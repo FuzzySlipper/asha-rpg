@@ -754,12 +754,12 @@ impl<'a> Validator<'a> {
                     "modifier",
                 );
                 self.require_identifier(stacking_group, &format!("{path}.stackingGroup"));
-                if *duration_turns == 0 {
+                if *duration_turns == 0 || *duration_turns > 1_000 {
                     self.error(
                         RpgDiagnosticStage::Semantics,
                         "RPG_IR_DURATION_INVALID",
                         format!("{path}.durationTurns"),
-                        "modifier duration must be positive",
+                        "modifier duration must be between 1 and 1000 turns",
                     );
                 }
                 self.validate_formula_at(value, &format!("{path}.value"), has_target_binding);

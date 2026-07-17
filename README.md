@@ -42,9 +42,14 @@ support bounded sequence, predicate branch, repeat, per-target branch, check
 outcome branch, and one atomic root. Unavailable semantics fail compilation;
 they are never delegated to consumer callbacks.
 
-`@asha-rpg/ir` and `@asha-rpg/authoring` still establish only the TypeScript
-package boundary. Their immutable builders and canonical normalizer are owned
-by the next implementation slice.
+`@asha-rpg/ir` publishes the strict normalized data contract and a checked
+vocabulary generated from the Rust registry. `@asha-rpg/authoring` publishes
+immutable branded ids, selectors, checks, formulas, predicates, costs,
+duration/stacking/timing data, operations, bounded composition, consumer source
+composition, diagnostics, and canonical normalization. It does not evaluate
+any of those semantics. Representative consumer code lives in
+`examples/representative-actions.ts`; its normalized artifact is sent through
+the Rust compiler during `npm test`.
 
 No Rulebench crate or package is part of this workspace. The independent
 `consumers/minimal-game` workspace verifies consumption through the public Git
@@ -54,6 +59,7 @@ boundary rather than an unpublished sibling path.
 
 ```bash
 npm test
+npm run build
 cargo test --workspace
 cargo clippy --workspace --all-targets -- -D warnings
 cargo test --manifest-path consumers/minimal-game/Cargo.toml

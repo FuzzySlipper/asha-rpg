@@ -1,13 +1,13 @@
-import type {
-  RpgRuleModuleReference,
-  RpgRulesetDeclaration,
+export * from './builders.js';
+export * from './normalize.js';
+export type * from './types.js';
+export type {
+  NormalizedRpgIr,
+  RpgActionId,
+  RpgDamageType,
+  RpgDefenseId,
+  RpgModifierId,
+  RpgResourceId,
+  RpgStackingGroup,
+  RpgStatId,
 } from '@asha-rpg/ir';
-
-/** Pure construction helper. It does not execute or mutate RPG state. */
-export function defineRuleset(
-  id: string,
-  version: string,
-  modules: readonly RpgRuleModuleReference[],
-): RpgRulesetDeclaration {
-  return { id, version, modules: [...modules] };
-}

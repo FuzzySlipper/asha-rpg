@@ -35,7 +35,7 @@ name = "@asha-rpg/ir"
 lane = "ts-authoring"
 type = "lib"
 layer = "protocol"
-implementation_status = "scaffolded"
+implementation_status = "active"
 may_depend_on = []
 
 [package."packages/authoring"]
@@ -43,5 +43,5 @@ name = "@asha-rpg/authoring"
 lane = "ts-authoring"
 type = "lib"
 layer = "domain"
-implementation_status = "scaffolded"
+implementation_status = "active"
 may_depend_on = ["@asha-rpg/ir"]

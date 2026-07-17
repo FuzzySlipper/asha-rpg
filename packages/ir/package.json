@@ -1,10 +1,19 @@
 {
   "name": "@asha-rpg/ir",
   "version": "0.1.0",
-  "private": true,
+  "description": "Versioned immutable normalized RPG IR and Rust-sourced vocabulary.",
   "type": "module",
   "exports": {
-    ".": "./src/index.ts"
+    ".": {
+      "types": "./dist/index.d.ts",
+      "default": "./dist/index.js"
+    }
   },
-  "types": "./src/index.ts"
+  "types": "./dist/index.d.ts",
+  "files": [
+    "dist"
+  ],
+  "scripts": {
+    "build": "tsc -p tsconfig.json"
+  }
 }

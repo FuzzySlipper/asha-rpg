@@ -166,6 +166,13 @@ fn compiler_rejects_non_atomic_programs_and_incompatible_requirements() {
             && diagnostic.code == "RPG_IR_REQUIREMENT_UNSUPPORTED"
             && diagnostic.requirement.as_deref() == Some("operation.damage@99")
     }));
+
+    let incompatible_branch = single_target_source().replacen("\"hit\":", "\"saved\":", 1);
+    let failure = compile_normalized_rpg_json(incompatible_branch.as_bytes()).unwrap_err();
+    assert!(failure
+        .diagnostics
+        .iter()
+        .any(|diagnostic| diagnostic.code == "RPG_IR_CHECK_BRANCH_INCOMPATIBLE"));
 }
 
 #[test]

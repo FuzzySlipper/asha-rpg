@@ -7,6 +7,12 @@ pub struct RpgOperationRegistration {
     pub accepted_events: &'static [&'static str],
 }
 
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct RpgCapabilityRegistration {
+    pub id: &'static str,
+    pub version: u32,
+}
+
 const REGISTRATIONS: &[RpgOperationRegistration] = &[
     RpgOperationRegistration {
         id: "operation.damage",
@@ -45,8 +51,43 @@ const REGISTRATIONS: &[RpgOperationRegistration] = &[
     },
 ];
 
+const CAPABILITIES: &[RpgCapabilityRegistration] = &[
+    RpgCapabilityRegistration {
+        id: "capability.vitality",
+        version: 1,
+    },
+    RpgCapabilityRegistration {
+        id: "capability.stats",
+        version: 1,
+    },
+    RpgCapabilityRegistration {
+        id: "capability.defenses",
+        version: 1,
+    },
+    RpgCapabilityRegistration {
+        id: "capability.resources",
+        version: 1,
+    },
+    RpgCapabilityRegistration {
+        id: "capability.modifiers",
+        version: 1,
+    },
+    RpgCapabilityRegistration {
+        id: "capability.position",
+        version: 1,
+    },
+    RpgCapabilityRegistration {
+        id: "capability.random",
+        version: 1,
+    },
+];
+
 pub fn operation_registrations() -> &'static [RpgOperationRegistration] {
     REGISTRATIONS
+}
+
+pub fn capability_registrations() -> &'static [RpgCapabilityRegistration] {
+    CAPABILITIES
 }
 
 pub(crate) fn operation_registration(id: &str) -> Option<&'static RpgOperationRegistration> {
@@ -56,14 +97,8 @@ pub(crate) fn operation_registration(id: &str) -> Option<&'static RpgOperationRe
 }
 
 pub(crate) fn capability_version(id: &str) -> Option<u32> {
-    match id {
-        "capability.vitality"
-        | "capability.stats"
-        | "capability.defenses"
-        | "capability.resources"
-        | "capability.modifiers"
-        | "capability.position"
-        | "capability.random" => Some(1),
-        _ => None,
-    }
+    CAPABILITIES
+        .iter()
+        .find(|registration| registration.id == id)
+        .map(|registration| registration.version)
 }

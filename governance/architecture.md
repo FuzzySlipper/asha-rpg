@@ -22,3 +22,8 @@ The TypeScript authoring layer is:
 
 TypeScript has no edge into Rust private structures. Normalized RPG IR is the
 only authored semantic artifact crossing the language boundary.
+
+Both TypeScript packages are active. The IR vocabulary is generated from the
+Rust registry, while the authoring package depends only on the IR package.
+Repository governance checks the generated output, runtime dependency set, and
+production-source import allowlists.

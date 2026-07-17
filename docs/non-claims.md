@@ -17,3 +17,8 @@ permanent or scheduler-relative durations, stack/highest-wins policies,
 reaction-window authoring, or a portable replay crate. Unknown requirements for
 those meanings fail closed. The replay ownership cell remains planned and is
 not an implementation claim.
+
+The TypeScript packages do not provide semantic preview, target evaluation,
+dice execution, predicate evaluation, state access, effect execution, or a
+mutable gameplay context. Their structural diagnostics are convenience only;
+Rust compilation remains authoritative.

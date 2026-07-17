@@ -40,6 +40,28 @@ for (const sourceRoot of ['crates', 'packages']) {
   }
 }
 
+checkPackageImports('packages/ir/src', (specifier) => specifier.startsWith('./'));
+checkPackageImports(
+  'packages/authoring/src',
+  (specifier) => specifier === '@asha-rpg/ir' || specifier.startsWith('./'),
+);
+
+const irPackage = JSON.parse(read('packages/ir/package.json'));
+const authoringPackage = JSON.parse(read('packages/authoring/package.json'));
+if (irPackage.private === true || authoringPackage.private === true) {
+  failures.push('supported TypeScript packages may not be marked private');
+}
+if (Object.keys(irPackage.dependencies ?? {}).length !== 0) {
+  failures.push('@asha-rpg/ir may not have runtime dependencies');
+}
+const authoringDependencies = Object.keys(authoringPackage.dependencies ?? {});
+if (
+  authoringDependencies.length !== 1 ||
+  authoringDependencies[0] !== '@asha-rpg/ir'
+) {
+  failures.push('@asha-rpg/authoring may depend only on @asha-rpg/ir at runtime');
+}
+
 if (failures.length > 0) {
   console.error(failures.join('\n'));
   process.exit(1);
@@ -55,4 +77,20 @@ function filesBelow(directory) {
     const path = join(directory, entry.name);
     return entry.isDirectory() ? filesBelow(path) : [path];
   });
+}
+
+function checkPackageImports(relativeRoot, allowed) {
+  const absolute = join(root, relativeRoot);
+  for (const path of filesBelow(absolute).filter((entry) => entry.endsWith('.ts'))) {
+    const source = readFileSync(path, 'utf8');
+    const imports = source.matchAll(/(?:from\s+|import\s*\()\s*['"]([^'"]+)['"]/g);
+    for (const match of imports) {
+      const specifier = match[1];
+      if (specifier !== undefined && !allowed(specifier)) {
+        failures.push(
+          `portable package import is outside its allowlist: ${path.slice(root.length + 1)} -> ${specifier}`,
+        );
+      }
+    }
+  }
 }

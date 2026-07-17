@@ -57,7 +57,7 @@ The active compatibility profile is:
 | formulas | constant, typed stat read, add, bounded dice, half |
 | predicates | always, comparison, not, all, any |
 | composition | atomic root, sequence, when, bounded repeat, bounded per-target, check branch |
-| modifier tenure | positive turn count with replace or refresh stacking |
+| modifier tenure | 1 to 1000 turns with replace or refresh stacking |
 | movement | bounded signed grid delta with explicit provoke behavior |
 
 Strict decode rejects unknown semantic fields. Compatibility requires exact
@@ -73,6 +73,27 @@ workspace. Costs, checks, branches, and owner mutations are staged there. A
 successful action advances both authoritative surfaces and emits accepted
 DomainEvents plus explanatory trace. A rejection returns stable code/path
 evidence while leaving both authoritative surfaces unchanged.
+
+## TypeScript authoring profile
+
+`@asha-rpg/ir` owns only immutable normalized data types plus operation and
+capability version maps generated from the Rust registry. The checked generator
+fails when those maps drift. `@asha-rpg/authoring` owns a distinct ergonomic AST
+whose builders return frozen data. Authoring-only immediate timing markers and
+consumer helper identity are eliminated during normalization.
+
+The normalizer performs deterministic structural work only: it expands
+consumer-composed action sources, sorts semantic catalogs and actions, derives
+exact requirements from data use, attaches stable path/source-path diagnostics,
+wraps each action in one atomic root, and emits recursively key-sorted canonical
+JSON. It does not roll dice, compare formulas, choose branches, test legality,
+apply stacking, move entities, or mutate state. Every representative artifact
+is passed to the Rust compiler as the final acceptance authority.
+
+Archetype, item, and scenario authoring helpers are pure action-composition
+sources in the initial profile. Their helper identities do not become new IR
+definition categories. This keeps ordinary consumer composition independent of
+Rust, product protocols, hosts, and runtime routing.
 
 ## Dependency direction
 

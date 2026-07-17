@@ -13,4 +13,7 @@ mod registry;
 
 pub use compile::{compile_normalized_rpg_ir, compile_normalized_rpg_json, CompiledRpgRuleset};
 pub use diagnostic::{RpgCompileFailure, RpgDiagnostic, RpgDiagnosticSeverity, RpgDiagnosticStage};
-pub use registry::{operation_registrations, RpgOperationRegistration};
+pub use registry::{
+    capability_registrations, operation_registrations, RpgCapabilityRegistration,
+    RpgOperationRegistration,
+};

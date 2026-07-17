@@ -1,12 +1,21 @@
 {
   "name": "@asha-rpg/authoring",
   "version": "0.1.0",
-  "private": true,
+  "description": "Immutable RPG authoring builders and deterministic IR normalization.",
   "type": "module",
   "exports": {
-    ".": "./src/index.ts"
+    ".": {
+      "types": "./dist/index.d.ts",
+      "default": "./dist/index.js"
+    }
   },
-  "types": "./src/index.ts",
+  "types": "./dist/index.d.ts",
+  "files": [
+    "dist"
+  ],
+  "scripts": {
+    "build": "tsc -p tsconfig.json"
+  },
   "dependencies": {
     "@asha-rpg/ir": "0.1.0"
   }
