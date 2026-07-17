@@ -1,4 +1,8 @@
-use asha_rpg::{PreEffectWorkspace, RpgGameplayFabric, RpgPreEffectOwner};
+use asha_rpg::{
+    compile_normalized_rpg_json, DeterministicRandomStream, GridPosition, PreEffectWorkspace,
+    RpgAuthoritySession, RpgCapabilityState, RpgEntityState, RpgGameplayFabric, RpgIntent,
+    RpgPreEffectOwner, Team,
+};
 
 #[derive(Default)]
 struct GameAuthority {
@@ -20,11 +24,73 @@ impl RpgPreEffectOwner for GameAuthority {
     fn commit(&mut self, workspace: &PreEffectWorkspace) -> Vec<String> {
         self.committed_damage = Some(workspace.damage_amount);
         self.revision = self.revision.saturating_add(1);
-        vec![format!("minimal-game-fact:damage={}", workspace.damage_amount)]
+        vec![format!(
+            "minimal-game-fact:damage={}",
+            workspace.damage_amount
+        )]
     }
 }
 
 fn main() {
+    run_semantic_action();
+    run_reaction_fabric();
+    println!("minimal consumer accepted semantic damage=7 and reaction damage=7");
+}
+
+fn run_semantic_action() {
+    let source = br#"{
+      "schema":{"identity":"asha.rpg.ir","major":1},
+      "package":{"id":"minimal.game","version":"1.0.0"},
+      "catalogs":{
+        "defenses":["guard"],
+        "capabilities":["capability.vitality","capability.defenses","capability.random"]
+      },
+      "requirements":[
+        {"kind":"operation","id":"operation.damage","version":1},
+        {"kind":"capability","id":"capability.vitality","version":1},
+        {"kind":"capability","id":"capability.defenses","version":1},
+        {"kind":"capability","id":"capability.random","version":1}
+      ],
+      "actions":[{
+        "id":"minimal.strike","name":"Minimal Strike","sourcePath":"actions/minimal-strike",
+        "targets":{"team":"hostile","maximumRange":3,"maximumTargets":1},
+        "check":{"kind":"attack","modifier":{"kind":"constant","value":2},"defenseId":"guard"},
+        "rollScope":"perTarget","costs":[],
+        "program":{"kind":"atomic","body":{"kind":"onCheck","hit":
+          {"kind":"operation","operation":{"kind":"damage","amount":{"kind":"constant","value":7},"damageType":"force"}}
+        }}
+      }]
+    }"#;
+    let ruleset = compile_normalized_rpg_json(source).expect("consumer RPG IR compiles");
+    let actor = RpgEntityState::new("hero", Team::Ally, GridPosition { x: 0, y: 0 }, 20);
+    let target = RpgEntityState::new("guardian", Team::Enemy, GridPosition { x: 1, y: 0 }, 20)
+        .with_defense("guard", 12);
+    let mut state = RpgCapabilityState::default();
+    state.insert_entity(actor);
+    state.insert_entity(target);
+    let mut session =
+        RpgAuthoritySession::new(ruleset, state, DeterministicRandomStream::new(vec![10]));
+    let receipt = session
+        .submit(&RpgIntent {
+            action_id: "minimal.strike".to_owned(),
+            actor_id: "hero".to_owned(),
+            target_ids: vec!["guardian".to_owned()],
+        })
+        .expect("consumer intent resolves");
+
+    assert_eq!(receipt.random_consumed, 1);
+    assert_eq!(
+        session
+            .state()
+            .entity("guardian")
+            .expect("target view remains available")
+            .vitality()
+            .current,
+        13
+    );
+}
+
+fn run_reaction_fabric() {
     let mut game = GameAuthority::default();
     let mut fabric = RpgGameplayFabric::new();
     let continuation = fabric
@@ -53,5 +119,4 @@ fn main() {
     assert!(receipt.accepted());
     assert_eq!(game.committed_damage, Some(7));
     assert_eq!(fabric.readout().pending_decision_count, 0);
-    println!("minimal consumer accepted damage=7");
 }

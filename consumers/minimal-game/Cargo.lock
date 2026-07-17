@@ -34,8 +34,9 @@ dependencies = [
 [[package]]
 name = "asha-rpg"
 version = "0.1.0"
-source = "git+https://github.com/FuzzySlipper/asha-rpg.git?rev=d8701adcf34f58bc911df0669e3c92aa9919fc7f#d8701adcf34f58bc911df0669e3c92aa9919fc7f"
+source = "git+https://github.com/FuzzySlipper/asha-rpg.git?rev=95907505ffcc942095953e5786186a18119cd97e#95907505ffcc942095953e5786186a18119cd97e"
 dependencies = [
+ "rpg-compiler",
  "rpg-core",
  "rpg-ir",
  "rpg-runtime",
@@ -764,25 +765,39 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "4e27ee8bb91ca0adcf0ecb116293afa12d393f9c2b9b9cd54d33e8078fe19839"
 
 [[package]]
+name = "rpg-compiler"
+version = "0.1.0"
+source = "git+https://github.com/FuzzySlipper/asha-rpg.git?rev=95907505ffcc942095953e5786186a18119cd97e#95907505ffcc942095953e5786186a18119cd97e"
+dependencies = [
+ "rpg-core",
+ "rpg-ir",
+ "serde_json",
+]
+
+[[package]]
 name = "rpg-core"
 version = "0.1.0"
-source = "git+https://github.com/FuzzySlipper/asha-rpg.git?rev=d8701adcf34f58bc911df0669e3c92aa9919fc7f#d8701adcf34f58bc911df0669e3c92aa9919fc7f"
+source = "git+https://github.com/FuzzySlipper/asha-rpg.git?rev=95907505ffcc942095953e5786186a18119cd97e#95907505ffcc942095953e5786186a18119cd97e"
 
 [[package]]
 name = "rpg-ir"
 version = "0.1.0"
-source = "git+https://github.com/FuzzySlipper/asha-rpg.git?rev=d8701adcf34f58bc911df0669e3c92aa9919fc7f#d8701adcf34f58bc911df0669e3c92aa9919fc7f"
+source = "git+https://github.com/FuzzySlipper/asha-rpg.git?rev=95907505ffcc942095953e5786186a18119cd97e#95907505ffcc942095953e5786186a18119cd97e"
 dependencies = [
  "rpg-core",
+ "serde",
+ "serde_json",
 ]
 
 [[package]]
 name = "rpg-runtime"
 version = "0.1.0"
-source = "git+https://github.com/FuzzySlipper/asha-rpg.git?rev=d8701adcf34f58bc911df0669e3c92aa9919fc7f#d8701adcf34f58bc911df0669e3c92aa9919fc7f"
+source = "git+https://github.com/FuzzySlipper/asha-rpg.git?rev=95907505ffcc942095953e5786186a18119cd97e#95907505ffcc942095953e5786186a18119cd97e"
 dependencies = [
  "asha-gameplay-module-sdk",
  "asha-runtime-session-composition",
+ "rpg-compiler",
+ "rpg-core",
  "serde",
  "serde_json",
 ]
