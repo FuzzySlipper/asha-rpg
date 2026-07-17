@@ -1,0 +1,11 @@
+{
+  "name": "asha-rpg",
+  "version": "0.1.0",
+  "private": true,
+  "type": "module",
+  "description": "Portable Rust-owned RPG semantics with a constrained TypeScript authoring frontend.",
+  "scripts": {
+    "check:governance": "node scripts/check-governance.mjs",
+    "test": "npm run check:governance"
+  }
+}

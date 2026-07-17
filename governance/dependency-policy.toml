@@ -1,0 +1,21 @@
+[repository]
+may_depend_on = ["asha-engine-public"]
+may_not_depend_on = ["asha-rulebench", "asha-rulebench-testing", "angular", "browser-host", "filesystem-storage"]
+
+[rust]
+public_facade = "asha-rpg"
+forbid_private_asha_imports = true
+forbid_dynamic_operation_registration = true
+forbid_rulebench_vocabulary = true
+
+[typescript]
+authoring_packages = ["@asha-rpg/ir", "@asha-rpg/authoring"]
+forbid_runtime_callbacks = true
+forbid_semantic_evaluation = true
+forbid_mutable_gameplay_context = true
+forbid_browser_globals = true
+forbid_angular = true
+
+[cross_language]
+semantic_border = "asha.rpg.ir"
+generated_private_rust_mirrors = false

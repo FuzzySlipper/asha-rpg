@@ -1,0 +1,12 @@
+[source]
+repository = "https://github.com/FuzzySlipper/asha-engine.git"
+revision = "67ce55dba602ad61e1b9ca3b0ad01a22fa4fe148"
+policy = "exact-revision-public-packages-only"
+
+[[package]]
+name = "asha-gameplay-module-sdk"
+version = "^0.1"
+
+[[package]]
+name = "asha-runtime-session-composition"
+version = "^0.1"
