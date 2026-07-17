@@ -9,15 +9,18 @@
   "description": "Portable Rust-owned RPG semantics with a constrained TypeScript authoring frontend.",
   "scripts": {
     "check:governance": "node scripts/check-governance.mjs",
+    "check:authoring-boundary": "node scripts/check-authoring-boundary.mjs",
+    "report:amplification": "node scripts/report-change-amplification.mjs",
     "generate:ir": "node scripts/generate-ir-vocabulary.mjs",
     "check:generated": "node scripts/generate-ir-vocabulary.mjs --check",
     "build": "npm run build -w @asha-rpg/ir && npm run build -w @asha-rpg/authoring",
     "check:types": "tsc -p tsconfig.test.json",
     "test:authoring": "node --test packages/authoring/test/*.test.ts",
-    "test": "npm run check:governance && npm run check:generated && npm run build && npm run check:types && npm run test:authoring"
+    "test:boundary-fixtures": "node --test scripts/*.test.mjs",
+    "test": "npm run test:boundary-fixtures && npm run check:governance && npm run check:authoring-boundary && npm run report:amplification && npm run check:generated && npm run build && npm run check:types && npm run test:authoring"
   },
   "devDependencies": {
     "@types/node": "^26.1.1",
-    "typescript": "^7.0.2"
+    "typescript": "~5.9.3"
   }
 }

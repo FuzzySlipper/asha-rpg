@@ -1,0 +1,28 @@
+{
+  "schema": "asha-rpg.change-amplification@1",
+  "contentOnly": {
+    "requiredLayers": [
+      "consumer TypeScript authored definition or pure composition helper",
+      "consumer owner-local normalization expectation",
+      "mechanically generated normalized RPG IR artifact"
+    ],
+    "forbiddenLayers": [
+      "Rust source",
+      "product protocol",
+      "host route",
+      "capability manifest",
+      "certification or exhaustive proof manifest"
+    ]
+  },
+  "semanticOperation": {
+    "requiredLayers": [
+      "Rust operation registration and complete extension contract",
+      "normalized IR decode and compatibility schema",
+      "Rust reference, requirement, and semantic validation",
+      "Rust staged execution and capability mutation owner",
+      "accepted DomainEvents, trace, and replay behavior",
+      "generated public operation vocabulary",
+      "TypeScript authoring sugar and owner-local type and normalization tests"
+    ]
+  }
+}

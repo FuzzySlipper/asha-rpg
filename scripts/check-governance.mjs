@@ -13,6 +13,7 @@ const requiredFiles = [
   'governance/dependency-policy.toml',
   'governance/upstream-asha.toml',
   'governance/boundary-rules.md',
+  'governance/change-amplification.json',
 ];
 
 const failures = [];
@@ -34,9 +35,12 @@ for (const sourceRoot of ['crates', 'packages']) {
   if (!existsSync(absolute)) continue;
   for (const path of filesBelow(absolute)) {
     const source = readFileSync(path, 'utf8');
-    if (/rulebench|certification|golden|experiment|\bangular\b/i.test(source)) {
-      failures.push(`portable source contains product/proof vocabulary: ${path.slice(root.length + 1)}`);
-    }
+    failures.push(
+      ...inspectPortableRustSource(
+        source,
+        path.slice(root.length + 1),
+      ),
+    );
   }
 }
 
@@ -68,12 +72,19 @@ if (failures.length > 0) {
 }
 console.log('asha-rpg governance check ok');
 
+export function inspectPortableRustSource(source, fileName = 'fixture.rs') {
+  return /rulebench|certification|golden|experiment|\bangular\b/i.test(source)
+    ? [`portable source contains product/proof vocabulary: ${fileName}`]
+    : [];
+}
+
 function read(path) {
   return readFileSync(join(root, path), 'utf8');
 }
 
 function filesBelow(directory) {
   return readdirSync(directory, { withFileTypes: true }).flatMap((entry) => {
+    if (entry.name === 'node_modules' || entry.name === 'dist') return [];
     const path = join(directory, entry.name);
     return entry.isDirectory() ? filesBelow(path) : [path];
   });

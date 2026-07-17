@@ -9,6 +9,12 @@ fn main() {
             json!({
                 "id": registration.id,
                 "version": registration.version,
+                "reads": registration.reads,
+                "mutationOwner": registration.mutation_owner,
+                "validationBehavior": registration.validation_behavior,
+                "acceptedEvents": registration.accepted_events,
+                "traceBehavior": registration.trace_behavior,
+                "replayImplications": registration.replay_implications,
             })
         })
         .collect::<Vec<_>>();

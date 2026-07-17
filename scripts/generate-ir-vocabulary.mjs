@@ -27,6 +27,7 @@ if (result.status !== 0) {
 const vocabulary = JSON.parse(result.stdout);
 const operations = [...vocabulary.operations].sort(compareId);
 const capabilities = [...vocabulary.capabilities].sort(compareId);
+for (const operation of operations) validateOperationContract(operation);
 const generated = `// Generated from the Rust semantic registry. Do not edit by hand.
 export const RPG_IR_IDENTITY = ${JSON.stringify(vocabulary.identity)} as const;
 export const RPG_IR_MAJOR = ${JSON.stringify(vocabulary.major)} as const;
@@ -64,4 +65,27 @@ function renderVersions(registrations) {
   return `{
 ${lines.join('\n')}
 }`;
+}
+
+function validateOperationContract(operation) {
+  const requiredText = [
+    'id',
+    'mutationOwner',
+    'validationBehavior',
+    'traceBehavior',
+    'replayImplications',
+  ];
+  for (const field of requiredText) {
+    if (typeof operation[field] !== 'string' || operation[field].trim() === '') {
+      throw new Error(`operation registry entry is missing ${field}`);
+    }
+  }
+  if (!Number.isInteger(operation.version) || operation.version < 1) {
+    throw new Error(`operation ${operation.id} has no positive integer version`);
+  }
+  for (const field of ['reads', 'acceptedEvents']) {
+    if (!Array.isArray(operation[field]) || operation[field].length === 0) {
+      throw new Error(`operation ${operation.id} is missing ${field}`);
+    }
+  }
 }

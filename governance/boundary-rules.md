@@ -15,3 +15,27 @@
    belongs to `asha-rulebench-testing`.
 9. Temporary migration adapters require a named consumer and deletion task.
 10. Planned cells are not implementation claims.
+
+## Extension checklists
+
+Content-only addition:
+
+- change a downstream TypeScript action or pure composition helper;
+- update its downstream owner-local normalization expectation;
+- regenerate the normalized RPG IR artifact;
+- confirm no Rust, product protocol, host route, capability manifest, or
+  certification/proof manifest changed.
+
+New semantic operation:
+
+- add or version the normalized IR declaration and strict decoder;
+- register Rust reads, mutation owner, validation behavior, accepted
+  DomainEvents, trace behavior, and replay implications;
+- implement reference/requirement/semantic validation and staged execution;
+- add Rust owner tests for acceptance, rejection atomicity, event, trace,
+  randomness, final view, and replay implications;
+- regenerate the public operation vocabulary;
+- only then add TypeScript authoring sugar and type/normalization tests.
+
+`npm run report:amplification` validates and reports these two change paths.
+Exhaustive cross-product proof belongs downstream in `asha-rulebench-testing`.

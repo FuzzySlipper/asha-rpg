@@ -116,6 +116,27 @@ A new name or composition is not a Rust extension. A new meaning that changes
 evaluation, legality, timing, mutation, events, randomness, or replay begins in
 Rust and then publishes authoring vocabulary.
 
+## Governed extension paths
+
+The checked amplification contract reports three downstream layers for an
+ordinary content-only addition: TypeScript content/composition, its owner-local
+normalization expectation, and the generated normalized IR artifact. Rust,
+product protocols, host routes, capability manifests, and certification proof
+are forbidden amplification for that change class.
+
+A new semantic operation crosses seven explicit owner layers. Its Rust
+registration must declare reads, mutation owner, validation behavior, accepted
+DomainEvents, trace behavior, and replay implications before the vocabulary
+generator will publish authoring-facing identity. The complete checklist lives
+in `governance/boundary-rules.md`; the machine-readable layer report lives in
+`governance/change-amplification.json`.
+
+Non-claims: the report is an architectural change contract, not a claim that
+all semantic operations are implemented, that TypeScript policy can execute
+rules, or that product proof belongs here. Focused owner tests stay in this
+repository; exhaustive cross-product boundary proof belongs to
+`asha-rulebench-testing`.
+
 ## Versioning
 
 RPG IR major versions, operation versions, capability versions, Rust facade
