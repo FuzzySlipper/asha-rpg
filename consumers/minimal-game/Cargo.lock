@@ -34,7 +34,7 @@ dependencies = [
 [[package]]
 name = "asha-rpg"
 version = "0.1.0"
-source = "git+https://github.com/FuzzySlipper/asha-rpg.git?rev=95907505ffcc942095953e5786186a18119cd97e#95907505ffcc942095953e5786186a18119cd97e"
+source = "git+https://github.com/FuzzySlipper/asha-rpg.git?rev=ef463d2d0ea3f708f08605c0e9df42b385645397#ef463d2d0ea3f708f08605c0e9df42b385645397"
 dependencies = [
  "rpg-compiler",
  "rpg-core",
@@ -767,7 +767,7 @@ checksum = "4e27ee8bb91ca0adcf0ecb116293afa12d393f9c2b9b9cd54d33e8078fe19839"
 [[package]]
 name = "rpg-compiler"
 version = "0.1.0"
-source = "git+https://github.com/FuzzySlipper/asha-rpg.git?rev=95907505ffcc942095953e5786186a18119cd97e#95907505ffcc942095953e5786186a18119cd97e"
+source = "git+https://github.com/FuzzySlipper/asha-rpg.git?rev=ef463d2d0ea3f708f08605c0e9df42b385645397#ef463d2d0ea3f708f08605c0e9df42b385645397"
 dependencies = [
  "rpg-core",
  "rpg-ir",
@@ -777,12 +777,12 @@ dependencies = [
 [[package]]
 name = "rpg-core"
 version = "0.1.0"
-source = "git+https://github.com/FuzzySlipper/asha-rpg.git?rev=95907505ffcc942095953e5786186a18119cd97e#95907505ffcc942095953e5786186a18119cd97e"
+source = "git+https://github.com/FuzzySlipper/asha-rpg.git?rev=ef463d2d0ea3f708f08605c0e9df42b385645397#ef463d2d0ea3f708f08605c0e9df42b385645397"
 
 [[package]]
 name = "rpg-ir"
 version = "0.1.0"
-source = "git+https://github.com/FuzzySlipper/asha-rpg.git?rev=95907505ffcc942095953e5786186a18119cd97e#95907505ffcc942095953e5786186a18119cd97e"
+source = "git+https://github.com/FuzzySlipper/asha-rpg.git?rev=ef463d2d0ea3f708f08605c0e9df42b385645397#ef463d2d0ea3f708f08605c0e9df42b385645397"
 dependencies = [
  "rpg-core",
  "serde",
@@ -792,7 +792,7 @@ dependencies = [
 [[package]]
 name = "rpg-runtime"
 version = "0.1.0"
-source = "git+https://github.com/FuzzySlipper/asha-rpg.git?rev=95907505ffcc942095953e5786186a18119cd97e#95907505ffcc942095953e5786186a18119cd97e"
+source = "git+https://github.com/FuzzySlipper/asha-rpg.git?rev=ef463d2d0ea3f708f08605c0e9df42b385645397#ef463d2d0ea3f708f08605c0e9df42b385645397"
 dependencies = [
  "asha-gameplay-module-sdk",
  "asha-runtime-session-composition",
