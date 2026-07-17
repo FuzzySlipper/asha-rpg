@@ -16,5 +16,8 @@
   "scripts": {
     "build": "tsc -p tsconfig.json",
     "prepare": "npm run build"
+  },
+  "devDependencies": {
+    "typescript": "^7.0.2"
   }
 }
