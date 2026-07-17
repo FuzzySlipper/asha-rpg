@@ -59,12 +59,31 @@ impl RpgAuthoritySession {
         self.ruleset.resolve(&mut state, &mut random, intent)
     }
 
+    pub fn preview_with_random(
+        &self,
+        intent: &RpgIntent,
+        values: impl IntoIterator<Item = u32>,
+    ) -> Result<RpgResolutionReceipt, RpgResolutionRejection> {
+        let mut state = self.state.clone();
+        let mut random = DeterministicRandomStream::new(values.into_iter().collect());
+        self.ruleset.resolve(&mut state, &mut random, intent)
+    }
+
     pub fn submit(
         &mut self,
         intent: &RpgIntent,
     ) -> Result<RpgResolutionReceipt, RpgResolutionRejection> {
         self.ruleset
             .resolve(&mut self.state, &mut self.random, intent)
+    }
+
+    pub fn submit_with_random(
+        &mut self,
+        intent: &RpgIntent,
+        values: impl IntoIterator<Item = u32>,
+    ) -> Result<RpgResolutionReceipt, RpgResolutionRejection> {
+        let mut random = DeterministicRandomStream::new(values.into_iter().collect());
+        self.ruleset.resolve(&mut self.state, &mut random, intent)
     }
 
     pub fn begin_before_effect(
