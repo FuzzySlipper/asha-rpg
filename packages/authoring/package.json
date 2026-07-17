@@ -15,7 +15,7 @@
   ],
   "scripts": {
     "build": "tsc -p tsconfig.json",
-    "prepare": "npm run build"
+    "prepare": "npm run build --workspace @asha-rpg/ir && npm run build"
   },
   "dependencies": {
     "@asha-rpg/ir": "0.1.0"
