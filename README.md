@@ -36,8 +36,8 @@ The `asha-rpg` crate is the supported consumer facade. The extracted public-ASHA
 decision/reaction fabric remains alongside this semantic path.
 
 The initial operation set is deliberately closed: damage, healing, resource
-change, and turn-bounded modifier application with explicit replace or refresh
-stacking. Checks support attack, saving throw, and no-roll flows. Programs
+change, bounded grid movement, and turn-bounded modifier application with
+explicit replace or refresh stacking. Checks support attack, saving throw, and no-roll flows. Programs
 support bounded sequence, predicate branch, repeat, per-target branch, check
 outcome branch, and one atomic root. Unavailable semantics fail compilation;
 they are never delegated to consumer callbacks.

@@ -36,6 +36,13 @@ const REGISTRATIONS: &[RpgOperationRegistration] = &[
         mutation_owner: "capability.modifiers",
         accepted_events: &["ModifierApplied"],
     },
+    RpgOperationRegistration {
+        id: "operation.move",
+        version: 1,
+        reads: &["capability.position"],
+        mutation_owner: "capability.position",
+        accepted_events: &["PositionChanged"],
+    },
 ];
 
 pub fn operation_registrations() -> &'static [RpgOperationRegistration] {
@@ -55,6 +62,7 @@ pub(crate) fn capability_version(id: &str) -> Option<u32> {
         | "capability.defenses"
         | "capability.resources"
         | "capability.modifiers"
+        | "capability.position"
         | "capability.random" => Some(1),
         _ => None,
     }

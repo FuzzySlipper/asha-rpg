@@ -226,6 +226,13 @@ pub enum RpgIrOperation {
         value: RpgIrFormula,
         duration_turns: u32,
     },
+    Move {
+        subject: RpgIrSubject,
+        delta_x: RpgIrFormula,
+        delta_y: RpgIrFormula,
+        maximum_distance: u32,
+        provokes: bool,
+    },
 }
 
 impl RpgIrOperation {
@@ -235,6 +242,7 @@ impl RpgIrOperation {
             Self::Heal { .. } => "operation.heal",
             Self::ChangeResource { .. } => "operation.changeResource",
             Self::ApplyModifier { .. } => "operation.applyModifier",
+            Self::Move { .. } => "operation.move",
         }
     }
 }

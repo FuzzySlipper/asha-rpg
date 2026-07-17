@@ -234,6 +234,29 @@ impl RpgCapabilityState {
         Ok(())
     }
 
+    pub fn move_entity(
+        &mut self,
+        entity_id: &str,
+        delta_x: i32,
+        delta_y: i32,
+        maximum_distance: u32,
+    ) -> Result<(GridPosition, GridPosition), RpgCapabilityMutationError> {
+        let distance = delta_x
+            .unsigned_abs()
+            .saturating_add(delta_y.unsigned_abs());
+        if distance == 0 || distance > maximum_distance {
+            return Err(RpgCapabilityMutationError::MovementDistanceInvalid);
+        }
+        let entity = self.entity_mut_for_owner(entity_id)?;
+        let previous = entity.position;
+        let x = i64::from(previous.x).saturating_add(i64::from(delta_x));
+        let y = i64::from(previous.y).saturating_add(i64::from(delta_y));
+        let x = u32::try_from(x).map_err(|_| RpgCapabilityMutationError::PositionOutOfBounds)?;
+        let y = u32::try_from(y).map_err(|_| RpgCapabilityMutationError::PositionOutOfBounds)?;
+        entity.position = GridPosition { x, y };
+        Ok((previous, entity.position))
+    }
+
     pub fn advance_revision(&mut self) -> u64 {
         self.revision = self.revision.saturating_add(1);
         self.revision
@@ -266,6 +289,8 @@ pub enum RpgCapabilityMutationError {
     UnknownResource,
     InvalidAmount,
     InsufficientResource,
+    MovementDistanceInvalid,
+    PositionOutOfBounds,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -352,6 +377,13 @@ pub enum RpgDomainEvent {
         stacking: RpgModifierStackingPolicy,
         value: i32,
         remaining_turns: u32,
+    },
+    PositionChanged {
+        source_id: String,
+        entity_id: String,
+        previous: GridPosition,
+        current: GridPosition,
+        provokes: bool,
     },
 }
 
@@ -441,5 +473,13 @@ mod tests {
         let modifier = state.entity("hero").unwrap().modifier("impeded").unwrap();
         assert_eq!(modifier.value(), -3);
         assert_eq!(modifier.remaining_turns(), 2);
+        assert_eq!(
+            state.move_entity("hero", 2, -1, 3),
+            Ok((GridPosition { x: 2, y: 3 }, GridPosition { x: 4, y: 2 }))
+        );
+        assert_eq!(
+            state.move_entity("hero", -9, 0, 9),
+            Err(RpgCapabilityMutationError::PositionOutOfBounds)
+        );
     }
 }

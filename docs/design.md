@@ -51,13 +51,14 @@ The active compatibility profile is:
 | Surface | Supported version or vocabulary |
 | --- | --- |
 | normalized IR | `asha.rpg.ir` major 1 |
-| operations | `operation.damage@1`, `operation.heal@1`, `operation.changeResource@1`, `operation.applyModifier@1` |
-| capabilities | vitality, stats, defenses, resources, modifiers, deterministic random, each at version 1 |
+| operations | `operation.damage@1`, `operation.heal@1`, `operation.changeResource@1`, `operation.applyModifier@1`, `operation.move@1` |
+| capabilities | vitality, stats, defenses, resources, modifiers, position, deterministic random, each at version 1 |
 | checks | attack, saving throw, no roll |
 | formulas | constant, typed stat read, add, bounded dice, half |
 | predicates | always, comparison, not, all, any |
 | composition | atomic root, sequence, when, bounded repeat, bounded per-target, check branch |
 | modifier tenure | positive turn count with replace or refresh stacking |
+| movement | bounded signed grid delta with explicit provoke behavior |
 
 Strict decode rejects unknown semantic fields. Compatibility requires exact
 operation and capability versions. Compilation resolves catalog references,

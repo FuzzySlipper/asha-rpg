@@ -764,6 +764,27 @@ impl<'a> Validator<'a> {
                 }
                 self.validate_formula_at(value, &format!("{path}.value"), has_target_binding);
             }
+            RpgIrOperation::Move {
+                subject,
+                delta_x,
+                delta_y,
+                maximum_distance,
+                provokes: _,
+            } => {
+                if *subject == RpgIrSubject::Target {
+                    self.require_target_binding(path, target_bound, action_target_maximum);
+                }
+                if *maximum_distance == 0 || *maximum_distance > 64 {
+                    self.error(
+                        RpgDiagnosticStage::Semantics,
+                        "RPG_IR_MOVEMENT_BOUND_INVALID",
+                        format!("{path}.maximumDistance"),
+                        "movement maximum distance must be between 1 and 64",
+                    );
+                }
+                self.validate_formula_at(delta_x, &format!("{path}.deltaX"), has_target_binding);
+                self.validate_formula_at(delta_y, &format!("{path}.deltaY"), has_target_binding);
+            }
         }
     }
 

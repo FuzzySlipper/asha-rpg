@@ -98,6 +98,43 @@ fn multi_target_saves_select_independent_bounded_branches() {
 }
 
 #[test]
+fn movement_uses_the_position_owner_and_emits_a_replayable_event() {
+    let ruleset = compile_normalized_rpg_json(movement_source().as_bytes()).unwrap();
+    let actor = RpgEntityState::new("actor", Team::Ally, GridPosition { x: 0, y: 0 }, 20);
+    let target = RpgEntityState::new("target", Team::Ally, GridPosition { x: 2, y: 2 }, 20);
+    let mut state = RpgCapabilityState::default();
+    state.insert_entity(actor);
+    state.insert_entity(target);
+    let mut random = DeterministicRandomStream::new(Vec::new());
+
+    let receipt = ruleset
+        .resolve(
+            &mut state,
+            &mut random,
+            &RpgIntent {
+                action_id: "action.move".to_owned(),
+                actor_id: "actor".to_owned(),
+                target_ids: vec!["target".to_owned()],
+            },
+        )
+        .unwrap();
+
+    assert_eq!(
+        state.entity("target").unwrap().position(),
+        GridPosition { x: 4, y: 1 }
+    );
+    assert!(matches!(
+        receipt.events[0],
+        RpgDomainEvent::PositionChanged {
+            previous: GridPosition { x: 2, y: 2 },
+            current: GridPosition { x: 4, y: 1 },
+            provokes: true,
+            ..
+        }
+    ));
+}
+
+#[test]
 fn compiler_rejects_unknown_references_before_execution() {
     let invalid =
         single_target_source().replacen("\"statId\":\"power\"", "\"statId\":\"missing\"", 1);
@@ -261,6 +298,27 @@ fn non_atomic_source() -> String {
         "targets":{"team":"ally","maximumRange":3,"maximumTargets":1},
         "check":{"kind":"noRoll"},"rollScope":"none","costs":[],
         "program":{"kind":"operation","operation":{"kind":"heal","amount":{"kind":"constant","value":4}}}
+      }]
+    }"#
+    .to_owned()
+}
+
+fn movement_source() -> String {
+    r#"{
+      "schema":{"identity":"asha.rpg.ir","major":1},
+      "package":{"id":"consumer.package","version":"1.0.0"},
+      "catalogs":{"capabilities":["capability.position"]},
+      "requirements":[
+        {"kind":"operation","id":"operation.move","version":1},
+        {"kind":"capability","id":"capability.position","version":1}
+      ],
+      "actions":[{
+        "id":"action.move","name":"Move an ally","sourcePath":"actions/move",
+        "targets":{"team":"ally","maximumRange":4,"maximumTargets":1},
+        "check":{"kind":"noRoll"},"rollScope":"none","costs":[],
+        "program":{"kind":"atomic","body":{"kind":"onCheck","noRoll":
+          {"kind":"operation","operation":{"kind":"move","subject":"target","deltaX":{"kind":"constant","value":2},"deltaY":{"kind":"constant","value":-1},"maximumDistance":3,"provokes":true}}
+        }}
       }]
     }"#
     .to_owned()

@@ -12,7 +12,7 @@ Asha RPG is not:
 - a home for every consumer's named content catalog.
 
 The initial semantic profile does not yet claim contested checks, critical
-outcomes, area selectors, spatial mutation, conditions, temporary vitality,
+outcomes, area selectors, terrain/occupancy pathfinding, conditions, temporary vitality,
 permanent or scheduler-relative durations, stack/highest-wins policies,
 reaction-window authoring, or a portable replay crate. Unknown requirements for
 those meanings fail closed. The replay ownership cell remains planned and is

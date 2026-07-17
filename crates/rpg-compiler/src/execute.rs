@@ -494,6 +494,28 @@ impl Execution<'_> {
                     remaining_turns: *duration_turns,
                 });
             }
+            RpgIrOperation::Move {
+                subject,
+                delta_x,
+                delta_y,
+                maximum_distance,
+                provokes,
+            } => {
+                let entity_id = self.subject_id(*subject, path)?;
+                let delta_x = self.eval_formula(delta_x, &format!("{path}.deltaX"))?;
+                let delta_y = self.eval_formula(delta_y, &format!("{path}.deltaY"))?;
+                let (previous, current) = self
+                    .staged_state
+                    .move_entity(&entity_id, delta_x, delta_y, *maximum_distance)
+                    .map_err(|error| self.mutation_rejection(error, path))?;
+                self.events.push(RpgDomainEvent::PositionChanged {
+                    source_id: self.intent.actor_id.clone(),
+                    entity_id,
+                    previous,
+                    current,
+                    provokes: *provokes,
+                });
+            }
         }
         self.trace.push(RpgTraceStep {
             path: path.to_owned(),
@@ -707,6 +729,14 @@ impl Execution<'_> {
             RpgCapabilityMutationError::InsufficientResource => (
                 "RPG_MUTATION_RESOURCE_INSUFFICIENT",
                 "mutation resource is insufficient",
+            ),
+            RpgCapabilityMutationError::MovementDistanceInvalid => (
+                "RPG_MUTATION_MOVEMENT_DISTANCE_INVALID",
+                "movement distance is zero or exceeds its bound",
+            ),
+            RpgCapabilityMutationError::PositionOutOfBounds => (
+                "RPG_MUTATION_POSITION_OUT_OF_BOUNDS",
+                "movement leaves the supported position space",
             ),
         };
         self.fail(code, path, message)
