@@ -1,9 +1,9 @@
 use std::collections::BTreeMap;
 
 use rpg_core::{
-    DeterministicRandomStream, RpgCapabilityMutationError, RpgCapabilityState, RpgDomainEvent,
-    RpgIntent, RpgModifierStackingPolicy, RpgResolutionReceipt, RpgResolutionRejection,
-    RpgTraceStep,
+    DeterministicRandomStream, RpgCapabilityId, RpgCapabilityMutationError, RpgCapabilityState,
+    RpgDomainEvent, RpgIntent, RpgModifierStackingPolicy, RpgRandomRequest, RpgRandomRequestKind,
+    RpgResolutionReceipt, RpgResolutionRejection, RpgTraceStep,
 };
 use rpg_ir::{
     RpgIrCheck, RpgIrComparison, RpgIrFormula, RpgIrOperation, RpgIrPredicate, RpgIrRollScope,
@@ -194,7 +194,8 @@ impl Execution<'_> {
             let path = format!("$.action.costs[{index}]");
             let remaining = self
                 .staged_state
-                .spend_resource(&self.intent.actor_id, &cost.resource_id, cost.amount)
+                .resources_owner()
+                .spend(&self.intent.actor_id, &cost.resource_id, cost.amount)
                 .map_err(|error| self.mutation_rejection(error, &path))?;
             self.events.push(RpgDomainEvent::ResourceSpent {
                 entity_id: self.intent.actor_id.clone(),
@@ -215,7 +216,12 @@ impl Execution<'_> {
         let shared_roll = if self.action.roll_scope == RpgIrRollScope::Shared
             && !matches!(self.action.check, RpgIrCheck::NoRoll)
         {
-            Some(self.take_random(20, "$.action.check.sharedRoll")?)
+            let kind = match self.action.check {
+                RpgIrCheck::Attack { .. } => RpgRandomRequestKind::AttackCheck,
+                RpgIrCheck::SavingThrow { .. } => RpgRandomRequestKind::SavingThrowCheck,
+                RpgIrCheck::NoRoll => unreachable!("no-roll check excluded above"),
+            };
+            Some(self.take_random(kind, 20, "$.action.check.sharedRoll")?)
         } else {
             None
         };
@@ -231,7 +237,11 @@ impl Execution<'_> {
                 } => {
                     let roll = match shared_roll {
                         Some(value) => value,
-                        None => self.take_random(20, &format!("{path}.roll"))?,
+                        None => self.take_random(
+                            RpgRandomRequestKind::AttackCheck,
+                            20,
+                            &format!("{path}.roll"),
+                        )?,
                     };
                     let modifier = self.eval_formula(modifier, &format!("{path}.modifier"))?;
                     let total = i32::try_from(roll)
@@ -270,7 +280,11 @@ impl Execution<'_> {
                 } => {
                     let roll = match shared_roll {
                         Some(value) => value,
-                        None => self.take_random(20, &format!("{path}.roll"))?,
+                        None => self.take_random(
+                            RpgRandomRequestKind::SavingThrowCheck,
+                            20,
+                            &format!("{path}.roll"),
+                        )?,
                     };
                     let difficulty =
                         self.eval_formula(difficulty, &format!("{path}.difficulty"))?;
@@ -410,6 +424,30 @@ impl Execution<'_> {
         operation: &CompiledOperation,
         path: &str,
     ) -> Result<(), RpgResolutionRejection> {
+        let expected_owner = match operation.declaration {
+            RpgIrOperation::Damage { .. } | RpgIrOperation::Heal { .. } => {
+                RpgCapabilityId::Vitality
+            }
+            RpgIrOperation::ChangeResource { .. } => RpgCapabilityId::Resources,
+            RpgIrOperation::ApplyModifier { .. } => RpgCapabilityId::Modifiers,
+            RpgIrOperation::Move { .. } => RpgCapabilityId::Position,
+        };
+        if operation
+            .binding
+            .bind_mutation_owner(expected_owner)
+            .is_err()
+        {
+            return Err(self.fail(
+                "RPG_OPERATION_OWNER_MISMATCH",
+                path,
+                format!(
+                    "{} binds {}, but the operation requires {}",
+                    operation.binding.id,
+                    operation.binding.mutation_owner.as_str(),
+                    expected_owner.as_str()
+                ),
+            ));
+        }
         match &operation.declaration {
             RpgIrOperation::Damage {
                 amount,
@@ -419,6 +457,7 @@ impl Execution<'_> {
                 let amount = self.eval_nonnegative_formula(amount, &format!("{path}.amount"))?;
                 let remaining_vitality = self
                     .staged_state
+                    .vitality_owner()
                     .apply_damage(&target_id, amount)
                     .map_err(|error| self.mutation_rejection(error, path))?;
                 self.events.push(RpgDomainEvent::DamageApplied {
@@ -434,6 +473,7 @@ impl Execution<'_> {
                 let amount = self.eval_nonnegative_formula(amount, &format!("{path}.amount"))?;
                 let current_vitality = self
                     .staged_state
+                    .vitality_owner()
                     .apply_healing(&target_id, amount)
                     .map_err(|error| self.mutation_rejection(error, path))?;
                 self.events.push(RpgDomainEvent::HealingApplied {
@@ -452,7 +492,8 @@ impl Execution<'_> {
                 let delta = self.eval_formula(delta, &format!("{path}.delta"))?;
                 let current = self
                     .staged_state
-                    .change_resource(&entity_id, resource_id, delta)
+                    .resources_owner()
+                    .change(&entity_id, resource_id, delta)
                     .map_err(|error| self.mutation_rejection(error, path))?;
                 self.events.push(RpgDomainEvent::ResourceChanged {
                     entity_id,
@@ -475,7 +516,8 @@ impl Execution<'_> {
                     rpg_ir::RpgIrStackingPolicy::Refresh => RpgModifierStackingPolicy::Refresh,
                 };
                 self.staged_state
-                    .apply_modifier(
+                    .modifiers_owner()
+                    .apply(
                         &target_id,
                         modifier_id,
                         stacking_group,
@@ -506,6 +548,7 @@ impl Execution<'_> {
                 let delta_y = self.eval_formula(delta_y, &format!("{path}.deltaY"))?;
                 let (previous, current) = self
                     .staged_state
+                    .position_owner()
                     .move_entity(&entity_id, delta_x, delta_y, *maximum_distance)
                     .map_err(|error| self.mutation_rejection(error, path))?;
                 self.events.push(RpgDomainEvent::PositionChanged {
@@ -580,9 +623,14 @@ impl Execution<'_> {
                 sides,
                 bonus,
             } => {
+                self.require_random(RpgRandomRequestKind::FormulaDice, *count, *sides, path)?;
                 let mut total = *bonus;
                 for index in 0..*count {
-                    let roll = self.take_random(*sides, &format!("{path}.dice[{index}]"))?;
+                    let roll = self.take_random(
+                        RpgRandomRequestKind::FormulaDice,
+                        *sides,
+                        &format!("{path}.dice[{index}]"),
+                    )?;
                     let roll = i32::try_from(roll).map_err(|_| {
                         self.fail(
                             "RPG_RUNTIME_INTEGER_OVERFLOW",
@@ -651,14 +699,30 @@ impl Execution<'_> {
         }
     }
 
-    fn take_random(&mut self, sides: u32, path: &str) -> Result<u32, RpgResolutionRejection> {
-        let value = self.staged_random.take().ok_or_else(|| {
-            self.fail(
-                "RPG_RANDOM_EXHAUSTED",
-                path,
-                "deterministic random stream is exhausted",
-            )
-        })?;
+    fn require_random(
+        &self,
+        kind: RpgRandomRequestKind,
+        count: u32,
+        sides: u32,
+        path: &str,
+    ) -> Result<(), RpgResolutionRejection> {
+        let available = u32::try_from(self.staged_random.remaining()).unwrap_or(u32::MAX);
+        if available >= count {
+            return Ok(());
+        }
+        Err(self.random_rejection(kind, count - available, sides, path))
+    }
+
+    fn take_random(
+        &mut self,
+        kind: RpgRandomRequestKind,
+        sides: u32,
+        path: &str,
+    ) -> Result<u32, RpgResolutionRejection> {
+        let value = self
+            .staged_random
+            .take()
+            .ok_or_else(|| self.random_rejection(kind, 1, sides, path))?;
         if value == 0 || value > sides {
             return Err(self.fail(
                 "RPG_RANDOM_VALUE_OUT_OF_RANGE",
@@ -672,6 +736,27 @@ impl Execution<'_> {
             detail: format!("d{sides}={value}"),
         });
         Ok(value)
+    }
+
+    fn random_rejection(
+        &self,
+        kind: RpgRandomRequestKind,
+        count: u32,
+        sides: u32,
+        path: &str,
+    ) -> RpgResolutionRejection {
+        let mut rejection = self.fail(
+            "RPG_RANDOM_EXHAUSTED",
+            path,
+            "deterministic random stream is exhausted",
+        );
+        rejection.random_request = Some(RpgRandomRequest {
+            kind,
+            count,
+            sides,
+            path: path.to_owned(),
+        });
+        rejection
     }
 
     fn current_outcome(&self, path: &str) -> Result<CheckOutcome, RpgResolutionRejection> {
@@ -730,6 +815,10 @@ impl Execution<'_> {
                 "RPG_MUTATION_RESOURCE_INSUFFICIENT",
                 "mutation resource is insufficient",
             ),
+            RpgCapabilityMutationError::ResourceOutOfBounds => (
+                "RPG_MUTATION_RESOURCE_OUT_OF_BOUNDS",
+                "resource transition exceeds its declared bounds",
+            ),
             RpgCapabilityMutationError::MovementDistanceInvalid => (
                 "RPG_MUTATION_MOVEMENT_DISTANCE_INVALID",
                 "movement distance is zero or exceeds its bound",
@@ -752,6 +841,7 @@ impl Execution<'_> {
                 .staged_random
                 .consumed()
                 .saturating_sub(self.random_start),
+            random_request: None,
         }
     }
 }
@@ -767,5 +857,6 @@ fn rejection(
         message: message.into(),
         trace: Vec::new(),
         random_attempted: 0,
+        random_request: None,
     }
 }

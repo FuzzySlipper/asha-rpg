@@ -2,6 +2,36 @@ use std::collections::BTreeMap;
 
 use crate::{BoundedValue, GridPosition, Team};
 
+/// Closed identities for the private capability workspaces owned by RPG authority.
+///
+/// Operations bind to these values at compile time and must acquire the matching
+/// owner before they can stage a mutation. Strings remain only at the serialized
+/// vocabulary boundary.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord)]
+pub enum RpgCapabilityId {
+    Vitality,
+    Stats,
+    Defenses,
+    Resources,
+    Modifiers,
+    Position,
+    Random,
+}
+
+impl RpgCapabilityId {
+    pub const fn as_str(self) -> &'static str {
+        match self {
+            Self::Vitality => "capability.vitality",
+            Self::Stats => "capability.stats",
+            Self::Defenses => "capability.defenses",
+            Self::Resources => "capability.resources",
+            Self::Modifiers => "capability.modifiers",
+            Self::Position => "capability.position",
+            Self::Random => "capability.random",
+        }
+    }
+}
+
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct RpgEntityState {
     id: String,
@@ -135,126 +165,20 @@ impl RpgCapabilityState {
         self.entities.insert(entity.id.clone(), entity)
     }
 
-    pub fn spend_resource(
-        &mut self,
-        entity_id: &str,
-        resource_id: &str,
-        amount: i32,
-    ) -> Result<i32, RpgCapabilityMutationError> {
-        if amount <= 0 {
-            return Err(RpgCapabilityMutationError::InvalidAmount);
-        }
-        let resource = self.resource_mut(entity_id, resource_id)?;
-        if resource.current < amount {
-            return Err(RpgCapabilityMutationError::InsufficientResource);
-        }
-        resource.current -= amount;
-        Ok(resource.current)
+    pub fn vitality_owner(&mut self) -> RpgVitalityOwner<'_> {
+        RpgVitalityOwner { state: self }
     }
 
-    pub fn apply_damage(
-        &mut self,
-        entity_id: &str,
-        amount: i32,
-    ) -> Result<i32, RpgCapabilityMutationError> {
-        if amount < 0 {
-            return Err(RpgCapabilityMutationError::InvalidAmount);
-        }
-        let entity = self.entity_mut_for_owner(entity_id)?;
-        entity.vitality.current = entity.vitality.current.saturating_sub(amount).max(0);
-        Ok(entity.vitality.current)
+    pub fn resources_owner(&mut self) -> RpgResourcesOwner<'_> {
+        RpgResourcesOwner { state: self }
     }
 
-    pub fn apply_healing(
-        &mut self,
-        entity_id: &str,
-        amount: i32,
-    ) -> Result<i32, RpgCapabilityMutationError> {
-        if amount < 0 {
-            return Err(RpgCapabilityMutationError::InvalidAmount);
-        }
-        let entity = self.entity_mut_for_owner(entity_id)?;
-        entity.vitality.current = entity
-            .vitality
-            .current
-            .saturating_add(amount)
-            .min(entity.vitality.max);
-        Ok(entity.vitality.current)
+    pub fn modifiers_owner(&mut self) -> RpgModifiersOwner<'_> {
+        RpgModifiersOwner { state: self }
     }
 
-    pub fn change_resource(
-        &mut self,
-        entity_id: &str,
-        resource_id: &str,
-        delta: i32,
-    ) -> Result<i32, RpgCapabilityMutationError> {
-        let resource = self.resource_mut(entity_id, resource_id)?;
-        resource.current = resource
-            .current
-            .saturating_add(delta)
-            .clamp(0, resource.max);
-        Ok(resource.current)
-    }
-
-    pub fn apply_modifier(
-        &mut self,
-        entity_id: &str,
-        modifier_id: &str,
-        stacking_group: &str,
-        stacking: RpgModifierStackingPolicy,
-        value: i32,
-        remaining_turns: u32,
-    ) -> Result<(), RpgCapabilityMutationError> {
-        let entity = self.entity_mut_for_owner(entity_id)?;
-        match stacking {
-            RpgModifierStackingPolicy::Replace => {
-                entity.modifiers.insert(
-                    stacking_group.to_owned(),
-                    ActiveRpgModifier {
-                        id: modifier_id.to_owned(),
-                        value,
-                        remaining_turns,
-                    },
-                );
-            }
-            RpgModifierStackingPolicy::Refresh => {
-                let modifier = entity
-                    .modifiers
-                    .entry(stacking_group.to_owned())
-                    .or_insert_with(|| ActiveRpgModifier {
-                        id: modifier_id.to_owned(),
-                        value,
-                        remaining_turns,
-                    });
-                modifier.id = modifier_id.to_owned();
-                modifier.value = value;
-                modifier.remaining_turns = remaining_turns;
-            }
-        }
-        Ok(())
-    }
-
-    pub fn move_entity(
-        &mut self,
-        entity_id: &str,
-        delta_x: i32,
-        delta_y: i32,
-        maximum_distance: u32,
-    ) -> Result<(GridPosition, GridPosition), RpgCapabilityMutationError> {
-        let distance = delta_x
-            .unsigned_abs()
-            .saturating_add(delta_y.unsigned_abs());
-        if distance == 0 || distance > maximum_distance {
-            return Err(RpgCapabilityMutationError::MovementDistanceInvalid);
-        }
-        let entity = self.entity_mut_for_owner(entity_id)?;
-        let previous = entity.position;
-        let x = i64::from(previous.x).saturating_add(i64::from(delta_x));
-        let y = i64::from(previous.y).saturating_add(i64::from(delta_y));
-        let x = u32::try_from(x).map_err(|_| RpgCapabilityMutationError::PositionOutOfBounds)?;
-        let y = u32::try_from(y).map_err(|_| RpgCapabilityMutationError::PositionOutOfBounds)?;
-        entity.position = GridPosition { x, y };
-        Ok((previous, entity.position))
+    pub fn position_owner(&mut self) -> RpgPositionOwner<'_> {
+        RpgPositionOwner { state: self }
     }
 
     pub fn advance_revision(&mut self) -> u64 {
@@ -283,12 +207,163 @@ impl RpgCapabilityState {
     }
 }
 
+pub struct RpgVitalityOwner<'a> {
+    state: &'a mut RpgCapabilityState,
+}
+
+impl RpgVitalityOwner<'_> {
+    pub fn apply_damage(
+        &mut self,
+        entity_id: &str,
+        amount: i32,
+    ) -> Result<i32, RpgCapabilityMutationError> {
+        if amount < 0 {
+            return Err(RpgCapabilityMutationError::InvalidAmount);
+        }
+        let entity = self.state.entity_mut_for_owner(entity_id)?;
+        entity.vitality.current = entity.vitality.current.saturating_sub(amount).max(0);
+        Ok(entity.vitality.current)
+    }
+
+    pub fn apply_healing(
+        &mut self,
+        entity_id: &str,
+        amount: i32,
+    ) -> Result<i32, RpgCapabilityMutationError> {
+        if amount < 0 {
+            return Err(RpgCapabilityMutationError::InvalidAmount);
+        }
+        let entity = self.state.entity_mut_for_owner(entity_id)?;
+        entity.vitality.current = entity
+            .vitality
+            .current
+            .saturating_add(amount)
+            .min(entity.vitality.max);
+        Ok(entity.vitality.current)
+    }
+}
+
+pub struct RpgResourcesOwner<'a> {
+    state: &'a mut RpgCapabilityState,
+}
+
+impl RpgResourcesOwner<'_> {
+    pub fn spend(
+        &mut self,
+        entity_id: &str,
+        resource_id: &str,
+        amount: i32,
+    ) -> Result<i32, RpgCapabilityMutationError> {
+        if amount <= 0 {
+            return Err(RpgCapabilityMutationError::InvalidAmount);
+        }
+        let resource = self.state.resource_mut(entity_id, resource_id)?;
+        if resource.current < amount {
+            return Err(RpgCapabilityMutationError::InsufficientResource);
+        }
+        resource.current -= amount;
+        Ok(resource.current)
+    }
+
+    pub fn change(
+        &mut self,
+        entity_id: &str,
+        resource_id: &str,
+        delta: i32,
+    ) -> Result<i32, RpgCapabilityMutationError> {
+        let resource = self.state.resource_mut(entity_id, resource_id)?;
+        let next = resource
+            .current
+            .checked_add(delta)
+            .ok_or(RpgCapabilityMutationError::ResourceOutOfBounds)?;
+        if next < 0 || next > resource.max {
+            return Err(RpgCapabilityMutationError::ResourceOutOfBounds);
+        }
+        resource.current = next;
+        Ok(next)
+    }
+}
+
+pub struct RpgModifiersOwner<'a> {
+    state: &'a mut RpgCapabilityState,
+}
+
+impl RpgModifiersOwner<'_> {
+    pub fn apply(
+        &mut self,
+        entity_id: &str,
+        modifier_id: &str,
+        stacking_group: &str,
+        stacking: RpgModifierStackingPolicy,
+        value: i32,
+        remaining_turns: u32,
+    ) -> Result<(), RpgCapabilityMutationError> {
+        let entity = self.state.entity_mut_for_owner(entity_id)?;
+        match stacking {
+            RpgModifierStackingPolicy::Replace => {
+                entity.modifiers.insert(
+                    stacking_group.to_owned(),
+                    ActiveRpgModifier {
+                        id: modifier_id.to_owned(),
+                        value,
+                        remaining_turns,
+                    },
+                );
+            }
+            RpgModifierStackingPolicy::Refresh => {
+                let modifier = entity
+                    .modifiers
+                    .entry(stacking_group.to_owned())
+                    .or_insert_with(|| ActiveRpgModifier {
+                        id: modifier_id.to_owned(),
+                        value,
+                        remaining_turns,
+                    });
+                modifier.id = modifier_id.to_owned();
+                modifier.value = value;
+                modifier.remaining_turns = remaining_turns;
+            }
+        }
+        Ok(())
+    }
+}
+
+pub struct RpgPositionOwner<'a> {
+    state: &'a mut RpgCapabilityState,
+}
+
+impl RpgPositionOwner<'_> {
+    pub fn move_entity(
+        &mut self,
+        entity_id: &str,
+        delta_x: i32,
+        delta_y: i32,
+        maximum_distance: u32,
+    ) -> Result<(GridPosition, GridPosition), RpgCapabilityMutationError> {
+        let distance = delta_x
+            .unsigned_abs()
+            .saturating_add(delta_y.unsigned_abs());
+        if distance == 0 || distance > maximum_distance {
+            return Err(RpgCapabilityMutationError::MovementDistanceInvalid);
+        }
+        let entity = self.state.entity_mut_for_owner(entity_id)?;
+        let previous = entity.position;
+        let x = i64::from(previous.x).saturating_add(i64::from(delta_x));
+        let y = i64::from(previous.y).saturating_add(i64::from(delta_y));
+        let x = u32::try_from(x).map_err(|_| RpgCapabilityMutationError::PositionOutOfBounds)?;
+        let y = u32::try_from(y).map_err(|_| RpgCapabilityMutationError::PositionOutOfBounds)?;
+        entity.position = GridPosition { x, y };
+        Ok((previous, entity.position))
+    }
+}
+
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum RpgCapabilityMutationError {
     UnknownEntity,
     UnknownResource,
     InvalidAmount,
     InsufficientResource,
+    ResourceOutOfBounds,
     MovementDistanceInvalid,
     PositionOutOfBounds,
 }
@@ -324,6 +399,25 @@ impl DeterministicRandomStream {
         self.cursor = self.cursor.saturating_add(1);
         Some(value)
     }
+
+    pub fn extend(&mut self, values: impl IntoIterator<Item = u32>) {
+        self.values.extend(values);
+    }
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum RpgRandomRequestKind {
+    AttackCheck,
+    SavingThrowCheck,
+    FormulaDice,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct RpgRandomRequest {
+    pub kind: RpgRandomRequestKind,
+    pub count: u32,
+    pub sides: u32,
+    pub path: String,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -412,6 +506,7 @@ pub struct RpgResolutionRejection {
     pub message: String,
     pub trace: Vec<RpgTraceStep>,
     pub random_attempted: usize,
+    pub random_request: Option<RpgRandomRequest>,
 }
 
 #[cfg(test)]
@@ -444,12 +539,24 @@ mod tests {
         let mut state = RpgCapabilityState::default();
         state.insert_entity(entity);
 
-        assert_eq!(state.spend_resource("hero", "focus", 1), Ok(1));
-        assert_eq!(state.apply_damage("hero", 7), Ok(13));
-        assert_eq!(state.apply_healing("hero", 20), Ok(20));
-        assert_eq!(state.change_resource("hero", "focus", 9), Ok(3));
+        assert_eq!(state.resources_owner().spend("hero", "focus", 1), Ok(1));
+        assert_eq!(state.vitality_owner().apply_damage("hero", 7), Ok(13));
+        assert_eq!(state.vitality_owner().apply_healing("hero", 20), Ok(20));
         assert_eq!(
-            state.apply_modifier(
+            state.resources_owner().change("hero", "focus", 9),
+            Err(RpgCapabilityMutationError::ResourceOutOfBounds)
+        );
+        assert_eq!(
+            state
+                .entity("hero")
+                .unwrap()
+                .resource("focus")
+                .unwrap()
+                .current,
+            1
+        );
+        assert_eq!(
+            state.modifiers_owner().apply(
                 "hero",
                 "impeded",
                 "movement-control",
@@ -460,7 +567,7 @@ mod tests {
             Ok(())
         );
         assert_eq!(
-            state.apply_modifier(
+            state.modifiers_owner().apply(
                 "hero",
                 "impeded",
                 "movement-control",
@@ -474,11 +581,11 @@ mod tests {
         assert_eq!(modifier.value(), -3);
         assert_eq!(modifier.remaining_turns(), 2);
         assert_eq!(
-            state.move_entity("hero", 2, -1, 3),
+            state.position_owner().move_entity("hero", 2, -1, 3),
             Ok((GridPosition { x: 2, y: 3 }, GridPosition { x: 4, y: 2 }))
         );
         assert_eq!(
-            state.move_entity("hero", -9, 0, 9),
+            state.position_owner().move_entity("hero", -9, 0, 9),
             Err(RpgCapabilityMutationError::PositionOutOfBounds)
         );
     }

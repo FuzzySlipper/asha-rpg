@@ -1,18 +1,41 @@
+use rpg_core::RpgCapabilityId;
+
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct RpgOperationRegistration {
     pub id: &'static str,
     pub version: u32,
-    pub reads: &'static [&'static str],
-    pub mutation_owner: &'static str,
+    pub reads: &'static [RpgCapabilityId],
+    pub mutation_owner: RpgCapabilityId,
     pub validation_behavior: &'static str,
     pub accepted_events: &'static [&'static str],
     pub trace_behavior: &'static str,
     pub replay_implications: &'static str,
 }
 
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct RpgCapabilityOwnerMismatch {
+    pub registered: RpgCapabilityId,
+    pub required: RpgCapabilityId,
+}
+
+impl RpgOperationRegistration {
+    pub fn bind_mutation_owner(
+        &self,
+        required: RpgCapabilityId,
+    ) -> Result<RpgCapabilityId, RpgCapabilityOwnerMismatch> {
+        if self.mutation_owner == required {
+            return Ok(required);
+        }
+        Err(RpgCapabilityOwnerMismatch {
+            registered: self.mutation_owner,
+            required,
+        })
+    }
+}
+
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct RpgCapabilityRegistration {
-    pub id: &'static str,
+    pub id: RpgCapabilityId,
     pub version: u32,
 }
 
@@ -20,8 +43,8 @@ const REGISTRATIONS: &[RpgOperationRegistration] = &[
     RpgOperationRegistration {
         id: "operation.damage",
         version: 1,
-        reads: &["capability.vitality"],
-        mutation_owner: "capability.vitality",
+        reads: &[RpgCapabilityId::Vitality],
+        mutation_owner: RpgCapabilityId::Vitality,
         validation_behavior: "Evaluate a bounded amount and require the vitality owner to accept the target transition.",
         accepted_events: &["DamageApplied"],
         trace_behavior: "Record the operation path, evaluated amount, and committed vitality transition.",
@@ -30,8 +53,8 @@ const REGISTRATIONS: &[RpgOperationRegistration] = &[
     RpgOperationRegistration {
         id: "operation.heal",
         version: 1,
-        reads: &["capability.vitality"],
-        mutation_owner: "capability.vitality",
+        reads: &[RpgCapabilityId::Vitality],
+        mutation_owner: RpgCapabilityId::Vitality,
         validation_behavior: "Evaluate a bounded amount and require the vitality owner to accept the target transition.",
         accepted_events: &["HealingApplied"],
         trace_behavior: "Record the operation path, evaluated amount, and committed vitality transition.",
@@ -40,8 +63,8 @@ const REGISTRATIONS: &[RpgOperationRegistration] = &[
     RpgOperationRegistration {
         id: "operation.changeResource",
         version: 1,
-        reads: &["capability.resources"],
-        mutation_owner: "capability.resources",
+        reads: &[RpgCapabilityId::Resources],
+        mutation_owner: RpgCapabilityId::Resources,
         validation_behavior: "Resolve the declared subject and resource, then reject an out-of-bounds resource transition.",
         accepted_events: &["ResourceChanged"],
         trace_behavior: "Record the operation path, resource identity, delta, and committed bounds-preserving transition.",
@@ -50,8 +73,8 @@ const REGISTRATIONS: &[RpgOperationRegistration] = &[
     RpgOperationRegistration {
         id: "operation.applyModifier",
         version: 1,
-        reads: &["capability.modifiers"],
-        mutation_owner: "capability.modifiers",
+        reads: &[RpgCapabilityId::Modifiers],
+        mutation_owner: RpgCapabilityId::Modifiers,
         validation_behavior: "Resolve the declared modifier and require valid duration and closed stacking policy data.",
         accepted_events: &["ModifierApplied"],
         trace_behavior: "Record the operation path, modifier identity, duration, stacking decision, and commit.",
@@ -60,8 +83,8 @@ const REGISTRATIONS: &[RpgOperationRegistration] = &[
     RpgOperationRegistration {
         id: "operation.move",
         version: 1,
-        reads: &["capability.position"],
-        mutation_owner: "capability.position",
+        reads: &[RpgCapabilityId::Position],
+        mutation_owner: RpgCapabilityId::Position,
         validation_behavior: "Resolve a bounded destination and reject moves beyond the declared maximum distance.",
         accepted_events: &["PositionChanged"],
         trace_behavior: "Record the operation path, origin, destination, distance validation, and commit.",
@@ -71,31 +94,31 @@ const REGISTRATIONS: &[RpgOperationRegistration] = &[
 
 const CAPABILITIES: &[RpgCapabilityRegistration] = &[
     RpgCapabilityRegistration {
-        id: "capability.vitality",
+        id: RpgCapabilityId::Vitality,
         version: 1,
     },
     RpgCapabilityRegistration {
-        id: "capability.stats",
+        id: RpgCapabilityId::Stats,
         version: 1,
     },
     RpgCapabilityRegistration {
-        id: "capability.defenses",
+        id: RpgCapabilityId::Defenses,
         version: 1,
     },
     RpgCapabilityRegistration {
-        id: "capability.resources",
+        id: RpgCapabilityId::Resources,
         version: 1,
     },
     RpgCapabilityRegistration {
-        id: "capability.modifiers",
+        id: RpgCapabilityId::Modifiers,
         version: 1,
     },
     RpgCapabilityRegistration {
-        id: "capability.position",
+        id: RpgCapabilityId::Position,
         version: 1,
     },
     RpgCapabilityRegistration {
-        id: "capability.random",
+        id: RpgCapabilityId::Random,
         version: 1,
     },
 ];
@@ -117,7 +140,7 @@ pub(crate) fn operation_registration(id: &str) -> Option<&'static RpgOperationRe
 pub(crate) fn capability_version(id: &str) -> Option<u32> {
     CAPABILITIES
         .iter()
-        .find(|registration| registration.id == id)
+        .find(|registration| registration.id.as_str() == id)
         .map(|registration| registration.version)
 }
 
@@ -142,11 +165,33 @@ mod tests {
                 .reads
                 .iter()
                 .all(|capability| capabilities.contains(capability)));
-            assert!(capabilities.contains(registration.mutation_owner));
+            assert!(capabilities.contains(&registration.mutation_owner));
             assert!(!registration.validation_behavior.trim().is_empty());
             assert!(!registration.accepted_events.is_empty());
             assert!(!registration.trace_behavior.trim().is_empty());
             assert!(!registration.replay_implications.trim().is_empty());
         }
+    }
+
+    #[test]
+    fn mismatched_mutation_owner_registration_is_rejected() {
+        let registration = RpgOperationRegistration {
+            id: "operation.invalidDamage",
+            version: 1,
+            reads: &[RpgCapabilityId::Vitality],
+            mutation_owner: RpgCapabilityId::Resources,
+            validation_behavior: "test registration",
+            accepted_events: &["DamageApplied"],
+            trace_behavior: "test registration",
+            replay_implications: "test registration",
+        };
+
+        assert_eq!(
+            registration.bind_mutation_owner(RpgCapabilityId::Vitality),
+            Err(RpgCapabilityOwnerMismatch {
+                registered: RpgCapabilityId::Resources,
+                required: RpgCapabilityId::Vitality,
+            })
+        );
     }
 }

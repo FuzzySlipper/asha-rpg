@@ -705,9 +705,9 @@ impl<'a> Validator<'a> {
             );
         }
         if let Some(registration) = operation_registration(id) {
-            self.require_capability(registration.mutation_owner, path);
+            self.require_capability(registration.mutation_owner.as_str(), path);
             for capability in registration.reads {
-                self.require_capability(capability, path);
+                self.require_capability(capability.as_str(), path);
             }
         }
         match operation {

@@ -1,7 +1,6 @@
 use asha_rpg::{
     compile_normalized_rpg_json, DeterministicRandomStream, GridPosition, PreEffectWorkspace,
-    RpgAuthoritySession, RpgCapabilityState, RpgEntityState, RpgGameplayFabric, RpgIntent,
-    RpgPreEffectOwner, Team,
+    RpgAuthoritySession, RpgCapabilityState, RpgEntityState, RpgIntent, RpgPreEffectOwner, Team,
 };
 
 #[derive(Default)]
@@ -32,12 +31,11 @@ impl RpgPreEffectOwner for GameAuthority {
 }
 
 fn main() {
-    run_semantic_action();
-    run_reaction_fabric();
+    run_authority_session();
     println!("minimal consumer accepted semantic damage=7 and reaction damage=7");
 }
 
-fn run_semantic_action() {
+fn run_authority_session() {
     let source = br#"{
       "schema":{"identity":"asha.rpg.ir","major":1},
       "package":{"id":"minimal.game","version":"1.0.0"},
@@ -88,12 +86,8 @@ fn run_semantic_action() {
             .current,
         13
     );
-}
-
-fn run_reaction_fabric() {
     let mut game = GameAuthority::default();
-    let mut fabric = RpgGameplayFabric::new();
-    let continuation = fabric
+    let continuation = session
         .begin_before_effect(
             PreEffectWorkspace {
                 decision_id: "turn-1".to_owned(),
@@ -107,7 +101,7 @@ fn run_reaction_fabric() {
         )
         .expect("the portable authority loop suspends at its reaction point");
 
-    let receipt = fabric
+    let receipt = session
         .resolve_before_effect(
             &continuation,
             true,
@@ -118,5 +112,5 @@ fn run_reaction_fabric() {
 
     assert!(receipt.accepted());
     assert_eq!(game.committed_damage, Some(7));
-    assert_eq!(fabric.readout().pending_decision_count, 0);
+    assert_eq!(session.gameplay_fabric_readout().pending_decision_count, 0);
 }

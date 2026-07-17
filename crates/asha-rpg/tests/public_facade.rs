@@ -33,7 +33,7 @@ fn public_facade_compiles_and_executes_a_no_roll_action() {
     let mut state = RpgCapabilityState::default();
     state.insert_entity(actor);
     state.insert_entity(target);
-    state.apply_damage("target", 7).unwrap();
+    state.vitality_owner().apply_damage("target", 7).unwrap();
     let mut session =
         RpgAuthoritySession::new(ruleset, state, DeterministicRandomStream::new(Vec::new()));
 

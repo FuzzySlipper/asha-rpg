@@ -1,7 +1,7 @@
 use rpg_compiler::{compile_normalized_rpg_json, RpgDiagnosticStage};
 use rpg_core::{
     DeterministicRandomStream, GridPosition, RpgCapabilityState, RpgDomainEvent, RpgEntityState,
-    RpgIntent, Team,
+    RpgIntent, RpgRandomRequest, RpgRandomRequestKind, Team,
 };
 
 #[test]
@@ -180,7 +180,7 @@ fn late_random_failure_rolls_back_state_and_random_together() {
     let ruleset = compile_normalized_rpg_json(single_target_source().as_bytes()).unwrap();
     let mut state = single_target_state();
     let original_state = state.clone();
-    let mut random = DeterministicRandomStream::new(vec![12, 7]);
+    let mut random = DeterministicRandomStream::new(vec![12, 7, 4]);
     let intent = RpgIntent {
         action_id: "action.attack".to_owned(),
         actor_id: "actor".to_owned(),
@@ -195,6 +195,98 @@ fn late_random_failure_rolls_back_state_and_random_together() {
     assert_eq!(rejection.random_attempted, 2);
     assert_eq!(state, original_state);
     assert_eq!(random.consumed(), 0);
+}
+
+#[test]
+fn dice_requests_preserve_declared_shape_without_a_probe_limit() {
+    let intent = RpgIntent {
+        action_id: "action.attack".to_owned(),
+        actor_id: "actor".to_owned(),
+        target_ids: vec!["target".to_owned()],
+    };
+    let mut state = single_target_state();
+    let mut random = DeterministicRandomStream::new(vec![12]);
+    let rejection = compile_normalized_rpg_json(single_target_source().as_bytes())
+        .unwrap()
+        .resolve(&mut state, &mut random, &intent)
+        .unwrap_err();
+    assert_eq!(
+        rejection.random_request,
+        Some(RpgRandomRequest {
+            kind: RpgRandomRequestKind::FormulaDice,
+            count: 2,
+            sides: 6,
+            path: "$.action.program.body.selected.steps[0].amount".to_owned(),
+        })
+    );
+
+    let five_d4 = single_target_source().replace(
+        "\"kind\":\"dice\",\"count\":2,\"sides\":6",
+        "\"kind\":\"dice\",\"count\":5,\"sides\":4",
+    );
+    let mut state = single_target_state();
+    let mut random = DeterministicRandomStream::new(vec![12]);
+    let rejection = compile_normalized_rpg_json(five_d4.as_bytes())
+        .unwrap()
+        .resolve(&mut state, &mut random, &intent)
+        .unwrap_err();
+    assert_eq!(
+        rejection.random_request,
+        Some(RpgRandomRequest {
+            kind: RpgRandomRequestKind::FormulaDice,
+            count: 5,
+            sides: 4,
+            path: "$.action.program.body.selected.steps[0].amount".to_owned(),
+        })
+    );
+}
+
+#[test]
+fn resource_bounds_reject_the_whole_transaction_without_misleading_events() {
+    let ruleset = compile_normalized_rpg_json(multi_target_source().as_bytes()).unwrap();
+    let mut state = multi_target_state();
+    state
+        .resources_owner()
+        .change("actor", "charge", -2)
+        .unwrap();
+    let original = state.clone();
+    let mut random = DeterministicRandomStream::new(vec![1, 1]);
+    let rejection = ruleset
+        .resolve(
+            &mut state,
+            &mut random,
+            &RpgIntent {
+                action_id: "action.save".to_owned(),
+                actor_id: "actor".to_owned(),
+                target_ids: vec!["target-a".to_owned(), "target-b".to_owned()],
+            },
+        )
+        .unwrap_err();
+    assert_eq!(rejection.code, "RPG_MUTATION_RESOURCE_OUT_OF_BOUNDS");
+    assert_eq!(state, original);
+    assert_eq!(random.consumed(), 0);
+
+    let increasing = multi_target_source().replace(
+        "\"kind\":\"constant\",\"value\":-1",
+        "\"kind\":\"constant\",\"value\":1",
+    );
+    let ruleset = compile_normalized_rpg_json(increasing.as_bytes()).unwrap();
+    let mut state = multi_target_state();
+    let original = state.clone();
+    let mut random = DeterministicRandomStream::new(vec![1, 1]);
+    let rejection = ruleset
+        .resolve(
+            &mut state,
+            &mut random,
+            &RpgIntent {
+                action_id: "action.save".to_owned(),
+                actor_id: "actor".to_owned(),
+                target_ids: vec!["target-a".to_owned(), "target-b".to_owned()],
+            },
+        )
+        .unwrap_err();
+    assert_eq!(rejection.code, "RPG_MUTATION_RESOURCE_OUT_OF_BOUNDS");
+    assert_eq!(state, original);
 }
 
 fn single_target_state() -> RpgCapabilityState {

@@ -9,8 +9,8 @@ fn main() {
             json!({
                 "id": registration.id,
                 "version": registration.version,
-                "reads": registration.reads,
-                "mutationOwner": registration.mutation_owner,
+                "reads": registration.reads.iter().map(|id| id.as_str()).collect::<Vec<_>>(),
+                "mutationOwner": registration.mutation_owner.as_str(),
                 "validationBehavior": registration.validation_behavior,
                 "acceptedEvents": registration.accepted_events,
                 "traceBehavior": registration.trace_behavior,
@@ -22,7 +22,7 @@ fn main() {
         .iter()
         .map(|registration| {
             json!({
-                "id": registration.id,
+                "id": registration.id.as_str(),
                 "version": registration.version,
             })
         })
