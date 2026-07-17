@@ -1,0 +1,10 @@
+[package]
+name = "minimal-rpg-consumer"
+version = "0.1.0"
+edition = "2021"
+publish = false
+
+[workspace]
+
+[dependencies]
+asha-rpg = { git = "https://github.com/FuzzySlipper/asha-rpg.git", rev = "d8701adcf34f58bc911df0669e3c92aa9919fc7f" }
