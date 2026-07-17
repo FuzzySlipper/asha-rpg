@@ -2,6 +2,10 @@
 
 #![forbid(unsafe_code)]
 
+mod semantic_session;
+
+pub use semantic_session::RpgAuthoritySession;
+
 use asha_gameplay_module_sdk::*;
 use asha_runtime_session_composition::{
     BundleArtifacts, ComposedGameplayOwner, ComposedGameplayOwnerCheckpoint,

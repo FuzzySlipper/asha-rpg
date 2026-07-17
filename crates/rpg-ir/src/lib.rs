@@ -4,6 +4,10 @@
 //! authority behavior. It does not own content catalogs, combat state, or
 //! effect application.
 
+mod normalized;
+
+pub use normalized::*;
+
 /// Identity and compatibility metadata for an authored ruleset.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct RulesetMetadata {

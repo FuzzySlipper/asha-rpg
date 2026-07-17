@@ -9,6 +9,7 @@ description = "Supported public Rust facade for portable RPG authority."
 workspace = true
 
 [dependencies]
+rpg-compiler = { path = "../rpg-compiler" }
 rpg-core = { path = "../rpg-core" }
 rpg-ir = { path = "../rpg-ir" }
 rpg-runtime = { path = "../rpg-runtime" }

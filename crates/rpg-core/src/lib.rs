@@ -5,6 +5,8 @@
 //! ruleset/combat layers until their fact vocabulary is independent of action
 //! resolution.
 
+mod authority;
 mod primitives;
 
+pub use authority::*;
 pub use primitives::{BoundedValue, GridPosition, NamedNumber, StateFingerprint, Team};

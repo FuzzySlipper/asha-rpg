@@ -28,12 +28,23 @@ rulesets remains in the owning game or workbench.
 
 ## Current implementation
 
-The first source-authority extraction owns dependency-free RPG values in
-`rpg-core`, normalized rule declarations in `rpg-ir`, and the public-ASHA
-RuntimeSession decision/reaction loop in `rpg-runtime`. The `asha-rpg` crate is
-the supported Rust facade. `@asha-rpg/ir` and `@asha-rpg/authoring` establish
-the permanent TypeScript package boundary; the complete compiler and
-authoring language arrive in the next implementation slices.
+The Rust semantic path is active. `rpg-ir` strictly decodes `asha.rpg.ir@1`,
+`rpg-compiler` resolves exact requirements and references into an opaque
+compiled program with closed operation bindings, and `rpg-runtime` owns an
+authority session that stages state and deterministic randomness together.
+The `asha-rpg` crate is the supported consumer facade. The extracted public-ASHA
+decision/reaction fabric remains alongside this semantic path.
+
+The initial operation set is deliberately closed: damage, healing, resource
+change, and turn-bounded modifier application with explicit replace or refresh
+stacking. Checks support attack, saving throw, and no-roll flows. Programs
+support bounded sequence, predicate branch, repeat, per-target branch, check
+outcome branch, and one atomic root. Unavailable semantics fail compilation;
+they are never delegated to consumer callbacks.
+
+`@asha-rpg/ir` and `@asha-rpg/authoring` still establish only the TypeScript
+package boundary. Their immutable builders and canonical normalizer are owned
+by the next implementation slice.
 
 No Rulebench crate or package is part of this workspace. The independent
 `consumers/minimal-game` workspace verifies consumption through the public Git
@@ -44,6 +55,7 @@ boundary rather than an unpublished sibling path.
 ```bash
 npm test
 cargo test --workspace
+cargo clippy --workspace --all-targets -- -D warnings
 cargo test --manifest-path consumers/minimal-game/Cargo.toml
 ```
 

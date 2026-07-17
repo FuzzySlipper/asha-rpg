@@ -3,6 +3,7 @@ resolver = "2"
 members = [
   "crates/rpg-core",
   "crates/rpg-ir",
+  "crates/rpg-compiler",
   "crates/rpg-runtime",
   "crates/asha-rpg",
 ]

@@ -12,8 +12,8 @@ may_depend_on = ["rpg-core", "serde"]
 
 [crate."crates/rpg-compiler"]
 lane = "rust-language"
-implementation_status = "planned"
-may_depend_on = ["rpg-core", "rpg-ir", "asha-gameplay-module-sdk"]
+implementation_status = "active"
+may_depend_on = ["rpg-core", "rpg-ir", "serde_json"]
 
 [crate."crates/rpg-runtime"]
 lane = "rust-authority"

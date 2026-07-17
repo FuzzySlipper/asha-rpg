@@ -9,6 +9,8 @@ description = "Public-ASHA-backed deterministic RPG decision and reaction fabric
 workspace = true
 
 [dependencies]
+rpg-compiler = { path = "../rpg-compiler" }
+rpg-core = { path = "../rpg-core" }
 asha-gameplay-module-sdk = { git = "https://github.com/FuzzySlipper/asha-engine.git", rev = "67ce55dba602ad61e1b9ca3b0ad01a22fa4fe148", version = "^0.1" }
 asha-runtime-session-composition = { git = "https://github.com/FuzzySlipper/asha-engine.git", rev = "67ce55dba602ad61e1b9ca3b0ad01a22fa4fe148", version = "^0.1" }
 serde.workspace = true

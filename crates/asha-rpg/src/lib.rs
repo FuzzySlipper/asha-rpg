@@ -5,6 +5,7 @@
 
 #![forbid(unsafe_code)]
 
+pub use rpg_compiler::*;
 pub use rpg_core::*;
 pub use rpg_ir::*;
 pub use rpg_runtime::*;

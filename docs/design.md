@@ -33,7 +33,7 @@ authority decisions but is not mutation input.
 
 ## Public surfaces
 
-The permanent public surface is planned as:
+The permanent public surface includes:
 
 - Rust facade `asha-rpg`, re-exporting only supported portable contracts;
 - normalized IR decode and compatibility contracts;
@@ -43,6 +43,35 @@ The permanent public surface is planned as:
 
 Private compiled structures, capability-store layout, ASHA routing envelopes,
 and optimization indexes are not serialization contracts.
+
+## Initial Rust semantic profile
+
+The active compatibility profile is:
+
+| Surface | Supported version or vocabulary |
+| --- | --- |
+| normalized IR | `asha.rpg.ir` major 1 |
+| operations | `operation.damage@1`, `operation.heal@1`, `operation.changeResource@1`, `operation.applyModifier@1` |
+| capabilities | vitality, stats, defenses, resources, modifiers, deterministic random, each at version 1 |
+| checks | attack, saving throw, no roll |
+| formulas | constant, typed stat read, add, bounded dice, half |
+| predicates | always, comparison, not, all, any |
+| composition | atomic root, sequence, when, bounded repeat, bounded per-target, check branch |
+| modifier tenure | positive turn count with replace or refresh stacking |
+
+Strict decode rejects unknown semantic fields. Compatibility requires exact
+operation and capability versions. Compilation resolves catalog references,
+checks declared reads and owners, enforces expression/program/expanded-program
+bounds, and binds every operation to a static Rust registration. The compiled
+program and capability plan are private; consumers receive identity,
+requirement, intent, event, trace, rejection, receipt, state-view, and session
+surfaces only.
+
+Resolution clones capability state and the deterministic random stream into a
+workspace. Costs, checks, branches, and owner mutations are staged there. A
+successful action advances both authoritative surfaces and emits accepted
+DomainEvents plus explanatory trace. A rejection returns stable code/path
+evidence while leaving both authoritative surfaces unchanged.
 
 ## Dependency direction
 
@@ -75,7 +104,7 @@ update content identity only. Unknown required semantic data fails closed.
 
 - #5940: repository and decision-complete ownership bootstrap.
 - #5941: coherent extraction of existing portable source and owner tests.
-- #5936: normalized IR compiler and Rust semantic kernel.
+- #5936: normalized IR compiler and Rust semantic kernel (active).
 - #5937: constrained TypeScript SDK and deterministic normalizer.
 - #5938: Rulebench consumer migration and legacy-path deletion.
 - #5939: mechanized boundary enforcement.

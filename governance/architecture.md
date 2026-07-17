@@ -9,9 +9,10 @@ Rust layer order is:
 rpg-core -> rpg-ir -> rpg-compiler -> rpg-runtime -> rpg-replay -> asha-rpg
 ```
 
-During the staged extraction, `rpg-core`, `rpg-ir`, `rpg-runtime`, and the
-public facade are active. The compiler and replay cells remain reserved for
-their owner tasks; active crates do not conceal them behind placeholder APIs.
+During the staged extraction, `rpg-core`, `rpg-ir`, `rpg-compiler`,
+`rpg-runtime`, and the public facade are active. The replay cell remains
+reserved for its owner task; active crates do not conceal it behind a
+placeholder API.
 
 The TypeScript authoring layer is:
 
