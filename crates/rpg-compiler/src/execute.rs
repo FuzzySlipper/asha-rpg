@@ -2,8 +2,8 @@ use std::collections::BTreeMap;
 
 use rpg_core::{
     DeterministicRandomStream, RpgCapabilityId, RpgCapabilityMutationError, RpgCapabilityState,
-    RpgDomainEvent, RpgIntent, RpgModifierStackingPolicy, RpgRandomRequest, RpgRandomRequestKind,
-    RpgResolutionReceipt, RpgResolutionRejection, RpgTraceStep,
+    RpgCapabilityWorkspace, RpgDomainEvent, RpgIntent, RpgModifierStackingPolicy, RpgRandomRequest,
+    RpgRandomRequestKind, RpgResolutionReceipt, RpgResolutionRejection, RpgTraceStep,
 };
 use rpg_ir::{
     RpgIrCheck, RpgIrComparison, RpgIrFormula, RpgIrOperation, RpgIrPredicate, RpgIrRollScope,
@@ -41,8 +41,7 @@ impl CompiledRpgRuleset {
             action,
             intent,
             target_ids,
-            staged_state: state.clone(),
-            staged_random: random.clone(),
+            workspace: RpgCapabilityWorkspace::stage(state, random),
             random_start: random.consumed(),
             outcomes: BTreeMap::new(),
             events: Vec::new(),
@@ -53,7 +52,7 @@ impl CompiledRpgRuleset {
         execution.spend_costs()?;
         execution.resolve_checks()?;
         execution.execute_program(&action.program, "$.action.program")?;
-        let revision = execution.staged_state.advance_revision();
+        let revision = execution.workspace.advance_revision();
         execution.trace.push(RpgTraceStep {
             path: "$.resolution.commit".to_owned(),
             code: "RPG_RESOLUTION_COMMITTED".to_owned(),
@@ -61,8 +60,8 @@ impl CompiledRpgRuleset {
         });
 
         let random_consumed = execution
-            .staged_random
-            .consumed()
+            .workspace
+            .random_consumed()
             .saturating_sub(execution.random_start);
         let receipt = RpgResolutionReceipt {
             action_id: intent.action_id.clone(),
@@ -73,8 +72,7 @@ impl CompiledRpgRuleset {
             random_consumed,
             state_revision: revision,
         };
-        *state = execution.staged_state;
-        *random = execution.staged_random;
+        execution.workspace.commit(state, random);
         Ok(receipt)
     }
 }
@@ -179,8 +177,7 @@ struct Execution<'a> {
     action: &'a CompiledAction,
     intent: &'a RpgIntent,
     target_ids: Vec<String>,
-    staged_state: RpgCapabilityState,
-    staged_random: DeterministicRandomStream,
+    workspace: RpgCapabilityWorkspace,
     random_start: usize,
     outcomes: BTreeMap<String, CheckOutcome>,
     events: Vec<RpgDomainEvent>,
@@ -193,7 +190,7 @@ impl Execution<'_> {
         for (index, cost) in self.action.costs.iter().enumerate() {
             let path = format!("$.action.costs[{index}]");
             let remaining = self
-                .staged_state
+                .workspace
                 .resources_owner()
                 .spend(&self.intent.actor_id, &cost.resource_id, cost.amount)
                 .map_err(|error| self.mutation_rejection(error, &path))?;
@@ -248,7 +245,8 @@ impl Execution<'_> {
                         .unwrap_or(i32::MAX)
                         .saturating_add(modifier);
                     let defense = self
-                        .staged_state
+                        .workspace
+                        .state()
                         .entity(&target_id)
                         .and_then(|target| target.defense(defense_id))
                         .ok_or_else(|| {
@@ -289,7 +287,8 @@ impl Execution<'_> {
                     let difficulty =
                         self.eval_formula(difficulty, &format!("{path}.difficulty"))?;
                     let defense = self
-                        .staged_state
+                        .workspace
+                        .state()
                         .entity(&target_id)
                         .and_then(|target| target.defense(defense_id))
                         .ok_or_else(|| {
@@ -412,7 +411,7 @@ impl Execution<'_> {
                 self.trace.push(RpgTraceStep {
                     path: path.to_owned(),
                     code: "RPG_ATOMIC_WORKSPACE_OPENED".to_owned(),
-                    detail: format!("base revision {}", self.staged_state.revision()),
+                    detail: format!("base revision {}", self.workspace.state().revision()),
                 });
                 self.execute_program(body, &format!("{path}.body"))
             }
@@ -456,7 +455,7 @@ impl Execution<'_> {
                 let target_id = self.target_id(path)?;
                 let amount = self.eval_nonnegative_formula(amount, &format!("{path}.amount"))?;
                 let remaining_vitality = self
-                    .staged_state
+                    .workspace
                     .vitality_owner()
                     .apply_damage(&target_id, amount)
                     .map_err(|error| self.mutation_rejection(error, path))?;
@@ -472,7 +471,7 @@ impl Execution<'_> {
                 let target_id = self.target_id(path)?;
                 let amount = self.eval_nonnegative_formula(amount, &format!("{path}.amount"))?;
                 let current_vitality = self
-                    .staged_state
+                    .workspace
                     .vitality_owner()
                     .apply_healing(&target_id, amount)
                     .map_err(|error| self.mutation_rejection(error, path))?;
@@ -491,7 +490,7 @@ impl Execution<'_> {
                 let entity_id = self.subject_id(*subject, path)?;
                 let delta = self.eval_formula(delta, &format!("{path}.delta"))?;
                 let current = self
-                    .staged_state
+                    .workspace
                     .resources_owner()
                     .change(&entity_id, resource_id, delta)
                     .map_err(|error| self.mutation_rejection(error, path))?;
@@ -515,7 +514,7 @@ impl Execution<'_> {
                     rpg_ir::RpgIrStackingPolicy::Replace => RpgModifierStackingPolicy::Replace,
                     rpg_ir::RpgIrStackingPolicy::Refresh => RpgModifierStackingPolicy::Refresh,
                 };
-                self.staged_state
+                self.workspace
                     .modifiers_owner()
                     .apply(
                         &target_id,
@@ -547,7 +546,7 @@ impl Execution<'_> {
                 let delta_x = self.eval_formula(delta_x, &format!("{path}.deltaX"))?;
                 let delta_y = self.eval_formula(delta_y, &format!("{path}.deltaY"))?;
                 let (previous, current) = self
-                    .staged_state
+                    .workspace
                     .position_owner()
                     .move_entity(&entity_id, delta_x, delta_y, *maximum_distance)
                     .map_err(|error| self.mutation_rejection(error, path))?;
@@ -593,7 +592,8 @@ impl Execution<'_> {
             RpgIrFormula::Constant { value } => Ok(*value),
             RpgIrFormula::ReadStat { subject, stat_id } => {
                 let entity_id = self.subject_id(*subject, path)?;
-                self.staged_state
+                self.workspace
+                    .state()
                     .entity(&entity_id)
                     .and_then(|entity| entity.stat(stat_id))
                     .ok_or_else(|| {
@@ -706,7 +706,7 @@ impl Execution<'_> {
         sides: u32,
         path: &str,
     ) -> Result<(), RpgResolutionRejection> {
-        let available = u32::try_from(self.staged_random.remaining()).unwrap_or(u32::MAX);
+        let available = u32::try_from(self.workspace.random_remaining()).unwrap_or(u32::MAX);
         if available >= count {
             return Ok(());
         }
@@ -720,7 +720,8 @@ impl Execution<'_> {
         path: &str,
     ) -> Result<u32, RpgResolutionRejection> {
         let value = self
-            .staged_random
+            .workspace
+            .random_owner()
             .take()
             .ok_or_else(|| self.random_rejection(kind, 1, sides, path))?;
         if value == 0 || value > sides {
@@ -838,8 +839,8 @@ impl Execution<'_> {
             message: message.into(),
             trace: self.trace.clone(),
             random_attempted: self
-                .staged_random
-                .consumed()
+                .workspace
+                .random_consumed()
                 .saturating_sub(self.random_start),
             random_request: None,
         }

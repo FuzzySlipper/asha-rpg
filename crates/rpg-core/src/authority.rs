@@ -207,6 +207,77 @@ impl RpgCapabilityState {
     }
 }
 
+/// One atomic transaction over all RPG capability owners and deterministic
+/// random evidence. The authoritative session stages this workspace, and only
+/// an accepted resolution can commit it back.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct RpgCapabilityWorkspace {
+    state: RpgCapabilityState,
+    random: DeterministicRandomStream,
+}
+
+impl RpgCapabilityWorkspace {
+    pub fn stage(state: &RpgCapabilityState, random: &DeterministicRandomStream) -> Self {
+        Self {
+            state: state.clone(),
+            random: random.clone(),
+        }
+    }
+
+    pub fn state(&self) -> &RpgCapabilityState {
+        &self.state
+    }
+
+    pub fn vitality_owner(&mut self) -> RpgVitalityOwner<'_> {
+        self.state.vitality_owner()
+    }
+
+    pub fn resources_owner(&mut self) -> RpgResourcesOwner<'_> {
+        self.state.resources_owner()
+    }
+
+    pub fn modifiers_owner(&mut self) -> RpgModifiersOwner<'_> {
+        self.state.modifiers_owner()
+    }
+
+    pub fn position_owner(&mut self) -> RpgPositionOwner<'_> {
+        self.state.position_owner()
+    }
+
+    pub fn random_owner(&mut self) -> RpgRandomOwner<'_> {
+        RpgRandomOwner {
+            random: &mut self.random,
+        }
+    }
+
+    pub fn random_remaining(&self) -> usize {
+        self.random.remaining()
+    }
+
+    pub fn random_consumed(&self) -> usize {
+        self.random.consumed()
+    }
+
+    pub fn advance_revision(&mut self) -> u64 {
+        self.state.advance_revision()
+    }
+
+    pub fn commit(self, state: &mut RpgCapabilityState, random: &mut DeterministicRandomStream) {
+        *state = self.state;
+        *random = self.random;
+    }
+}
+
+pub struct RpgRandomOwner<'a> {
+    random: &'a mut DeterministicRandomStream,
+}
+
+impl RpgRandomOwner<'_> {
+    pub fn take(&mut self) -> Option<u32> {
+        self.random.take()
+    }
+}
+
 pub struct RpgVitalityOwner<'a> {
     state: &'a mut RpgCapabilityState,
 }
