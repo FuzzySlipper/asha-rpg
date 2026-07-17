@@ -1,0 +1,9 @@
+[package]
+name = "rpg-core"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+description = "Dependency-free values shared by portable RPG authority crates."
+
+[lints]
+workspace = true

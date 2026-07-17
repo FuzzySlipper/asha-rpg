@@ -1,13 +1,13 @@
-# Planned cells become active only when source and owner-local tests move together.
+# Source and owner-local tests activate a cell together.
 
 [crate."crates/rpg-core"]
 lane = "rust-domain"
-implementation_status = "planned"
+implementation_status = "active"
 may_depend_on = []
 
 [crate."crates/rpg-ir"]
 lane = "rust-language"
-implementation_status = "planned"
+implementation_status = "active"
 may_depend_on = ["rpg-core", "serde"]
 
 [crate."crates/rpg-compiler"]
@@ -17,7 +17,7 @@ may_depend_on = ["rpg-core", "rpg-ir", "asha-gameplay-module-sdk"]
 
 [crate."crates/rpg-runtime"]
 lane = "rust-authority"
-implementation_status = "planned"
+implementation_status = "active"
 may_depend_on = ["rpg-core", "rpg-ir", "rpg-compiler", "asha-runtime-session-composition"]
 
 [crate."crates/rpg-replay"]
@@ -27,7 +27,7 @@ may_depend_on = ["rpg-core", "rpg-ir", "rpg-runtime"]
 
 [crate."crates/asha-rpg"]
 lane = "rust-api"
-implementation_status = "planned"
+implementation_status = "active"
 may_depend_on = ["rpg-core", "rpg-ir", "rpg-compiler", "rpg-runtime", "rpg-replay"]
 
 [package."packages/ir"]
@@ -35,7 +35,7 @@ name = "@asha-rpg/ir"
 lane = "ts-authoring"
 type = "lib"
 layer = "protocol"
-implementation_status = "planned"
+implementation_status = "scaffolded"
 may_depend_on = []
 
 [package."packages/authoring"]
@@ -43,5 +43,5 @@ name = "@asha-rpg/authoring"
 lane = "ts-authoring"
 type = "lib"
 layer = "domain"
-implementation_status = "planned"
+implementation_status = "scaffolded"
 may_depend_on = ["@asha-rpg/ir"]

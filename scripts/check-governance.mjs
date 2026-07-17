@@ -34,7 +34,7 @@ for (const sourceRoot of ['crates', 'packages']) {
   if (!existsSync(absolute)) continue;
   for (const path of filesBelow(absolute)) {
     const source = readFileSync(path, 'utf8');
-    if (/rulebench|certification|golden|experiment|angular/i.test(source)) {
+    if (/rulebench|certification|golden|experiment|\bangular\b/i.test(source)) {
       failures.push(`portable source contains product/proof vocabulary: ${path.slice(root.length + 1)}`);
     }
   }

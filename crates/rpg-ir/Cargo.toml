@@ -1,0 +1,12 @@
+[package]
+name = "rpg-ir"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+description = "Normalized RPG rule declarations and operation vocabulary."
+
+[lints]
+workspace = true
+
+[dependencies]
+rpg-core = { path = "../rpg-core" }

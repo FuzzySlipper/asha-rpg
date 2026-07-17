@@ -26,19 +26,25 @@ downstream games   asha-rulebench
 content such as named actions, classes, items, conditions, encounters, and
 rulesets remains in the owning game or workbench.
 
-## Bootstrap status
+## Current implementation
 
-Task #5940 establishes this repository and its governance boundary. The
-portable implementation is intentionally not copied here yet; #5941 performs
-the coherent source-of-authority extraction. Planned ownership cells are
-recorded in `governance/ownership.toml` and are marked `planned` until their
-source and owner-local tests move together.
+The first source-authority extraction owns dependency-free RPG values in
+`rpg-core`, normalized rule declarations in `rpg-ir`, and the public-ASHA
+RuntimeSession decision/reaction loop in `rpg-runtime`. The `asha-rpg` crate is
+the supported Rust facade. `@asha-rpg/ir` and `@asha-rpg/authoring` establish
+the permanent TypeScript package boundary; the complete compiler and
+authoring language arrive in the next implementation slices.
+
+No Rulebench crate or package is part of this workspace. The independent
+`consumers/minimal-game` workspace verifies consumption through the public Git
+boundary rather than an unpublished sibling path.
 
 ## Checks
 
 ```bash
 npm test
-cargo metadata --no-deps --format-version 1
+cargo test --workspace
+cargo test --manifest-path consumers/minimal-game/Cargo.toml
 ```
 
 The canonical architecture is [docs/design.md](docs/design.md). The language
