@@ -1,7 +1,7 @@
 import { RPG_CAPABILITY_VERSIONS, RPG_OPERATION_VERSIONS, } from '@asha-rpg/ir';
 import { canonicalJson, immutable, stableFingerprint } from './canonical.js';
 import { defineActions, definePackage } from './builders.js';
-import { normalizePackage } from './normalize.js';
+import { normalizeAction, normalizePackage } from './normalize.js';
 const NO_DIAGNOSTICS = Object.freeze([]);
 export const ASHA_RPG_COMPILER_TARGET = immutable({
     language: { id: 'asha-rpg', version: '1.0.0' },
@@ -445,6 +445,17 @@ function materializeSelectedDefinitions(context, composition, overlayPackages) {
             return undefined;
         visiting.push(key);
         const baseSource = resolveRelationshipReference(record.package, derivation.target, `$.packages[${record.package.key}].relationships.${record.definition.id}.target`, definitionsByPackage, context.diagnostics);
+        if (baseSource !== undefined &&
+            (baseSource.definition.kind === 'mixin' || baseSource.definition.kind === 'template')) {
+            context.diagnostics.push(diagnostic('materialization', 'RULESET_DERIVATION_KIND_INCOMPATIBLE', `$.packages[${record.package.key}].relationships.${record.definition.id}.target`, `derived ${record.definition.materializesAs} cannot use ${baseSource.definition.kind} base ${baseSource.definition.id}`, {
+                definitionId: record.definition.id,
+                source: record.definition.source,
+                expected: record.definition.materializesAs,
+                actual: baseSource.definition.kind,
+            }));
+            visiting.pop();
+            return undefined;
+        }
         const base = baseSource === undefined ? undefined : resolveConcrete(baseSource);
         if (base === undefined) {
             visiting.pop();
@@ -468,6 +479,7 @@ function materializeSelectedDefinitions(context, composition, overlayPackages) {
         let current = definitionValue(base);
         const changes = [];
         const mixinProvenance = [];
+        const inheritedReferenceIds = new Set(resolveMaterializationReferenceIds(base, definitionsByPackage, context.diagnostics));
         for (const [order, application] of derivation.mixins.entries()) {
             const mixinRecord = resolveRelationshipReference(record.package, application.target, `$.packages[${record.package.key}].relationships.${record.definition.id}.mixins[${order}]`, definitionsByPackage, context.diagnostics);
             if (mixinRecord === undefined || mixinRecord.definition.kind !== 'mixin') {
@@ -479,6 +491,9 @@ function materializeSelectedDefinitions(context, composition, overlayPackages) {
             const parameters = resolveMixinParameters(mixinRecord.definition, application.parameters, `$.packages[${record.package.key}].relationships.${record.definition.id}.mixins[${order}].parameters`, context.diagnostics);
             if (parameters === undefined)
                 continue;
+            for (const referenceId of resolveMaterializationReferenceIds(mixinRecord, definitionsByPackage, context.diagnostics)) {
+                inheritedReferenceIds.add(referenceId);
+            }
             const applied = applyRulesetPatch(current, mixinRecord.definition.patch, parameters, `$.packages[${record.package.key}].relationships.${record.definition.id}.mixins[${order}].patch`, context.diagnostics);
             if (applied === undefined)
                 continue;
@@ -504,7 +519,7 @@ function materializeSelectedDefinitions(context, composition, overlayPackages) {
             current = local;
             changes.push(...local.changes);
         }
-        const concrete = concreteDerivedRecord(record, base, current, context.diagnostics);
+        const concrete = concreteDerivedRecord(record, base, current, [...inheritedReferenceIds].sort(), context.diagnostics);
         visiting.pop();
         if (concrete === undefined)
             return undefined;
@@ -710,7 +725,7 @@ function definitionValue(record) {
     }
     throw new Error(`definition ${record.definition.id} is not concrete`);
 }
-function concreteDerivedRecord(derived, base, value, diagnostics) {
+function concreteDerivedRecord(derived, base, value, inheritedReferenceIds, diagnostics) {
     if (derived.definition.kind !== 'derived')
         return undefined;
     const references = uniqueReferences(derived.definition.references);
@@ -727,6 +742,7 @@ function concreteDerivedRecord(derived, base, value, diagnostics) {
         return {
             package: derived.package,
             exported: derived.exported,
+            inheritedReferenceIds,
             definition: immutable({
                 kind: 'action',
                 id: derived.definition.id,
@@ -746,6 +762,7 @@ function concreteDerivedRecord(derived, base, value, diagnostics) {
     return {
         package: derived.package,
         exported: derived.exported,
+        inheritedReferenceIds,
         definition: immutable({
             kind: 'support',
             id: derived.definition.id,
@@ -988,8 +1005,8 @@ function definitionMaterializationFingerprint(record) {
         id: record.definition.id,
         kind: record.definition.kind,
         extensionPolicy: record.definition.extensionPolicy,
-        value: definitionValue(record),
-        references: uniqueReferences(record.definition.references),
+        value: normalizedDefinitionValue(record),
+        references: materializationReferenceIds(record),
     });
 }
 export function rulesetDefinitionMaterializationFingerprint(definition) {
@@ -998,10 +1015,33 @@ export function rulesetDefinitionMaterializationFingerprint(definition) {
         kind: definition.kind,
         extensionPolicy: definition.extensionPolicy,
         value: definition.kind === 'action'
-            ? { semantic: definition.action, presentation: definition.presentation ?? null }
+            ? { semantic: normalizeAction(definition.action), presentation: definition.presentation ?? null }
             : { semantic: definition.semantic, presentation: definition.presentation ?? null },
-        references: uniqueReferences(definition.references),
+        references: [...new Set(definition.references.map((reference) => reference.definitionId))].sort(),
     });
+}
+function normalizedDefinitionValue(record) {
+    if (record.definition.kind === 'action') {
+        return {
+            semantic: normalizeAction(record.definition.action),
+            presentation: record.definition.presentation ?? null,
+        };
+    }
+    if (record.definition.kind === 'support') {
+        return {
+            semantic: record.definition.semantic,
+            presentation: record.definition.presentation ?? null,
+        };
+    }
+    throw new Error(`definition ${record.definition.id} is not concrete`);
+}
+function materializationReferenceIds(record) {
+    return [
+        ...new Set([
+            ...record.definition.references.map((reference) => reference.definitionId),
+            ...(record.inheritedReferenceIds ?? []).map(localDefinitionId),
+        ]),
+    ].sort();
 }
 function cloneJsonValue(value) {
     if (Array.isArray(value))
@@ -1061,17 +1101,30 @@ function closeDefinitionGraph(context, rootKeys, sourceRecords) {
         if (reachable.has(globalId))
             return;
         visiting.push(globalId);
-        const references = [];
+        const references = new Set();
         for (const [index, reference] of record.definition.references.entries()) {
             const target = resolveDefinitionReference(record, reference, index, definitionsByPackage, context.diagnostics);
             if (target !== undefined) {
-                references.push(globalDefinitionId(target));
+                references.add(globalDefinitionId(target));
                 visit(target);
             }
         }
+        for (const inheritedReferenceId of record.inheritedReferenceIds ?? []) {
+            const target = byGlobalId.get(inheritedReferenceId);
+            if (target === undefined) {
+                context.diagnostics.push(diagnostic('graph', 'RULESET_INHERITED_REFERENCE_MISSING', `$.packages[${record.package.key}].definitions.${record.definition.id}.references`, `inherited definition reference ${inheritedReferenceId} is missing`, {
+                    packageId: record.package.source.manifest.identity.id,
+                    definitionId: record.definition.id,
+                    source: record.definition.source,
+                }));
+                continue;
+            }
+            references.add(inheritedReferenceId);
+            visit(target);
+        }
         visiting.pop();
         reachable.add(globalId);
-        resolvedReferences.set(globalId, Object.freeze(references.sort()));
+        resolvedReferences.set(globalId, Object.freeze([...references].sort()));
     };
     for (const root of roots) {
         const record = byGlobalId.get(root);
@@ -1080,7 +1133,9 @@ function closeDefinitionGraph(context, rootKeys, sourceRecords) {
     }
     for (const record of sourceRecords) {
         const globalId = globalDefinitionId(record);
-        if (!reachable.has(globalId) && record.definition.visibility === 'public') {
+        if (rootKeys.has(record.package.key) &&
+            !reachable.has(globalId) &&
+            record.definition.visibility === 'public') {
             context.diagnostics.push(diagnostic('graph', 'RULESET_PUBLIC_DEFINITION_UNREACHABLE', `$.packages[${record.package.key}].definitions.${record.definition.id}`, `public definition ${record.definition.id} is unreachable from an exported root`, {
                 packageId: record.package.source.manifest.identity.id,
                 definitionId: record.definition.id,
@@ -1116,6 +1171,15 @@ function closeDefinitionGraph(context, rootKeys, sourceRecords) {
         resolvedReferences,
         byGlobalId: new Map(materialized.map((record) => [record.definition.id, record])),
     };
+}
+function resolveMaterializationReferenceIds(record, definitionsByPackage, diagnostics) {
+    const resolved = new Set(record.inheritedReferenceIds ?? []);
+    for (const [index, reference] of record.definition.references.entries()) {
+        const target = resolveDefinitionReference(record, reference, index, definitionsByPackage, diagnostics);
+        if (target !== undefined)
+            resolved.add(globalDefinitionId(target));
+    }
+    return [...resolved].sort();
 }
 function resolveDefinitionReference(source, reference, index, definitionsByPackage, diagnostics) {
     const targetPackageKey = reference.importAs === undefined

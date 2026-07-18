@@ -18,6 +18,7 @@ import {
   defineRulesetPackage,
   defineRulesetRelationship,
   defineSupportDefinition,
+  defineTemplateDefinition,
   definitionReference,
   hostile,
   noRoll,
@@ -34,6 +35,26 @@ import type {
 } from '@asha-rpg/authoring';
 
 const root = fileURLToPath(new URL('../../../', import.meta.url));
+
+type CompilePreparedResult =
+  | {
+      readonly ok: true;
+      readonly artifact: {
+        readonly materializedDefinitions: readonly unknown[];
+        readonly derivationProvenance: readonly unknown[];
+        readonly overlayProvenance: readonly unknown[];
+        readonly fingerprints: {
+          readonly source: string;
+          readonly semantic: string;
+          readonly presentation: string;
+        };
+      };
+      readonly diagnostics: readonly unknown[];
+    }
+  | {
+      readonly ok: false;
+      readonly diagnostics: readonly { readonly code: string }[];
+    };
 
 test('ordered mixins, local patches, and overlays materialize deterministically', () => {
   const baseSources = materializationSources('multiplyThenAdd');
@@ -129,6 +150,58 @@ test('ordered mixins, local patches, and overlays materialize deterministically'
   );
 });
 
+test('Rust rejects provenance fingerprints and coverage that do not match materialized definitions', () => {
+  const sources = materializationSources('multiplyThenAdd');
+  const baseline = acceptedPrepared(composition([]), sources);
+  const falseDerivationFingerprint: PreparedRulesetCompilation = {
+    ...baseline,
+    derivationProvenance: baseline.derivationProvenance.map((provenance, index) =>
+      index === 0
+        ? { ...provenance, materializedFingerprint: 'fnv1a64:0000000000000000' }
+        : provenance,
+    ),
+  };
+  assertCompilationFailsWith(
+    falseDerivationFingerprint,
+    'RULESET_DERIVATION_MATERIALIZED_FINGERPRINT_MISMATCH',
+  );
+
+  const derived = baseline.derivationProvenance[0];
+  assert.ok(derived);
+  const semanticOverlay = overlayPackage({
+    id: 'sample.semantic-overlay',
+    expectedFingerprint: derived.materializedFingerprint,
+    plane: 'semantic',
+    path: ['targets', 'maximumRange'],
+    value: 11,
+  });
+  const semanticPrepared = acceptedPrepared(
+    composition(['sample.semantic-overlay']),
+    [...sources, semanticOverlay],
+  );
+  const falseOverlayFingerprint: PreparedRulesetCompilation = {
+    ...semanticPrepared,
+    overlayProvenance: semanticPrepared.overlayProvenance.map((provenance, index) =>
+      index === 0
+        ? { ...provenance, afterFingerprint: 'fnv1a64:0000000000000000' }
+        : provenance,
+    ),
+  };
+  assertCompilationFailsWith(
+    falseOverlayFingerprint,
+    'RULESET_OVERLAY_AFTER_FINGERPRINT_MISMATCH',
+  );
+
+  const missingOverlayProvenance: PreparedRulesetCompilation = {
+    ...semanticPrepared,
+    overlayProvenance: [],
+  };
+  assertCompilationFailsWith(
+    missingOverlayProvenance,
+    'RULESET_OVERLAY_PROVENANCE_COVERAGE_MISMATCH',
+  );
+});
+
 test('derivation and overlay errors retain exact path and policy diagnostics', () => {
   const cycle = prepareRulesetCompilation({
     composition: composeRuleset({
@@ -151,6 +224,29 @@ test('derivation and overlay errors retain exact path and policy diagnostics', (
       'sample.cycle@1.0.0#sample.b',
       'sample.cycle@1.0.0#sample.a',
     ]);
+  }
+
+  const incompatible = prepareRulesetCompilation({
+    composition: composeRuleset({
+      identity: { id: 'sample.incompatible-composition', version: '1.0.0' },
+      language: { id: 'asha-rpg', version: '^1.0.0' },
+      base: rulesetPackageRequest({ id: 'sample.incompatible', version: '1.0.0' }),
+      add: [],
+      overlays: [],
+      configure: {},
+    }),
+    packages: [incompatibleBasePackage()],
+  });
+  assert.equal(incompatible.ok, false);
+  if (!incompatible.ok) {
+    assert.ok(
+      incompatible.diagnostics.some(
+        (entry) =>
+          entry.code === 'RULESET_DERIVATION_KIND_INCOMPATIBLE' &&
+          entry.definitionId === 'sample.invalid-derived' &&
+          entry.actual === 'template',
+      ),
+    );
   }
 
   const sources = materializationSources('multiplyThenAdd');
@@ -282,12 +378,22 @@ function materializationSources(
   const damageTypeDefinition = defineSupportDefinition({
     kind: 'support',
     id: 'catalog.damage.storm',
-    visibility: 'public',
+    visibility: 'private',
     extensionPolicy: 'sealed',
     source: { module: 'foundation/catalog.ts', declaration: 'storm' },
     references: [],
     semantic: { catalog: 'damageType', id: 'storm' },
     presentation: { label: 'Storm' },
+  });
+  const mixinSupportDefinition = defineSupportDefinition({
+    kind: 'support',
+    id: 'catalog.stat.range-tuning',
+    visibility: 'private',
+    extensionPolicy: 'sealed',
+    source: { module: 'foundation/catalog.ts', declaration: 'rangeTuning' },
+    references: [],
+    semantic: { catalog: 'stat', id: 'range-tuning' },
+    presentation: { label: 'Range tuning' },
   });
   const baseAction = defineActionDefinition({
     kind: 'action',
@@ -314,7 +420,7 @@ function materializationSources(
     visibility: 'public',
     extensionPolicy: 'sealed',
     source: { module: 'foundation/mixins.ts', declaration: 'multiplyRange' },
-    references: [],
+    references: [definitionReference({ definitionId: mixinSupportDefinition.id })],
     parameters: [{ id: 'factor', type: 'number' }],
     patch: {
       version: 1,
@@ -355,9 +461,8 @@ function materializationSources(
       operations: [{ id: 'operation.damage', version: 1 }],
       capabilities: [{ id: 'capability.vitality', version: 1 }],
     },
-    definitions: [damageTypeDefinition, baseAction, multiply, add],
+    definitions: [damageTypeDefinition, mixinSupportDefinition, baseAction, multiply, add],
     exports: [
-      damageTypeDefinition.id,
       baseAction.id,
       multiply.id,
       add.id,
@@ -382,9 +487,7 @@ function materializationSources(
     visibility: 'public',
     extensionPolicy: 'patchable',
     source: { module: 'core/derived.ts', declaration: 'arcVariant' },
-    references: [
-      definitionReference({ importAs: 'foundation', definitionId: damageTypeDefinition.id }),
-    ],
+    references: [],
     presentation: { label: 'ignored authored placeholder' },
   });
   const core = rulesetPackageSource(defineRulesetPackage({
@@ -470,7 +573,7 @@ function forbiddenOverlayPackage(): RulesetPackageSource {
     relationships: [defineRulesetRelationship({
       kind: 'patches',
       definitionId: 'sample.forbidden-overlay.patch',
-      target: definitionReference({ importAs: 'foundation', definitionId: 'catalog.damage.storm' }),
+      target: definitionReference({ importAs: 'foundation', definitionId: 'sample.arc-base' }),
       targetPackage: { id: 'sample.foundation', version: '1.0.0' },
       expectedFingerprint: 'fnv1a64:0000000000000000',
       patch: { version: 1, operations: [{ kind: 'setScalar', plane: 'presentation', path: fields('label'), value: 'Forbidden' }] },
@@ -503,12 +606,50 @@ function cyclePackage(): RulesetPackageSource {
   }));
 }
 
+function incompatibleBasePackage(): RulesetPackageSource {
+  const template = defineTemplateDefinition({
+    kind: 'template',
+    id: 'sample.template-base',
+    visibility: 'private',
+    extensionPolicy: 'derivable',
+    source: { module: 'incompatible.ts', declaration: 'templateBase' },
+    references: [],
+  });
+  const derived = defineDerivedDefinition({
+    kind: 'derived',
+    id: 'sample.invalid-derived',
+    materializesAs: 'action',
+    visibility: 'public',
+    extensionPolicy: 'sealed',
+    source: { module: 'incompatible.ts', declaration: 'invalidDerived' },
+    references: [],
+  });
+  return rulesetPackageSource(defineRulesetPackage({
+    identity: { id: 'sample.incompatible', version: '1.0.0' },
+    entry: { module: 'incompatible.ts', declaration: 'default' },
+    language: { id: 'asha-rpg', version: '^1.0.0' },
+    dependencies: [],
+    requirements: { operations: [], capabilities: [] },
+    definitions: [template, derived],
+    exports: [derived.id],
+    policyBindings: [],
+    relationships: [defineRulesetRelationship({
+      kind: 'derivesFrom',
+      definitionId: derived.id,
+      target: definitionReference({ definitionId: template.id }),
+      mixins: [],
+      localPatch: { version: 1, operations: [] },
+      version: 1,
+    })],
+  }));
+}
+
 function composition(overlays: readonly string[]) {
   return composeRuleset({
     identity: { id: 'sample.materialized', version: '1.0.0' },
     language: { id: 'asha-rpg', version: '^1.0.0' },
     base: rulesetPackageRequest({ id: 'sample.core', version: '1.0.0' }),
-    add: [rulesetPackageRequest({ id: 'sample.foundation', version: '1.0.0' })],
+    add: [],
     overlays: overlays.map((id) => rulesetPackageRequest({ id, version: '1.0.0' })),
     configure: {},
   });
@@ -524,28 +665,32 @@ function acceptedPrepared(
 }
 
 function compilePrepared(prepared: PreparedRulesetCompilation) {
+  const result = compilePreparedResult(prepared);
+  if (!result.ok) assert.fail(JSON.stringify(result.diagnostics));
+  return result.artifact;
+}
+
+function compilePreparedResult(prepared: PreparedRulesetCompilation): CompilePreparedResult {
   const compilation = spawnSync(
     'cargo',
     ['run', '--quiet', '--manifest-path', join(root, 'Cargo.toml'), '-p', 'rpg-compiler', '--bin', 'compile_ruleset'],
     { cwd: root, encoding: 'utf8', input: canonicalJson(prepared) },
   );
   assert.equal(compilation.status, 0, compilation.stderr);
-  const result = JSON.parse(compilation.stdout) as {
-    readonly ok: boolean;
-    readonly artifact: {
-      readonly materializedDefinitions: readonly unknown[];
-      readonly derivationProvenance: readonly unknown[];
-      readonly overlayProvenance: readonly unknown[];
-      readonly fingerprints: {
-        readonly source: string;
-        readonly semantic: string;
-        readonly presentation: string;
-      };
-    };
-    readonly diagnostics?: readonly unknown[];
-  };
-  assert.equal(result.ok, true, JSON.stringify(result.diagnostics));
-  return result.artifact;
+  return JSON.parse(compilation.stdout) as CompilePreparedResult;
+}
+
+function assertCompilationFailsWith(
+  prepared: PreparedRulesetCompilation,
+  diagnosticCode: string,
+): void {
+  const result = compilePreparedResult(prepared);
+  assert.equal(result.ok, false, JSON.stringify(result));
+  if (result.ok) return;
+  assert.ok(
+    result.diagnostics.some((diagnostic) => diagnostic.code === diagnosticCode),
+    JSON.stringify(result.diagnostics),
+  );
 }
 
 function fields(...names: readonly string[]) {

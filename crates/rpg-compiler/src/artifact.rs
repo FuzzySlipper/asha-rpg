@@ -1250,6 +1250,16 @@ fn validate_materialization_provenance(
         .iter()
         .map(|definition| (definition.id.as_str(), definition))
         .collect::<BTreeMap<_, _>>();
+    let mut materialization_fingerprints = BTreeMap::new();
+    for definition in &prepared.materialized_definitions {
+        match materialization_provenance_fingerprint(definition) {
+            Ok(fingerprint) => {
+                materialization_fingerprints.insert(definition.id.as_str(), fingerprint);
+            }
+            Err(failure) => diagnostics.extend(failure.diagnostics),
+        }
+    }
+    let mut derivations_by_definition = BTreeMap::new();
     let mut previous_derivation = None::<&str>;
     for (index, provenance) in prepared.derivation_provenance.iter().enumerate() {
         if previous_derivation.is_some_and(|previous| previous >= provenance.definition_id.as_str())
@@ -1262,6 +1272,7 @@ fn validate_materialization_provenance(
             ));
         }
         previous_derivation = Some(&provenance.definition_id);
+        derivations_by_definition.insert(provenance.definition_id.as_str(), provenance);
         if !definitions.contains_key(provenance.definition_id.as_str()) {
             diagnostics.push(RpgDiagnostic::error(
                 RpgDiagnosticStage::References,
@@ -1322,6 +1333,7 @@ fn validate_materialization_provenance(
         );
     }
 
+    let mut overlays_by_definition = BTreeMap::<&str, Vec<_>>::new();
     let mut previous_overlay_order = None::<usize>;
     for (index, provenance) in prepared.overlay_provenance.iter().enumerate() {
         if previous_overlay_order.is_some_and(|previous| previous >= provenance.order) {
@@ -1333,6 +1345,10 @@ fn validate_materialization_provenance(
             ));
         }
         previous_overlay_order = Some(provenance.order);
+        overlays_by_definition
+            .entry(provenance.target_definition_id.as_str())
+            .or_default()
+            .push(provenance);
         if !definitions.contains_key(provenance.target_definition_id.as_str()) {
             diagnostics.push(RpgDiagnostic::error(
                 RpgDiagnosticStage::References,
@@ -1376,28 +1392,180 @@ fn validate_materialization_provenance(
             diagnostics,
         );
     }
-    for (index, relationship) in prepared.relationships.iter().enumerate() {
-        if matches!(relationship.kind, RulesetRelationshipKind::DerivesFrom)
-            && prepared.derivation_provenance.is_empty()
-        {
-            diagnostics.push(RpgDiagnostic::error(
-                RpgDiagnosticStage::Artifact,
-                "RULESET_DERIVATION_PROVENANCE_MISSING",
-                format!("$.relationships[{index}]"),
-                "derivation relationships require typed materialization provenance",
-            ));
-        }
-        if matches!(relationship.kind, RulesetRelationshipKind::Patches)
-            && prepared.overlay_provenance.is_empty()
-        {
-            diagnostics.push(RpgDiagnostic::error(
-                RpgDiagnosticStage::Artifact,
-                "RULESET_OVERLAY_PROVENANCE_MISSING",
-                format!("$.relationships[{index}]"),
-                "patch relationships require typed overlay provenance",
-            ));
+
+    for overlays in overlays_by_definition.values_mut() {
+        overlays.sort_by_key(|provenance| provenance.order);
+    }
+    for (definition_id, expected_fingerprint) in &materialization_fingerprints {
+        let derivation = derivations_by_definition.get(definition_id).copied();
+        let overlays = overlays_by_definition.get(definition_id);
+        if let Some(first_overlay) = overlays.and_then(|entries| entries.first()) {
+            if let Some(derivation) = derivation {
+                if derivation.materialized_fingerprint != first_overlay.before_fingerprint {
+                    diagnostics.push(RpgDiagnostic::error(
+                        RpgDiagnosticStage::Artifact,
+                        "RULESET_DERIVATION_OVERLAY_FINGERPRINT_MISMATCH",
+                        "$.derivationProvenance",
+                        format!(
+                            "derived definition {definition_id} must begin its overlay chain at the derivation result"
+                        ),
+                    ));
+                }
+            }
+            if let Some(entries) = overlays {
+                for pair in entries.windows(2) {
+                    let [before, after] = pair else {
+                        continue;
+                    };
+                    if before.after_fingerprint != after.before_fingerprint {
+                        diagnostics.push(RpgDiagnostic::error(
+                            RpgDiagnosticStage::Artifact,
+                            "RULESET_OVERLAY_FINGERPRINT_CHAIN_MISMATCH",
+                            "$.overlayProvenance",
+                            format!(
+                                "overlay order {} for {definition_id} does not continue from order {}",
+                                after.order, before.order
+                            ),
+                        ));
+                    }
+                }
+                if entries
+                    .last()
+                    .is_some_and(|last| last.after_fingerprint != expected_fingerprint.as_str())
+                {
+                    diagnostics.push(RpgDiagnostic::error(
+                        RpgDiagnosticStage::Artifact,
+                        "RULESET_OVERLAY_AFTER_FINGERPRINT_MISMATCH",
+                        "$.overlayProvenance",
+                        format!(
+                            "the final overlay fingerprint for {definition_id} does not match the materialized definition"
+                        ),
+                    ));
+                }
+            }
+        } else if let Some(derivation) = derivation {
+            if derivation.materialized_fingerprint != expected_fingerprint.as_str() {
+                diagnostics.push(RpgDiagnostic::error(
+                    RpgDiagnosticStage::Artifact,
+                    "RULESET_DERIVATION_MATERIALIZED_FINGERPRINT_MISMATCH",
+                    "$.derivationProvenance",
+                    format!(
+                        "the derivation fingerprint for {definition_id} is {}, but the materialized definition is {expected_fingerprint}",
+                        derivation.materialized_fingerprint,
+                    ),
+                ));
+            }
         }
     }
+
+    let mut declared_derivations = BTreeMap::new();
+    for relationship in prepared
+        .relationships
+        .iter()
+        .filter(|relationship| matches!(relationship.kind, RulesetRelationshipKind::DerivesFrom))
+    {
+        *declared_derivations
+            .entry((
+                relationship.source.clone(),
+                relationship.target.clone(),
+                relationship.order,
+            ))
+            .or_insert(0_usize) += 1;
+    }
+    let mut proven_derivations = BTreeMap::new();
+    for provenance in &prepared.derivation_provenance {
+        let source = materialization_relationship_identity(
+            &provenance.package_id,
+            &provenance.package_version,
+            &provenance.definition_id,
+        );
+        let base = materialization_relationship_identity(
+            &provenance.base_package_id,
+            &provenance.base_package_version,
+            &provenance.base_definition_id,
+        );
+        *proven_derivations
+            .entry((source.clone(), base, 0_usize))
+            .or_insert(0_usize) += 1;
+        for mixin in &provenance.mixins {
+            let target = materialization_relationship_identity(
+                &mixin.package_id,
+                &mixin.package_version,
+                &mixin.definition_id,
+            );
+            *proven_derivations
+                .entry((source.clone(), target, mixin.order))
+                .or_insert(0_usize) += 1;
+        }
+    }
+    if declared_derivations != proven_derivations {
+        diagnostics.push(RpgDiagnostic::error(
+            RpgDiagnosticStage::Artifact,
+            "RULESET_DERIVATION_PROVENANCE_COVERAGE_MISMATCH",
+            "$.relationships",
+            "each derivation base and mixin relationship requires one matching provenance record",
+        ));
+    }
+
+    let mut declared_overlays = BTreeMap::new();
+    for relationship in prepared.relationships.iter().filter(|relationship| {
+        matches!(relationship.kind, RulesetRelationshipKind::Patches)
+            && relationship.target.contains('#')
+    }) {
+        *declared_overlays
+            .entry((
+                relationship.source.clone(),
+                relationship.target.clone(),
+                relationship.order,
+            ))
+            .or_insert(0_usize) += 1;
+    }
+    let mut proven_overlays = BTreeMap::new();
+    for provenance in &prepared.overlay_provenance {
+        let source = format!(
+            "{}@{}",
+            provenance.overlay_package_id, provenance.overlay_package_version
+        );
+        let target = materialization_relationship_identity(
+            &provenance.target_package_id,
+            &provenance.target_package_version,
+            &provenance.target_definition_id,
+        );
+        *proven_overlays
+            .entry((source, target, provenance.order))
+            .or_insert(0_usize) += 1;
+    }
+    if declared_overlays != proven_overlays {
+        diagnostics.push(RpgDiagnostic::error(
+            RpgDiagnosticStage::Artifact,
+            "RULESET_OVERLAY_PROVENANCE_COVERAGE_MISMATCH",
+            "$.relationships",
+            "each overlay relationship requires one matching provenance record",
+        ));
+    }
+}
+
+fn materialization_relationship_identity(
+    package_id: &str,
+    package_version: &str,
+    definition_id: &str,
+) -> String {
+    format!("{package_id}@{package_version}#{definition_id}")
+}
+
+fn materialization_provenance_fingerprint(
+    definition: &MaterializedRulesetDefinition,
+) -> Result<String, RpgCompileFailure> {
+    fingerprint(&json!({
+        "id": definition.id,
+        "kind": definition.kind,
+        "extensionPolicy": definition.extension_policy,
+        "value": {
+            "semantic": definition.semantic,
+            "presentation": definition.presentation,
+        },
+        "references": definition.references,
+    }))
 }
 
 fn validate_patch_changes(

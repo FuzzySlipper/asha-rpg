@@ -61,7 +61,7 @@ export function normalizePackage(source) {
 export function canonicalRpgJson(artifact) {
     return JSON.stringify(canonicalValue(artifact));
 }
-function normalizeAction(action) {
+export function normalizeAction(action) {
     return {
         id: action.id,
         name: action.name,
