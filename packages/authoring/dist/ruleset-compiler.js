@@ -476,12 +476,20 @@ function resolveDefinitionReference(source, reference, index, definitionsByPacka
         : source.package.aliases.get(reference.importAs);
     const path = `$.packages[${source.package.key}].definitions.${source.definition.id}.references[${index}]`;
     if (targetPackageKey === undefined) {
-        diagnostics.push(diagnostic('graph', 'RULESET_IMPORT_ALIAS_UNRESOLVED', path, `import alias ${reference.importAs ?? ''} is not declared`, { definitionId: source.definition.id, source: source.definition.source }));
+        diagnostics.push(diagnostic('graph', 'RULESET_IMPORT_ALIAS_UNRESOLVED', path, `import alias ${reference.importAs ?? ''} is not declared`, {
+            packageId: source.package.source.manifest.identity.id,
+            definitionId: source.definition.id,
+            source: source.definition.source,
+        }));
         return undefined;
     }
     const target = definitionsByPackage.get(targetPackageKey)?.get(reference.definitionId);
     if (target === undefined) {
-        diagnostics.push(diagnostic('graph', 'RULESET_DEFINITION_REFERENCE_MISSING', path, `definition ${reference.definitionId} was not found in ${targetPackageKey}`, { definitionId: source.definition.id, source: source.definition.source }));
+        diagnostics.push(diagnostic('graph', 'RULESET_DEFINITION_REFERENCE_MISSING', path, `definition ${reference.definitionId} was not found in ${targetPackageKey}`, {
+            packageId: source.package.source.manifest.identity.id,
+            definitionId: source.definition.id,
+            source: source.definition.source,
+        }));
         return undefined;
     }
     if (targetPackageKey !== source.package.key &&

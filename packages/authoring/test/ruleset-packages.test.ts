@@ -82,7 +82,11 @@ test('typed source diagnostics fail before materialization and retain full graph
   if (missing.ok) return;
   assert.ok(
     missing.diagnostics.some(
-      (entry) => entry.code === 'RULESET_DEFINITION_REFERENCE_MISSING',
+      (entry) =>
+        entry.code === 'RULESET_DEFINITION_REFERENCE_MISSING' &&
+        entry.packageId === 'sample.core' &&
+        entry.definitionId === 'sample.spark' &&
+        entry.source?.module === 'core/actions/spark.ts',
     ),
   );
 

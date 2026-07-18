@@ -788,7 +788,11 @@ function resolveDefinitionReference(
         'RULESET_IMPORT_ALIAS_UNRESOLVED',
         path,
         `import alias ${reference.importAs ?? ''} is not declared`,
-        { definitionId: source.definition.id, source: source.definition.source },
+        {
+          packageId: source.package.source.manifest.identity.id,
+          definitionId: source.definition.id,
+          source: source.definition.source,
+        },
       ),
     );
     return undefined;
@@ -801,7 +805,11 @@ function resolveDefinitionReference(
         'RULESET_DEFINITION_REFERENCE_MISSING',
         path,
         `definition ${reference.definitionId} was not found in ${targetPackageKey}`,
-        { definitionId: source.definition.id, source: source.definition.source },
+        {
+          packageId: source.package.source.manifest.identity.id,
+          definitionId: source.definition.id,
+          source: source.definition.source,
+        },
       ),
     );
     return undefined;
