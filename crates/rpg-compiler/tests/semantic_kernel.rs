@@ -1,4 +1,4 @@
-use rpg_compiler::{compile_normalized_rpg_json, RpgDiagnosticStage};
+use rpg_compiler::{compile_normalized_rpg_json, RpgDiagnosticStage, RpgRandomPlanConditionKind};
 use rpg_core::{
     DeterministicRandomStream, GridPosition, RpgCapabilityState, RpgDomainEvent, RpgEntityState,
     RpgIntent, RpgRandomRequest, RpgRandomRequestKind, Team,
@@ -239,6 +239,69 @@ fn dice_requests_preserve_declared_shape_without_a_probe_limit() {
             path: "$.action.program.body.selected.steps[0].amount".to_owned(),
         }))
     );
+}
+
+#[test]
+fn catalog_random_plan_keeps_mutually_exclusive_branches_explicit() {
+    let mut source: serde_json::Value = serde_json::from_str(&single_target_source()).unwrap();
+    source["actions"][0]["program"]["body"]["hit"] = serde_json::json!({
+        "kind": "when",
+        "predicate": {
+            "kind": "compare",
+            "left": {"kind": "readStat", "subject": "actor", "statId": "power"},
+            "comparison": "greaterThan",
+            "right": {"kind": "constant", "value": 0}
+        },
+        "then": {
+            "kind": "operation",
+            "operation": {
+                "kind": "damage",
+                "amount": {"kind": "dice", "count": 2, "sides": 6, "bonus": 0},
+                "damageType": "force"
+            }
+        },
+        "otherwise": {
+            "kind": "operation",
+            "operation": {
+                "kind": "damage",
+                "amount": {"kind": "dice", "count": 1, "sides": 6, "bonus": 0},
+                "damageType": "force"
+            }
+        }
+    });
+
+    let ruleset = compile_normalized_rpg_json(&serde_json::to_vec(&source).unwrap()).unwrap();
+    let action = ruleset.actions().next().unwrap();
+    assert_eq!(action.random_plan.len(), 3);
+    assert!(action.random_plan[0].conditions.is_empty());
+    assert_eq!(action.random_plan[0].request.count, 1);
+    assert_eq!(action.random_plan[0].request.sides, 20);
+    assert_eq!(
+        action.random_plan[1]
+            .conditions
+            .iter()
+            .map(|condition| condition.kind)
+            .collect::<Vec<_>>(),
+        vec![
+            RpgRandomPlanConditionKind::CheckHit,
+            RpgRandomPlanConditionKind::WhenThen,
+        ]
+    );
+    assert_eq!(action.random_plan[1].request.count, 2);
+    assert_eq!(action.random_plan[1].request.sides, 6);
+    assert_eq!(
+        action.random_plan[2]
+            .conditions
+            .iter()
+            .map(|condition| condition.kind)
+            .collect::<Vec<_>>(),
+        vec![
+            RpgRandomPlanConditionKind::CheckHit,
+            RpgRandomPlanConditionKind::WhenOtherwise,
+        ]
+    );
+    assert_eq!(action.random_plan[2].request.count, 1);
+    assert_eq!(action.random_plan[2].request.sides, 6);
 }
 
 #[test]

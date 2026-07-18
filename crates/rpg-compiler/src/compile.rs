@@ -72,7 +72,7 @@ impl CompiledRpgRuleset {
             check: action.check.clone(),
             roll_scope: action.roll_scope,
             costs: action.costs.clone(),
-            random_requests: action.random_requests.clone(),
+            random_plan: action.random_plan.clone(),
         })
     }
 
@@ -96,7 +96,38 @@ pub struct CompiledRpgAction {
     pub check: RpgIrCheck,
     pub roll_scope: RpgIrRollScope,
     pub costs: Vec<RpgIrResourceCost>,
-    pub random_requests: Vec<RpgRandomRequest>,
+    pub random_plan: Vec<RpgRandomPlanEntry>,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+/// A closed authority branch that must be selected before a catalog random
+/// request becomes required.
+pub enum RpgRandomPlanConditionKind {
+    WhenThen,
+    WhenOtherwise,
+    CheckHit,
+    CheckMiss,
+    CheckSaved,
+    CheckFailed,
+    CheckNoRoll,
+    AllPreviousTrue,
+    AnyPreviousFalse,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct RpgRandomPlanCondition {
+    pub kind: RpgRandomPlanConditionKind,
+    pub path: String,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+/// One possible random request and the complete branch condition stack that
+/// guards it. An empty condition list means the request is unconditional;
+/// sibling entries with exclusive conditions are alternatives, not a union of
+/// evidence that callers should submit together.
+pub struct RpgRandomPlanEntry {
+    pub request: RpgRandomRequest,
+    pub conditions: Vec<RpgRandomPlanCondition>,
 }
 
 #[derive(Debug, Clone)]
@@ -108,7 +139,7 @@ pub(crate) struct CompiledAction {
     pub(crate) roll_scope: RpgIrRollScope,
     pub(crate) costs: Vec<RpgIrResourceCost>,
     pub(crate) program: CompiledProgram,
-    pub(crate) random_requests: Vec<RpgRandomRequest>,
+    pub(crate) random_plan: Vec<RpgRandomPlanEntry>,
 }
 
 #[derive(Debug, Clone)]
@@ -189,7 +220,7 @@ pub fn compile_normalized_rpg_ir(
 }
 
 fn compile_action(action: RpgIrAction) -> CompiledAction {
-    let random_requests = collect_action_random_requests(&action);
+    let random_plan = collect_action_random_plan(&action);
     CompiledAction {
         name: action.name,
         source_path: action.source_path,
@@ -198,12 +229,12 @@ fn compile_action(action: RpgIrAction) -> CompiledAction {
         roll_scope: action.roll_scope,
         costs: action.costs,
         program: compile_program(action.program),
-        random_requests,
+        random_plan,
     }
 }
 
-fn collect_action_random_requests(action: &RpgIrAction) -> Vec<RpgRandomRequest> {
-    let mut requests = Vec::new();
+fn collect_action_random_plan(action: &RpgIrAction) -> Vec<RpgRandomPlanEntry> {
+    let mut plan = Vec::new();
     if !matches!(action.check, RpgIrCheck::NoRoll) {
         let kind = match action.check {
             RpgIrCheck::Attack { .. } => RpgRandomRequestKind::AttackCheck,
@@ -215,44 +246,53 @@ fn collect_action_random_requests(action: &RpgIrAction) -> Vec<RpgRandomRequest>
             RpgIrRollScope::PerTarget => action.targets.maximum_targets,
             RpgIrRollScope::None => 0,
         };
-        requests.push(RpgRandomRequest {
-            kind,
-            count,
-            sides: 20,
-            path: "$.action.check".to_owned(),
+        plan.push(RpgRandomPlanEntry {
+            request: RpgRandomRequest {
+                kind,
+                count,
+                sides: 20,
+                path: "$.action.check".to_owned(),
+            },
+            conditions: Vec::new(),
         });
     }
-    collect_program_random_requests(&action.program, "$.action.program", &mut requests);
-    requests
+    collect_program_random_plan(&action.program, "$.action.program", &[], &mut plan);
+    plan
 }
 
-fn collect_program_random_requests(
+fn collect_program_random_plan(
     program: &RpgIrProgram,
     path: &str,
-    requests: &mut Vec<RpgRandomRequest>,
+    conditions: &[RpgRandomPlanCondition],
+    plan: &mut Vec<RpgRandomPlanEntry>,
 ) {
     match program {
         RpgIrProgram::Operation { operation } => match operation {
             RpgIrOperation::Damage { amount, .. } | RpgIrOperation::Heal { amount } => {
-                collect_formula_random_requests(amount, &format!("{path}.amount"), requests);
+                collect_formula_random_plan(amount, &format!("{path}.amount"), conditions, plan);
             }
             RpgIrOperation::ChangeResource { delta, .. } => {
-                collect_formula_random_requests(delta, &format!("{path}.delta"), requests);
+                collect_formula_random_plan(delta, &format!("{path}.delta"), conditions, plan);
             }
             RpgIrOperation::ApplyModifier { value, .. } => {
-                collect_formula_random_requests(value, &format!("{path}.value"), requests);
+                collect_formula_random_plan(value, &format!("{path}.value"), conditions, plan);
             }
             RpgIrOperation::Move {
                 delta_x, delta_y, ..
             } => {
-                collect_formula_random_requests(delta_x, &format!("{path}.deltaX"), requests);
-                collect_formula_random_requests(delta_y, &format!("{path}.deltaY"), requests);
+                collect_formula_random_plan(delta_x, &format!("{path}.deltaX"), conditions, plan);
+                collect_formula_random_plan(delta_y, &format!("{path}.deltaY"), conditions, plan);
             }
             RpgIrOperation::OpenReaction { .. } => {}
         },
         RpgIrProgram::Sequence { steps } => {
             for (index, step) in steps.iter().enumerate() {
-                collect_program_random_requests(step, &format!("{path}.steps[{index}]"), requests);
+                collect_program_random_plan(
+                    step,
+                    &format!("{path}.steps[{index}]"),
+                    conditions,
+                    plan,
+                );
             }
         }
         RpgIrProgram::When {
@@ -260,24 +300,38 @@ fn collect_program_random_requests(
             then,
             otherwise,
         } => {
-            collect_predicate_random_requests(predicate, &format!("{path}.predicate"), requests);
-            collect_program_random_requests(then, &format!("{path}.then"), requests);
+            collect_predicate_random_plan(
+                predicate,
+                &format!("{path}.predicate"),
+                conditions,
+                plan,
+            );
+            let then_conditions =
+                with_condition(conditions, RpgRandomPlanConditionKind::WhenThen, path);
+            collect_program_random_plan(then, &format!("{path}.then"), &then_conditions, plan);
             if let Some(otherwise) = otherwise {
-                collect_program_random_requests(otherwise, &format!("{path}.otherwise"), requests);
+                let otherwise_conditions =
+                    with_condition(conditions, RpgRandomPlanConditionKind::WhenOtherwise, path);
+                collect_program_random_plan(
+                    otherwise,
+                    &format!("{path}.otherwise"),
+                    &otherwise_conditions,
+                    plan,
+                );
             }
         }
         RpgIrProgram::Repeat { count, body } => {
-            let start = requests.len();
-            collect_program_random_requests(body, &format!("{path}.body"), requests);
-            for request in &mut requests[start..] {
-                request.count = request.count.saturating_mul(*count);
+            let start = plan.len();
+            collect_program_random_plan(body, &format!("{path}.body"), conditions, plan);
+            for entry in &mut plan[start..] {
+                entry.request.count = entry.request.count.saturating_mul(*count);
             }
         }
         RpgIrProgram::ForEachTarget { maximum, body } => {
-            let start = requests.len();
-            collect_program_random_requests(body, &format!("{path}.body"), requests);
-            for request in &mut requests[start..] {
-                request.count = request.count.saturating_mul(*maximum);
+            let start = plan.len();
+            collect_program_random_plan(body, &format!("{path}.body"), conditions, plan);
+            for entry in &mut plan[start..] {
+                entry.request.count = entry.request.count.saturating_mul(*maximum);
             }
         }
         RpgIrProgram::OnCheck {
@@ -287,68 +341,135 @@ fn collect_program_random_requests(
             failed,
             no_roll,
         } => {
-            for (label, branch) in [
-                ("hit", hit),
-                ("miss", miss),
-                ("saved", saved),
-                ("failed", failed),
-                ("noRoll", no_roll),
+            for (label, condition_kind, branch) in [
+                ("hit", RpgRandomPlanConditionKind::CheckHit, hit),
+                ("miss", RpgRandomPlanConditionKind::CheckMiss, miss),
+                ("saved", RpgRandomPlanConditionKind::CheckSaved, saved),
+                ("failed", RpgRandomPlanConditionKind::CheckFailed, failed),
+                ("noRoll", RpgRandomPlanConditionKind::CheckNoRoll, no_roll),
             ] {
                 if let Some(branch) = branch {
-                    collect_program_random_requests(branch, &format!("{path}.{label}"), requests);
+                    let branch_conditions = with_condition(conditions, condition_kind, path);
+                    collect_program_random_plan(
+                        branch,
+                        &format!("{path}.{label}"),
+                        &branch_conditions,
+                        plan,
+                    );
                 }
             }
         }
         RpgIrProgram::Atomic { body } => {
-            collect_program_random_requests(body, &format!("{path}.body"), requests);
+            collect_program_random_plan(body, &format!("{path}.body"), conditions, plan);
         }
     }
 }
 
-fn collect_predicate_random_requests(
+fn collect_predicate_random_plan(
     predicate: &RpgIrPredicate,
     path: &str,
-    requests: &mut Vec<RpgRandomRequest>,
+    conditions: &[RpgRandomPlanCondition],
+    plan: &mut Vec<RpgRandomPlanEntry>,
 ) {
     match predicate {
         RpgIrPredicate::Always => {}
         RpgIrPredicate::Compare { left, right, .. } => {
-            collect_formula_random_requests(left, &format!("{path}.left"), requests);
-            collect_formula_random_requests(right, &format!("{path}.right"), requests);
+            collect_formula_random_plan(left, &format!("{path}.left"), conditions, plan);
+            collect_formula_random_plan(right, &format!("{path}.right"), conditions, plan);
         }
         RpgIrPredicate::Not { predicate } => {
-            collect_predicate_random_requests(predicate, &format!("{path}.predicate"), requests);
+            collect_predicate_random_plan(
+                predicate,
+                &format!("{path}.predicate"),
+                conditions,
+                plan,
+            );
         }
-        RpgIrPredicate::All { predicates } | RpgIrPredicate::Any { predicates } => {
+        RpgIrPredicate::All { predicates } => {
             for (index, predicate) in predicates.iter().enumerate() {
-                collect_predicate_random_requests(predicate, &format!("{path}[{index}]"), requests);
+                let predicate_conditions = if index == 0 {
+                    conditions.to_vec()
+                } else {
+                    with_condition(
+                        conditions,
+                        RpgRandomPlanConditionKind::AllPreviousTrue,
+                        &format!("{path}[0..{index}]"),
+                    )
+                };
+                collect_predicate_random_plan(
+                    predicate,
+                    &format!("{path}[{index}]"),
+                    &predicate_conditions,
+                    plan,
+                );
+            }
+        }
+        RpgIrPredicate::Any { predicates } => {
+            for (index, predicate) in predicates.iter().enumerate() {
+                let predicate_conditions = if index == 0 {
+                    conditions.to_vec()
+                } else {
+                    with_condition(
+                        conditions,
+                        RpgRandomPlanConditionKind::AnyPreviousFalse,
+                        &format!("{path}[0..{index}]"),
+                    )
+                };
+                collect_predicate_random_plan(
+                    predicate,
+                    &format!("{path}[{index}]"),
+                    &predicate_conditions,
+                    plan,
+                );
             }
         }
     }
 }
 
-fn collect_formula_random_requests(
+fn collect_formula_random_plan(
     formula: &RpgIrFormula,
     path: &str,
-    requests: &mut Vec<RpgRandomRequest>,
+    conditions: &[RpgRandomPlanCondition],
+    plan: &mut Vec<RpgRandomPlanEntry>,
 ) {
     match formula {
-        RpgIrFormula::Dice { count, sides, .. } => requests.push(RpgRandomRequest {
-            kind: RpgRandomRequestKind::FormulaDice,
-            count: *count,
-            sides: *sides,
-            path: path.to_owned(),
+        RpgIrFormula::Dice { count, sides, .. } => plan.push(RpgRandomPlanEntry {
+            request: RpgRandomRequest {
+                kind: RpgRandomRequestKind::FormulaDice,
+                count: *count,
+                sides: *sides,
+                path: path.to_owned(),
+            },
+            conditions: conditions.to_vec(),
         }),
         RpgIrFormula::Add { terms } => {
             for (index, term) in terms.iter().enumerate() {
-                collect_formula_random_requests(term, &format!("{path}.terms[{index}]"), requests);
+                collect_formula_random_plan(
+                    term,
+                    &format!("{path}.terms[{index}]"),
+                    conditions,
+                    plan,
+                );
             }
         }
         RpgIrFormula::Half { value } => {
-            collect_formula_random_requests(value, &format!("{path}.value"), requests);
+            collect_formula_random_plan(value, &format!("{path}.value"), conditions, plan);
         }
         RpgIrFormula::Constant { .. } | RpgIrFormula::ReadStat { .. } => {}
     }
+}
+
+fn with_condition(
+    conditions: &[RpgRandomPlanCondition],
+    kind: RpgRandomPlanConditionKind,
+    path: &str,
+) -> Vec<RpgRandomPlanCondition> {
+    let mut result = conditions.to_vec();
+    result.push(RpgRandomPlanCondition {
+        kind,
+        path: path.to_owned(),
+    });
+    result
 }
 
 fn compile_program(program: RpgIrProgram) -> CompiledProgram {

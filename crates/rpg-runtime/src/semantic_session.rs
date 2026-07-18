@@ -188,14 +188,7 @@ impl RpgAuthoritySession {
                     .saturating_add(receipt.random_consumed);
                 RpgCommandOutcome::Accepted(receipt)
             }
-            Err(error) => {
-                if error.code == "RPG_RANDOM_EXHAUSTED" {
-                    if let Some(pending) = &mut self.pending {
-                        pending.random_values = evidence;
-                    }
-                }
-                RpgCommandOutcome::Rejected(error)
-            }
+            Err(error) => RpgCommandOutcome::Rejected(error),
         }
     }
 }
@@ -352,5 +345,40 @@ mod tests {
             13
         );
         assert!(session.pending_reaction().is_none());
+    }
+
+    #[test]
+    fn rejected_reaction_evidence_does_not_accumulate_between_retries() {
+        let mut session = reaction_session();
+        let RpgCommandOutcome::AwaitingReaction(_) = session.submit(command()) else {
+            panic!("command must suspend");
+        };
+
+        let insufficient = RpgReactionCommand {
+            expected_revision: 0,
+            reaction_id: "reaction.ward".to_owned(),
+            option_id: Some("ward".to_owned()),
+            additional_random_values: vec![2, 2],
+        };
+        let first = session.react(insufficient.clone());
+        let second = session.react(insufficient);
+
+        assert_eq!(first, second);
+        let RpgCommandOutcome::Rejected(rejection) = first else {
+            panic!("insufficient evidence must reject");
+        };
+        assert_eq!(rejection.code, "RPG_RANDOM_EXHAUSTED");
+        assert_eq!(rejection.random_attempted, 0);
+        assert!(session.pending.as_ref().unwrap().random_values.is_empty());
+        assert_eq!(session.state().revision(), 0);
+
+        let accepted = session.react(RpgReactionCommand {
+            expected_revision: 0,
+            reaction_id: "reaction.ward".to_owned(),
+            option_id: Some("ward".to_owned()),
+            additional_random_values: vec![2, 2, 2, 2, 2],
+        });
+        assert!(matches!(accepted, RpgCommandOutcome::Accepted(_)));
+        assert_eq!(session.state().revision(), 1);
     }
 }

@@ -18,6 +18,7 @@ pub use artifact::{
 };
 pub use compile::{
     compile_normalized_rpg_ir, compile_normalized_rpg_json, CompiledRpgAction, CompiledRpgRuleset,
+    RpgRandomPlanCondition, RpgRandomPlanConditionKind, RpgRandomPlanEntry,
 };
 pub use diagnostic::{RpgCompileFailure, RpgDiagnostic, RpgDiagnosticSeverity, RpgDiagnosticStage};
 pub use registry::{
