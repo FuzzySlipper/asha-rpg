@@ -306,6 +306,7 @@ export interface RulesetDefinitionProvenance {
 export interface RulesetPatchChangeProvenance {
   readonly plane: 'semantic' | 'presentation';
   readonly path: string;
+  readonly pathSegments: readonly RulesetPatchPathSegment[];
   readonly before: unknown;
   readonly after: unknown;
   readonly effective: boolean;

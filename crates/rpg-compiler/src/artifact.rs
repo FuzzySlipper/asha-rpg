@@ -5,9 +5,9 @@ use rpg_ir::{
     MaterializedRulesetVisibility, NormalizedRpgIr, PreparedRulesetCompilation, RpgIrAction,
     RpgIrCatalogs, RpgIrCheck, RpgIrFormula, RpgIrOperation, RpgIrPackage, RpgIrPredicate,
     RpgIrProgram, RpgIrRequirement, RpgIrRequirementKind, RpgIrSchema, RulesetArtifactFingerprints,
-    RulesetArtifactSchema, RulesetRelationshipKind, VersionedRulesetRequirement,
-    COMPILED_RULESET_IDENTITY, PREPARED_RULESET_IDENTITY, RPG_IR_IDENTITY, RPG_IR_MAJOR,
-    RULESET_ARTIFACT_MAJOR,
+    RulesetArtifactSchema, RulesetImpactPlane, RulesetPatchMemberKey, RulesetPatchPathSegment,
+    RulesetRelationshipKind, VersionedRulesetRequirement, COMPILED_RULESET_IDENTITY,
+    PREPARED_RULESET_IDENTITY, RPG_IR_IDENTITY, RPG_IR_MAJOR, RULESET_ARTIFACT_MAJOR,
 };
 use serde::{Deserialize, Serialize};
 use serde_json::{json, Value};
@@ -1399,9 +1399,16 @@ fn validate_materialization_provenance(
     for (definition_id, expected_fingerprint) in &materialization_fingerprints {
         let derivation = derivations_by_definition.get(definition_id).copied();
         let overlays = overlays_by_definition.get(definition_id);
-        if let Some(first_overlay) = overlays.and_then(|entries| entries.first()) {
+        if let Some(entries) = overlays {
+            let independently_anchored_fingerprint =
+                definitions.get(definition_id).and_then(|definition| {
+                    validate_overlay_fingerprint_chain(definition, entries, diagnostics)
+                });
+            let first_overlay = entries.first();
             if let Some(derivation) = derivation {
-                if derivation.materialized_fingerprint != first_overlay.before_fingerprint {
+                if first_overlay.is_some_and(|first_overlay| {
+                    derivation.materialized_fingerprint != first_overlay.before_fingerprint
+                }) {
                     diagnostics.push(RpgDiagnostic::error(
                         RpgDiagnosticStage::Artifact,
                         "RULESET_DERIVATION_OVERLAY_FINGERPRINT_MISMATCH",
@@ -1411,34 +1418,15 @@ fn validate_materialization_provenance(
                         ),
                     ));
                 }
-            }
-            if let Some(entries) = overlays {
-                for pair in entries.windows(2) {
-                    let [before, after] = pair else {
-                        continue;
-                    };
-                    if before.after_fingerprint != after.before_fingerprint {
-                        diagnostics.push(RpgDiagnostic::error(
-                            RpgDiagnosticStage::Artifact,
-                            "RULESET_OVERLAY_FINGERPRINT_CHAIN_MISMATCH",
-                            "$.overlayProvenance",
-                            format!(
-                                "overlay order {} for {definition_id} does not continue from order {}",
-                                after.order, before.order
-                            ),
-                        ));
-                    }
-                }
-                if entries
-                    .last()
-                    .is_some_and(|last| last.after_fingerprint != expected_fingerprint.as_str())
+                if independently_anchored_fingerprint.as_deref()
+                    != Some(derivation.materialized_fingerprint.as_str())
                 {
                     diagnostics.push(RpgDiagnostic::error(
                         RpgDiagnosticStage::Artifact,
-                        "RULESET_OVERLAY_AFTER_FINGERPRINT_MISMATCH",
-                        "$.overlayProvenance",
+                        "RULESET_DERIVATION_MATERIALIZED_FINGERPRINT_MISMATCH",
+                        "$.derivationProvenance",
                         format!(
-                            "the final overlay fingerprint for {definition_id} does not match the materialized definition"
+                            "the derivation fingerprint for {definition_id} is not the independently reconstructed pre-overlay definition"
                         ),
                     ));
                 }
@@ -1568,18 +1556,233 @@ fn materialization_provenance_fingerprint(
     }))
 }
 
+fn validate_overlay_fingerprint_chain(
+    final_definition: &MaterializedRulesetDefinition,
+    overlays: &[&rpg_ir::RulesetOverlayProvenance],
+    diagnostics: &mut Vec<RpgDiagnostic>,
+) -> Option<String> {
+    let mut stage = final_definition.clone();
+    for provenance in overlays.iter().rev() {
+        let after_fingerprint = match materialization_provenance_fingerprint(&stage) {
+            Ok(fingerprint) => fingerprint,
+            Err(failure) => {
+                diagnostics.extend(failure.diagnostics);
+                return None;
+            }
+        };
+        if after_fingerprint != provenance.after_fingerprint {
+            diagnostics.push(RpgDiagnostic::error(
+                RpgDiagnosticStage::Artifact,
+                "RULESET_OVERLAY_AFTER_FINGERPRINT_MISMATCH",
+                "$.overlayProvenance",
+                format!(
+                    "overlay order {} for {} claims after fingerprint {}, but its materialized stage is {after_fingerprint}",
+                    provenance.order,
+                    provenance.target_definition_id,
+                    provenance.after_fingerprint,
+                ),
+            ));
+        }
+        if !reverse_patch_changes(
+            &mut stage,
+            &provenance.changes,
+            provenance.order,
+            diagnostics,
+        ) {
+            return None;
+        }
+        let before_fingerprint = match materialization_provenance_fingerprint(&stage) {
+            Ok(fingerprint) => fingerprint,
+            Err(failure) => {
+                diagnostics.extend(failure.diagnostics);
+                return None;
+            }
+        };
+        if before_fingerprint != provenance.before_fingerprint {
+            diagnostics.push(RpgDiagnostic::error(
+                RpgDiagnosticStage::Artifact,
+                "RULESET_OVERLAY_BEFORE_FINGERPRINT_MISMATCH",
+                "$.overlayProvenance",
+                format!(
+                    "overlay order {} for {} claims before fingerprint {}, but reversing its typed changes reconstructs {before_fingerprint}",
+                    provenance.order,
+                    provenance.target_definition_id,
+                    provenance.before_fingerprint,
+                ),
+            ));
+        }
+        if before_fingerprint != provenance.expected_fingerprint {
+            diagnostics.push(RpgDiagnostic::error(
+                RpgDiagnosticStage::Artifact,
+                "RULESET_OVERLAY_EXPECTED_FINGERPRINT_MISMATCH",
+                "$.overlayProvenance",
+                format!(
+                    "overlay order {} for {} pins {}, but reversing its typed changes reconstructs {before_fingerprint}",
+                    provenance.order,
+                    provenance.target_definition_id,
+                    provenance.expected_fingerprint,
+                ),
+            ));
+        }
+    }
+    match materialization_provenance_fingerprint(&stage) {
+        Ok(fingerprint) => Some(fingerprint),
+        Err(failure) => {
+            diagnostics.extend(failure.diagnostics);
+            None
+        }
+    }
+}
+
+fn reverse_patch_changes(
+    definition: &mut MaterializedRulesetDefinition,
+    changes: &[rpg_ir::RulesetPatchChangeProvenance],
+    overlay_order: usize,
+    diagnostics: &mut Vec<RpgDiagnostic>,
+) -> bool {
+    let mut valid = true;
+    for (index, change) in changes.iter().enumerate().rev() {
+        let root = match change.plane {
+            RulesetImpactPlane::Semantic => &mut definition.semantic,
+            RulesetImpactPlane::Presentation => &mut definition.presentation,
+            RulesetImpactPlane::Both => {
+                diagnostics.push(RpgDiagnostic::error(
+                    RpgDiagnosticStage::Artifact,
+                    "RULESET_PATCH_CHANGE_PLANE_INVALID",
+                    format!("$.overlayProvenance[order={overlay_order}].changes[{index}].plane"),
+                    "an individual patch change must name semantic or presentation",
+                ));
+                valid = false;
+                continue;
+            }
+        };
+        if let Err(message) =
+            replace_patch_change_value(root, &change.path_segments, &change.after, &change.before)
+        {
+            diagnostics.push(RpgDiagnostic::error(
+                RpgDiagnosticStage::Artifact,
+                "RULESET_OVERLAY_CHANGE_REVERSE_FAILED",
+                format!("$.overlayProvenance[order={overlay_order}].changes[{index}]"),
+                message,
+            ));
+            valid = false;
+        }
+    }
+    valid
+}
+
+fn replace_patch_change_value(
+    root: &mut Value,
+    path: &[RulesetPatchPathSegment],
+    expected: &Value,
+    replacement: &Value,
+) -> Result<(), String> {
+    let Some((leaf, parent_path)) = path.split_last() else {
+        return Err("typed patch change path must not be empty".to_owned());
+    };
+    let mut current = root;
+    for segment in parent_path {
+        current = match segment {
+            RulesetPatchPathSegment::Field { name } => current
+                .as_object_mut()
+                .and_then(|object| object.get_mut(name))
+                .ok_or_else(|| format!("field {name} is missing while reversing the change"))?,
+            RulesetPatchPathSegment::Member { key, value } => {
+                let key = patch_member_key(*key);
+                let list = current
+                    .as_array_mut()
+                    .ok_or_else(|| format!("member selector [{key}={value}] requires a list"))?;
+                let matching_indexes = list
+                    .iter()
+                    .enumerate()
+                    .filter_map(|(index, entry)| {
+                        entry
+                            .as_object()
+                            .and_then(|object| object.get(key))
+                            .and_then(Value::as_str)
+                            .is_some_and(|candidate| candidate == value)
+                            .then_some(index)
+                    })
+                    .collect::<Vec<_>>();
+                if matching_indexes.len() != 1 {
+                    return Err(format!(
+                        "member selector [{key}={value}] resolved {} entries while reversing the change",
+                        matching_indexes.len()
+                    ));
+                }
+                &mut list[matching_indexes[0]]
+            }
+        };
+    }
+    let RulesetPatchPathSegment::Field { name } = leaf else {
+        return Err("typed patch change paths must end in a writable field".to_owned());
+    };
+    let current_value = current
+        .as_object_mut()
+        .and_then(|object| object.get_mut(name))
+        .ok_or_else(|| format!("writable field {name} is missing while reversing the change"))?;
+    if current_value != expected {
+        return Err(format!(
+            "field {name} does not contain the recorded post-change value"
+        ));
+    }
+    *current_value = replacement.clone();
+    Ok(())
+}
+
+fn patch_member_key(key: RulesetPatchMemberKey) -> &'static str {
+    match key {
+        RulesetPatchMemberKey::Id => "id",
+        RulesetPatchMemberKey::ResourceId => "resourceId",
+        RulesetPatchMemberKey::StatId => "statId",
+        RulesetPatchMemberKey::DefenseId => "defenseId",
+        RulesetPatchMemberKey::ModifierId => "modifierId",
+        RulesetPatchMemberKey::DamageType => "damageType",
+        RulesetPatchMemberKey::Kind => "kind",
+    }
+}
+
+fn patch_change_path(path: &[RulesetPatchPathSegment]) -> String {
+    path.iter()
+        .map(|segment| match segment {
+            RulesetPatchPathSegment::Field { name } => name.clone(),
+            RulesetPatchPathSegment::Member { key, value } => {
+                format!("[{}={value}]", patch_member_key(*key))
+            }
+        })
+        .collect::<Vec<_>>()
+        .join(".")
+}
+
 fn validate_patch_changes(
     changes: &[rpg_ir::RulesetPatchChangeProvenance],
     path: &str,
     diagnostics: &mut Vec<RpgDiagnostic>,
 ) {
     for (index, change) in changes.iter().enumerate() {
-        if change.path.is_empty() {
+        if change.path_segments.is_empty() {
             diagnostics.push(RpgDiagnostic::error(
                 RpgDiagnosticStage::Artifact,
-                "RULESET_PATCH_CHANGE_PATH_MISSING",
+                "RULESET_PATCH_CHANGE_PATH_SEGMENTS_MISSING",
+                format!("{path}[{index}].pathSegments"),
+                "patch changes must carry a typed path for authoritative reconstruction",
+            ));
+        }
+        let rendered_path = patch_change_path(&change.path_segments);
+        if rendered_path != change.path {
+            diagnostics.push(RpgDiagnostic::error(
+                RpgDiagnosticStage::Artifact,
+                "RULESET_PATCH_CHANGE_PATH_MISMATCH",
                 format!("{path}[{index}].path"),
-                "patch change paths must be explicit",
+                "the display path must match the canonical typed path",
+            ));
+        }
+        if change.plane == RulesetImpactPlane::Both {
+            diagnostics.push(RpgDiagnostic::error(
+                RpgDiagnosticStage::Artifact,
+                "RULESET_PATCH_CHANGE_PLANE_INVALID",
+                format!("{path}[{index}].plane"),
+                "an individual patch change must name semantic or presentation",
             ));
         }
         let effective = change.before != change.after;

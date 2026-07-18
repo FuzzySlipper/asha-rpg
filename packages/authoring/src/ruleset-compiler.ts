@@ -1453,6 +1453,7 @@ function applyRulesetPatch(
     changes.push({
       plane: operation.plane,
       path: patchPath(operation.path),
+      pathSegments: operation.path,
       before,
       after,
       effective: canonicalJson(before) !== canonicalJson(after),

@@ -129,9 +129,35 @@ pub enum RulesetConflictPolicy {
 pub struct RulesetPatchChangeProvenance {
     pub plane: RulesetImpactPlane,
     pub path: String,
+    #[serde(default)]
+    pub path_segments: Vec<RulesetPatchPathSegment>,
     pub before: Value,
     pub after: Value,
     pub effective: bool,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub enum RulesetPatchMemberKey {
+    Id,
+    ResourceId,
+    StatId,
+    DefenseId,
+    ModifierId,
+    DamageType,
+    Kind,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(tag = "kind", rename_all = "camelCase", deny_unknown_fields)]
+pub enum RulesetPatchPathSegment {
+    Field {
+        name: String,
+    },
+    Member {
+        key: RulesetPatchMemberKey,
+        value: String,
+    },
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
