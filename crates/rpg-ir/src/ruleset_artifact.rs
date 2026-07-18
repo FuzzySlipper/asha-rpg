@@ -162,11 +162,80 @@ pub enum RulesetPatchPathSegment {
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase", deny_unknown_fields)]
+pub struct RulesetPatchMemberSelector {
+    pub key: RulesetPatchMemberKey,
+    pub value: String,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(tag = "kind", rename_all = "camelCase", deny_unknown_fields)]
+pub enum RulesetPatchPosition {
+    Start,
+    End,
+    Before { anchor: RulesetPatchMemberSelector },
+    After { anchor: RulesetPatchMemberSelector },
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(tag = "kind", rename_all = "camelCase", deny_unknown_fields)]
+pub enum RulesetPatchOperation {
+    SetScalar {
+        plane: RulesetImpactPlane,
+        path: Vec<RulesetPatchPathSegment>,
+        value: Value,
+    },
+    AdjustNumber {
+        plane: RulesetImpactPlane,
+        path: Vec<RulesetPatchPathSegment>,
+        multiply: Value,
+        add: Value,
+    },
+    AppendMember {
+        plane: RulesetImpactPlane,
+        path: Vec<RulesetPatchPathSegment>,
+        identity: RulesetPatchMemberSelector,
+        value: BTreeMap<String, Value>,
+        position: RulesetPatchPosition,
+    },
+    RemoveMember {
+        plane: RulesetImpactPlane,
+        path: Vec<RulesetPatchPathSegment>,
+        identity: RulesetPatchMemberSelector,
+    },
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase", deny_unknown_fields)]
+pub struct RulesetPatch {
+    pub version: u32,
+    pub operations: Vec<RulesetPatchOperation>,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase", deny_unknown_fields)]
+pub struct RulesetMaterializationValue {
+    pub semantic: Value,
+    pub presentation: Value,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase", deny_unknown_fields)]
+pub struct RulesetMaterializationStage {
+    pub id: String,
+    pub kind: MaterializedRulesetDefinitionKind,
+    pub extension_policy: RulesetExtensionPolicy,
+    pub value: RulesetMaterializationValue,
+    pub references: Vec<String>,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase", deny_unknown_fields)]
 pub struct RulesetDerivationMixinProvenance {
     pub definition_id: String,
     pub package_id: String,
     pub package_version: String,
     pub fingerprint: String,
+    pub patch: RulesetPatch,
     pub parameters: BTreeMap<String, Value>,
     pub order: usize,
 }
@@ -181,9 +250,12 @@ pub struct RulesetDerivationProvenance {
     pub base_package_id: String,
     pub base_package_version: String,
     pub base_fingerprint: String,
+    pub base: RulesetMaterializationStage,
     pub mixins: Vec<RulesetDerivationMixinProvenance>,
     pub local_patch_fingerprint: String,
+    pub local_patch: RulesetPatch,
     pub materialized_fingerprint: String,
+    pub materialized: RulesetMaterializationStage,
     pub changes: Vec<RulesetPatchChangeProvenance>,
 }
 
@@ -201,6 +273,8 @@ pub struct RulesetOverlayProvenance {
     pub plane: RulesetImpactPlane,
     pub conflict_policy: RulesetConflictPolicy,
     pub patch_fingerprint: String,
+    pub patch: RulesetPatch,
+    pub before: RulesetMaterializationStage,
     pub order: usize,
     pub changes: Vec<RulesetPatchChangeProvenance>,
 }

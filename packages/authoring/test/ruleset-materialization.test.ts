@@ -219,6 +219,34 @@ test('Rust rejects provenance fingerprints and coverage that do not match materi
     'RULESET_DERIVATION_MATERIALIZED_FINGERPRINT_MISMATCH',
   );
 
+  const finalFingerprint = semanticPrepared.overlayProvenance[0]?.afterFingerprint;
+  assert.ok(finalFingerprint);
+  const omittedOverlayChanges: PreparedRulesetCompilation = {
+    ...semanticPrepared,
+    derivationProvenance: semanticPrepared.derivationProvenance.map(
+      (provenance, index) =>
+        index === 0
+          ? { ...provenance, materializedFingerprint: finalFingerprint }
+          : provenance,
+    ),
+    overlayProvenance: semanticPrepared.overlayProvenance.map(
+      (provenance, index) =>
+        index === 0
+          ? {
+              ...provenance,
+              expectedFingerprint: finalFingerprint,
+              beforeFingerprint: finalFingerprint,
+              afterFingerprint: finalFingerprint,
+              changes: [],
+            }
+          : provenance,
+    ),
+  };
+  assertCompilationFailsWith(
+    omittedOverlayChanges,
+    'RULESET_OVERLAY_CHANGE_COVERAGE_MISMATCH',
+  );
+
   const missingOverlayProvenance: PreparedRulesetCompilation = {
     ...semanticPrepared,
     overlayProvenance: [],

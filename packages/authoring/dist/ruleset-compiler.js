@@ -503,7 +503,8 @@ function materializeSelectedDefinitions(context, composition, overlayPackages) {
                 definitionId: mixinRecord.definition.id,
                 packageId: mixinRecord.package.source.manifest.identity.id,
                 packageVersion: mixinRecord.package.source.manifest.identity.version,
-                fingerprint: stableFingerprint(mixinRecord.definition),
+                fingerprint: stableFingerprint(mixinRecord.definition.patch),
+                patch: mixinRecord.definition.patch,
                 parameters,
                 order,
             });
@@ -534,9 +535,12 @@ function materializeSelectedDefinitions(context, composition, overlayPackages) {
             basePackageId: baseIdentity.id,
             basePackageVersion: baseIdentity.version,
             baseFingerprint: definitionMaterializationFingerprint(base),
+            base: definitionMaterializationStage(base),
             mixins: mixinProvenance,
             localPatchFingerprint: stableFingerprint(derivation.localPatch),
+            localPatch: derivation.localPatch,
             materializedFingerprint: definitionMaterializationFingerprint(concrete),
+            materialized: definitionMaterializationStage(concrete),
             changes,
         });
         relationshipProvenance.push({
@@ -595,7 +599,8 @@ function materializeSelectedDefinitions(context, composition, overlayPackages) {
                 context.diagnostics.push(diagnostic('materialization', 'RULESET_OVERLAY_TARGET_FORBIDDEN', `$.packages[${entry.key}].relationships[${relationshipOrder}].target`, `definition ${target.definition.id} is ${target.definition.extensionPolicy}, not patchable`, { definitionId: target.definition.id, source: entry.source.manifest.entry }));
                 continue;
             }
-            const beforeFingerprint = definitionMaterializationFingerprint(target);
+            const before = definitionMaterializationStage(target);
+            const beforeFingerprint = stableFingerprint(before);
             if (beforeFingerprint !== relationship.expectedFingerprint) {
                 context.diagnostics.push(diagnostic('materialization', 'RULESET_OVERLAY_EXPECTED_FINGERPRINT_MISMATCH', `$.packages[${entry.key}].relationships[${relationshipOrder}].expectedFingerprint`, `overlay expected ${relationship.expectedFingerprint}, materialized target is ${beforeFingerprint}`, { definitionId: target.definition.id, expected: relationship.expectedFingerprint, actual: beforeFingerprint }));
                 continue;
@@ -635,6 +640,8 @@ function materializeSelectedDefinitions(context, composition, overlayPackages) {
                 plane: relationship.plane,
                 conflictPolicy: relationship.conflictPolicy,
                 patchFingerprint: stableFingerprint(relationship.patch),
+                patch: relationship.patch,
+                before,
                 order: overlayOrder * 1_000 + relationshipOrder,
                 changes: applied.changes,
             });
@@ -1002,13 +1009,19 @@ function memberMatches(value, selector) {
     return isRecord(value) && value[selector.key] === selector.value;
 }
 function definitionMaterializationFingerprint(record) {
-    return stableFingerprint({
+    return stableFingerprint(definitionMaterializationStage(record));
+}
+function definitionMaterializationStage(record) {
+    if (record.definition.kind !== 'action' && record.definition.kind !== 'support') {
+        throw new Error(`definition ${record.definition.id} is not concrete`);
+    }
+    return {
         id: record.definition.id,
         kind: record.definition.kind,
         extensionPolicy: record.definition.extensionPolicy,
         value: normalizedDefinitionValue(record),
         references: materializationReferenceIds(record),
-    });
+    };
 }
 export function rulesetDefinitionMaterializationFingerprint(definition) {
     return stableFingerprint({

@@ -5,9 +5,12 @@ use rpg_ir::{
     MaterializedRulesetVisibility, NormalizedRpgIr, PreparedRulesetCompilation, RpgIrAction,
     RpgIrCatalogs, RpgIrCheck, RpgIrFormula, RpgIrOperation, RpgIrPackage, RpgIrPredicate,
     RpgIrProgram, RpgIrRequirement, RpgIrRequirementKind, RpgIrSchema, RulesetArtifactFingerprints,
-    RulesetArtifactSchema, RulesetImpactPlane, RulesetPatchMemberKey, RulesetPatchPathSegment,
-    RulesetRelationshipKind, VersionedRulesetRequirement, COMPILED_RULESET_IDENTITY,
-    PREPARED_RULESET_IDENTITY, RPG_IR_IDENTITY, RPG_IR_MAJOR, RULESET_ARTIFACT_MAJOR,
+    RulesetArtifactSchema, RulesetImpactPlane, RulesetMaterializationStage,
+    RulesetMaterializationValue, RulesetPatch, RulesetPatchChangeProvenance, RulesetPatchMemberKey,
+    RulesetPatchMemberSelector, RulesetPatchOperation, RulesetPatchPathSegment,
+    RulesetPatchPosition, RulesetRelationshipKind, VersionedRulesetRequirement,
+    COMPILED_RULESET_IDENTITY, PREPARED_RULESET_IDENTITY, RPG_IR_IDENTITY, RPG_IR_MAJOR,
+    RULESET_ARTIFACT_MAJOR,
 };
 use serde::{Deserialize, Serialize};
 use serde_json::{json, Value};
@@ -1250,16 +1253,7 @@ fn validate_materialization_provenance(
         .iter()
         .map(|definition| (definition.id.as_str(), definition))
         .collect::<BTreeMap<_, _>>();
-    let mut materialization_fingerprints = BTreeMap::new();
-    for definition in &prepared.materialized_definitions {
-        match materialization_provenance_fingerprint(definition) {
-            Ok(fingerprint) => {
-                materialization_fingerprints.insert(definition.id.as_str(), fingerprint);
-            }
-            Err(failure) => diagnostics.extend(failure.diagnostics),
-        }
-    }
-    let mut derivations_by_definition = BTreeMap::new();
+    let mut validated_derivation_stages = BTreeMap::new();
     let mut previous_derivation = None::<&str>;
     for (index, provenance) in prepared.derivation_provenance.iter().enumerate() {
         if previous_derivation.is_some_and(|previous| previous >= provenance.definition_id.as_str())
@@ -1272,7 +1266,6 @@ fn validate_materialization_provenance(
             ));
         }
         previous_derivation = Some(&provenance.definition_id);
-        derivations_by_definition.insert(provenance.definition_id.as_str(), provenance);
         if !definitions.contains_key(provenance.definition_id.as_str()) {
             diagnostics.push(RpgDiagnostic::error(
                 RpgDiagnosticStage::References,
@@ -1331,6 +1324,9 @@ fn validate_materialization_provenance(
             &format!("$.derivationProvenance[{index}].changes"),
             diagnostics,
         );
+        if let Some(stage) = validate_derivation_semantics(provenance, index, diagnostics) {
+            validated_derivation_stages.insert(provenance.definition_id.as_str(), stage);
+        }
     }
 
     let mut overlays_by_definition = BTreeMap::<&str, Vec<_>>::new();
@@ -1396,50 +1392,19 @@ fn validate_materialization_provenance(
     for overlays in overlays_by_definition.values_mut() {
         overlays.sort_by_key(|provenance| provenance.order);
     }
-    for (definition_id, expected_fingerprint) in &materialization_fingerprints {
-        let derivation = derivations_by_definition.get(definition_id).copied();
-        let overlays = overlays_by_definition.get(definition_id);
-        if let Some(entries) = overlays {
-            let independently_anchored_fingerprint =
-                definitions.get(definition_id).and_then(|definition| {
-                    validate_overlay_fingerprint_chain(definition, entries, diagnostics)
-                });
-            let first_overlay = entries.first();
-            if let Some(derivation) = derivation {
-                if first_overlay.is_some_and(|first_overlay| {
-                    derivation.materialized_fingerprint != first_overlay.before_fingerprint
-                }) {
-                    diagnostics.push(RpgDiagnostic::error(
-                        RpgDiagnosticStage::Artifact,
-                        "RULESET_DERIVATION_OVERLAY_FINGERPRINT_MISMATCH",
-                        "$.derivationProvenance",
-                        format!(
-                            "derived definition {definition_id} must begin its overlay chain at the derivation result"
-                        ),
-                    ));
-                }
-                if independently_anchored_fingerprint.as_deref()
-                    != Some(derivation.materialized_fingerprint.as_str())
-                {
-                    diagnostics.push(RpgDiagnostic::error(
-                        RpgDiagnosticStage::Artifact,
-                        "RULESET_DERIVATION_MATERIALIZED_FINGERPRINT_MISMATCH",
-                        "$.derivationProvenance",
-                        format!(
-                            "the derivation fingerprint for {definition_id} is not the independently reconstructed pre-overlay definition"
-                        ),
-                    ));
-                }
-            }
-        } else if let Some(derivation) = derivation {
-            if derivation.materialized_fingerprint != expected_fingerprint.as_str() {
+    for (definition_id, definition) in &definitions {
+        let derivation_stage = validated_derivation_stages.get(definition_id).cloned();
+        if let Some(entries) = overlays_by_definition.get(definition_id) {
+            validate_overlay_fingerprint_chain(definition, derivation_stage, entries, diagnostics);
+        } else if let Some(stage) = derivation_stage {
+            let final_stage = materialization_stage(definition);
+            if stage != final_stage {
                 diagnostics.push(RpgDiagnostic::error(
                     RpgDiagnosticStage::Artifact,
-                    "RULESET_DERIVATION_MATERIALIZED_FINGERPRINT_MISMATCH",
+                    "RULESET_DERIVATION_MATERIALIZED_STAGE_MISMATCH",
                     "$.derivationProvenance",
                     format!(
-                        "the derivation fingerprint for {definition_id} is {}, but the materialized definition is {expected_fingerprint}",
-                        derivation.materialized_fingerprint,
+                        "the replayed derivation stage for {definition_id} does not equal the materialized definition"
                     ),
                 ));
             }
@@ -1541,192 +1506,639 @@ fn materialization_relationship_identity(
     format!("{package_id}@{package_version}#{definition_id}")
 }
 
-fn materialization_provenance_fingerprint(
+fn materialization_stage(
     definition: &MaterializedRulesetDefinition,
-) -> Result<String, RpgCompileFailure> {
-    fingerprint(&json!({
-        "id": definition.id,
-        "kind": definition.kind,
-        "extensionPolicy": definition.extension_policy,
-        "value": {
-            "semantic": definition.semantic,
-            "presentation": definition.presentation,
+) -> RulesetMaterializationStage {
+    RulesetMaterializationStage {
+        id: definition.id.clone(),
+        kind: definition.kind,
+        extension_policy: definition.extension_policy,
+        value: RulesetMaterializationValue {
+            semantic: definition.semantic.clone(),
+            presentation: definition.presentation.clone(),
         },
-        "references": definition.references,
-    }))
+        references: definition.references.clone(),
+    }
+}
+
+fn canonical_fingerprint(value: &impl Serialize) -> Result<String, RpgCompileFailure> {
+    let canonical = serde_json::to_value(value).map_err(fingerprint_error)?;
+    fingerprint(&canonical)
+}
+
+fn validate_derivation_semantics(
+    provenance: &rpg_ir::RulesetDerivationProvenance,
+    provenance_index: usize,
+    diagnostics: &mut Vec<RpgDiagnostic>,
+) -> Option<RulesetMaterializationStage> {
+    let path = format!("$.derivationProvenance[{provenance_index}]");
+    if provenance.base.id != provenance.base_definition_id {
+        diagnostics.push(RpgDiagnostic::error(
+            RpgDiagnosticStage::Artifact,
+            "RULESET_DERIVATION_BASE_STAGE_MISMATCH",
+            format!("{path}.base.id"),
+            "the base stage identity must match baseDefinitionId",
+        ));
+    }
+    match canonical_fingerprint(&provenance.base) {
+        Ok(actual) if actual != provenance.base_fingerprint => {
+            diagnostics.push(RpgDiagnostic::error(
+                RpgDiagnosticStage::Artifact,
+                "RULESET_DERIVATION_BASE_FINGERPRINT_MISMATCH",
+                format!("{path}.baseFingerprint"),
+                format!("the base stage fingerprints as {actual}"),
+            ))
+        }
+        Err(failure) => diagnostics.extend(failure.diagnostics),
+        _ => {}
+    }
+
+    let mut stage = provenance.base.clone();
+    let mut computed_changes = Vec::new();
+    for (mixin_index, mixin) in provenance.mixins.iter().enumerate() {
+        match canonical_fingerprint(&mixin.patch) {
+            Ok(actual) if actual != mixin.fingerprint => diagnostics.push(RpgDiagnostic::error(
+                RpgDiagnosticStage::Artifact,
+                "RULESET_DERIVATION_MIXIN_FINGERPRINT_MISMATCH",
+                format!("{path}.mixins[{mixin_index}].fingerprint"),
+                format!("the mixin patch fingerprints as {actual}"),
+            )),
+            Err(failure) => diagnostics.extend(failure.diagnostics),
+            _ => {}
+        }
+        match apply_ruleset_patch(&stage, &mixin.patch, &mixin.parameters) {
+            Ok((next, changes)) => {
+                stage = next;
+                computed_changes.extend(changes);
+            }
+            Err(message) => {
+                diagnostics.push(RpgDiagnostic::error(
+                    RpgDiagnosticStage::Artifact,
+                    "RULESET_DERIVATION_PATCH_REPLAY_FAILED",
+                    format!("{path}.mixins[{mixin_index}].patch"),
+                    message,
+                ));
+                return None;
+            }
+        }
+    }
+
+    match canonical_fingerprint(&provenance.local_patch) {
+        Ok(actual) if actual != provenance.local_patch_fingerprint => {
+            diagnostics.push(RpgDiagnostic::error(
+                RpgDiagnosticStage::Artifact,
+                "RULESET_DERIVATION_LOCAL_PATCH_FINGERPRINT_MISMATCH",
+                format!("{path}.localPatchFingerprint"),
+                format!("the local patch fingerprints as {actual}"),
+            ))
+        }
+        Err(failure) => diagnostics.extend(failure.diagnostics),
+        _ => {}
+    }
+    match apply_ruleset_patch(&stage, &provenance.local_patch, &BTreeMap::new()) {
+        Ok((next, changes)) => {
+            stage = next;
+            computed_changes.extend(changes);
+        }
+        Err(message) => {
+            diagnostics.push(RpgDiagnostic::error(
+                RpgDiagnosticStage::Artifact,
+                "RULESET_DERIVATION_PATCH_REPLAY_FAILED",
+                format!("{path}.localPatch"),
+                message,
+            ));
+            return None;
+        }
+    }
+
+    materialize_derived_identity(&mut stage, &provenance.materialized);
+    if stage != provenance.materialized {
+        diagnostics.push(RpgDiagnostic::error(
+            RpgDiagnosticStage::Artifact,
+            "RULESET_DERIVATION_MATERIALIZED_STAGE_MISMATCH",
+            format!("{path}.materialized"),
+            "replaying the base, mixins, and local patch does not produce the claimed materialized stage",
+        ));
+    }
+    if computed_changes != provenance.changes {
+        diagnostics.push(RpgDiagnostic::error(
+            RpgDiagnosticStage::Artifact,
+            "RULESET_DERIVATION_CHANGE_COVERAGE_MISMATCH",
+            format!("{path}.changes"),
+            "the submitted derivation changes do not exactly match authoritative patch replay",
+        ));
+    }
+    match canonical_fingerprint(&provenance.materialized) {
+        Ok(actual) if actual != provenance.materialized_fingerprint => {
+            diagnostics.push(RpgDiagnostic::error(
+                RpgDiagnosticStage::Artifact,
+                "RULESET_DERIVATION_MATERIALIZED_FINGERPRINT_MISMATCH",
+                format!("{path}.materializedFingerprint"),
+                format!("the materialized derivation stage fingerprints as {actual}"),
+            ))
+        }
+        Err(failure) => diagnostics.extend(failure.diagnostics),
+        _ => {}
+    }
+    Some(stage)
+}
+
+fn materialize_derived_identity(
+    stage: &mut RulesetMaterializationStage,
+    materialized: &RulesetMaterializationStage,
+) {
+    stage.id.clone_from(&materialized.id);
+    stage.kind = materialized.kind;
+    stage.extension_policy = materialized.extension_policy;
+    stage.references.clone_from(&materialized.references);
+    if materialized.kind == MaterializedRulesetDefinitionKind::Action {
+        let materialized_semantic = materialized.value.semantic.as_object();
+        if let (Some(stage_semantic), Some(materialized_semantic)) =
+            (stage.value.semantic.as_object_mut(), materialized_semantic)
+        {
+            for field in ["id", "sourcePath"] {
+                if let Some(value) = materialized_semantic.get(field) {
+                    stage_semantic.insert(field.to_owned(), value.clone());
+                }
+            }
+        }
+    }
 }
 
 fn validate_overlay_fingerprint_chain(
     final_definition: &MaterializedRulesetDefinition,
+    derivation_stage: Option<RulesetMaterializationStage>,
     overlays: &[&rpg_ir::RulesetOverlayProvenance],
     diagnostics: &mut Vec<RpgDiagnostic>,
-) -> Option<String> {
-    let mut stage = final_definition.clone();
-    for provenance in overlays.iter().rev() {
-        let after_fingerprint = match materialization_provenance_fingerprint(&stage) {
+) {
+    let Some(first) = overlays.first() else {
+        return;
+    };
+    let mut stage = derivation_stage.unwrap_or_else(|| first.before.clone());
+    for provenance in overlays {
+        let path = format!("$.overlayProvenance[order={}]", provenance.order);
+        if stage != provenance.before {
+            diagnostics.push(RpgDiagnostic::error(
+                RpgDiagnosticStage::Artifact,
+                "RULESET_OVERLAY_BEFORE_STAGE_MISMATCH",
+                format!("{path}.before"),
+                "the submitted pre-overlay stage does not equal the preceding materialization stage",
+            ));
+        }
+        let before_fingerprint = match canonical_fingerprint(&stage) {
             Ok(fingerprint) => fingerprint,
             Err(failure) => {
                 diagnostics.extend(failure.diagnostics);
-                return None;
+                return;
+            }
+        };
+        for (field, expected) in [
+            ("expectedFingerprint", &provenance.expected_fingerprint),
+            ("beforeFingerprint", &provenance.before_fingerprint),
+        ] {
+            if expected != &before_fingerprint {
+                diagnostics.push(RpgDiagnostic::error(
+                    RpgDiagnosticStage::Artifact,
+                    "RULESET_OVERLAY_BEFORE_FINGERPRINT_MISMATCH",
+                    format!("{path}.{field}"),
+                    format!(
+                        "the authoritative pre-overlay stage fingerprints as {before_fingerprint}"
+                    ),
+                ));
+            }
+        }
+        match canonical_fingerprint(&provenance.patch) {
+            Ok(actual) if actual != provenance.patch_fingerprint => {
+                diagnostics.push(RpgDiagnostic::error(
+                    RpgDiagnosticStage::Artifact,
+                    "RULESET_OVERLAY_PATCH_FINGERPRINT_MISMATCH",
+                    format!("{path}.patchFingerprint"),
+                    format!("the overlay patch fingerprints as {actual}"),
+                ))
+            }
+            Err(failure) => diagnostics.extend(failure.diagnostics),
+            _ => {}
+        }
+        if !patch_matches_plane(&provenance.patch, provenance.plane) {
+            diagnostics.push(RpgDiagnostic::error(
+                RpgDiagnosticStage::Artifact,
+                "RULESET_OVERLAY_IMPACT_PLANE_MISMATCH",
+                format!("{path}.patch"),
+                "overlay patch operations exceed the declared impact plane",
+            ));
+        }
+        let (next, computed_changes) =
+            match apply_ruleset_patch(&stage, &provenance.patch, &BTreeMap::new()) {
+                Ok(result) => result,
+                Err(message) => {
+                    diagnostics.push(RpgDiagnostic::error(
+                        RpgDiagnosticStage::Artifact,
+                        "RULESET_OVERLAY_PATCH_REPLAY_FAILED",
+                        format!("{path}.patch"),
+                        message,
+                    ));
+                    return;
+                }
+            };
+        if computed_changes != provenance.changes {
+            diagnostics.push(RpgDiagnostic::error(
+                RpgDiagnosticStage::Artifact,
+                "RULESET_OVERLAY_CHANGE_COVERAGE_MISMATCH",
+                format!("{path}.changes"),
+                "the submitted overlay changes do not exactly match authoritative patch replay",
+            ));
+        }
+        let after_fingerprint = match canonical_fingerprint(&next) {
+            Ok(fingerprint) => fingerprint,
+            Err(failure) => {
+                diagnostics.extend(failure.diagnostics);
+                return;
             }
         };
         if after_fingerprint != provenance.after_fingerprint {
             diagnostics.push(RpgDiagnostic::error(
                 RpgDiagnosticStage::Artifact,
                 "RULESET_OVERLAY_AFTER_FINGERPRINT_MISMATCH",
-                "$.overlayProvenance",
-                format!(
-                    "overlay order {} for {} claims after fingerprint {}, but its materialized stage is {after_fingerprint}",
-                    provenance.order,
-                    provenance.target_definition_id,
-                    provenance.after_fingerprint,
-                ),
+                format!("{path}.afterFingerprint"),
+                format!("the authoritative post-overlay stage fingerprints as {after_fingerprint}"),
             ));
         }
-        if !reverse_patch_changes(
-            &mut stage,
-            &provenance.changes,
-            provenance.order,
-            diagnostics,
-        ) {
-            return None;
-        }
-        let before_fingerprint = match materialization_provenance_fingerprint(&stage) {
-            Ok(fingerprint) => fingerprint,
-            Err(failure) => {
-                diagnostics.extend(failure.diagnostics);
-                return None;
-            }
-        };
-        if before_fingerprint != provenance.before_fingerprint {
-            diagnostics.push(RpgDiagnostic::error(
-                RpgDiagnosticStage::Artifact,
-                "RULESET_OVERLAY_BEFORE_FINGERPRINT_MISMATCH",
-                "$.overlayProvenance",
-                format!(
-                    "overlay order {} for {} claims before fingerprint {}, but reversing its typed changes reconstructs {before_fingerprint}",
-                    provenance.order,
-                    provenance.target_definition_id,
-                    provenance.before_fingerprint,
-                ),
-            ));
-        }
-        if before_fingerprint != provenance.expected_fingerprint {
-            diagnostics.push(RpgDiagnostic::error(
-                RpgDiagnosticStage::Artifact,
-                "RULESET_OVERLAY_EXPECTED_FINGERPRINT_MISMATCH",
-                "$.overlayProvenance",
-                format!(
-                    "overlay order {} for {} pins {}, but reversing its typed changes reconstructs {before_fingerprint}",
-                    provenance.order,
-                    provenance.target_definition_id,
-                    provenance.expected_fingerprint,
-                ),
-            ));
-        }
+        stage = next;
     }
-    match materialization_provenance_fingerprint(&stage) {
-        Ok(fingerprint) => Some(fingerprint),
-        Err(failure) => {
-            diagnostics.extend(failure.diagnostics);
-            None
+    if stage != materialization_stage(final_definition) {
+        diagnostics.push(RpgDiagnostic::error(
+            RpgDiagnosticStage::Artifact,
+            "RULESET_OVERLAY_FINAL_STAGE_MISMATCH",
+            "$.overlayProvenance",
+            format!(
+                "replaying overlays for {} does not produce the materialized definition",
+                final_definition.id
+            ),
+        ));
+    }
+}
+
+fn apply_ruleset_patch(
+    stage: &RulesetMaterializationStage,
+    patch: &RulesetPatch,
+    parameters: &BTreeMap<String, Value>,
+) -> Result<
+    (
+        RulesetMaterializationStage,
+        Vec<RulesetPatchChangeProvenance>,
+    ),
+    String,
+> {
+    if patch.version != 1 {
+        return Err(format!("patch version {} is unsupported", patch.version));
+    }
+    let mut next = stage.clone();
+    if next.value.presentation.is_null() {
+        next.value.presentation = json!({});
+    }
+    let mut changes = Vec::new();
+    for operation in &patch.operations {
+        let plane = patch_operation_plane(operation);
+        if plane == RulesetImpactPlane::Both {
+            return Err(
+                "an individual patch operation must name semantic or presentation".to_owned(),
+            );
+        }
+        let root = patch_plane_root_mut(&mut next, plane)?;
+        let path = patch_operation_path(operation);
+        let before = read_patch_path(root, path)?.clone();
+        match operation {
+            RulesetPatchOperation::SetScalar { value, .. } => {
+                let replacement = resolve_patch_scalar(value, parameters)?;
+                write_patch_path(root, path, replacement)?;
+            }
+            RulesetPatchOperation::AdjustNumber { multiply, add, .. } => {
+                let current = read_patch_path(root, path)?
+                    .as_f64()
+                    .ok_or_else(|| "adjustNumber requires a numeric target".to_owned())?;
+                let multiplier = resolve_patch_number(multiply, parameters)?;
+                let addend = resolve_patch_number(add, parameters)?;
+                write_patch_path(root, path, json_number(current * multiplier + addend)?)?;
+            }
+            RulesetPatchOperation::AppendMember {
+                identity,
+                value,
+                position,
+                ..
+            } => append_patch_member(root, path, identity, value, position)?,
+            RulesetPatchOperation::RemoveMember { identity, .. } => {
+                remove_patch_member(root, path, identity)?;
+            }
+        }
+        let after = read_patch_path(root, path)?.clone();
+        changes.push(RulesetPatchChangeProvenance {
+            plane,
+            path: patch_change_path(path),
+            path_segments: path.to_vec(),
+            effective: before != after,
+            before,
+            after,
+        });
+    }
+    if next
+        .value
+        .presentation
+        .as_object()
+        .is_some_and(serde_json::Map::is_empty)
+    {
+        next.value.presentation = Value::Null;
+    }
+    Ok((next, changes))
+}
+
+fn patch_operation_plane(operation: &RulesetPatchOperation) -> RulesetImpactPlane {
+    match operation {
+        RulesetPatchOperation::SetScalar { plane, .. }
+        | RulesetPatchOperation::AdjustNumber { plane, .. }
+        | RulesetPatchOperation::AppendMember { plane, .. }
+        | RulesetPatchOperation::RemoveMember { plane, .. } => *plane,
+    }
+}
+
+fn patch_operation_path(operation: &RulesetPatchOperation) -> &[RulesetPatchPathSegment] {
+    match operation {
+        RulesetPatchOperation::SetScalar { path, .. }
+        | RulesetPatchOperation::AdjustNumber { path, .. }
+        | RulesetPatchOperation::AppendMember { path, .. }
+        | RulesetPatchOperation::RemoveMember { path, .. } => path,
+    }
+}
+
+fn patch_matches_plane(patch: &RulesetPatch, plane: RulesetImpactPlane) -> bool {
+    patch.operations.iter().all(|operation| {
+        plane == RulesetImpactPlane::Both || patch_operation_plane(operation) == plane
+    })
+}
+
+fn patch_plane_root_mut(
+    stage: &mut RulesetMaterializationStage,
+    plane: RulesetImpactPlane,
+) -> Result<&mut Value, String> {
+    match plane {
+        RulesetImpactPlane::Semantic => Ok(&mut stage.value.semantic),
+        RulesetImpactPlane::Presentation => Ok(&mut stage.value.presentation),
+        RulesetImpactPlane::Both => {
+            Err("an individual patch operation cannot target both planes".to_owned())
         }
     }
 }
 
-fn reverse_patch_changes(
-    definition: &mut MaterializedRulesetDefinition,
-    changes: &[rpg_ir::RulesetPatchChangeProvenance],
-    overlay_order: usize,
-    diagnostics: &mut Vec<RpgDiagnostic>,
-) -> bool {
-    let mut valid = true;
-    for (index, change) in changes.iter().enumerate().rev() {
-        let root = match change.plane {
-            RulesetImpactPlane::Semantic => &mut definition.semantic,
-            RulesetImpactPlane::Presentation => &mut definition.presentation,
-            RulesetImpactPlane::Both => {
-                diagnostics.push(RpgDiagnostic::error(
-                    RpgDiagnosticStage::Artifact,
-                    "RULESET_PATCH_CHANGE_PLANE_INVALID",
-                    format!("$.overlayProvenance[order={overlay_order}].changes[{index}].plane"),
-                    "an individual patch change must name semantic or presentation",
-                ));
-                valid = false;
-                continue;
-            }
-        };
-        if let Err(message) =
-            replace_patch_change_value(root, &change.path_segments, &change.after, &change.before)
-        {
-            diagnostics.push(RpgDiagnostic::error(
-                RpgDiagnosticStage::Artifact,
-                "RULESET_OVERLAY_CHANGE_REVERSE_FAILED",
-                format!("$.overlayProvenance[order={overlay_order}].changes[{index}]"),
-                message,
-            ));
-            valid = false;
-        }
-    }
-    valid
-}
-
-fn replace_patch_change_value(
-    root: &mut Value,
+fn read_patch_path<'a>(
+    root: &'a Value,
     path: &[RulesetPatchPathSegment],
-    expected: &Value,
-    replacement: &Value,
-) -> Result<(), String> {
-    let Some((leaf, parent_path)) = path.split_last() else {
-        return Err("typed patch change path must not be empty".to_owned());
-    };
+) -> Result<&'a Value, String> {
     let mut current = root;
-    for segment in parent_path {
+    for segment in path {
+        current = match segment {
+            RulesetPatchPathSegment::Field { name } => current
+                .as_object()
+                .and_then(|object| object.get(name))
+                .ok_or_else(|| format!("field {name} is missing at {}", patch_change_path(path)))?,
+            RulesetPatchPathSegment::Member { key, value } => {
+                resolve_patch_member(current, *key, value)?
+            }
+        };
+    }
+    Ok(current)
+}
+
+fn read_patch_path_mut<'a>(
+    root: &'a mut Value,
+    path: &[RulesetPatchPathSegment],
+) -> Result<&'a mut Value, String> {
+    let mut current = root;
+    for segment in path {
         current = match segment {
             RulesetPatchPathSegment::Field { name } => current
                 .as_object_mut()
                 .and_then(|object| object.get_mut(name))
-                .ok_or_else(|| format!("field {name} is missing while reversing the change"))?,
+                .ok_or_else(|| format!("field {name} is missing at {}", patch_change_path(path)))?,
             RulesetPatchPathSegment::Member { key, value } => {
-                let key = patch_member_key(*key);
-                let list = current
-                    .as_array_mut()
-                    .ok_or_else(|| format!("member selector [{key}={value}] requires a list"))?;
-                let matching_indexes = list
-                    .iter()
-                    .enumerate()
-                    .filter_map(|(index, entry)| {
-                        entry
-                            .as_object()
-                            .and_then(|object| object.get(key))
-                            .and_then(Value::as_str)
-                            .is_some_and(|candidate| candidate == value)
-                            .then_some(index)
-                    })
-                    .collect::<Vec<_>>();
-                if matching_indexes.len() != 1 {
-                    return Err(format!(
-                        "member selector [{key}={value}] resolved {} entries while reversing the change",
-                        matching_indexes.len()
-                    ));
-                }
-                &mut list[matching_indexes[0]]
+                resolve_patch_member_mut(current, *key, value)?
             }
         };
     }
-    let RulesetPatchPathSegment::Field { name } = leaf else {
-        return Err("typed patch change paths must end in a writable field".to_owned());
+    Ok(current)
+}
+
+fn write_patch_path(
+    root: &mut Value,
+    path: &[RulesetPatchPathSegment],
+    replacement: Value,
+) -> Result<(), String> {
+    let Some((leaf, parent_path)) = path.split_last() else {
+        return Err("patch operations must not write the root".to_owned());
     };
-    let current_value = current
+    let RulesetPatchPathSegment::Field { name } = leaf else {
+        return Err("patch writes must end in a writable field".to_owned());
+    };
+    let parent = read_patch_path_mut(root, parent_path)?;
+    let current = parent
         .as_object_mut()
         .and_then(|object| object.get_mut(name))
-        .ok_or_else(|| format!("writable field {name} is missing while reversing the change"))?;
-    if current_value != expected {
+        .ok_or_else(|| format!("writable field {name} is missing"))?;
+    *current = replacement;
+    Ok(())
+}
+
+fn resolve_patch_member<'a>(
+    value: &'a Value,
+    key: RulesetPatchMemberKey,
+    expected: &str,
+) -> Result<&'a Value, String> {
+    let list = value.as_array().ok_or_else(|| {
+        format!(
+            "member selector [{}={expected}] requires a list",
+            patch_member_key(key)
+        )
+    })?;
+    let matches = list
+        .iter()
+        .filter(|entry| patch_member_matches(entry, key, expected))
+        .collect::<Vec<_>>();
+    if matches.len() != 1 {
         return Err(format!(
-            "field {name} does not contain the recorded post-change value"
+            "member selector [{}={expected}] resolved {} entries",
+            patch_member_key(key),
+            matches.len()
         ));
     }
-    *current_value = replacement.clone();
+    Ok(matches[0])
+}
+
+fn resolve_patch_member_mut<'a>(
+    value: &'a mut Value,
+    key: RulesetPatchMemberKey,
+    expected: &str,
+) -> Result<&'a mut Value, String> {
+    let list = value.as_array_mut().ok_or_else(|| {
+        format!(
+            "member selector [{}={expected}] requires a list",
+            patch_member_key(key)
+        )
+    })?;
+    let indexes = list
+        .iter()
+        .enumerate()
+        .filter_map(|(index, entry)| patch_member_matches(entry, key, expected).then_some(index))
+        .collect::<Vec<_>>();
+    if indexes.len() != 1 {
+        return Err(format!(
+            "member selector [{}={expected}] resolved {} entries",
+            patch_member_key(key),
+            indexes.len()
+        ));
+    }
+    Ok(&mut list[indexes[0]])
+}
+
+fn patch_member_matches(value: &Value, key: RulesetPatchMemberKey, expected: &str) -> bool {
+    value
+        .as_object()
+        .and_then(|object| object.get(patch_member_key(key)))
+        .and_then(Value::as_str)
+        .is_some_and(|actual| actual == expected)
+}
+
+fn resolve_patch_scalar(
+    value: &Value,
+    parameters: &BTreeMap<String, Value>,
+) -> Result<Value, String> {
+    if let Some(parameter) = patch_parameter(value) {
+        return parameters
+            .get(parameter)
+            .filter(|value| value.is_string() || value.is_number() || value.is_boolean())
+            .cloned()
+            .ok_or_else(|| format!("scalar parameter {parameter} is not supplied"));
+    }
+    if value.is_null() || value.is_string() || value.is_number() || value.is_boolean() {
+        return Ok(value.clone());
+    }
+    Err("setScalar requires a scalar value or parameter reference".to_owned())
+}
+
+fn resolve_patch_number(
+    value: &Value,
+    parameters: &BTreeMap<String, Value>,
+) -> Result<f64, String> {
+    if let Some(parameter) = patch_parameter(value) {
+        return parameters
+            .get(parameter)
+            .and_then(Value::as_f64)
+            .ok_or_else(|| format!("numeric parameter {parameter} is not supplied"));
+    }
+    value
+        .as_f64()
+        .ok_or_else(|| "adjustNumber operands must be numeric".to_owned())
+}
+
+fn patch_parameter(value: &Value) -> Option<&str> {
+    value
+        .as_object()
+        .and_then(|object| object.get("parameter"))
+        .and_then(Value::as_str)
+}
+
+fn json_number(value: f64) -> Result<Value, String> {
+    if value.fract() == 0.0 && value >= i64::MIN as f64 && value <= i64::MAX as f64 {
+        return Ok(Value::from(value as i64));
+    }
+    serde_json::Number::from_f64(value)
+        .map(Value::Number)
+        .ok_or_else(|| "adjustNumber produced a non-finite value".to_owned())
+}
+
+fn append_patch_member(
+    root: &mut Value,
+    path: &[RulesetPatchPathSegment],
+    identity: &RulesetPatchMemberSelector,
+    value: &BTreeMap<String, Value>,
+    position: &RulesetPatchPosition,
+) -> Result<(), String> {
+    let target = read_patch_path_mut(root, path)?;
+    let list = target
+        .as_array_mut()
+        .ok_or_else(|| "appendMember requires a list".to_owned())?;
+    if list
+        .iter()
+        .any(|entry| patch_member_matches(entry, identity.key, &identity.value))
+    {
+        return Err(format!(
+            "member {}={} already exists",
+            patch_member_key(identity.key),
+            identity.value
+        ));
+    }
+    if value.values().any(|value| {
+        !value.is_null() && !value.is_string() && !value.is_number() && !value.is_boolean()
+    }) {
+        return Err("appendMember values must be scalar".to_owned());
+    }
+    let mut member = value
+        .iter()
+        .map(|(key, value)| (key.clone(), value.clone()))
+        .collect::<serde_json::Map<_, _>>();
+    member.insert(
+        patch_member_key(identity.key).to_owned(),
+        Value::String(identity.value.clone()),
+    );
+    let member = Value::Object(member);
+    let index = match position {
+        RulesetPatchPosition::Start => 0,
+        RulesetPatchPosition::End => list.len(),
+        RulesetPatchPosition::Before { anchor } | RulesetPatchPosition::After { anchor } => {
+            let matches = list
+                .iter()
+                .enumerate()
+                .filter_map(|(index, entry)| {
+                    patch_member_matches(entry, anchor.key, &anchor.value).then_some(index)
+                })
+                .collect::<Vec<_>>();
+            if matches.len() != 1 {
+                return Err(format!(
+                    "anchor {}={} resolved {} entries",
+                    patch_member_key(anchor.key),
+                    anchor.value,
+                    matches.len()
+                ));
+            }
+            matches[0] + usize::from(matches!(position, RulesetPatchPosition::After { .. }))
+        }
+    };
+    list.insert(index, member);
+    Ok(())
+}
+
+fn remove_patch_member(
+    root: &mut Value,
+    path: &[RulesetPatchPathSegment],
+    identity: &RulesetPatchMemberSelector,
+) -> Result<(), String> {
+    let target = read_patch_path_mut(root, path)?;
+    let list = target
+        .as_array_mut()
+        .ok_or_else(|| "removeMember requires a list".to_owned())?;
+    let indexes = list
+        .iter()
+        .enumerate()
+        .filter_map(|(index, entry)| {
+            patch_member_matches(entry, identity.key, &identity.value).then_some(index)
+        })
+        .collect::<Vec<_>>();
+    if indexes.len() != 1 {
+        return Err(format!(
+            "member {}={} resolved {} entries",
+            patch_member_key(identity.key),
+            identity.value,
+            indexes.len()
+        ));
+    }
+    list.remove(indexes[0]);
     Ok(())
 }
 

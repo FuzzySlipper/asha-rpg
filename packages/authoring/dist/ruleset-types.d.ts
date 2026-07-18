@@ -252,11 +252,22 @@ export interface RulesetPatchChangeProvenance {
     readonly after: unknown;
     readonly effective: boolean;
 }
+export interface RulesetMaterializationStage {
+    readonly id: string;
+    readonly kind: 'action' | 'support';
+    readonly extensionPolicy: RulesetExtensionPolicy;
+    readonly value: {
+        readonly semantic: unknown;
+        readonly presentation: RulesetPresentation | null;
+    };
+    readonly references: readonly string[];
+}
 export interface RulesetDerivationMixinProvenance {
     readonly definitionId: string;
     readonly packageId: string;
     readonly packageVersion: string;
     readonly fingerprint: string;
+    readonly patch: RulesetPatch;
     readonly parameters: Readonly<Record<string, string | number | boolean>>;
     readonly order: number;
 }
@@ -268,9 +279,12 @@ export interface RulesetDerivationProvenance {
     readonly basePackageId: string;
     readonly basePackageVersion: string;
     readonly baseFingerprint: string;
+    readonly base: RulesetMaterializationStage;
     readonly mixins: readonly RulesetDerivationMixinProvenance[];
     readonly localPatchFingerprint: string;
+    readonly localPatch: RulesetPatch;
     readonly materializedFingerprint: string;
+    readonly materialized: RulesetMaterializationStage;
     readonly changes: readonly RulesetPatchChangeProvenance[];
 }
 export interface RulesetOverlayProvenance {
@@ -285,6 +299,8 @@ export interface RulesetOverlayProvenance {
     readonly plane: 'semantic' | 'presentation' | 'both';
     readonly conflictPolicy: 'reject' | 'replace';
     readonly patchFingerprint: string;
+    readonly patch: RulesetPatch;
+    readonly before: RulesetMaterializationStage;
     readonly order: number;
     readonly changes: readonly RulesetPatchChangeProvenance[];
 }
