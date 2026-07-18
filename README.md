@@ -57,10 +57,13 @@ Representative consumer code lives in
 `examples/representative-actions.ts`; its normalized artifact is sent through
 the Rust compiler during `npm test`.
 
-Derivation, mixin, and overlay records are reserved and rejected until their
-Rust-owned execution contract lands. Runtime activation remains a downstream
-host responsibility; the portable loader only accepts a closed artifact after
-recompiling and matching its identity and fingerprint planes.
+Derivation, ordered typed mixins, local relational patches, package overlays,
+and exposed configuration options are materialized deterministically during
+authoring compilation. The emitted artifact contains no runtime inheritance or
+plugin graph: only final definitions, exact definition fingerprints, and typed
+source-to-effective-value provenance. Rust independently validates those
+closed records and recompiles gameplay semantics from the materialized graph.
+Runtime activation remains a downstream host responsibility.
 
 No Rulebench crate or package is part of this workspace. The independent
 `consumers/minimal-game` workspace verifies consumption through the public Git

@@ -54,6 +54,81 @@ export interface RulesetDefinitionReference {
 export type RulesetDefinitionVisibility = 'public' | 'private';
 export type RulesetExtensionPolicy = 'sealed' | 'derivable' | 'patchable' | 'configurable';
 
+export type RulesetPatchScalar = string | number | boolean | null;
+
+export type RulesetPatchPathSegment =
+  | { readonly kind: 'field'; readonly name: string }
+  | {
+      readonly kind: 'member';
+      readonly key:
+        | 'id'
+        | 'resourceId'
+        | 'statId'
+        | 'defenseId'
+        | 'modifierId'
+        | 'damageType'
+        | 'kind';
+      readonly value: string;
+    };
+
+export type RulesetPatchNumber =
+  | number
+  | { readonly parameter: string };
+
+export type RulesetPatchOperation =
+  | {
+      readonly kind: 'setScalar';
+      readonly plane: 'semantic' | 'presentation';
+      readonly path: readonly RulesetPatchPathSegment[];
+      readonly value: RulesetPatchScalar | { readonly parameter: string };
+    }
+  | {
+      readonly kind: 'adjustNumber';
+      readonly plane: 'semantic' | 'presentation';
+      readonly path: readonly RulesetPatchPathSegment[];
+      readonly multiply: RulesetPatchNumber;
+      readonly add: RulesetPatchNumber;
+    }
+  | {
+      readonly kind: 'appendMember';
+      readonly plane: 'semantic' | 'presentation';
+      readonly path: readonly RulesetPatchPathSegment[];
+      readonly identity: {
+        readonly key: Exclude<Extract<RulesetPatchPathSegment, { readonly kind: 'member' }>['key'], 'kind'>;
+        readonly value: string;
+      };
+      readonly value: Readonly<Record<string, RulesetPatchScalar>>;
+      readonly position:
+        | { readonly kind: 'start' }
+        | { readonly kind: 'end' }
+        | {
+            readonly kind: 'before' | 'after';
+            readonly anchor: Extract<RulesetPatchPathSegment, { readonly kind: 'member' }>;
+          };
+    }
+  | {
+      readonly kind: 'removeMember';
+      readonly plane: 'semantic' | 'presentation';
+      readonly path: readonly RulesetPatchPathSegment[];
+      readonly identity: Extract<RulesetPatchPathSegment, { readonly kind: 'member' }>;
+    };
+
+export interface RulesetPatch {
+  readonly version: 1;
+  readonly operations: readonly RulesetPatchOperation[];
+}
+
+export interface RulesetMixinParameter {
+  readonly id: string;
+  readonly type: 'string' | 'number' | 'boolean';
+  readonly default?: string | number | boolean;
+}
+
+export interface RulesetMixinApplication {
+  readonly target: RulesetDefinitionReference;
+  readonly parameters: Readonly<Record<string, string | number | boolean>>;
+}
+
 export interface RulesetPresentation {
   readonly label: string;
   readonly description?: string;
@@ -86,10 +161,23 @@ export interface RulesetTemplateDefinition extends RulesetDefinitionBase {
   readonly kind: 'template';
 }
 
+export interface RulesetDerivedDefinition extends RulesetDefinitionBase {
+  readonly kind: 'derived';
+  readonly materializesAs: 'action' | 'support';
+}
+
+export interface RulesetMixinDefinition extends RulesetDefinitionBase {
+  readonly kind: 'mixin';
+  readonly parameters: readonly RulesetMixinParameter[];
+  readonly patch: RulesetPatch;
+}
+
 export type RulesetDefinition =
   | RulesetActionDefinition
   | RulesetSupportDefinition
-  | RulesetTemplateDefinition;
+  | RulesetTemplateDefinition
+  | RulesetDerivedDefinition
+  | RulesetMixinDefinition;
 
 export interface RulesetPolicyBinding {
   readonly id: string;
@@ -107,15 +195,19 @@ export type RulesetReservedRelationship =
       readonly kind: 'derivesFrom';
       readonly definitionId: string;
       readonly target: RulesetDefinitionReference;
+      readonly mixins: readonly RulesetMixinApplication[];
+      readonly localPatch: RulesetPatch;
       readonly version: 1;
     }
   | {
       readonly kind: 'patches';
       readonly definitionId: string;
       readonly target: RulesetDefinitionReference;
+      readonly targetPackage: RulesetIdentity;
       readonly expectedFingerprint: string;
+      readonly patch: RulesetPatch;
       readonly plane: 'semantic' | 'presentation' | 'both';
-      readonly conflictPolicy: 'reject';
+      readonly conflictPolicy: 'reject' | 'replace';
       readonly version: 1;
     }
   | {
@@ -123,6 +215,7 @@ export type RulesetReservedRelationship =
       readonly optionId: string;
       readonly target: RulesetDefinitionReference;
       readonly value: string | number | boolean;
+      readonly patch: RulesetPatch;
       readonly version: 1;
     };
 
@@ -210,6 +303,53 @@ export interface RulesetDefinitionProvenance {
   readonly source: RulesetSourceLocation;
 }
 
+export interface RulesetPatchChangeProvenance {
+  readonly plane: 'semantic' | 'presentation';
+  readonly path: string;
+  readonly before: unknown;
+  readonly after: unknown;
+  readonly effective: boolean;
+}
+
+export interface RulesetDerivationMixinProvenance {
+  readonly definitionId: string;
+  readonly packageId: string;
+  readonly packageVersion: string;
+  readonly fingerprint: string;
+  readonly parameters: Readonly<Record<string, string | number | boolean>>;
+  readonly order: number;
+}
+
+export interface RulesetDerivationProvenance {
+  readonly definitionId: string;
+  readonly packageId: string;
+  readonly packageVersion: string;
+  readonly baseDefinitionId: string;
+  readonly basePackageId: string;
+  readonly basePackageVersion: string;
+  readonly baseFingerprint: string;
+  readonly mixins: readonly RulesetDerivationMixinProvenance[];
+  readonly localPatchFingerprint: string;
+  readonly materializedFingerprint: string;
+  readonly changes: readonly RulesetPatchChangeProvenance[];
+}
+
+export interface RulesetOverlayProvenance {
+  readonly overlayPackageId: string;
+  readonly overlayPackageVersion: string;
+  readonly targetDefinitionId: string;
+  readonly targetPackageId: string;
+  readonly targetPackageVersion: string;
+  readonly expectedFingerprint: string;
+  readonly beforeFingerprint: string;
+  readonly afterFingerprint: string;
+  readonly plane: 'semantic' | 'presentation' | 'both';
+  readonly conflictPolicy: 'reject' | 'replace';
+  readonly patchFingerprint: string;
+  readonly order: number;
+  readonly changes: readonly RulesetPatchChangeProvenance[];
+}
+
 export interface MaterializedRulesetDefinition {
   readonly id: string;
   readonly kind: 'action' | 'support';
@@ -219,6 +359,7 @@ export interface MaterializedRulesetDefinition {
   readonly presentation: RulesetPresentation | null;
   readonly references: readonly string[];
   readonly provenance: RulesetDefinitionProvenance;
+  readonly fingerprint: string;
 }
 
 export interface PreparedRulesetCompilation {
@@ -237,8 +378,8 @@ export interface PreparedRulesetCompilation {
   readonly compiledPolicyBindings: readonly RulesetPolicyBinding[];
   readonly definitionProvenance: readonly RulesetDefinitionProvenance[];
   readonly relationships: readonly RulesetRelationshipProvenance[];
-  readonly derivationProvenance: readonly [];
-  readonly overlayProvenance: readonly [];
+  readonly derivationProvenance: readonly RulesetDerivationProvenance[];
+  readonly overlayProvenance: readonly RulesetOverlayProvenance[];
 }
 
 export type PrepareRulesetResult =

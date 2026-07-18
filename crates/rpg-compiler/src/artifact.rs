@@ -209,7 +209,7 @@ fn validate_prepared(prepared: &PreparedRulesetCompilation) -> Vec<RpgDiagnostic
     validate_sources_and_lock(prepared, &mut diagnostics);
     validate_requirements(prepared, &mut diagnostics);
     validate_definitions(prepared, &mut diagnostics);
-    validate_deferred_relationships(prepared, &mut diagnostics);
+    validate_materialization_provenance(prepared, &mut diagnostics);
     diagnostics
 }
 
@@ -409,6 +409,21 @@ fn validate_definitions(
                 format!("$.materializedDefinitions[{index}].provenance"),
                 "definition provenance must name its materialized definition",
             ));
+        }
+        match materialized_definition_fingerprint(definition) {
+            Ok(expected) if expected != definition.fingerprint => {
+                diagnostics.push(RpgDiagnostic::error(
+                    RpgDiagnosticStage::Artifact,
+                    "RULESET_DEFINITION_FINGERPRINT_MISMATCH",
+                    format!("$.materializedDefinitions[{index}].fingerprint"),
+                    format!(
+                        "definition {} fingerprint does not match its canonical materialized value",
+                        definition.id
+                    ),
+                ));
+            }
+            Err(failure) => diagnostics.extend(failure.diagnostics),
+            Ok(_) => {}
         }
     }
     for (index, definition) in prepared.materialized_definitions.iter().enumerate() {
@@ -1226,41 +1241,204 @@ fn collect_predicate_catalogs(predicate: &RpgIrPredicate, catalogs: &mut Derived
     }
 }
 
-fn validate_deferred_relationships(
+fn validate_materialization_provenance(
     prepared: &PreparedRulesetCompilation,
     diagnostics: &mut Vec<RpgDiagnostic>,
 ) {
-    if !prepared.derivation_provenance.is_empty() {
-        diagnostics.push(RpgDiagnostic::error(
-            RpgDiagnosticStage::Artifact,
-            "RULESET_DERIVATION_EXECUTION_DEFERRED",
-            "$.derivationProvenance",
-            "derivation provenance cannot enter an artifact until its owned materializer exists",
-        ));
-    }
-    if !prepared.overlay_provenance.is_empty() {
-        diagnostics.push(RpgDiagnostic::error(
-            RpgDiagnosticStage::Artifact,
-            "RULESET_OVERLAY_EXECUTION_DEFERRED",
-            "$.overlayProvenance",
-            "overlay provenance cannot enter an artifact until its owned materializer exists",
-        ));
-    }
-    for (index, relationship) in prepared.relationships.iter().enumerate() {
-        if matches!(
-            relationship.kind,
-            RulesetRelationshipKind::DerivesFrom
-                | RulesetRelationshipKind::Patches
-                | RulesetRelationshipKind::Configures
-        ) {
+    let definitions = prepared
+        .materialized_definitions
+        .iter()
+        .map(|definition| (definition.id.as_str(), definition))
+        .collect::<BTreeMap<_, _>>();
+    let mut previous_derivation = None::<&str>;
+    for (index, provenance) in prepared.derivation_provenance.iter().enumerate() {
+        if previous_derivation.is_some_and(|previous| previous >= provenance.definition_id.as_str())
+        {
             diagnostics.push(RpgDiagnostic::error(
                 RpgDiagnosticStage::Artifact,
-                "RULESET_RELATIONSHIP_EXECUTION_DEFERRED",
+                "RULESET_DERIVATION_PROVENANCE_NOT_CANONICAL",
+                format!("$.derivationProvenance[{index}]"),
+                "derivation provenance must be strictly definition-sorted",
+            ));
+        }
+        previous_derivation = Some(&provenance.definition_id);
+        if !definitions.contains_key(provenance.definition_id.as_str()) {
+            diagnostics.push(RpgDiagnostic::error(
+                RpgDiagnosticStage::References,
+                "RULESET_DERIVATION_TARGET_MISSING",
+                format!("$.derivationProvenance[{index}].definitionId"),
+                format!(
+                    "derived definition {} is not materialized",
+                    provenance.definition_id
+                ),
+            ));
+        }
+        for (field, value) in [
+            ("baseFingerprint", provenance.base_fingerprint.as_str()),
+            (
+                "localPatchFingerprint",
+                provenance.local_patch_fingerprint.as_str(),
+            ),
+            (
+                "materializedFingerprint",
+                provenance.materialized_fingerprint.as_str(),
+            ),
+        ] {
+            if !valid_fingerprint(value) {
+                diagnostics.push(RpgDiagnostic::error(
+                    RpgDiagnosticStage::Artifact,
+                    "RULESET_DERIVATION_FINGERPRINT_INVALID",
+                    format!("$.derivationProvenance[{index}].{field}"),
+                    "derivation fingerprints must be fnv1a64 with sixteen lowercase hex digits",
+                ));
+            }
+        }
+        for (mixin_index, mixin) in provenance.mixins.iter().enumerate() {
+            if mixin.order != mixin_index || !valid_fingerprint(&mixin.fingerprint) {
+                diagnostics.push(RpgDiagnostic::error(
+                    RpgDiagnosticStage::Artifact,
+                    "RULESET_DERIVATION_MIXIN_NOT_CANONICAL",
+                    format!("$.derivationProvenance[{index}].mixins[{mixin_index}]"),
+                    "mixin provenance must preserve contiguous order and exact fingerprints",
+                ));
+            }
+            if mixin
+                .parameters
+                .values()
+                .any(|value| !value.is_string() && !value.is_number() && !value.is_boolean())
+            {
+                diagnostics.push(RpgDiagnostic::error(
+                    RpgDiagnosticStage::Artifact,
+                    "RULESET_DERIVATION_MIXIN_PARAMETER_INVALID",
+                    format!("$.derivationProvenance[{index}].mixins[{mixin_index}].parameters"),
+                    "mixin parameters must be scalar immutable values",
+                ));
+            }
+        }
+        validate_patch_changes(
+            &provenance.changes,
+            &format!("$.derivationProvenance[{index}].changes"),
+            diagnostics,
+        );
+    }
+
+    let mut previous_overlay_order = None::<usize>;
+    for (index, provenance) in prepared.overlay_provenance.iter().enumerate() {
+        if previous_overlay_order.is_some_and(|previous| previous >= provenance.order) {
+            diagnostics.push(RpgDiagnostic::error(
+                RpgDiagnosticStage::Artifact,
+                "RULESET_OVERLAY_PROVENANCE_NOT_CANONICAL",
+                format!("$.overlayProvenance[{index}].order"),
+                "overlay provenance order must be strictly increasing",
+            ));
+        }
+        previous_overlay_order = Some(provenance.order);
+        if !definitions.contains_key(provenance.target_definition_id.as_str()) {
+            diagnostics.push(RpgDiagnostic::error(
+                RpgDiagnosticStage::References,
+                "RULESET_OVERLAY_TARGET_MISSING",
+                format!("$.overlayProvenance[{index}].targetDefinitionId"),
+                format!(
+                    "overlay target {} is not materialized",
+                    provenance.target_definition_id
+                ),
+            ));
+        }
+        for (field, value) in [
+            (
+                "expectedFingerprint",
+                provenance.expected_fingerprint.as_str(),
+            ),
+            ("beforeFingerprint", provenance.before_fingerprint.as_str()),
+            ("afterFingerprint", provenance.after_fingerprint.as_str()),
+            ("patchFingerprint", provenance.patch_fingerprint.as_str()),
+        ] {
+            if !valid_fingerprint(value) {
+                diagnostics.push(RpgDiagnostic::error(
+                    RpgDiagnosticStage::Artifact,
+                    "RULESET_OVERLAY_FINGERPRINT_INVALID",
+                    format!("$.overlayProvenance[{index}].{field}"),
+                    "overlay fingerprints must be fnv1a64 with sixteen lowercase hex digits",
+                ));
+            }
+        }
+        if provenance.expected_fingerprint != provenance.before_fingerprint {
+            diagnostics.push(RpgDiagnostic::error(
+                RpgDiagnosticStage::Artifact,
+                "RULESET_OVERLAY_EXPECTED_FINGERPRINT_MISMATCH",
+                format!("$.overlayProvenance[{index}].expectedFingerprint"),
+                "the pinned expected fingerprint must equal the observed pre-overlay fingerprint",
+            ));
+        }
+        validate_patch_changes(
+            &provenance.changes,
+            &format!("$.overlayProvenance[{index}].changes"),
+            diagnostics,
+        );
+    }
+    for (index, relationship) in prepared.relationships.iter().enumerate() {
+        if matches!(relationship.kind, RulesetRelationshipKind::DerivesFrom)
+            && prepared.derivation_provenance.is_empty()
+        {
+            diagnostics.push(RpgDiagnostic::error(
+                RpgDiagnosticStage::Artifact,
+                "RULESET_DERIVATION_PROVENANCE_MISSING",
                 format!("$.relationships[{index}]"),
-                "derivation, patch, and configuration relationships require an owned materializer",
+                "derivation relationships require typed materialization provenance",
+            ));
+        }
+        if matches!(relationship.kind, RulesetRelationshipKind::Patches)
+            && prepared.overlay_provenance.is_empty()
+        {
+            diagnostics.push(RpgDiagnostic::error(
+                RpgDiagnosticStage::Artifact,
+                "RULESET_OVERLAY_PROVENANCE_MISSING",
+                format!("$.relationships[{index}]"),
+                "patch relationships require typed overlay provenance",
             ));
         }
     }
+}
+
+fn validate_patch_changes(
+    changes: &[rpg_ir::RulesetPatchChangeProvenance],
+    path: &str,
+    diagnostics: &mut Vec<RpgDiagnostic>,
+) {
+    for (index, change) in changes.iter().enumerate() {
+        if change.path.is_empty() {
+            diagnostics.push(RpgDiagnostic::error(
+                RpgDiagnosticStage::Artifact,
+                "RULESET_PATCH_CHANGE_PATH_MISSING",
+                format!("{path}[{index}].path"),
+                "patch change paths must be explicit",
+            ));
+        }
+        let effective = change.before != change.after;
+        if effective != change.effective {
+            diagnostics.push(RpgDiagnostic::error(
+                RpgDiagnosticStage::Artifact,
+                "RULESET_PATCH_CHANGE_EFFECT_MISMATCH",
+                format!("{path}[{index}].effective"),
+                "patch change effectiveness must match canonical before/after values",
+            ));
+        }
+    }
+}
+
+fn materialized_definition_fingerprint(
+    definition: &MaterializedRulesetDefinition,
+) -> Result<String, RpgCompileFailure> {
+    fingerprint(&json!({
+        "id": definition.id,
+        "kind": definition.kind,
+        "visibility": definition.visibility,
+        "extensionPolicy": definition.extension_policy,
+        "semantic": definition.semantic,
+        "presentation": definition.presentation,
+        "references": definition.references,
+        "provenance": definition.provenance,
+    }))
 }
 
 fn fingerprints(

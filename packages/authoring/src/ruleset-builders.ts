@@ -3,8 +3,11 @@ import type {
   RulesetActionDefinition,
   RulesetCompositionManifest,
   RulesetDefinitionReference,
+  RulesetDerivedDefinition,
   RulesetDependency,
+  RulesetMixinDefinition,
   RulesetPackageManifest,
+  RulesetPatch,
   RulesetPackageRequest,
   RulesetPackageSource,
   RulesetPolicyBinding,
@@ -34,6 +37,18 @@ export function defineSupportDefinition(input: RulesetSupportDefinition): Rulese
 }
 
 export function defineTemplateDefinition(input: RulesetTemplateDefinition): RulesetTemplateDefinition {
+  return immutable({ ...input });
+}
+
+export function defineDerivedDefinition(input: RulesetDerivedDefinition): RulesetDerivedDefinition {
+  return immutable({ ...input });
+}
+
+export function defineMixinDefinition(input: RulesetMixinDefinition): RulesetMixinDefinition {
+  return immutable({ ...input });
+}
+
+export function defineRulesetPatch(input: RulesetPatch): RulesetPatch {
   return immutable({ ...input });
 }
 

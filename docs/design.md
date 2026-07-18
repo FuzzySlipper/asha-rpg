@@ -50,8 +50,8 @@ The permanent public surface includes:
 The compiled artifact contains its schema and composition identity, language
 identity, exact source and dependency lock, operation and capability
 requirements, exported roots and materialized definition closure, policy
-bindings, relationship and definition provenance, reserved derivation and
-overlay provenance slots, and separate source, semantic, and presentation
+bindings, relationship and definition provenance, typed derivation and overlay
+provenance records, and separate source, semantic, and presentation
 fingerprints. Runtime semantics are reconstructed from that single materialized
 definition graph. The artifact contains no executable TypeScript, callbacks,
 floating dependencies, filesystem discovery state, or private Rust plan.
@@ -115,10 +115,22 @@ materializes only the reachable graph. Rust then repeats artifact-level
 compatibility and closure checks before semantic compilation. Loading a stored
 artifact recompiles those contents and requires an exact artifact match.
 
-Relationship records for derivation and patch/configure execution are carried
-as reserved versioned declarations but fail closed until that Rust-owned
-semantic phase is implemented. This prevents TypeScript from becoming a second
-compiler while leaving an explicit extension point.
+The authoring compiler now materializes one primary base, explicitly ordered
+typed mixins, local relational patches, authorized composition-ordered package
+overlays, and deliberately exposed configuration options. Patch paths use
+fields and stable member selectors rather than array indexes. Every applied
+step records before/after values, exact package and definition identities,
+parameters, order, conflict policy, impact plane, and fingerprints. Cycles,
+excessive depth, private or sealed targets, missing parameters, ambiguous
+members, conflicting writes, and expected-fingerprint drift fail before
+normalization.
+
+This phase remains deterministic structural compilation over immutable data; it
+does not evaluate gameplay meaning. The portable artifact contains only fully
+materialized definitions plus typed provenance. Rust rejects unresolved or
+internally inconsistent records, independently verifies every final definition
+fingerprint and the closed artifact fingerprint planes, and compiles gameplay
+semantics from the materialized graph only.
 
 Archetype, item, and scenario authoring helpers are pure action-composition
 sources in the initial profile. Their helper identities do not become new IR

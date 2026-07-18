@@ -130,7 +130,7 @@ test('typed source diagnostics fail before materialization and retain full graph
   );
 });
 
-test('duplicate identities and unresolved relational execution fail closed', () => {
+test('duplicate identities and incompatible relational declarations fail closed', () => {
   const fixture = packageFixture();
   const duplicate = prepareRulesetCompilation({
     composition: fixture.composition,
@@ -149,7 +149,7 @@ test('duplicate identities and unresolved relational execution fail closed', () 
   if (relationship.ok) return;
   assert.ok(
     relationship.diagnostics.some(
-      (entry) => entry.code === 'RULESET_RELATIONSHIP_EXECUTION_DEFERRED',
+      (entry) => entry.code === 'RULESET_DERIVATION_DECLARATION_INCOMPATIBLE',
     ),
   );
 
@@ -181,7 +181,7 @@ test('duplicate identities and unresolved relational execution fail closed', () 
   );
 });
 
-test('composition extensions remain explicit records and fail closed before #5957', () => {
+test('composition extensions require explicit materialization records', () => {
   const fixture = packageFixture();
   const overlay = prepareRulesetCompilation({
     composition: composeRuleset({
@@ -194,7 +194,7 @@ test('composition extensions remain explicit records and fail closed before #595
   if (overlay.ok) return;
   assert.ok(
     overlay.diagnostics.some(
-      (entry) => entry.code === 'RULESET_OVERLAY_EXECUTION_DEFERRED',
+      (entry) => entry.code === 'RULESET_OVERLAY_EMPTY',
     ),
   );
 
@@ -209,7 +209,7 @@ test('composition extensions remain explicit records and fail closed before #595
   if (configure.ok) return;
   assert.ok(
     configure.diagnostics.some(
-      (entry) => entry.code === 'RULESET_CONFIGURATION_EXECUTION_DEFERRED',
+      (entry) => entry.code === 'RULESET_CONFIGURATION_OPTION_UNAVAILABLE',
     ),
   );
 });
@@ -278,7 +278,9 @@ test('Rust emits byte-stable closed artifacts and separates fingerprint planes',
         : definition,
     ),
   };
-  const catalogSemantic = compilePrepared(semanticVariantPrepared);
+  const catalogSemanticDiagnostics = failedCompilationDiagnostics(
+    runCompilation(semanticVariantPrepared),
+  );
 
   assert.notEqual(repeated.fingerprints.source, sourceOnly.fingerprints.source);
   assert.equal(repeated.fingerprints.semantic, sourceOnly.fingerprints.semantic);
@@ -295,12 +297,9 @@ test('Rust emits byte-stable closed artifacts and separates fingerprint planes',
   assert.notEqual(repeated.fingerprints.semantic, semantic.fingerprints.semantic);
   assert.equal(repeated.fingerprints.presentation, semantic.fingerprints.presentation);
 
-  assert.notEqual(repeated.artifactId, catalogSemantic.artifactId);
-  assert.equal(repeated.fingerprints.source, catalogSemantic.fingerprints.source);
-  assert.notEqual(repeated.fingerprints.semantic, catalogSemantic.fingerprints.semantic);
-  assert.equal(
-    repeated.fingerprints.presentation,
-    catalogSemantic.fingerprints.presentation,
+  assert.match(
+    catalogSemanticDiagnostics,
+    /RULESET_DEFINITION_FINGERPRINT_MISMATCH/,
   );
 
   const encoded = JSON.stringify(repeated);
@@ -379,7 +378,7 @@ test('Rust emits byte-stable closed artifacts and separates fingerprint planes',
   assert.notEqual(semanticTamperValidation.status, 0);
   assert.match(
     semanticTamperValidation.stderr,
-    /RULESET_ARTIFACT_FINGERPRINT_MISMATCH/,
+    /RULESET_DEFINITION_FINGERPRINT_MISMATCH/,
   );
 });
 
@@ -667,6 +666,8 @@ function packageFixture(options: FixtureOptions = {}): {
               importAs: 'foundation',
               definitionId: 'sample.private-template',
             }),
+            mixins: [],
+            localPatch: { version: 1, operations: [] },
             version: 1,
           },
         ]

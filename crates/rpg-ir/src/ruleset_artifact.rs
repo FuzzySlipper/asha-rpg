@@ -1,3 +1,5 @@
+use std::collections::BTreeMap;
+
 use serde::{Deserialize, Serialize};
 use serde_json::Value;
 
@@ -104,6 +106,77 @@ pub struct MaterializedRulesetDefinition {
     pub presentation: Value,
     pub references: Vec<String>,
     pub provenance: RulesetDefinitionProvenance,
+    pub fingerprint: String,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub enum RulesetImpactPlane {
+    Semantic,
+    Presentation,
+    Both,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub enum RulesetConflictPolicy {
+    Reject,
+    Replace,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase", deny_unknown_fields)]
+pub struct RulesetPatchChangeProvenance {
+    pub plane: RulesetImpactPlane,
+    pub path: String,
+    pub before: Value,
+    pub after: Value,
+    pub effective: bool,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase", deny_unknown_fields)]
+pub struct RulesetDerivationMixinProvenance {
+    pub definition_id: String,
+    pub package_id: String,
+    pub package_version: String,
+    pub fingerprint: String,
+    pub parameters: BTreeMap<String, Value>,
+    pub order: usize,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase", deny_unknown_fields)]
+pub struct RulesetDerivationProvenance {
+    pub definition_id: String,
+    pub package_id: String,
+    pub package_version: String,
+    pub base_definition_id: String,
+    pub base_package_id: String,
+    pub base_package_version: String,
+    pub base_fingerprint: String,
+    pub mixins: Vec<RulesetDerivationMixinProvenance>,
+    pub local_patch_fingerprint: String,
+    pub materialized_fingerprint: String,
+    pub changes: Vec<RulesetPatchChangeProvenance>,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase", deny_unknown_fields)]
+pub struct RulesetOverlayProvenance {
+    pub overlay_package_id: String,
+    pub overlay_package_version: String,
+    pub target_definition_id: String,
+    pub target_package_id: String,
+    pub target_package_version: String,
+    pub expected_fingerprint: String,
+    pub before_fingerprint: String,
+    pub after_fingerprint: String,
+    pub plane: RulesetImpactPlane,
+    pub conflict_policy: RulesetConflictPolicy,
+    pub patch_fingerprint: String,
+    pub order: usize,
+    pub changes: Vec<RulesetPatchChangeProvenance>,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
@@ -155,9 +228,9 @@ pub struct PreparedRulesetCompilation {
     pub definition_provenance: Vec<RulesetDefinitionProvenance>,
     pub relationships: Vec<RulesetRelationshipProvenance>,
     #[serde(default)]
-    pub derivation_provenance: Vec<Value>,
+    pub derivation_provenance: Vec<RulesetDerivationProvenance>,
     #[serde(default)]
-    pub overlay_provenance: Vec<Value>,
+    pub overlay_provenance: Vec<RulesetOverlayProvenance>,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
@@ -184,7 +257,7 @@ pub struct CompiledRulesetArtifact {
     pub compiled_policy_bindings: Vec<CompiledRulesetPolicyBinding>,
     pub definition_provenance: Vec<RulesetDefinitionProvenance>,
     pub relationships: Vec<RulesetRelationshipProvenance>,
-    pub derivation_provenance: Vec<Value>,
-    pub overlay_provenance: Vec<Value>,
+    pub derivation_provenance: Vec<RulesetDerivationProvenance>,
+    pub overlay_provenance: Vec<RulesetOverlayProvenance>,
     pub fingerprints: RulesetArtifactFingerprints,
 }

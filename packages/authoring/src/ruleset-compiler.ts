@@ -4,7 +4,7 @@ import {
 } from '@asha-rpg/ir';
 import type { RpgCapabilityId, RpgOperationId } from '@asha-rpg/ir';
 
-import { immutable } from './canonical.js';
+import { canonicalJson, immutable, stableFingerprint } from './canonical.js';
 import { defineActions, definePackage } from './builders.js';
 import { normalizePackage } from './normalize.js';
 import type {
@@ -14,9 +14,17 @@ import type {
   RulesetCompilerDiagnostic,
   RulesetCompilerTarget,
   RulesetDefinition,
+  RulesetDerivationProvenance,
   RulesetDefinitionProvenance,
   RulesetDefinitionReference,
   RulesetDependencyLockEntry,
+  RulesetMixinDefinition,
+  RulesetOverlayProvenance,
+  RulesetPatch,
+  RulesetPatchChangeProvenance,
+  RulesetPatchOperation,
+  RulesetPatchPathSegment,
+  RulesetPatchScalar,
   RulesetPackageRequest,
   RulesetPackageSource,
   RulesetRelationshipProvenance,
@@ -32,6 +40,22 @@ interface DefinitionRecord {
   readonly package: SelectedPackage;
   readonly definition: RulesetDefinition;
   readonly exported: boolean;
+}
+
+interface MaterializationResult {
+  readonly records: readonly DefinitionRecord[];
+  readonly derivationProvenance: readonly RulesetDerivationProvenance[];
+  readonly overlayProvenance: readonly RulesetOverlayProvenance[];
+  readonly relationships: readonly RulesetRelationshipProvenance[];
+}
+
+interface PatchedValue {
+  readonly semantic: unknown;
+  readonly presentation: import('./ruleset-types.js').RulesetPresentation | null;
+}
+
+interface PatchResult extends PatchedValue {
+  readonly changes: readonly RulesetPatchChangeProvenance[];
 }
 
 interface ResolutionContext {
@@ -86,14 +110,18 @@ export function prepareRulesetCompilation(options: {
   const { base, additions } = resolved;
 
   validateSelectedPackages(context, target);
-  validateDeferredRelationships(context);
-
   const rootKeys = new Set(
     [base, ...additions]
       .filter((entry): entry is SelectedPackage => entry !== undefined)
       .map((entry) => entry.key),
   );
-  const graph = closeDefinitionGraph(context, rootKeys);
+  const materialization = materializeSelectedDefinitions(
+    context,
+    options.composition,
+    resolved.overlays,
+  );
+  if (materialization === undefined) return failed(diagnostics);
+  const graph = closeDefinitionGraph(context, rootKeys, materialization.records);
   if (diagnostics.length > 0 || graph === undefined) return failed(diagnostics);
 
   const normalized = normalizeMaterializedActions(options.composition, graph, diagnostics);
@@ -123,6 +151,7 @@ export function prepareRulesetCompilation(options: {
   );
   const relationships = [
     ...context.relationships,
+    ...materialization.relationships,
     ...graph.exportedRoots.map((definitionId, order) => ({
       kind: 'exports' as const,
       source: graph.byGlobalId.get(definitionId)?.package.key ?? compositionKey,
@@ -158,8 +187,8 @@ export function prepareRulesetCompilation(options: {
     compiledPolicyBindings: policyBindings,
     definitionProvenance,
     relationships,
-    derivationProvenance: [],
-    overlayProvenance: [],
+    derivationProvenance: materialization.derivationProvenance,
+    overlayProvenance: materialization.overlayProvenance,
   });
   return immutable({ ok: true, prepared, diagnostics: NO_DIAGNOSTICS });
 }
@@ -199,25 +228,8 @@ function validateComposition(
       ),
     );
   }
-  for (const [index] of composition.overlays.entries()) {
-    diagnostics.push(
-      diagnostic(
-        'materialization',
-        'RULESET_OVERLAY_EXECUTION_DEFERRED',
-        `$.composition.overlays[${index}]`,
-        'overlay records cannot enter an artifact until #5957 materializes them',
-      ),
-    );
-  }
   for (const optionId of Object.keys(composition.configure).sort()) {
-    diagnostics.push(
-      diagnostic(
-        'materialization',
-        'RULESET_CONFIGURATION_EXECUTION_DEFERRED',
-        `$.composition.configure.${optionId}`,
-        'configuration records require an owned materializer before entering an artifact',
-      ),
-    );
+    requireIdentifier(optionId, `$.composition.configure.${optionId}`, diagnostics);
   }
 }
 
@@ -596,23 +608,970 @@ function validateRequirements(
   }
 }
 
-function validateDeferredRelationships(context: ResolutionContext): void {
+function materializeSelectedDefinitions(
+  context: ResolutionContext,
+  composition: import('./ruleset-types.js').RulesetCompositionManifest,
+  overlayPackages: readonly SelectedPackage[],
+): MaterializationResult | undefined {
+  const definitionsByPackage = new Map<string, Map<string, DefinitionRecord>>();
+  for (const entry of context.selected.values()) {
+    rejectDuplicateValues(
+      entry.source.manifest.definitions.map((definition) => definition.id),
+      'RULESET_DUPLICATE_LOCAL_DEFINITION',
+      `$.packages[${entry.key}].definitions`,
+      'definition',
+      context.diagnostics,
+    );
+    const exports = new Set(entry.source.manifest.exports);
+    const definitions = new Map<string, DefinitionRecord>();
+    for (const definition of entry.source.manifest.definitions) {
+      definitions.set(definition.id, {
+        package: entry,
+        definition,
+        exported: exports.has(definition.id),
+      });
+    }
+    for (const [index, definitionId] of entry.source.manifest.exports.entries()) {
+      if (definitions.has(definitionId)) continue;
+      context.diagnostics.push(
+        diagnostic(
+          'graph',
+          'RULESET_EXPORT_MISSING',
+          `$.packages[${entry.key}].exports[${index}]`,
+          `export ${definitionId} has no declaration`,
+          { packageId: entry.source.manifest.identity.id, definitionId, source: entry.source.manifest.entry },
+        ),
+      );
+    }
+    definitionsByPackage.set(entry.key, definitions);
+  }
+
+  const derivationsByDefinition = new Map<string, import('./ruleset-types.js').RulesetReservedRelationship[]>();
   for (const entry of context.selected.values()) {
     for (const [index, relationship] of entry.source.manifest.relationships.entries()) {
+      if (relationship.version !== 1) {
+        context.diagnostics.push(
+          diagnostic(
+            'compatibility',
+            'RULESET_RELATIONSHIP_VERSION_UNSUPPORTED',
+            `$.packages[${entry.key}].relationships[${index}].version`,
+            `${relationship.kind} relationship version ${String(relationship.version)} is unsupported`,
+            { packageId: entry.source.manifest.identity.id },
+          ),
+        );
+      }
+      if (relationship.kind !== 'derivesFrom') continue;
+      const key = `${entry.key}#${relationship.definitionId}`;
+      const relationships = derivationsByDefinition.get(key) ?? [];
+      relationships.push(relationship);
+      derivationsByDefinition.set(key, relationships);
+    }
+  }
+
+  const records = new Map<string, DefinitionRecord>();
+  const derivationProvenance: RulesetDerivationProvenance[] = [];
+  const relationshipProvenance: RulesetRelationshipProvenance[] = [];
+  const visiting: string[] = [];
+
+  const resolveConcrete = (record: DefinitionRecord): DefinitionRecord | undefined => {
+    const key = globalDefinitionId(record);
+    const cached = records.get(key);
+    if (cached !== undefined) return cached;
+    const cycleStart = visiting.indexOf(key);
+    if (cycleStart >= 0) {
+      const graphPath = [...visiting.slice(cycleStart), key];
       context.diagnostics.push(
         diagnostic(
           'materialization',
-          'RULESET_RELATIONSHIP_EXECUTION_DEFERRED',
-          `$.packages[${entry.key}].relationships[${index}]`,
-          `${relationship.kind} records are versioned but cannot enter an artifact until #5957 materializes them`,
+          'RULESET_DERIVATION_CYCLE',
+          '$.derivationGraph',
+          `derivation cycle: ${graphPath.join(' -> ')}`,
+          { definitionId: record.definition.id, source: record.definition.source, graphPath },
+        ),
+      );
+      return undefined;
+    }
+    if (visiting.length >= 32) {
+      context.diagnostics.push(
+        diagnostic(
+          'materialization',
+          'RULESET_DERIVATION_DEPTH_EXCEEDED',
+          '$.derivationGraph',
+          `derivation depth exceeds the supported limit of 32 at ${key}`,
+          { definitionId: record.definition.id, source: record.definition.source, graphPath: [...visiting, key] },
+        ),
+      );
+      return undefined;
+    }
+
+    if (record.definition.kind === 'action' || record.definition.kind === 'support') {
+      if ((derivationsByDefinition.get(key)?.length ?? 0) > 0) {
+        context.diagnostics.push(
+          diagnostic(
+            'materialization',
+            'RULESET_DERIVATION_DECLARATION_INCOMPATIBLE',
+            `$.packages[${record.package.key}].definitions.${record.definition.id}`,
+            'a derivesFrom relationship must name a derived definition declaration',
+            { definitionId: record.definition.id, source: record.definition.source },
+          ),
+        );
+        return undefined;
+      }
+      records.set(key, record);
+      return record;
+    }
+    if (record.definition.kind === 'mixin' || record.definition.kind === 'template') {
+      return undefined;
+    }
+
+    const derivations = derivationsByDefinition.get(key) ?? [];
+    if (derivations.length !== 1) {
+      context.diagnostics.push(
+        diagnostic(
+          'materialization',
+          derivations.length === 0
+            ? 'RULESET_DERIVATION_BASE_MISSING'
+            : 'RULESET_DERIVATION_BASE_AMBIGUOUS',
+          `$.packages[${record.package.key}].definitions.${record.definition.id}`,
+          derivations.length === 0
+            ? `derived definition ${record.definition.id} has no primary base`
+            : `derived definition ${record.definition.id} has more than one primary base`,
+          { definitionId: record.definition.id, source: record.definition.source },
+        ),
+      );
+      return undefined;
+    }
+    const derivation = derivations[0];
+    if (derivation?.kind !== 'derivesFrom') return undefined;
+    visiting.push(key);
+    const baseSource = resolveRelationshipReference(
+      record.package,
+      derivation.target,
+      `$.packages[${record.package.key}].relationships.${record.definition.id}.target`,
+      definitionsByPackage,
+      context.diagnostics,
+    );
+    const base = baseSource === undefined ? undefined : resolveConcrete(baseSource);
+    if (base === undefined) {
+      visiting.pop();
+      return undefined;
+    }
+    if (
+      base.definition.kind !== 'action' &&
+      base.definition.kind !== 'support'
+    ) {
+      visiting.pop();
+      return undefined;
+    }
+    if (base.definition.extensionPolicy !== 'derivable') {
+      context.diagnostics.push(
+        diagnostic(
+          'materialization',
+          'RULESET_DERIVATION_BASE_FORBIDDEN',
+          `$.packages[${record.package.key}].relationships.${record.definition.id}.target`,
+          `definition ${base.definition.id} is ${base.definition.extensionPolicy}, not derivable`,
+          { definitionId: base.definition.id, source: record.definition.source },
+        ),
+      );
+      visiting.pop();
+      return undefined;
+    }
+    if (record.definition.materializesAs !== base.definition.kind) {
+      context.diagnostics.push(
+        diagnostic(
+          'materialization',
+          'RULESET_DERIVATION_KIND_INCOMPATIBLE',
+          `$.packages[${record.package.key}].definitions.${record.definition.id}.materializesAs`,
+          `derived ${record.definition.materializesAs} cannot use ${base.definition.kind} base ${base.definition.id}`,
+          { definitionId: record.definition.id, source: record.definition.source },
+        ),
+      );
+      visiting.pop();
+      return undefined;
+    }
+
+    let current = definitionValue(base);
+    const changes: RulesetPatchChangeProvenance[] = [];
+    const mixinProvenance: import('./ruleset-types.js').RulesetDerivationMixinProvenance[] = [];
+    for (const [order, application] of derivation.mixins.entries()) {
+      const mixinRecord = resolveRelationshipReference(
+        record.package,
+        application.target,
+        `$.packages[${record.package.key}].relationships.${record.definition.id}.mixins[${order}]`,
+        definitionsByPackage,
+        context.diagnostics,
+      );
+      if (mixinRecord === undefined || mixinRecord.definition.kind !== 'mixin') {
+        if (mixinRecord !== undefined) {
+          context.diagnostics.push(
+            diagnostic(
+              'materialization',
+              'RULESET_MIXIN_KIND_INCOMPATIBLE',
+              `$.packages[${record.package.key}].relationships.${record.definition.id}.mixins[${order}]`,
+              `definition ${mixinRecord.definition.id} is not a mixin`,
+              { definitionId: mixinRecord.definition.id, source: record.definition.source },
+            ),
+          );
+        }
+        continue;
+      }
+      const parameters = resolveMixinParameters(
+        mixinRecord.definition,
+        application.parameters,
+        `$.packages[${record.package.key}].relationships.${record.definition.id}.mixins[${order}].parameters`,
+        context.diagnostics,
+      );
+      if (parameters === undefined) continue;
+      const applied = applyRulesetPatch(
+        current,
+        mixinRecord.definition.patch,
+        parameters,
+        `$.packages[${record.package.key}].relationships.${record.definition.id}.mixins[${order}].patch`,
+        context.diagnostics,
+      );
+      if (applied === undefined) continue;
+      current = applied;
+      changes.push(...applied.changes);
+      mixinProvenance.push({
+        definitionId: mixinRecord.definition.id,
+        packageId: mixinRecord.package.source.manifest.identity.id,
+        packageVersion: mixinRecord.package.source.manifest.identity.version,
+        fingerprint: stableFingerprint(mixinRecord.definition),
+        parameters,
+        order,
+      });
+      relationshipProvenance.push({
+        kind: 'derivesFrom',
+        source: key,
+        target: globalDefinitionId(mixinRecord),
+        order,
+      });
+    }
+    const local = applyRulesetPatch(
+      current,
+      derivation.localPatch,
+      {},
+      `$.packages[${record.package.key}].relationships.${record.definition.id}.localPatch`,
+      context.diagnostics,
+    );
+    if (local !== undefined) {
+      current = local;
+      changes.push(...local.changes);
+    }
+    const concrete = concreteDerivedRecord(record, base, current, context.diagnostics);
+    visiting.pop();
+    if (concrete === undefined) return undefined;
+    records.set(key, concrete);
+    const baseIdentity = base.package.source.manifest.identity;
+    const identity = record.package.source.manifest.identity;
+    derivationProvenance.push({
+      definitionId: record.definition.id,
+      packageId: identity.id,
+      packageVersion: identity.version,
+      baseDefinitionId: base.definition.id,
+      basePackageId: baseIdentity.id,
+      basePackageVersion: baseIdentity.version,
+      baseFingerprint: definitionMaterializationFingerprint(base),
+      mixins: mixinProvenance,
+      localPatchFingerprint: stableFingerprint(derivation.localPatch),
+      materializedFingerprint: definitionMaterializationFingerprint(concrete),
+      changes,
+    });
+    relationshipProvenance.push({
+      kind: 'derivesFrom',
+      source: key,
+      target: globalDefinitionId(base),
+      order: 0,
+    });
+    return concrete;
+  };
+
+  for (const definitions of definitionsByPackage.values()) {
+    for (const record of definitions.values()) {
+      if (
+        record.definition.kind === 'action' ||
+        record.definition.kind === 'support' ||
+        record.definition.kind === 'derived'
+      ) {
+        resolveConcrete(record);
+      }
+      if (
+        record.definition.kind === 'template' &&
+        record.definition.visibility === 'public'
+      ) {
+        context.diagnostics.push(
+          diagnostic(
+            'graph',
+            'RULESET_PUBLIC_DEFINITION_UNREACHABLE',
+            `$.packages[${record.package.key}].definitions.${record.definition.id}`,
+            `public template ${record.definition.id} has no materialized definition`,
+            {
+              packageId: record.package.source.manifest.identity.id,
+              definitionId: record.definition.id,
+              source: record.definition.source,
+            },
+          ),
+        );
+      }
+    }
+  }
+
+  const overlayProvenance: RulesetOverlayProvenance[] = [];
+  const overlayKeys = new Set(overlayPackages.map((entry) => entry.key));
+  const writes = new Set<string>();
+  for (const entry of context.selected.values()) {
+    const patchRelationships = entry.source.manifest.relationships.filter(
+      (relationship) => relationship.kind === 'patches',
+    );
+    if (patchRelationships.length > 0 && !overlayKeys.has(entry.key)) {
+      context.diagnostics.push(
+        diagnostic(
+          'materialization',
+          'RULESET_OVERLAY_PACKAGE_NOT_SELECTED',
+          `$.packages[${entry.key}].relationships`,
+          `package ${entry.key} declares patches but is not selected in composition overlay order`,
           { packageId: entry.source.manifest.identity.id, source: entry.source.manifest.entry },
         ),
       );
     }
   }
+  for (const [overlayOrder, entry] of overlayPackages.entries()) {
+    const relationships = entry.source.manifest.relationships.filter(
+      (relationship) => relationship.kind === 'patches',
+    );
+    if (relationships.length === 0) {
+      context.diagnostics.push(
+        diagnostic(
+          'materialization',
+          'RULESET_OVERLAY_EMPTY',
+          `$.composition.overlays[${overlayOrder}]`,
+          `selected overlay ${entry.key} declares no patch relationships`,
+          { packageId: entry.source.manifest.identity.id, source: entry.source.manifest.entry },
+        ),
+      );
+    }
+    for (const [relationshipOrder, relationship] of relationships.entries()) {
+      if (relationship.kind !== 'patches') continue;
+      const sourceTarget = resolveRelationshipReference(
+        entry,
+        relationship.target,
+        `$.packages[${entry.key}].relationships[${relationshipOrder}].target`,
+        definitionsByPackage,
+        context.diagnostics,
+      );
+      const target = sourceTarget === undefined ? undefined : records.get(globalDefinitionId(sourceTarget));
+      if (target === undefined) continue;
+      const targetIdentity = target.package.source.manifest.identity;
+      if (
+        relationship.targetPackage.id !== targetIdentity.id ||
+        relationship.targetPackage.version !== targetIdentity.version
+      ) {
+        context.diagnostics.push(
+          diagnostic(
+            'materialization',
+            'RULESET_OVERLAY_TARGET_PACKAGE_MISMATCH',
+            `$.packages[${entry.key}].relationships[${relationshipOrder}].targetPackage`,
+            `overlay pins ${relationship.targetPackage.id}@${relationship.targetPackage.version}, resolved ${targetIdentity.id}@${targetIdentity.version}`,
+            { definitionId: target.definition.id, expected: `${relationship.targetPackage.id}@${relationship.targetPackage.version}`, actual: `${targetIdentity.id}@${targetIdentity.version}` },
+          ),
+        );
+        continue;
+      }
+      if (target.definition.extensionPolicy !== 'patchable') {
+        context.diagnostics.push(
+          diagnostic(
+            'materialization',
+            'RULESET_OVERLAY_TARGET_FORBIDDEN',
+            `$.packages[${entry.key}].relationships[${relationshipOrder}].target`,
+            `definition ${target.definition.id} is ${target.definition.extensionPolicy}, not patchable`,
+            { definitionId: target.definition.id, source: entry.source.manifest.entry },
+          ),
+        );
+        continue;
+      }
+      const beforeFingerprint = definitionMaterializationFingerprint(target);
+      if (beforeFingerprint !== relationship.expectedFingerprint) {
+        context.diagnostics.push(
+          diagnostic(
+            'materialization',
+            'RULESET_OVERLAY_EXPECTED_FINGERPRINT_MISMATCH',
+            `$.packages[${entry.key}].relationships[${relationshipOrder}].expectedFingerprint`,
+            `overlay expected ${relationship.expectedFingerprint}, materialized target is ${beforeFingerprint}`,
+            { definitionId: target.definition.id, expected: relationship.expectedFingerprint, actual: beforeFingerprint },
+          ),
+        );
+        continue;
+      }
+      if (!patchMatchesPlane(relationship.patch, relationship.plane)) {
+        context.diagnostics.push(
+          diagnostic(
+            'materialization',
+            'RULESET_OVERLAY_IMPACT_PLANE_MISMATCH',
+            `$.packages[${entry.key}].relationships[${relationshipOrder}].patch`,
+            `overlay patch operations exceed declared ${relationship.plane} impact plane`,
+            { definitionId: target.definition.id },
+          ),
+        );
+        continue;
+      }
+      let conflicted = false;
+      for (const operation of relationship.patch.operations) {
+        const write = `${target.definition.id}:${operation.plane}:${patchPath(operation.path)}`;
+        if (writes.has(write) && relationship.conflictPolicy === 'reject') {
+          conflicted = true;
+          context.diagnostics.push(
+            diagnostic(
+              'materialization',
+              'RULESET_OVERLAY_WRITE_CONFLICT',
+              `$.packages[${entry.key}].relationships[${relationshipOrder}].patch`,
+              `overlay write conflicts at ${write}`,
+              { definitionId: target.definition.id },
+            ),
+          );
+        }
+        writes.add(write);
+      }
+      if (conflicted) continue;
+      const applied = applyRulesetPatch(
+        definitionValue(target),
+        relationship.patch,
+        {},
+        `$.packages[${entry.key}].relationships[${relationshipOrder}].patch`,
+        context.diagnostics,
+      );
+      if (applied === undefined) continue;
+      const patched = replaceConcreteRecordValue(target, applied, context.diagnostics);
+      if (patched === undefined) continue;
+      records.set(globalDefinitionId(target), patched);
+      const afterFingerprint = definitionMaterializationFingerprint(patched);
+      overlayProvenance.push({
+        overlayPackageId: entry.source.manifest.identity.id,
+        overlayPackageVersion: entry.source.manifest.identity.version,
+        targetDefinitionId: target.definition.id,
+        targetPackageId: targetIdentity.id,
+        targetPackageVersion: targetIdentity.version,
+        expectedFingerprint: relationship.expectedFingerprint,
+        beforeFingerprint,
+        afterFingerprint,
+        plane: relationship.plane,
+        conflictPolicy: relationship.conflictPolicy,
+        patchFingerprint: stableFingerprint(relationship.patch),
+        order: overlayOrder * 1_000 + relationshipOrder,
+        changes: applied.changes,
+      });
+      relationshipProvenance.push({
+        kind: 'patches',
+        source: entry.key,
+        target: globalDefinitionId(target),
+        order: overlayOrder * 1_000 + relationshipOrder,
+      });
+    }
+  }
+
+  for (const [optionOrder, [optionId, selectedValue]] of Object.entries(composition.configure)
+    .sort(([left], [right]) => left.localeCompare(right))
+    .entries()) {
+    const matches = [...context.selected.values()].flatMap((entry) =>
+      entry.source.manifest.relationships
+        .filter(
+          (relationship) =>
+            relationship.kind === 'configures' &&
+            relationship.optionId === optionId &&
+            relationship.value === selectedValue,
+        )
+        .map((relationship) => ({ entry, relationship })),
+    );
+    if (matches.length !== 1) {
+      context.diagnostics.push(
+        diagnostic(
+          'materialization',
+          matches.length === 0
+            ? 'RULESET_CONFIGURATION_OPTION_UNAVAILABLE'
+            : 'RULESET_CONFIGURATION_OPTION_AMBIGUOUS',
+          `$.composition.configure.${optionId}`,
+          matches.length === 0
+            ? `no selected package exposes ${optionId}=${String(selectedValue)}`
+            : `more than one selected package exposes ${optionId}=${String(selectedValue)}`,
+        ),
+      );
+      continue;
+    }
+    const match = matches[0];
+    if (match === undefined || match.relationship.kind !== 'configures') continue;
+    const sourceTarget = resolveRelationshipReference(
+      match.entry,
+      match.relationship.target,
+      `$.packages[${match.entry.key}].relationships.${optionId}.target`,
+      definitionsByPackage,
+      context.diagnostics,
+    );
+    const target = sourceTarget === undefined ? undefined : records.get(globalDefinitionId(sourceTarget));
+    if (target === undefined) continue;
+    if (target.definition.extensionPolicy !== 'configurable') {
+      context.diagnostics.push(
+        diagnostic(
+          'materialization',
+          'RULESET_CONFIGURATION_TARGET_FORBIDDEN',
+          `$.packages[${match.entry.key}].relationships.${optionId}.target`,
+          `definition ${target.definition.id} is ${target.definition.extensionPolicy}, not configurable`,
+          { definitionId: target.definition.id },
+        ),
+      );
+      continue;
+    }
+    const applied = applyRulesetPatch(
+      definitionValue(target),
+      match.relationship.patch,
+      {},
+      `$.packages[${match.entry.key}].relationships.${optionId}.patch`,
+      context.diagnostics,
+    );
+    if (applied === undefined) continue;
+    const configured = replaceConcreteRecordValue(target, applied, context.diagnostics);
+    if (configured === undefined) continue;
+    records.set(globalDefinitionId(target), configured);
+    relationshipProvenance.push({
+      kind: 'configures',
+      source: match.entry.key,
+      target: `${globalDefinitionId(target)}:${optionId}=${String(selectedValue)}`,
+      order: optionOrder,
+    });
+  }
+
+  if (context.diagnostics.length > 0) return undefined;
+  return {
+    records: [...records.values()].sort((left, right) =>
+      globalDefinitionId(left).localeCompare(globalDefinitionId(right)),
+    ),
+    derivationProvenance: derivationProvenance.sort((left, right) =>
+      left.definitionId.localeCompare(right.definitionId),
+    ),
+    overlayProvenance: overlayProvenance.sort((left, right) => left.order - right.order),
+    relationships: relationshipProvenance,
+  };
 }
 
-function closeDefinitionGraph(context: ResolutionContext, rootKeys: ReadonlySet<string>): {
+function resolveRelationshipReference(
+  sourcePackage: SelectedPackage,
+  reference: RulesetDefinitionReference,
+  path: string,
+  definitionsByPackage: ReadonlyMap<string, ReadonlyMap<string, DefinitionRecord>>,
+  diagnostics: RulesetCompilerDiagnostic[],
+): DefinitionRecord | undefined {
+  const targetPackageKey =
+    reference.importAs === undefined
+      ? sourcePackage.key
+      : sourcePackage.aliases.get(reference.importAs);
+  if (targetPackageKey === undefined) {
+    diagnostics.push(
+      diagnostic(
+        'materialization',
+        'RULESET_IMPORT_ALIAS_UNRESOLVED',
+        path,
+        `import alias ${reference.importAs ?? ''} is not declared`,
+        { packageId: sourcePackage.source.manifest.identity.id, source: sourcePackage.source.manifest.entry },
+      ),
+    );
+    return undefined;
+  }
+  const target = definitionsByPackage.get(targetPackageKey)?.get(reference.definitionId);
+  if (target === undefined) {
+    diagnostics.push(
+      diagnostic(
+        'materialization',
+        'RULESET_DEFINITION_REFERENCE_MISSING',
+        path,
+        `definition ${reference.definitionId} was not found in ${targetPackageKey}`,
+        { packageId: sourcePackage.source.manifest.identity.id, definitionId: reference.definitionId, source: sourcePackage.source.manifest.entry },
+      ),
+    );
+    return undefined;
+  }
+  if (
+    targetPackageKey !== sourcePackage.key &&
+    (!target.exported || target.definition.visibility === 'private')
+  ) {
+    diagnostics.push(
+      diagnostic(
+        'materialization',
+        'RULESET_PRIVATE_CROSS_PACKAGE_REFERENCE',
+        path,
+        `definition ${target.definition.id} is not exported for cross-package use`,
+        { packageId: target.package.source.manifest.identity.id, definitionId: target.definition.id, source: sourcePackage.source.manifest.entry },
+      ),
+    );
+    return undefined;
+  }
+  return target;
+}
+
+function definitionValue(record: DefinitionRecord): PatchedValue {
+  if (record.definition.kind === 'action') {
+    return { semantic: record.definition.action, presentation: record.definition.presentation ?? null };
+  }
+  if (record.definition.kind === 'support') {
+    return { semantic: record.definition.semantic, presentation: record.definition.presentation ?? null };
+  }
+  throw new Error(`definition ${record.definition.id} is not concrete`);
+}
+
+function concreteDerivedRecord(
+  derived: DefinitionRecord,
+  base: DefinitionRecord,
+  value: PatchedValue,
+  diagnostics: RulesetCompilerDiagnostic[],
+): DefinitionRecord | undefined {
+  if (derived.definition.kind !== 'derived') return undefined;
+  const references = uniqueReferences(derived.definition.references);
+  if (derived.definition.materializesAs === 'action') {
+    if (!isRecord(value.semantic)) {
+      diagnostics.push(diagnostic('materialization', 'RULESET_DERIVED_ACTION_INVALID', '$.semantic', 'derived action semantic value must be an object', { definitionId: derived.definition.id }));
+      return undefined;
+    }
+    const action = immutable({
+      ...value.semantic,
+      id: derived.definition.id,
+      sourcePath: derived.definition.source.module,
+    }) as unknown as import('./types.js').AuthoredAction;
+    return {
+      package: derived.package,
+      exported: derived.exported,
+      definition: immutable({
+        kind: 'action' as const,
+        id: derived.definition.id,
+        visibility: derived.definition.visibility,
+        extensionPolicy: derived.definition.extensionPolicy,
+        source: derived.definition.source,
+        references,
+        ...(value.presentation === null ? {} : { presentation: value.presentation }),
+        action,
+      }),
+    };
+  }
+  if (!isRecord(value.semantic)) {
+    diagnostics.push(diagnostic('materialization', 'RULESET_DERIVED_SUPPORT_INVALID', '$.semantic', 'derived support semantic value must be an object', { definitionId: derived.definition.id }));
+    return undefined;
+  }
+  return {
+    package: derived.package,
+    exported: derived.exported,
+    definition: immutable({
+      kind: 'support' as const,
+      id: derived.definition.id,
+      visibility: derived.definition.visibility,
+      extensionPolicy: derived.definition.extensionPolicy,
+      source: derived.definition.source,
+      references,
+      ...(value.presentation === null ? {} : { presentation: value.presentation }),
+      semantic: value.semantic as unknown as import('./ruleset-types.js').RulesetSupportDefinition['semantic'],
+    }),
+  };
+}
+
+function replaceConcreteRecordValue(
+  record: DefinitionRecord,
+  value: PatchedValue,
+  diagnostics: RulesetCompilerDiagnostic[],
+): DefinitionRecord | undefined {
+  if (record.definition.kind === 'action') {
+    if (!isRecord(value.semantic)) return undefined;
+    return {
+      ...record,
+      definition: immutable({
+        ...record.definition,
+        action: value.semantic as unknown as import('./types.js').AuthoredAction,
+        ...(value.presentation === null ? {} : { presentation: value.presentation }),
+      }),
+    };
+  }
+  if (record.definition.kind === 'support') {
+    if (!isRecord(value.semantic)) return undefined;
+    return {
+      ...record,
+      definition: immutable({
+        ...record.definition,
+        semantic: value.semantic as unknown as import('./ruleset-types.js').RulesetSupportDefinition['semantic'],
+        ...(value.presentation === null ? {} : { presentation: value.presentation }),
+      }),
+    };
+  }
+  diagnostics.push(diagnostic('materialization', 'RULESET_PATCH_TARGET_INCOMPATIBLE', '$.patch', `definition ${record.definition.id} is not patchable materialized content`, { definitionId: record.definition.id }));
+  return undefined;
+}
+
+function uniqueReferences(
+  references: readonly RulesetDefinitionReference[],
+): readonly RulesetDefinitionReference[] {
+  const byIdentity = new Map<string, RulesetDefinitionReference>();
+  for (const reference of references) {
+    byIdentity.set(`${reference.importAs ?? ''}#${reference.definitionId}`, reference);
+  }
+  return [...byIdentity.values()].sort((left, right) =>
+    `${left.importAs ?? ''}#${left.definitionId}`.localeCompare(
+      `${right.importAs ?? ''}#${right.definitionId}`,
+    ),
+  );
+}
+
+function resolveMixinParameters(
+  mixin: RulesetMixinDefinition,
+  supplied: Readonly<Record<string, string | number | boolean>>,
+  path: string,
+  diagnostics: RulesetCompilerDiagnostic[],
+): Readonly<Record<string, string | number | boolean>> | undefined {
+  const definitions = new Map(mixin.parameters.map((parameter) => [parameter.id, parameter]));
+  const resolved: Record<string, string | number | boolean> = {};
+  for (const parameterId of Object.keys(supplied)) {
+    if (definitions.has(parameterId)) continue;
+    diagnostics.push(diagnostic('materialization', 'RULESET_MIXIN_PARAMETER_UNKNOWN', `${path}.${parameterId}`, `mixin ${mixin.id} does not declare parameter ${parameterId}`, { definitionId: mixin.id }));
+  }
+  for (const parameter of mixin.parameters) {
+    const value = supplied[parameter.id] ?? parameter.default;
+    if (value === undefined) {
+      diagnostics.push(diagnostic('materialization', 'RULESET_MIXIN_PARAMETER_MISSING', `${path}.${parameter.id}`, `mixin parameter ${parameter.id} is required`, { definitionId: mixin.id }));
+      continue;
+    }
+    if (typeof value !== parameter.type) {
+      diagnostics.push(diagnostic('materialization', 'RULESET_MIXIN_PARAMETER_TYPE_MISMATCH', `${path}.${parameter.id}`, `mixin parameter ${parameter.id} must be ${parameter.type}`, { definitionId: mixin.id, expected: parameter.type, actual: typeof value }));
+      continue;
+    }
+    resolved[parameter.id] = value;
+  }
+  return diagnostics.length > 0 ? undefined : immutable(resolved);
+}
+
+function applyRulesetPatch(
+  value: PatchedValue,
+  patch: RulesetPatch,
+  parameters: Readonly<Record<string, string | number | boolean>>,
+  path: string,
+  diagnostics: RulesetCompilerDiagnostic[],
+): PatchResult | undefined {
+  if (patch.version !== 1) {
+    diagnostics.push(diagnostic('compatibility', 'RULESET_PATCH_VERSION_UNSUPPORTED', `${path}.version`, `patch version ${String(patch.version)} is unsupported`));
+    return undefined;
+  }
+  let semantic = cloneJsonValue(value.semantic);
+  let presentation: unknown = cloneJsonValue(value.presentation ?? {});
+  const changes: RulesetPatchChangeProvenance[] = [];
+  for (const [index, operation] of patch.operations.entries()) {
+    const operationPath = `${path}.operations[${index}]`;
+    const root = operation.plane === 'semantic' ? semantic : presentation;
+    const before = cloneJsonValue(readPatchPath(root, operation.path, operationPath, diagnostics));
+    if (operation.kind === 'setScalar') {
+      const replacement = resolvePatchScalar(operation.value, parameters, operationPath, diagnostics);
+      if (replacement === undefined && operation.value !== null) continue;
+      if (!writePatchPath(root, operation.path, replacement ?? null, operationPath, diagnostics)) continue;
+    } else if (operation.kind === 'adjustNumber') {
+      const current = readPatchPath(root, operation.path, operationPath, diagnostics);
+      const multiply = resolvePatchNumber(operation.multiply, parameters, operationPath, diagnostics);
+      const add = resolvePatchNumber(operation.add, parameters, operationPath, diagnostics);
+      if (typeof current !== 'number' || multiply === undefined || add === undefined) {
+        diagnostics.push(diagnostic('materialization', 'RULESET_PATCH_NUMBER_REQUIRED', operationPath, `adjustNumber requires a numeric target at ${patchPath(operation.path)}`));
+        continue;
+      }
+      if (!writePatchPath(root, operation.path, current * multiply + add, operationPath, diagnostics)) continue;
+    } else if (operation.kind === 'appendMember') {
+      const target = readPatchPath(root, operation.path, operationPath, diagnostics);
+      if (!Array.isArray(target)) {
+        diagnostics.push(diagnostic('materialization', 'RULESET_PATCH_LIST_REQUIRED', operationPath, `appendMember requires a list at ${patchPath(operation.path)}`));
+        continue;
+      }
+      if (target.some((entry) => isRecord(entry) && entry[operation.identity.key] === operation.identity.value)) {
+        diagnostics.push(diagnostic('materialization', 'RULESET_PATCH_MEMBER_DUPLICATE', operationPath, `member ${operation.identity.key}=${operation.identity.value} already exists`));
+        continue;
+      }
+      const member = { ...operation.value, [operation.identity.key]: operation.identity.value };
+      const position = operation.position;
+      if (position.kind === 'start') target.unshift(member);
+      else if (position.kind === 'end') target.push(member);
+      else {
+        const anchorIndex = target.findIndex((entry) => memberMatches(entry, position.anchor));
+        if (anchorIndex < 0) {
+          diagnostics.push(diagnostic('materialization', 'RULESET_PATCH_ANCHOR_MISSING', operationPath, `anchor ${patchSegment(position.anchor)} is missing`));
+          continue;
+        }
+        target.splice(position.kind === 'before' ? anchorIndex : anchorIndex + 1, 0, member);
+      }
+    } else {
+      const target = readPatchPath(root, operation.path, operationPath, diagnostics);
+      if (!Array.isArray(target)) {
+        diagnostics.push(diagnostic('materialization', 'RULESET_PATCH_LIST_REQUIRED', operationPath, `removeMember requires a list at ${patchPath(operation.path)}`));
+        continue;
+      }
+      const indexes = target
+        .map((entry, memberIndex) => memberMatches(entry, operation.identity) ? memberIndex : -1)
+        .filter((memberIndex) => memberIndex >= 0);
+      if (indexes.length !== 1) {
+        diagnostics.push(diagnostic('materialization', indexes.length === 0 ? 'RULESET_PATCH_MEMBER_MISSING' : 'RULESET_PATCH_MEMBER_AMBIGUOUS', operationPath, `member ${patchSegment(operation.identity)} must resolve exactly once`));
+        continue;
+      }
+      target.splice(indexes[0] ?? 0, 1);
+    }
+    const after = cloneJsonValue(readPatchPath(root, operation.path, operationPath, diagnostics));
+    changes.push({
+      plane: operation.plane,
+      path: patchPath(operation.path),
+      before,
+      after,
+      effective: canonicalJson(before) !== canonicalJson(after),
+    });
+    if (operation.plane === 'semantic') semantic = root;
+    else presentation = root;
+  }
+  if (diagnostics.length > 0) return undefined;
+  return {
+    semantic: immutable(semantic),
+    presentation: Object.keys(isRecord(presentation) ? presentation : {}).length === 0
+      ? null
+      : immutable(presentation as unknown as import('./ruleset-types.js').RulesetPresentation),
+    changes: immutable(changes),
+  };
+}
+
+function readPatchPath(
+  root: unknown,
+  path: readonly RulesetPatchPathSegment[],
+  diagnosticPath: string,
+  diagnostics: RulesetCompilerDiagnostic[],
+): unknown {
+  let current = root;
+  for (const segment of path) {
+    if (segment.kind === 'field') {
+      if (!isRecord(current) || !(segment.name in current)) {
+        diagnostics.push(diagnostic('materialization', 'RULESET_PATCH_PATH_MISSING', diagnosticPath, `field ${segment.name} is missing at ${patchPath(path)}`));
+        return undefined;
+      }
+      current = current[segment.name];
+    } else {
+      if (!Array.isArray(current)) {
+        diagnostics.push(diagnostic('materialization', 'RULESET_PATCH_LIST_REQUIRED', diagnosticPath, `member selector ${patchSegment(segment)} requires a list`));
+        return undefined;
+      }
+      const matches = current.filter((entry) => memberMatches(entry, segment));
+      if (matches.length !== 1) {
+        diagnostics.push(diagnostic('materialization', matches.length === 0 ? 'RULESET_PATCH_MEMBER_MISSING' : 'RULESET_PATCH_MEMBER_AMBIGUOUS', diagnosticPath, `member ${patchSegment(segment)} must resolve exactly once`));
+        return undefined;
+      }
+      current = matches[0];
+    }
+  }
+  return current;
+}
+
+function writePatchPath(
+  root: unknown,
+  path: readonly RulesetPatchPathSegment[],
+  value: unknown,
+  diagnosticPath: string,
+  diagnostics: RulesetCompilerDiagnostic[],
+): boolean {
+  if (path.length === 0) {
+    diagnostics.push(diagnostic('materialization', 'RULESET_PATCH_ROOT_WRITE_FORBIDDEN', diagnosticPath, 'patch operations must name a field or stable member'));
+    return false;
+  }
+  const parentPath = path.slice(0, -1);
+  const parent = readPatchPath(root, parentPath, diagnosticPath, diagnostics);
+  const leaf = path[path.length - 1];
+  if (leaf?.kind !== 'field' || !isRecord(parent) || !(leaf.name in parent)) {
+    diagnostics.push(diagnostic('materialization', 'RULESET_PATCH_PATH_MISSING', diagnosticPath, `writable field is missing at ${patchPath(path)}`));
+    return false;
+  }
+  parent[leaf.name] = value;
+  return true;
+}
+
+function resolvePatchScalar(
+  value: RulesetPatchOperation extends infer _Unused ? RulesetPatchScalar | { readonly parameter: string } : never,
+  parameters: Readonly<Record<string, string | number | boolean>>,
+  path: string,
+  diagnostics: RulesetCompilerDiagnostic[],
+): RulesetPatchScalar | undefined {
+  if (!isParameterReference(value)) return value;
+  const resolved = parameters[value.parameter];
+  if (resolved !== undefined) return resolved;
+  diagnostics.push(diagnostic('materialization', 'RULESET_PATCH_PARAMETER_UNRESOLVED', path, `parameter ${value.parameter} is not supplied`));
+  return undefined;
+}
+
+function resolvePatchNumber(
+  value: import('./ruleset-types.js').RulesetPatchNumber,
+  parameters: Readonly<Record<string, string | number | boolean>>,
+  path: string,
+  diagnostics: RulesetCompilerDiagnostic[],
+): number | undefined {
+  if (typeof value === 'number') return value;
+  const resolved = parameters[value.parameter];
+  if (typeof resolved === 'number') return resolved;
+  diagnostics.push(diagnostic('materialization', 'RULESET_PATCH_NUMBER_PARAMETER_UNRESOLVED', path, `numeric parameter ${value.parameter} is not supplied`));
+  return undefined;
+}
+
+function isParameterReference(value: unknown): value is { readonly parameter: string } {
+  return isRecord(value) && typeof value['parameter'] === 'string';
+}
+
+function patchMatchesPlane(patch: RulesetPatch, plane: 'semantic' | 'presentation' | 'both'): boolean {
+  return patch.operations.every((operation) => plane === 'both' || operation.plane === plane);
+}
+
+function patchPath(path: readonly RulesetPatchPathSegment[]): string {
+  return path.map(patchSegment).join('.');
+}
+
+function patchSegment(segment: RulesetPatchPathSegment): string {
+  return segment.kind === 'field'
+    ? segment.name
+    : `[${segment.key}=${segment.value}]`;
+}
+
+function memberMatches(value: unknown, selector: Extract<RulesetPatchPathSegment, { readonly kind: 'member' }>): boolean {
+  return isRecord(value) && value[selector.key] === selector.value;
+}
+
+function definitionMaterializationFingerprint(record: DefinitionRecord): string {
+  return stableFingerprint({
+    id: record.definition.id,
+    kind: record.definition.kind,
+    extensionPolicy: record.definition.extensionPolicy,
+    value: definitionValue(record),
+    references: uniqueReferences(record.definition.references),
+  });
+}
+
+export function rulesetDefinitionMaterializationFingerprint(
+  definition: Extract<RulesetDefinition, { readonly kind: 'action' | 'support' }>,
+): string {
+  return stableFingerprint({
+    id: definition.id,
+    kind: definition.kind,
+    extensionPolicy: definition.extensionPolicy,
+    value: definition.kind === 'action'
+      ? { semantic: definition.action, presentation: definition.presentation ?? null }
+      : { semantic: definition.semantic, presentation: definition.presentation ?? null },
+    references: uniqueReferences(definition.references),
+  });
+}
+
+function cloneJsonValue(value: unknown): unknown {
+  if (Array.isArray(value)) return value.map(cloneJsonValue);
+  if (isRecord(value)) {
+    return Object.fromEntries(
+      Object.entries(value).map(([key, child]) => [key, cloneJsonValue(child)]),
+    );
+  }
+  return value;
+}
+
+function isRecord(value: unknown): value is Record<string, unknown> {
+  return value !== null && typeof value === 'object' && !Array.isArray(value);
+}
+
+function closeDefinitionGraph(
+  context: ResolutionContext,
+  rootKeys: ReadonlySet<string>,
+  sourceRecords: readonly DefinitionRecord[],
+): {
   readonly materialized: readonly DefinitionRecord[];
   readonly exportedRoots: readonly string[];
   readonly resolvedReferences: ReadonlyMap<string, readonly string[]>;
@@ -622,18 +1581,18 @@ function closeDefinitionGraph(context: ResolutionContext, rootKeys: ReadonlySet<
   for (const entry of context.selected.values()) {
     const definitions = new Map<string, DefinitionRecord>();
     const exports = new Set(entry.source.manifest.exports);
-    rejectDuplicateValues(
-      entry.source.manifest.definitions.map((definition) => definition.id),
-      'RULESET_DUPLICATE_LOCAL_DEFINITION',
-      `$.packages[${entry.key}].definitions`,
-      'definition',
-      context.diagnostics,
-    );
     for (const definition of entry.source.manifest.definitions) {
-      definitions.set(definition.id, { package: entry, definition, exported: exports.has(definition.id) });
+      definitions.set(definition.id, {
+        package: entry,
+        definition,
+        exported: exports.has(definition.id),
+      });
+    }
+    for (const record of sourceRecords.filter((candidate) => candidate.package.key === entry.key)) {
+      definitions.set(record.definition.id, record);
     }
     for (const [index, definitionId] of entry.source.manifest.exports.entries()) {
-      if (!definitions.has(definitionId)) {
+      if (!entry.source.manifest.definitions.some((definition) => definition.id === definitionId)) {
         context.diagnostics.push(
           diagnostic(
             'graph',
@@ -651,7 +1610,11 @@ function closeDefinitionGraph(context: ResolutionContext, rootKeys: ReadonlySet<
   const roots = [...rootKeys]
     .flatMap((key) =>
       [...(definitionsByPackage.get(key)?.values() ?? [])]
-        .filter((record) => record.exported)
+        .filter(
+          (record) =>
+            record.exported &&
+            sourceRecords.some((candidate) => globalDefinitionId(candidate) === globalDefinitionId(record)),
+        )
         .map((record) => globalDefinitionId(record)),
     )
     .sort();
@@ -705,7 +1668,7 @@ function closeDefinitionGraph(context: ResolutionContext, rootKeys: ReadonlySet<
     if (record !== undefined) visit(record);
   }
 
-  for (const record of byGlobalId.values()) {
+  for (const record of sourceRecords) {
     const globalId = globalDefinitionId(record);
     if (!reachable.has(globalId) && record.definition.visibility === 'public') {
       context.diagnostics.push(
@@ -942,18 +1905,19 @@ function materializeDefinitions(
   );
   const rootSet = new Set(exportedRoots);
   return records
-    .filter((record) => record.definition.kind !== 'template')
+    .filter(
+      (record): record is DefinitionRecord & {
+        readonly definition: Extract<RulesetDefinition, { readonly kind: 'action' | 'support' }>;
+      } => record.definition.kind === 'action' || record.definition.kind === 'support',
+    )
     .map((record) => {
       const definition = record.definition;
-      if (definition.kind === 'template') {
-        throw new Error(`template ${definition.id} reached direct materialization`);
-      }
       const semantic =
         definition.kind === 'action'
           ? normalizedActions.get(definition.id)
           : definition.semantic;
       if (semantic === undefined) throw new Error(`materialization missing ${definition.id}`);
-      return {
+      const materialized = {
         id: definition.id,
         kind: definition.kind,
         visibility: rootSet.has(definition.id) ? ('exported' as const) : ('support' as const),
@@ -962,6 +1926,10 @@ function materializeDefinitions(
         presentation: definition.presentation ?? null,
         references: (references.get(globalDefinitionId(record)) ?? []).map(localDefinitionId),
         provenance: provenance(record),
+      };
+      return {
+        ...materialized,
+        fingerprint: stableFingerprint(materialized),
       };
     })
     .sort((left, right) => left.id.localeCompare(right.id));

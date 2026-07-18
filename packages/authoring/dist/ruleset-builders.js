@@ -17,6 +17,15 @@ export function defineSupportDefinition(input) {
 export function defineTemplateDefinition(input) {
     return immutable({ ...input });
 }
+export function defineDerivedDefinition(input) {
+    return immutable({ ...input });
+}
+export function defineMixinDefinition(input) {
+    return immutable({ ...input });
+}
+export function defineRulesetPatch(input) {
+    return immutable({ ...input });
+}
 export function definePolicyBinding(input) {
     return immutable({ ...input });
 }
