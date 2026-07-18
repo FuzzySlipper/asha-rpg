@@ -1,38 +1,11 @@
 use asha_rpg::{
-    compile_normalized_rpg_json, DeterministicRandomStream, GridPosition, PreEffectWorkspace,
-    RpgAuthoritySession, RpgCapabilityState, RpgEntityState, RpgIntent, RpgPreEffectOwner, Team,
+    compile_normalized_rpg_json, GridPosition, RpgAuthorityCommand, RpgAuthoritySession,
+    RpgCapabilityState, RpgCommandOutcome, RpgEntityState, RpgIntent, RpgReactionCommand, Team,
 };
-
-#[derive(Default)]
-struct GameAuthority {
-    revision: u64,
-    committed_damage: Option<u32>,
-}
-
-impl RpgPreEffectOwner for GameAuthority {
-    fn revision_hash(&self) -> String {
-        format!("minimal-game:{:016x}", self.revision)
-    }
-
-    fn validate_commit(&self, workspace: &PreEffectWorkspace) -> Result<(), Vec<String>> {
-        (workspace.damage_amount <= 20)
-            .then_some(())
-            .ok_or_else(|| vec!["damageOutOfConsumerRange".to_owned()])
-    }
-
-    fn commit(&mut self, workspace: &PreEffectWorkspace) -> Vec<String> {
-        self.committed_damage = Some(workspace.damage_amount);
-        self.revision = self.revision.saturating_add(1);
-        vec![format!(
-            "minimal-game-fact:damage={}",
-            workspace.damage_amount
-        )]
-    }
-}
 
 fn main() {
     run_authority_session();
-    println!("minimal consumer accepted semantic damage=7 and reaction damage=7");
+    println!("minimal consumer resumed one staged reaction and committed damage=5");
 }
 
 fn run_authority_session() {
@@ -41,13 +14,15 @@ fn run_authority_session() {
       "package":{"id":"minimal.game","version":"1.0.0"},
       "catalogs":{
         "defenses":["guard"],
-        "capabilities":["capability.vitality","capability.defenses","capability.random"]
+        "capabilities":["capability.vitality","capability.defenses","capability.random","capability.reactions"]
       },
       "requirements":[
         {"kind":"operation","id":"operation.damage","version":1},
+        {"kind":"operation","id":"operation.openReaction","version":1},
         {"kind":"capability","id":"capability.vitality","version":1},
         {"kind":"capability","id":"capability.defenses","version":1},
-        {"kind":"capability","id":"capability.random","version":1}
+        {"kind":"capability","id":"capability.random","version":1},
+        {"kind":"capability","id":"capability.reactions","version":1}
       ],
       "actions":[{
         "id":"minimal.strike","name":"Minimal Strike","sourcePath":"actions/minimal-strike",
@@ -55,7 +30,12 @@ fn run_authority_session() {
         "check":{"kind":"attack","modifier":{"kind":"constant","value":2},"defenseId":"guard"},
         "rollScope":"perTarget","costs":[],
         "program":{"kind":"atomic","body":{"kind":"onCheck","hit":
-          {"kind":"operation","operation":{"kind":"damage","amount":{"kind":"constant","value":7},"damageType":"force"}}
+          {"kind":"sequence","steps":[
+            {"kind":"operation","operation":{"kind":"openReaction","reactionId":"minimal.ward","options":[
+              {"id":"ward","label":"Raise ward","damageReduction":2}
+            ]}},
+            {"kind":"operation","operation":{"kind":"damage","amount":{"kind":"constant","value":7},"damageType":"force"}}
+          ]}
         }}
       }]
     }"#;
@@ -66,51 +46,34 @@ fn run_authority_session() {
     let mut state = RpgCapabilityState::default();
     state.insert_entity(actor);
     state.insert_entity(target);
-    let mut session =
-        RpgAuthoritySession::new(ruleset, state, DeterministicRandomStream::new(vec![10]));
-    let receipt = session
-        .submit(&RpgIntent {
+    let mut session = RpgAuthoritySession::new(ruleset, state);
+
+    let suspended = session.submit(RpgAuthorityCommand {
+        expected_revision: 0,
+        intent: RpgIntent {
             action_id: "minimal.strike".to_owned(),
             actor_id: "hero".to_owned(),
             target_ids: vec!["guardian".to_owned()],
-        })
-        .expect("consumer intent resolves");
+        },
+        random_values: vec![10],
+    });
+    let RpgCommandOutcome::AwaitingReaction(pending) = suspended else {
+        panic!("consumer command should suspend: {suspended:?}");
+    };
+    assert_eq!(session.state().revision(), 0);
 
+    let resumed = session.react(RpgReactionCommand {
+        expected_revision: 0,
+        reaction_id: pending.request.reaction_id,
+        option_id: Some("ward".to_owned()),
+        additional_random_values: Vec::new(),
+    });
+    let RpgCommandOutcome::Accepted(receipt) = resumed else {
+        panic!("consumer reaction should commit: {resumed:?}");
+    };
     assert_eq!(receipt.random_consumed, 1);
     assert_eq!(
-        session
-            .state()
-            .entity("guardian")
-            .expect("target view remains available")
-            .vitality()
-            .current,
-        13
+        session.state().entity("guardian").unwrap().vitality().current,
+        15
     );
-    let mut game = GameAuthority::default();
-    let continuation = session
-        .begin_before_effect(
-            PreEffectWorkspace {
-                decision_id: "turn-1".to_owned(),
-                actor_id: "hero".to_owned(),
-                target_id: "guardian".to_owned(),
-                action_id: "arc-bolt".to_owned(),
-                damage_amount: 9,
-                damage_type: "arcane".to_owned(),
-            },
-            game.revision_hash(),
-        )
-        .expect("the portable authority loop suspends at its reaction point");
-
-    let receipt = session
-        .resolve_before_effect(
-            &continuation,
-            true,
-            Some("guardian.ward".to_owned()),
-            &mut game,
-        )
-        .expect("the consumer-owned commit is accepted");
-
-    assert!(receipt.accepted());
-    assert_eq!(game.committed_damage, Some(7));
-    assert_eq!(session.gameplay_fabric_readout().pending_decision_count, 0);
 }
