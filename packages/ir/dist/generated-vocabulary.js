@@ -1,0 +1,20 @@
+// Generated from the Rust semantic registry. Do not edit by hand.
+export const RPG_IR_IDENTITY = "asha.rpg.ir";
+export const RPG_IR_MAJOR = 1;
+export const RPG_OPERATION_VERSIONS = {
+    "operation.applyModifier": 1,
+    "operation.changeResource": 1,
+    "operation.damage": 1,
+    "operation.heal": 1,
+    "operation.move": 1,
+};
+export const RPG_CAPABILITY_VERSIONS = {
+    "capability.defenses": 1,
+    "capability.modifiers": 1,
+    "capability.position": 1,
+    "capability.random": 1,
+    "capability.resources": 1,
+    "capability.stats": 1,
+    "capability.vitality": 1,
+};
+//# sourceMappingURL=generated-vocabulary.js.map

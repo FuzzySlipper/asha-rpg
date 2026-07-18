@@ -14,13 +14,13 @@
     "dist"
   ],
   "scripts": {
-    "build": "tsc -p tsconfig.json",
-    "prepare": "npm run build --workspace @asha-rpg/ir && npm run build"
+    "build": "tsc -p tsconfig.json"
   },
-  "dependencies": {
+  "peerDependencies": {
     "@asha-rpg/ir": "0.1.0"
   },
   "devDependencies": {
+    "@asha-rpg/ir": "0.1.0",
     "typescript": "^7.0.2"
   }
 }

@@ -58,7 +58,10 @@ if (irPackage.private === true || authoringPackage.private === true) {
 if (Object.keys(irPackage.dependencies ?? {}).length !== 0) {
   failures.push('@asha-rpg/ir may not have runtime dependencies');
 }
-const authoringDependencies = Object.keys(authoringPackage.dependencies ?? {});
+const authoringDependencies = [
+  ...Object.keys(authoringPackage.dependencies ?? {}),
+  ...Object.keys(authoringPackage.peerDependencies ?? {}),
+];
 if (
   authoringDependencies.length !== 1 ||
   authoringDependencies[0] !== '@asha-rpg/ir'
