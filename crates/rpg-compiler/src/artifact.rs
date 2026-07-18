@@ -2,16 +2,19 @@ use std::collections::{BTreeMap, BTreeSet};
 
 use rpg_ir::{
     CompiledRulesetArtifact, MaterializedRulesetDefinition, MaterializedRulesetDefinitionKind,
-    MaterializedRulesetVisibility, PreparedRulesetCompilation, RulesetArtifactFingerprints,
+    MaterializedRulesetVisibility, NormalizedRpgIr, PreparedRulesetCompilation, RpgIrAction,
+    RpgIrCatalogs, RpgIrCheck, RpgIrFormula, RpgIrOperation, RpgIrPackage, RpgIrPredicate,
+    RpgIrProgram, RpgIrRequirement, RpgIrRequirementKind, RpgIrSchema, RulesetArtifactFingerprints,
     RulesetArtifactSchema, RulesetRelationshipKind, VersionedRulesetRequirement,
-    COMPILED_RULESET_IDENTITY, PREPARED_RULESET_IDENTITY, RPG_IR_IDENTITY, RULESET_ARTIFACT_MAJOR,
+    COMPILED_RULESET_IDENTITY, PREPARED_RULESET_IDENTITY, RPG_IR_IDENTITY, RPG_IR_MAJOR,
+    RULESET_ARTIFACT_MAJOR,
 };
-use serde::Serialize;
+use serde::{Deserialize, Serialize};
 use serde_json::{json, Value};
 
 use crate::{
-    compile_normalized_rpg_ir, CompiledRpgRuleset, RpgCompileFailure, RpgDiagnostic,
-    RpgDiagnosticStage,
+    capability_registrations, compile_normalized_rpg_ir, operation_registrations,
+    CompiledRpgRuleset, RpgCompileFailure, RpgDiagnostic, RpgDiagnosticStage,
 };
 
 #[derive(Debug, Clone)]
@@ -59,19 +62,32 @@ pub fn compile_prepared_ruleset(
         return Err(RpgCompileFailure { diagnostics });
     }
 
-    let ruleset = compile_normalized_rpg_ir(prepared.normalized_ir.clone())?;
+    let normalized_ir = normalized_ir_from_materialized(&prepared)?;
+    let ruleset = compile_normalized_rpg_ir(normalized_ir)?;
     let fingerprints = fingerprints(&prepared)?;
-    let artifact_id = fingerprint(&(
-        &prepared.composition_identity,
-        &fingerprints.source,
-        &fingerprints.semantic,
-        &fingerprints.presentation,
-    ))?;
+    let artifact_schema = RulesetArtifactSchema {
+        identity: COMPILED_RULESET_IDENTITY.to_owned(),
+        major: RULESET_ARTIFACT_MAJOR,
+    };
+    let artifact_id = fingerprint(&json!({
+        "artifactSchema": &artifact_schema,
+        "compositionIdentity": &prepared.composition_identity,
+        "languageIdentity": &prepared.language_identity,
+        "sourcePackages": &prepared.source_packages,
+        "dependencyLock": &prepared.dependency_lock,
+        "requiredOperations": &prepared.required_operations,
+        "requiredCapabilities": &prepared.required_capabilities,
+        "exportedRoots": &prepared.exported_roots,
+        "materializedDefinitions": &prepared.materialized_definitions,
+        "compiledPolicyBindings": &prepared.compiled_policy_bindings,
+        "definitionProvenance": &prepared.definition_provenance,
+        "relationships": &prepared.relationships,
+        "derivationProvenance": &prepared.derivation_provenance,
+        "overlayProvenance": &prepared.overlay_provenance,
+        "fingerprints": &fingerprints,
+    }))?;
     let artifact = CompiledRulesetArtifact {
-        artifact_schema: RulesetArtifactSchema {
-            identity: COMPILED_RULESET_IDENTITY.to_owned(),
-            major: RULESET_ARTIFACT_MAJOR,
-        },
+        artifact_schema,
         artifact_id: format!(
             "{}@{}:{artifact_id}",
             prepared.composition_identity.id, prepared.composition_identity.version
@@ -89,7 +105,6 @@ pub fn compile_prepared_ruleset(
         relationships: prepared.relationships,
         derivation_provenance: prepared.derivation_provenance,
         overlay_provenance: prepared.overlay_provenance,
-        normalized_ir: prepared.normalized_ir,
         fingerprints,
     };
     Ok(CompiledRulesetBundle { artifact, ruleset })
@@ -161,7 +176,6 @@ fn prepared_from_artifact(artifact: &CompiledRulesetArtifact) -> PreparedRuleset
         relationships: artifact.relationships.clone(),
         derivation_provenance: artifact.derivation_provenance.clone(),
         overlay_provenance: artifact.overlay_provenance.clone(),
-        normalized_ir: artifact.normalized_ir.clone(),
     }
 }
 
@@ -192,18 +206,6 @@ fn validate_prepared(prepared: &PreparedRulesetCompilation) -> Vec<RpgDiagnostic
             "supported language is asha-rpg@1.0.0",
         ));
     }
-    if prepared.normalized_ir.schema.identity != RPG_IR_IDENTITY
-        || prepared.normalized_ir.package.id != prepared.composition_identity.id
-        || prepared.normalized_ir.package.version != prepared.composition_identity.version
-    {
-        diagnostics.push(RpgDiagnostic::error(
-            RpgDiagnosticStage::Artifact,
-            "RULESET_NORMALIZED_IDENTITY_MISMATCH",
-            "$.normalizedIr.package",
-            "normalized IR must carry the resolved composition identity",
-        ));
-    }
-
     validate_sources_and_lock(prepared, &mut diagnostics);
     validate_requirements(prepared, &mut diagnostics);
     validate_definitions(prepared, &mut diagnostics);
@@ -318,32 +320,34 @@ fn validate_requirements(
         diagnostics,
     );
 
-    let operations = prepared
-        .required_operations
-        .iter()
-        .map(|entry| (entry.id.as_str(), entry.version))
-        .collect::<BTreeSet<_>>();
-    let capabilities = prepared
-        .required_capabilities
-        .iter()
-        .map(|entry| (entry.id.as_str(), entry.version))
-        .collect::<BTreeSet<_>>();
-    for (index, requirement) in prepared.normalized_ir.requirements.iter().enumerate() {
-        let present = match requirement.kind {
-            rpg_ir::RpgIrRequirementKind::Operation => {
-                operations.contains(&(requirement.id.as_str(), requirement.version))
-            }
-            rpg_ir::RpgIrRequirementKind::Capability => {
-                capabilities.contains(&(requirement.id.as_str(), requirement.version))
-            }
-        };
-        if !present {
+    for (index, requirement) in prepared.required_operations.iter().enumerate() {
+        let supported = operation_registrations().iter().any(|registration| {
+            registration.id == requirement.id && registration.version == requirement.version
+        });
+        if !supported {
             diagnostics.push(RpgDiagnostic::error(
-                RpgDiagnosticStage::Requirements,
-                "RULESET_NORMALIZED_REQUIREMENT_UNDECLARED",
-                format!("$.normalizedIr.requirements[{index}]"),
+                RpgDiagnosticStage::Compatibility,
+                "RULESET_OPERATION_REQUIREMENT_UNSUPPORTED",
+                format!("$.requiredOperations[{index}]"),
                 format!(
-                    "normalized requirement {}@{} is absent from the closed artifact requirements",
+                    "operation {}@{} is not registered by Rust authority",
+                    requirement.id, requirement.version
+                ),
+            ));
+        }
+    }
+    for (index, requirement) in prepared.required_capabilities.iter().enumerate() {
+        let supported = capability_registrations().iter().any(|registration| {
+            registration.id.as_str() == requirement.id
+                && registration.version == requirement.version
+        });
+        if !supported {
+            diagnostics.push(RpgDiagnostic::error(
+                RpgDiagnosticStage::Compatibility,
+                "RULESET_CAPABILITY_REQUIREMENT_UNSUPPORTED",
+                format!("$.requiredCapabilities[{index}]"),
+                format!(
+                    "capability {}@{} is not registered by Rust authority",
                     requirement.id, requirement.version
                 ),
             ));
@@ -502,27 +506,6 @@ fn validate_definitions(
             ));
         }
     }
-
-    let action_definitions = prepared
-        .materialized_definitions
-        .iter()
-        .filter(|definition| definition.kind == MaterializedRulesetDefinitionKind::Action)
-        .map(|definition| definition.id.as_str())
-        .collect::<BTreeSet<_>>();
-    let normalized_actions = prepared
-        .normalized_ir
-        .actions
-        .iter()
-        .map(|action| action.id.as_str())
-        .collect::<BTreeSet<_>>();
-    if action_definitions != normalized_actions {
-        diagnostics.push(RpgDiagnostic::error(
-            RpgDiagnosticStage::Artifact,
-            "RULESET_ACTION_MATERIALIZATION_MISMATCH",
-            "$.normalizedIr.actions",
-            "normalized actions must exactly match materialized action definitions",
-        ));
-    }
 }
 
 fn visit_materialized_definition<'a>(
@@ -555,6 +538,395 @@ fn visit_materialized_definition<'a>(
     }
     visiting.pop();
     reachable.insert(definition_id.to_owned());
+}
+
+#[derive(Default)]
+struct DerivedCatalogs {
+    stats: BTreeSet<String>,
+    defenses: BTreeSet<String>,
+    resources: BTreeSet<String>,
+    modifiers: BTreeSet<String>,
+}
+
+#[derive(Deserialize)]
+#[serde(rename_all = "camelCase", deny_unknown_fields)]
+struct CatalogDefinitionSemantic {
+    catalog: String,
+    id: String,
+}
+
+fn normalized_ir_from_materialized(
+    prepared: &PreparedRulesetCompilation,
+) -> Result<NormalizedRpgIr, RpgCompileFailure> {
+    let definitions = prepared
+        .materialized_definitions
+        .iter()
+        .map(|definition| (definition.id.as_str(), definition))
+        .collect::<BTreeMap<_, _>>();
+    let mut diagnostics = Vec::new();
+    let mut catalogs = DerivedCatalogs::default();
+    let mut actions = Vec::new();
+
+    for (index, definition) in prepared.materialized_definitions.iter().enumerate() {
+        if definition.kind != MaterializedRulesetDefinitionKind::Action {
+            continue;
+        }
+        let path = format!("$.materializedDefinitions[{index}].semantic");
+        let mut action = match serde_json::from_value::<RpgIrAction>(definition.semantic.clone()) {
+            Ok(action) => action,
+            Err(error) => {
+                diagnostics.push(RpgDiagnostic::error(
+                    RpgDiagnosticStage::Semantics,
+                    "RULESET_ACTION_SEMANTIC_DECODE_FAILED",
+                    &path,
+                    error.to_string(),
+                ));
+                continue;
+            }
+        };
+        if action.id != definition.id {
+            diagnostics.push(RpgDiagnostic::error(
+                RpgDiagnosticStage::References,
+                "RULESET_ACTION_SEMANTIC_ID_MISMATCH",
+                format!("{path}.id"),
+                format!(
+                    "materialized action {} carries semantic identity {}",
+                    definition.id, action.id
+                ),
+            ));
+        }
+        resolve_program_catalogs(
+            &mut action.program,
+            definition,
+            &definitions,
+            &format!("{path}.program"),
+            &mut diagnostics,
+        );
+        collect_action_catalogs(&action, &mut catalogs);
+        actions.push(action);
+    }
+    if !diagnostics.is_empty() {
+        return Err(RpgCompileFailure { diagnostics });
+    }
+    actions.sort_by(|left, right| left.id.cmp(&right.id));
+
+    let requirements = prepared
+        .required_operations
+        .iter()
+        .map(|requirement| RpgIrRequirement {
+            kind: RpgIrRequirementKind::Operation,
+            id: requirement.id.clone(),
+            version: requirement.version,
+        })
+        .chain(
+            prepared
+                .required_capabilities
+                .iter()
+                .map(|requirement| RpgIrRequirement {
+                    kind: RpgIrRequirementKind::Capability,
+                    id: requirement.id.clone(),
+                    version: requirement.version,
+                }),
+        )
+        .collect();
+    Ok(NormalizedRpgIr {
+        schema: RpgIrSchema {
+            identity: RPG_IR_IDENTITY.to_owned(),
+            major: RPG_IR_MAJOR,
+        },
+        package: RpgIrPackage {
+            id: prepared.composition_identity.id.clone(),
+            version: prepared.composition_identity.version.clone(),
+        },
+        catalogs: RpgIrCatalogs {
+            stats: catalogs.stats.into_iter().collect(),
+            defenses: catalogs.defenses.into_iter().collect(),
+            resources: catalogs.resources.into_iter().collect(),
+            modifiers: catalogs.modifiers.into_iter().collect(),
+            capabilities: prepared
+                .required_capabilities
+                .iter()
+                .map(|requirement| requirement.id.clone())
+                .collect(),
+        },
+        requirements,
+        actions,
+    })
+}
+
+fn resolve_program_catalogs(
+    program: &mut RpgIrProgram,
+    action_definition: &MaterializedRulesetDefinition,
+    definitions: &BTreeMap<&str, &MaterializedRulesetDefinition>,
+    path: &str,
+    diagnostics: &mut Vec<RpgDiagnostic>,
+) {
+    match program {
+        RpgIrProgram::Operation { operation } => {
+            if let RpgIrOperation::Damage { damage_type, .. } = operation {
+                resolve_damage_type(
+                    damage_type,
+                    action_definition,
+                    definitions,
+                    &format!("{path}.operation.damageType"),
+                    diagnostics,
+                );
+            }
+        }
+        RpgIrProgram::Sequence { steps } => {
+            for (index, step) in steps.iter_mut().enumerate() {
+                resolve_program_catalogs(
+                    step,
+                    action_definition,
+                    definitions,
+                    &format!("{path}.steps[{index}]"),
+                    diagnostics,
+                );
+            }
+        }
+        RpgIrProgram::When {
+            then, otherwise, ..
+        } => {
+            resolve_program_catalogs(
+                then,
+                action_definition,
+                definitions,
+                &format!("{path}.then"),
+                diagnostics,
+            );
+            if let Some(otherwise) = otherwise {
+                resolve_program_catalogs(
+                    otherwise,
+                    action_definition,
+                    definitions,
+                    &format!("{path}.otherwise"),
+                    diagnostics,
+                );
+            }
+        }
+        RpgIrProgram::Repeat { body, .. }
+        | RpgIrProgram::ForEachTarget { body, .. }
+        | RpgIrProgram::Atomic { body } => resolve_program_catalogs(
+            body,
+            action_definition,
+            definitions,
+            &format!("{path}.body"),
+            diagnostics,
+        ),
+        RpgIrProgram::OnCheck {
+            hit,
+            miss,
+            saved,
+            failed,
+            no_roll,
+        } => {
+            for (branch_name, branch) in [
+                ("hit", hit),
+                ("miss", miss),
+                ("saved", saved),
+                ("failed", failed),
+                ("noRoll", no_roll),
+            ] {
+                if let Some(branch) = branch {
+                    resolve_program_catalogs(
+                        branch,
+                        action_definition,
+                        definitions,
+                        &format!("{path}.{branch_name}"),
+                        diagnostics,
+                    );
+                }
+            }
+        }
+    }
+}
+
+fn resolve_damage_type(
+    damage_type: &mut String,
+    action_definition: &MaterializedRulesetDefinition,
+    definitions: &BTreeMap<&str, &MaterializedRulesetDefinition>,
+    path: &str,
+    diagnostics: &mut Vec<RpgDiagnostic>,
+) {
+    if !action_definition
+        .references
+        .iter()
+        .any(|reference| reference == damage_type)
+    {
+        diagnostics.push(RpgDiagnostic::error(
+            RpgDiagnosticStage::References,
+            "RULESET_DAMAGE_TYPE_REFERENCE_UNDECLARED",
+            path,
+            format!(
+                "damage type {damage_type} must be a direct definition reference from {}",
+                action_definition.id
+            ),
+        ));
+        return;
+    }
+    let Some(definition) = definitions.get(damage_type.as_str()) else {
+        diagnostics.push(RpgDiagnostic::error(
+            RpgDiagnosticStage::References,
+            "RULESET_DAMAGE_TYPE_DEFINITION_MISSING",
+            path,
+            format!("damage type definition {damage_type} is absent"),
+        ));
+        return;
+    };
+    if definition.kind != MaterializedRulesetDefinitionKind::Support {
+        diagnostics.push(RpgDiagnostic::error(
+            RpgDiagnosticStage::References,
+            "RULESET_DAMAGE_TYPE_DEFINITION_KIND_INVALID",
+            path,
+            format!("damage type definition {damage_type} must be support data"),
+        ));
+        return;
+    }
+    let semantic =
+        match serde_json::from_value::<CatalogDefinitionSemantic>(definition.semantic.clone()) {
+            Ok(semantic) => semantic,
+            Err(error) => {
+                diagnostics.push(RpgDiagnostic::error(
+                    RpgDiagnosticStage::Semantics,
+                    "RULESET_DAMAGE_TYPE_SEMANTIC_INVALID",
+                    path,
+                    error.to_string(),
+                ));
+                return;
+            }
+        };
+    if semantic.catalog != "damageType" {
+        diagnostics.push(RpgDiagnostic::error(
+            RpgDiagnosticStage::References,
+            "RULESET_DAMAGE_TYPE_CATALOG_MISMATCH",
+            path,
+            format!(
+                "definition {} belongs to catalog {}, not damageType",
+                definition.id, semantic.catalog
+            ),
+        ));
+        return;
+    }
+    *damage_type = semantic.id;
+}
+
+fn collect_action_catalogs(action: &RpgIrAction, catalogs: &mut DerivedCatalogs) {
+    for cost in &action.costs {
+        catalogs.resources.insert(cost.resource_id.clone());
+    }
+    match &action.check {
+        RpgIrCheck::NoRoll => {}
+        RpgIrCheck::Attack {
+            modifier,
+            defense_id,
+        } => {
+            catalogs.defenses.insert(defense_id.clone());
+            collect_formula_catalogs(modifier, catalogs);
+        }
+        RpgIrCheck::SavingThrow {
+            difficulty,
+            defense_id,
+        } => {
+            catalogs.defenses.insert(defense_id.clone());
+            collect_formula_catalogs(difficulty, catalogs);
+        }
+    }
+    collect_program_catalogs(&action.program, catalogs);
+}
+
+fn collect_program_catalogs(program: &RpgIrProgram, catalogs: &mut DerivedCatalogs) {
+    match program {
+        RpgIrProgram::Operation { operation } => collect_operation_catalogs(operation, catalogs),
+        RpgIrProgram::Sequence { steps } => {
+            for step in steps {
+                collect_program_catalogs(step, catalogs);
+            }
+        }
+        RpgIrProgram::When {
+            predicate,
+            then,
+            otherwise,
+        } => {
+            collect_predicate_catalogs(predicate, catalogs);
+            collect_program_catalogs(then, catalogs);
+            if let Some(otherwise) = otherwise {
+                collect_program_catalogs(otherwise, catalogs);
+            }
+        }
+        RpgIrProgram::Repeat { body, .. }
+        | RpgIrProgram::ForEachTarget { body, .. }
+        | RpgIrProgram::Atomic { body } => collect_program_catalogs(body, catalogs),
+        RpgIrProgram::OnCheck {
+            hit,
+            miss,
+            saved,
+            failed,
+            no_roll,
+        } => {
+            for branch in [hit, miss, saved, failed, no_roll] {
+                if let Some(branch) = branch {
+                    collect_program_catalogs(branch, catalogs);
+                }
+            }
+        }
+    }
+}
+
+fn collect_operation_catalogs(operation: &RpgIrOperation, catalogs: &mut DerivedCatalogs) {
+    match operation {
+        RpgIrOperation::Damage { amount, .. } | RpgIrOperation::Heal { amount } => {
+            collect_formula_catalogs(amount, catalogs);
+        }
+        RpgIrOperation::ChangeResource {
+            resource_id, delta, ..
+        } => {
+            catalogs.resources.insert(resource_id.clone());
+            collect_formula_catalogs(delta, catalogs);
+        }
+        RpgIrOperation::ApplyModifier {
+            modifier_id, value, ..
+        } => {
+            catalogs.modifiers.insert(modifier_id.clone());
+            collect_formula_catalogs(value, catalogs);
+        }
+        RpgIrOperation::Move {
+            delta_x, delta_y, ..
+        } => {
+            collect_formula_catalogs(delta_x, catalogs);
+            collect_formula_catalogs(delta_y, catalogs);
+        }
+    }
+}
+
+fn collect_formula_catalogs(formula: &RpgIrFormula, catalogs: &mut DerivedCatalogs) {
+    match formula {
+        RpgIrFormula::Constant { .. } | RpgIrFormula::Dice { .. } => {}
+        RpgIrFormula::ReadStat { stat_id, .. } => {
+            catalogs.stats.insert(stat_id.clone());
+        }
+        RpgIrFormula::Add { terms } => {
+            for term in terms {
+                collect_formula_catalogs(term, catalogs);
+            }
+        }
+        RpgIrFormula::Half { value } => collect_formula_catalogs(value, catalogs),
+    }
+}
+
+fn collect_predicate_catalogs(predicate: &RpgIrPredicate, catalogs: &mut DerivedCatalogs) {
+    match predicate {
+        RpgIrPredicate::Always => {}
+        RpgIrPredicate::Compare { left, right, .. } => {
+            collect_formula_catalogs(left, catalogs);
+            collect_formula_catalogs(right, catalogs);
+        }
+        RpgIrPredicate::Not { predicate } => collect_predicate_catalogs(predicate, catalogs),
+        RpgIrPredicate::All { predicates } | RpgIrPredicate::Any { predicates } => {
+            for predicate in predicates {
+                collect_predicate_catalogs(predicate, catalogs);
+            }
+        }
+    }
 }
 
 fn validate_deferred_relationships(
@@ -605,20 +977,32 @@ fn fingerprints(
         &prepared.relationships,
         &prepared.derivation_provenance,
         &prepared.overlay_provenance,
+        prepared
+            .materialized_definitions
+            .iter()
+            .map(|definition| {
+                json!({
+                    "id": definition.id,
+                    "kind": definition.kind,
+                    "visibility": definition.visibility,
+                    "extensionPolicy": definition.extension_policy,
+                    "references": definition.references,
+                    "actionSourcePath": action_semantic_field(definition, "sourcePath"),
+                })
+            })
+            .collect::<Vec<_>>(),
     ))?;
 
-    let mut normalized =
-        serde_json::to_value(&prepared.normalized_ir).map_err(fingerprint_error)?;
-    if let Some(actions) = normalized.get_mut("actions").and_then(Value::as_array_mut) {
-        for action in actions {
-            if let Some(object) = action.as_object_mut() {
-                object.remove("name");
-                object.remove("sourcePath");
-            }
-        }
-    }
     let semantic = fingerprint(&json!({
-        "normalizedIr": normalized,
+        "languageIdentity": prepared.language_identity,
+        "definitions": prepared.materialized_definitions.iter().map(|definition| json!({
+            "id": definition.id,
+            "kind": definition.kind,
+            "visibility": definition.visibility,
+            "extensionPolicy": definition.extension_policy,
+            "semantic": semantic_definition_value(definition),
+            "references": definition.references,
+        })).collect::<Vec<_>>(),
         "requiredOperations": prepared.required_operations,
         "requiredCapabilities": prepared.required_capabilities,
         "policyBindings": prepared.compiled_policy_bindings.iter().map(|binding| json!({
@@ -635,6 +1019,7 @@ fn fingerprints(
         "definitions": prepared.materialized_definitions.iter().map(|definition| json!({
             "id": definition.id,
             "presentation": definition.presentation,
+            "actionName": action_semantic_field(definition, "name"),
         })).collect::<Vec<_>>(),
         "policyLabels": prepared.compiled_policy_bindings.iter().map(|binding| json!({
             "id": binding.id,
@@ -646,6 +1031,28 @@ fn fingerprints(
         semantic,
         presentation,
     })
+}
+
+fn semantic_definition_value(definition: &MaterializedRulesetDefinition) -> Value {
+    let mut semantic = definition.semantic.clone();
+    if definition.kind == MaterializedRulesetDefinitionKind::Action {
+        if let Some(object) = semantic.as_object_mut() {
+            object.remove("name");
+            object.remove("sourcePath");
+        }
+    }
+    semantic
+}
+
+fn action_semantic_field(definition: &MaterializedRulesetDefinition, field: &str) -> Value {
+    if definition.kind != MaterializedRulesetDefinitionKind::Action {
+        return Value::Null;
+    }
+    definition
+        .semantic
+        .get(field)
+        .cloned()
+        .unwrap_or(Value::Null)
 }
 
 fn fingerprint(value: &impl Serialize) -> Result<String, RpgCompileFailure> {

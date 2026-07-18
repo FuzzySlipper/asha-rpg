@@ -1,8 +1,6 @@
 use serde::{Deserialize, Serialize};
 use serde_json::Value;
 
-use crate::NormalizedRpgIr;
-
 pub const PREPARED_RULESET_IDENTITY: &str = "asha.rpg.ruleset.prepared";
 pub const COMPILED_RULESET_IDENTITY: &str = "asha.rpg.ruleset.compiled";
 pub const RULESET_ARTIFACT_MAJOR: u32 = 1;
@@ -160,7 +158,6 @@ pub struct PreparedRulesetCompilation {
     pub derivation_provenance: Vec<Value>,
     #[serde(default)]
     pub overlay_provenance: Vec<Value>,
-    pub normalized_ir: NormalizedRpgIr,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
@@ -189,6 +186,5 @@ pub struct CompiledRulesetArtifact {
     pub relationships: Vec<RulesetRelationshipProvenance>,
     pub derivation_provenance: Vec<Value>,
     pub overlay_provenance: Vec<Value>,
-    pub normalized_ir: NormalizedRpgIr,
     pub fingerprints: RulesetArtifactFingerprints,
 }

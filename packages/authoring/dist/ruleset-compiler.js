@@ -18,16 +18,14 @@ export function prepareRulesetCompilation(options) {
         diagnostics,
         availableById: indexAvailablePackages(options.packages, diagnostics),
         selected: new Map(),
-        selectedVersionById: new Map(),
         lock: [],
         relationships: [],
     };
     const compositionKey = identityKey(options.composition.identity.id, options.composition.identity.version);
-    const base = resolveRequest(context, options.composition.base, compositionKey, 'base', 'contributes', '$.composition.base');
-    const additions = options.composition.add.map((request, index) => resolveRequest(context, request, compositionKey, `add:${request.id}`, 'contributes', `$.composition.add[${index}]`));
-    const overlays = options.composition.overlays.map((request, index) => resolveRequest(context, request, compositionKey, `overlay:${request.id}`, 'patches', `$.composition.overlays[${index}]`));
-    const roots = [base, ...additions, ...overlays].filter((entry) => entry !== undefined);
-    resolveDependencies(context, roots);
+    const resolved = resolvePackageGraph(context, options.composition, compositionKey);
+    if (resolved === undefined)
+        return failed(diagnostics);
+    const { base, additions } = resolved;
     validateSelectedPackages(context, target);
     validateDeferredRelationships(context);
     const rootKeys = new Set([base, ...additions]
@@ -88,7 +86,6 @@ export function prepareRulesetCompilation(options) {
         relationships,
         derivationProvenance: [],
         overlayProvenance: [],
-        normalizedIr: normalized,
     });
     return immutable({ ok: true, prepared, diagnostics: NO_DIAGNOSTICS });
 }
@@ -141,49 +138,159 @@ function validateUniquePackageSources(sources, diagnostics) {
         diagnostics.push(diagnostic('source', 'RULESET_DUPLICATE_PACKAGE_IDENTITY', `$.packages[${index}]`, `duplicate package source ${key}`, { packageId: identity.id }));
     }
 }
-function resolveRequest(context, request, requester, importAs, relationship, path) {
-    const available = context.availableById.get(request.id) ?? [];
-    const compatible = available.filter((source) => satisfiesVersion(source.manifest.identity.version, request.version));
-    if (!supportedRange(request.version)) {
-        context.diagnostics.push(diagnostic('resolution', 'RULESET_VERSION_RANGE_UNSUPPORTED', `${path}.version`, `unsupported version range ${request.version}`, { packageId: request.id }));
+function resolvePackageGraph(context, composition, compositionKey) {
+    const rootConstraints = [
+        {
+            request: composition.base,
+            requester: compositionKey,
+            importAs: 'base',
+            relationship: 'contributes',
+            path: '$.composition.base',
+        },
+        ...composition.add.map((request, index) => ({
+            request,
+            requester: compositionKey,
+            importAs: `add:${request.id}`,
+            relationship: 'contributes',
+            path: `$.composition.add[${index}]`,
+        })),
+        ...composition.overlays.map((request, index) => ({
+            request,
+            requester: compositionKey,
+            importAs: `overlay:${request.id}`,
+            relationship: 'patches',
+            path: `$.composition.overlays[${index}]`,
+        })),
+    ];
+    for (const constraint of rootConstraints) {
+        validateSupportedRange(constraint, context.diagnostics);
+    }
+    if (context.diagnostics.length > 0)
+        return undefined;
+    let failedConstraints = rootConstraints;
+    const search = (selectedById) => {
+        const constraints = collectPackageConstraints(rootConstraints, selectedById);
+        for (const constraint of constraints) {
+            if (!supportedRange(constraint.request.version)) {
+                failedConstraints = [constraint];
+                return undefined;
+            }
+        }
+        const constraintsById = groupConstraints(constraints);
+        for (const [packageId, selected] of selectedById) {
+            const compatible = (constraintsById.get(packageId) ?? []).every((constraint) => satisfiesVersion(selected.manifest.identity.version, constraint.request.version));
+            if (!compatible) {
+                failedConstraints = constraintsById.get(packageId) ?? [];
+                return undefined;
+            }
+        }
+        const unresolvedId = [...constraintsById.keys()]
+            .filter((packageId) => !selectedById.has(packageId))
+            .sort(compareText)[0];
+        if (unresolvedId === undefined)
+            return selectedById;
+        const packageConstraints = constraintsById.get(unresolvedId) ?? [];
+        const candidates = (context.availableById.get(unresolvedId) ?? []).filter((source) => packageConstraints.every((constraint) => satisfiesVersion(source.manifest.identity.version, constraint.request.version)));
+        if (candidates.length === 0) {
+            failedConstraints = packageConstraints;
+            return undefined;
+        }
+        for (const candidate of candidates) {
+            const branch = new Map(selectedById);
+            branch.set(unresolvedId, candidate);
+            const solved = search(branch);
+            if (solved !== undefined)
+                return solved;
+        }
+        return undefined;
+    };
+    const selectedById = search(new Map());
+    if (selectedById === undefined) {
+        const first = failedConstraints[0] ?? rootConstraints[0];
+        if (first !== undefined) {
+            const expected = failedConstraints
+                .map((constraint) => constraint.request.version)
+                .sort(compareText)
+                .join(' & ');
+            context.diagnostics.push(diagnostic('resolution', 'RULESET_PACKAGE_UNRESOLVED', first.path, `no package ${first.request.id} satisfies all constraints: ${expected}`, { packageId: first.request.id, expected }));
+        }
         return undefined;
     }
-    const source = compatible[0];
-    if (source === undefined) {
-        context.diagnostics.push(diagnostic('resolution', 'RULESET_PACKAGE_UNRESOLVED', path, `no package ${request.id} satisfies ${request.version}`, { packageId: request.id, expected: request.version }));
-        return undefined;
+    for (const source of [...selectedById.values()].sort((left, right) => compareIdentity(left.manifest.identity, right.manifest.identity))) {
+        const identity = source.manifest.identity;
+        const key = identityKey(identity.id, identity.version);
+        context.selected.set(key, { key, source, aliases: new Map() });
     }
-    const version = source.manifest.identity.version;
-    const selectedVersion = context.selectedVersionById.get(request.id);
-    if (selectedVersion !== undefined && selectedVersion !== version) {
-        context.diagnostics.push(diagnostic('resolution', 'RULESET_MULTIPLE_PACKAGE_VERSIONS', path, `package ${request.id} resolved to both ${selectedVersion} and ${version}`, { packageId: request.id, expected: selectedVersion, actual: version }));
-        return undefined;
+    const allConstraints = collectPackageConstraints(rootConstraints, selectedById);
+    for (const constraint of allConstraints) {
+        const source = selectedById.get(constraint.request.id);
+        if (source === undefined)
+            continue;
+        const version = source.manifest.identity.version;
+        const targetKey = identityKey(constraint.request.id, version);
+        context.lock.push({
+            requester: constraint.requester,
+            packageId: constraint.request.id,
+            requestedVersion: constraint.request.version,
+            resolvedVersion: version,
+            sourceFingerprint: source.sourceFingerprint,
+            importAs: constraint.importAs,
+            relationship: constraint.relationship,
+        });
+        context.relationships.push({
+            kind: constraint.relationship,
+            source: constraint.requester,
+            target: targetKey,
+            order: context.relationships.length,
+        });
     }
-    context.selectedVersionById.set(request.id, version);
-    const key = identityKey(request.id, version);
-    let selected = context.selected.get(key);
-    if (selected === undefined) {
-        selected = { key, source, aliases: new Map() };
-        context.selected.set(key, selected);
-    }
-    context.lock.push({
-        requester,
-        packageId: request.id,
-        requestedVersion: request.version,
-        resolvedVersion: version,
-        sourceFingerprint: source.sourceFingerprint,
-        importAs,
-        relationship,
-    });
-    context.relationships.push({
-        kind: relationship,
-        source: requester,
-        target: key,
-        order: context.relationships.length,
-    });
-    return selected;
+    const selectedForRequest = (request) => {
+        const source = selectedById.get(request.id);
+        if (source === undefined)
+            throw new Error(`resolved package ${request.id} is absent`);
+        const key = identityKey(request.id, source.manifest.identity.version);
+        const selected = context.selected.get(key);
+        if (selected === undefined)
+            throw new Error(`resolved package ${key} is absent`);
+        return selected;
+    };
+    const base = selectedForRequest(composition.base);
+    const additions = composition.add.map(selectedForRequest);
+    const overlays = composition.overlays.map(selectedForRequest);
+    resolveDependencies(context, [base, ...additions, ...overlays], selectedById);
+    return { base, additions, overlays };
 }
-function resolveDependencies(context, roots) {
+function collectPackageConstraints(roots, selectedById) {
+    const constraints = [...roots];
+    for (const source of [...selectedById.values()].sort((left, right) => compareIdentity(left.manifest.identity, right.manifest.identity))) {
+        const requester = identityKey(source.manifest.identity.id, source.manifest.identity.version);
+        for (const [index, dependency] of source.manifest.dependencies.entries()) {
+            constraints.push({
+                request: dependency,
+                requester,
+                importAs: dependency.importAs,
+                relationship: 'dependsOn',
+                path: `$.packages[${requester}].dependencies[${index}]`,
+            });
+        }
+    }
+    return constraints;
+}
+function groupConstraints(constraints) {
+    const grouped = new Map();
+    for (const constraint of constraints) {
+        const group = grouped.get(constraint.request.id) ?? [];
+        group.push(constraint);
+        grouped.set(constraint.request.id, group);
+    }
+    return grouped;
+}
+function validateSupportedRange(constraint, diagnostics) {
+    if (supportedRange(constraint.request.version))
+        return;
+    diagnostics.push(diagnostic('resolution', 'RULESET_VERSION_RANGE_UNSUPPORTED', `${constraint.path}.version`, `unsupported version range ${constraint.request.version}`, { packageId: constraint.request.id }));
+}
+function resolveDependencies(context, roots, selectedById) {
     const visiting = [];
     const visited = new Set();
     const visit = (entry) => {
@@ -205,11 +312,15 @@ function resolveDependencies(context, roots) {
                 continue;
             }
             aliases.add(dependency.importAs);
-            const resolved = resolveRequest(context, dependency, entry.key, dependency.importAs, 'dependsOn', path);
-            if (resolved !== undefined) {
-                entry.aliases.set(dependency.importAs, resolved.key);
-                visit(resolved);
-            }
+            const source = selectedById.get(dependency.id);
+            if (source === undefined)
+                continue;
+            const targetKey = identityKey(dependency.id, source.manifest.identity.version);
+            const resolved = context.selected.get(targetKey);
+            if (resolved === undefined)
+                continue;
+            entry.aliases.set(dependency.importAs, resolved.key);
+            visit(resolved);
         }
         visiting.pop();
         visited.add(entry.key);
@@ -550,7 +661,9 @@ function satisfiesVersion(version, range) {
             return false;
         if (expected[0] > 0)
             return actual[0] === expected[0];
-        return actual[0] === 0 && actual[1] === expected[1];
+        if (expected[1] > 0)
+            return actual[0] === 0 && actual[1] === expected[1];
+        return compareSegments(actual, expected) === 0;
     }
     if (prefix === '~') {
         return comparison >= 0 && actual[0] === expected[0] && actual[1] === expected[1];
@@ -578,6 +691,9 @@ function compareSegments(left, right) {
 }
 function identityKey(id, version) {
     return `${id}@${version}`;
+}
+function compareText(left, right) {
+    return left < right ? -1 : left > right ? 1 : 0;
 }
 function compareIdentity(left, right) {
     return left.id.localeCompare(right.id) || compareVersion(left.version, right.version);

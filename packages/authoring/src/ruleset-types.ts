@@ -1,8 +1,4 @@
-import type {
-  NormalizedRpgIr,
-  RpgCapabilityId,
-  RpgOperationId,
-} from '@asha-rpg/ir';
+import type { RpgCapabilityId, RpgOperationId } from '@asha-rpg/ir';
 
 import type { AuthoredAction } from './types.js';
 
@@ -243,7 +239,6 @@ export interface PreparedRulesetCompilation {
   readonly relationships: readonly RulesetRelationshipProvenance[];
   readonly derivationProvenance: readonly [];
   readonly overlayProvenance: readonly [];
-  readonly normalizedIr: NormalizedRpgIr;
 }
 
 export type PrepareRulesetResult =

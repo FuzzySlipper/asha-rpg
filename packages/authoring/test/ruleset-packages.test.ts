@@ -210,6 +210,47 @@ test('composition extensions remain explicit records and fail closed before #595
   );
 });
 
+test('package resolution selects one version satisfying the complete constraint graph', () => {
+  const consumers = [
+    packageSourceWithDependency('sample.consumer-a', '^1.0.0'),
+    packageSourceWithDependency('sample.consumer-b', '~1.1.0'),
+  ];
+  const available = [
+    emptyPackageSource('sample.shared', '1.1.0'),
+    emptyPackageSource('sample.shared', '1.2.0'),
+  ];
+  const composition = composeRuleset({
+    identity: { id: 'sample.intersection', version: '1.0.0' },
+    language: { id: 'asha-rpg', version: '^1.0.0' },
+    base: rulesetPackageRequest({ id: 'sample.consumer-a', version: '1.0.0' }),
+    add: [rulesetPackageRequest({ id: 'sample.consumer-b', version: '1.0.0' })],
+    overlays: [],
+    configure: {},
+  });
+
+  const first = prepareRulesetCompilation({
+    composition,
+    packages: [...consumers, ...available],
+  });
+  const reordered = prepareRulesetCompilation({
+    composition,
+    packages: [...available].reverse().concat([...consumers].reverse()),
+  });
+
+  assert.equal(first.ok, true, JSON.stringify(first));
+  assert.equal(reordered.ok, true, JSON.stringify(reordered));
+  if (!first.ok || !reordered.ok) return;
+  const sharedLocks = first.prepared.dependencyLock.filter(
+    (entry) => entry.packageId === 'sample.shared',
+  );
+  assert.equal(sharedLocks.length, 2);
+  assert.deepEqual(
+    sharedLocks.map((entry) => entry.resolvedVersion),
+    ['1.1.0', '1.1.0'],
+  );
+  assert.equal(canonicalJson(first.prepared), canonicalJson(reordered.prepared));
+});
+
 test('Rust emits byte-stable closed artifacts and separates fingerprint planes', () => {
   const baseline = acceptedPrepared(packageFixture());
   const repeated = compilePrepared(baseline);
@@ -225,6 +266,15 @@ test('Rust emits byte-stable closed artifacts and separates fingerprint planes',
   const semantic = compilePrepared(
     acceptedPrepared(packageFixture({ damageAmount: 7 })),
   );
+  const semanticVariantPrepared: PreparedRulesetCompilation = {
+    ...baseline,
+    materializedDefinitions: baseline.materializedDefinitions.map((definition) =>
+      definition.id === 'catalog.damage.arcane'
+        ? { ...definition, semantic: { catalog: 'damageType', id: 'shadow' } }
+        : definition,
+    ),
+  };
+  const catalogSemantic = compilePrepared(semanticVariantPrepared);
 
   assert.notEqual(repeated.fingerprints.source, sourceOnly.fingerprints.source);
   assert.equal(repeated.fingerprints.semantic, sourceOnly.fingerprints.semantic);
@@ -240,6 +290,14 @@ test('Rust emits byte-stable closed artifacts and separates fingerprint planes',
   assert.notEqual(repeated.fingerprints.source, semantic.fingerprints.source);
   assert.notEqual(repeated.fingerprints.semantic, semantic.fingerprints.semantic);
   assert.equal(repeated.fingerprints.presentation, semantic.fingerprints.presentation);
+
+  assert.notEqual(repeated.artifactId, catalogSemantic.artifactId);
+  assert.equal(repeated.fingerprints.source, catalogSemantic.fingerprints.source);
+  assert.notEqual(repeated.fingerprints.semantic, catalogSemantic.fingerprints.semantic);
+  assert.equal(
+    repeated.fingerprints.presentation,
+    catalogSemantic.fingerprints.presentation,
+  );
 
   const encoded = JSON.stringify(repeated);
   assert.equal(encoded.includes('privatePlan'), false);
@@ -306,6 +364,89 @@ test('Rust emits byte-stable closed artifacts and separates fingerprint planes',
   );
   assert.notEqual(unknownFieldValidation.status, 0);
   assert.match(unknownFieldValidation.stderr, /RULESET_ARTIFACT_DECODE_FAILED/);
+
+  const semanticTamper = structuredClone(repeated);
+  const supportDefinition = semanticTamper.materializedDefinitions.find(
+    (definition) => definition.id === 'catalog.damage.arcane',
+  );
+  assert.ok(supportDefinition);
+  supportDefinition.semantic = { catalog: 'damageType', id: 'shadow' };
+  const semanticTamperValidation = validateArtifact(semanticTamper);
+  assert.notEqual(semanticTamperValidation.status, 0);
+  assert.match(
+    semanticTamperValidation.stderr,
+    /RULESET_ARTIFACT_FINGERPRINT_MISMATCH/,
+  );
+});
+
+test('Rust derives runtime semantics from the closed definition graph only', () => {
+  const baseline = acceptedPrepared(packageFixture());
+  const missingSupport = {
+    ...baseline,
+    exportedRoots: baseline.exportedRoots.filter(
+      (definitionId) => definitionId !== 'catalog.damage.arcane',
+    ),
+    materializedDefinitions: baseline.materializedDefinitions.filter(
+      (definition) => definition.id !== 'catalog.damage.arcane',
+    ),
+    definitionProvenance: baseline.definitionProvenance.filter(
+      (entry) => entry.definitionId !== 'catalog.damage.arcane',
+    ),
+  };
+  const missingSupportCompilation = runCompilation(missingSupport);
+  const missingSupportDiagnostics = failedCompilationDiagnostics(
+    missingSupportCompilation,
+  );
+  assert.match(
+    missingSupportDiagnostics,
+    /RULESET_ARTIFACT_REFERENCE_MISSING|RULESET_DAMAGE_TYPE_DEFINITION_MISSING/,
+  );
+
+  const undeclaredRuntimeType = acceptedPrepared(
+    packageFixture({ runtimeDamageDefinitionId: 'catalog.damage.shadow' }),
+  );
+  const undeclaredCompilation = runCompilation(undeclaredRuntimeType);
+  const undeclaredDiagnostics = failedCompilationDiagnostics(
+    undeclaredCompilation,
+  );
+  assert.match(
+    undeclaredDiagnostics,
+    /RULESET_DAMAGE_TYPE_REFERENCE_UNDECLARED/,
+  );
+
+  const parallelRuntimeStructure = {
+    ...baseline,
+    normalizedIr: { actions: [] },
+  };
+  const parallelStructureCompilation = runCompilation(parallelRuntimeStructure);
+  const parallelStructureDiagnostics = failedCompilationDiagnostics(
+    parallelStructureCompilation,
+  );
+  assert.match(
+    parallelStructureDiagnostics,
+    /RULESET_PREPARED_DECODE_FAILED/,
+  );
+});
+
+test('Rust authority rejects unsupported requirements during compile and artifact load', () => {
+  const baseline = acceptedPrepared(packageFixture());
+  const unsupportedPrepared = {
+    ...baseline,
+    requiredOperations: [{ id: 'operation.not-supported', version: 99 }],
+  };
+  const compilation = runCompilation(unsupportedPrepared);
+  assert.match(
+    failedCompilationDiagnostics(compilation),
+    /RULESET_OPERATION_REQUIREMENT_UNSUPPORTED/,
+  );
+
+  const artifact = structuredClone(compilePrepared(baseline));
+  artifact.requiredOperations = [
+    { id: 'operation.not-supported', version: 99 },
+  ];
+  const validation = validateArtifact(artifact);
+  assert.notEqual(validation.status, 0);
+  assert.match(validation.stderr, /RULESET_OPERATION_REQUIREMENT_UNSUPPORTED/);
 });
 
 function acceptedPrepared(
@@ -328,7 +469,15 @@ function prepareFixture(options: FixtureOptions) {
 }
 
 function compilePrepared(prepared: PreparedRulesetCompilation): CompiledArtifact {
-  const compilation = spawnSync(
+  const compilation = runCompilation(prepared);
+  assert.equal(compilation.status, 0, compilation.stderr);
+  const result = JSON.parse(compilation.stdout) as CompilationEnvelope;
+  if (!result.ok) assert.fail(JSON.stringify(result.diagnostics));
+  return result.artifact;
+}
+
+function runCompilation(prepared: unknown) {
+  return spawnSync(
     'cargo',
     [
       'run',
@@ -342,14 +491,38 @@ function compilePrepared(prepared: PreparedRulesetCompilation): CompiledArtifact
     ],
     { cwd: root, encoding: 'utf8', input: canonicalJson(prepared) },
   );
+}
+
+function failedCompilationDiagnostics(
+  compilation: ReturnType<typeof runCompilation>,
+): string {
   assert.equal(compilation.status, 0, compilation.stderr);
   const result = JSON.parse(compilation.stdout) as CompilationEnvelope;
-  if (!result.ok) assert.fail(JSON.stringify(result.diagnostics));
-  return result.artifact;
+  assert.equal(result.ok, false, compilation.stdout);
+  return JSON.stringify(result.diagnostics);
+}
+
+function validateArtifact(artifact: unknown) {
+  return spawnSync(
+    'cargo',
+    [
+      'run',
+      '--quiet',
+      '--manifest-path',
+      join(root, 'Cargo.toml'),
+      '-p',
+      'rpg-compiler',
+      '--bin',
+      'validate_ruleset_artifact',
+    ],
+    { cwd: root, encoding: 'utf8', input: canonicalJson(artifact) },
+  );
 }
 
 interface FixtureOptions {
   readonly damageAmount?: number;
+  readonly damageSemanticId?: string;
+  readonly runtimeDamageDefinitionId?: string;
   readonly label?: string;
   readonly sourceModule?: string;
   readonly referenceId?: string;
@@ -382,7 +555,7 @@ function packageFixture(options: FixtureOptions = {}): {
     extensionPolicy: 'sealed',
     source: { module: 'foundation/damage-types.ts', declaration: 'arcane' },
     references: [],
-    semantic: { catalog: 'damageType', id: 'arcane' },
+    semantic: { catalog: 'damageType', id: options.damageSemanticId ?? 'arcane' },
   });
   const foundationManifest: RulesetPackageManifest = defineRulesetPackage({
     identity: { id: 'sample.foundation', version: '1.1.0' },
@@ -428,7 +601,9 @@ function packageFixture(options: FixtureOptions = {}): {
     program: onCheck({
       noRoll: damage({
         amount: constant(options.damageAmount ?? 5),
-        type: damageType('arcane'),
+        type: damageType(
+          options.runtimeDamageDefinitionId ?? 'catalog.damage.arcane',
+        ),
       }),
     }),
   });
@@ -506,8 +681,54 @@ function packageFixture(options: FixtureOptions = {}): {
   };
 }
 
+function emptyPackageSource(id: string, version: string): RulesetPackageSource {
+  return rulesetPackageSource(
+    defineRulesetPackage({
+      identity: { id, version },
+      entry: { module: `${id}.ts`, declaration: 'default' },
+      language: { id: 'asha-rpg', version: '^1.0.0' },
+      dependencies: [],
+      requirements: { operations: [], capabilities: [] },
+      definitions: [],
+      exports: [],
+      policyBindings: [],
+      relationships: [],
+    }),
+  );
+}
+
+function packageSourceWithDependency(
+  id: string,
+  sharedVersion: string,
+): RulesetPackageSource {
+  return rulesetPackageSource(
+    defineRulesetPackage({
+      identity: { id, version: '1.0.0' },
+      entry: { module: `${id}.ts`, declaration: 'default' },
+      language: { id: 'asha-rpg', version: '^1.0.0' },
+      dependencies: [
+        rulesetDependency({
+          id: 'sample.shared',
+          version: sharedVersion,
+          importAs: 'shared',
+        }),
+      ],
+      requirements: { operations: [], capabilities: [] },
+      definitions: [],
+      exports: [],
+      policyBindings: [],
+      relationships: [],
+    }),
+  );
+}
+
 interface CompiledArtifact {
   readonly artifactId: string;
+  requiredOperations: { id: string; version: number }[];
+  readonly materializedDefinitions: {
+    readonly id: string;
+    semantic: unknown;
+  }[];
   readonly fingerprints: {
     readonly source: string;
     readonly semantic: string;
