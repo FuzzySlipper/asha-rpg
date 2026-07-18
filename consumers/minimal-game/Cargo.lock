@@ -5,7 +5,7 @@ version = 4
 [[package]]
 name = "asha-rpg"
 version = "0.1.0"
-source = "git+https://github.com/FuzzySlipper/asha-rpg.git?rev=5378107283b5f41f47dcfc6bc3c8bd2e3c60ef42#5378107283b5f41f47dcfc6bc3c8bd2e3c60ef42"
+source = "git+https://github.com/FuzzySlipper/asha-rpg.git?rev=593951f8530c25685bc4a907aed4b588fff6ced4#593951f8530c25685bc4a907aed4b588fff6ced4"
 dependencies = [
  "rpg-compiler",
  "rpg-core",
@@ -53,7 +53,7 @@ dependencies = [
 [[package]]
 name = "rpg-compiler"
 version = "0.1.0"
-source = "git+https://github.com/FuzzySlipper/asha-rpg.git?rev=5378107283b5f41f47dcfc6bc3c8bd2e3c60ef42#5378107283b5f41f47dcfc6bc3c8bd2e3c60ef42"
+source = "git+https://github.com/FuzzySlipper/asha-rpg.git?rev=593951f8530c25685bc4a907aed4b588fff6ced4#593951f8530c25685bc4a907aed4b588fff6ced4"
 dependencies = [
  "rpg-core",
  "rpg-ir",
@@ -64,12 +64,15 @@ dependencies = [
 [[package]]
 name = "rpg-core"
 version = "0.1.0"
-source = "git+https://github.com/FuzzySlipper/asha-rpg.git?rev=5378107283b5f41f47dcfc6bc3c8bd2e3c60ef42#5378107283b5f41f47dcfc6bc3c8bd2e3c60ef42"
+source = "git+https://github.com/FuzzySlipper/asha-rpg.git?rev=593951f8530c25685bc4a907aed4b588fff6ced4#593951f8530c25685bc4a907aed4b588fff6ced4"
+dependencies = [
+ "serde",
+]
 
 [[package]]
 name = "rpg-ir"
 version = "0.1.0"
-source = "git+https://github.com/FuzzySlipper/asha-rpg.git?rev=5378107283b5f41f47dcfc6bc3c8bd2e3c60ef42#5378107283b5f41f47dcfc6bc3c8bd2e3c60ef42"
+source = "git+https://github.com/FuzzySlipper/asha-rpg.git?rev=593951f8530c25685bc4a907aed4b588fff6ced4#593951f8530c25685bc4a907aed4b588fff6ced4"
 dependencies = [
  "rpg-core",
  "serde",
@@ -79,10 +82,13 @@ dependencies = [
 [[package]]
 name = "rpg-runtime"
 version = "0.1.0"
-source = "git+https://github.com/FuzzySlipper/asha-rpg.git?rev=5378107283b5f41f47dcfc6bc3c8bd2e3c60ef42#5378107283b5f41f47dcfc6bc3c8bd2e3c60ef42"
+source = "git+https://github.com/FuzzySlipper/asha-rpg.git?rev=593951f8530c25685bc4a907aed4b588fff6ced4#593951f8530c25685bc4a907aed4b588fff6ced4"
 dependencies = [
  "rpg-compiler",
  "rpg-core",
+ "rpg-ir",
+ "serde",
+ "serde_json",
 ]
 
 [[package]]
