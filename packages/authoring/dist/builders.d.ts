@@ -1,4 +1,4 @@
-import type { RpgActionId, RpgDamageType, RpgDefenseId, RpgIrComparison, RpgIrFormula, RpgIrPredicate, RpgIrResourceCost, RpgIrSubject, RpgIrTargetSelector, RpgModifierId, RpgResourceId, RpgStackingGroup, RpgStatId } from '@asha-rpg/ir';
+import type { RpgActionId, RpgDamageType, RpgDefenseId, RpgIrComparison, RpgIrFormula, RpgIrPredicate, RpgIrResourceCost, RpgIrSubject, RpgIrTargetSelector, RpgModifierId, RpgResourceId, RpgReactionId, RpgReactionOptionId, RpgStackingGroup, RpgStatId } from '@asha-rpg/ir';
 import type { ActionInput, AuthoredAction, AuthoredActionSource, AuthoredPackage, AuthoringDuration, AuthoringProgram, AuthoringStacking, AuthoringTiming, CheckBranchInput } from './types.js';
 export declare function actionId(value: string): RpgActionId;
 export declare function statId(value: string): RpgStatId;
@@ -7,6 +7,8 @@ export declare function resourceId(value: string): RpgResourceId;
 export declare function modifierId(value: string): RpgModifierId;
 export declare function damageType(value: string): RpgDamageType;
 export declare function stackingGroup(value: string): RpgStackingGroup;
+export declare function reactionId(value: string): RpgReactionId;
+export declare function reactionOptionId(value: string): RpgReactionOptionId;
 export declare function targets(options: {
     readonly team: 'hostile' | 'ally' | 'any';
     readonly maximumRange: number;
@@ -82,6 +84,15 @@ export declare function moveEntity(options: {
     readonly deltaY: RpgIrFormula;
     readonly maximumDistance: number;
     readonly provokes: boolean;
+    readonly timing?: AuthoringTiming;
+}): AuthoringProgram;
+export declare function openReaction(options: {
+    readonly id: RpgReactionId;
+    readonly options: readonly {
+        readonly id: RpgReactionOptionId;
+        readonly label: string;
+        readonly damageReduction: number;
+    }[];
     readonly timing?: AuthoringTiming;
 }): AuthoringProgram;
 export declare function sequence(...steps: readonly AuthoringProgram[]): AuthoringProgram;

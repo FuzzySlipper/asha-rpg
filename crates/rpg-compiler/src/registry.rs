@@ -90,6 +90,16 @@ const REGISTRATIONS: &[RpgOperationRegistration] = &[
         trace_behavior: "Record the operation path, origin, destination, distance validation, and commit.",
         replay_implications: "Replay verifies the accepted PositionChanged event and resulting position view.",
     },
+    RpgOperationRegistration {
+        id: "operation.openReaction",
+        version: 1,
+        reads: &[RpgCapabilityId::Reactions],
+        mutation_owner: RpgCapabilityId::Reactions,
+        validation_behavior: "Suspend the staged command at the declared reaction window and accept only one typed option before resuming the same transaction.",
+        accepted_events: &["ReactionOpened", "ReactionResolved"],
+        trace_behavior: "Record the reaction identity, selected option, and bounded damage adjustment in the resumed transaction.",
+        replay_implications: "Replay must supply the same typed reaction decision before the command can commit.",
+    },
 ];
 
 const CAPABILITIES: &[RpgCapabilityRegistration] = &[
@@ -119,6 +129,10 @@ const CAPABILITIES: &[RpgCapabilityRegistration] = &[
     },
     RpgCapabilityRegistration {
         id: RpgCapabilityId::Random,
+        version: 1,
+    },
+    RpgCapabilityRegistration {
+        id: RpgCapabilityId::Reactions,
         version: 1,
     },
 ];

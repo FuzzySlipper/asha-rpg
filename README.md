@@ -31,13 +31,14 @@ rulesets remains in the owning game or workbench.
 The Rust semantic path is active. `rpg-ir` strictly decodes `asha.rpg.ir@1`,
 `rpg-compiler` resolves exact requirements and references into an opaque
 compiled program with closed operation bindings, and `rpg-runtime` owns an
-authority session that stages state and deterministic randomness together.
-The `asha-rpg` crate is the supported consumer facade. The extracted public-ASHA
-decision/reaction fabric remains alongside this semantic path.
+authority session that stages state, explicit random evidence, and typed
+reaction decisions together. The `asha-rpg` crate is the supported consumer
+facade. There is no parallel gameplay fabric or disposable preview session.
 
 The initial operation set is deliberately closed: damage, healing, resource
-change, bounded grid movement, and turn-bounded modifier application with
-explicit replace or refresh stacking. Checks support attack, saving throw, and no-roll flows. Programs
+change, bounded grid movement, turn-bounded modifier application with explicit
+replace or refresh stacking, and a typed before-damage reaction window. Checks
+support attack, saving throw, and no-roll flows. Programs
 support bounded sequence, predicate branch, repeat, per-target branch, check
 outcome branch, and one atomic root. Unavailable semantics fail compilation;
 they are never delegated to consumer callbacks.

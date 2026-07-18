@@ -7,12 +7,14 @@ export const RPG_OPERATION_VERSIONS = {
     "operation.damage": 1,
     "operation.heal": 1,
     "operation.move": 1,
+    "operation.openReaction": 1,
 };
 export const RPG_CAPABILITY_VERSIONS = {
     "capability.defenses": 1,
     "capability.modifiers": 1,
     "capability.position": 1,
     "capability.random": 1,
+    "capability.reactions": 1,
     "capability.resources": 1,
     "capability.stats": 1,
     "capability.vitality": 1,

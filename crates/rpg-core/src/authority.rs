@@ -16,6 +16,7 @@ pub enum RpgCapabilityId {
     Modifiers,
     Position,
     Random,
+    Reactions,
 }
 
 impl RpgCapabilityId {
@@ -28,6 +29,7 @@ impl RpgCapabilityId {
             Self::Modifiers => "capability.modifiers",
             Self::Position => "capability.position",
             Self::Random => "capability.random",
+            Self::Reactions => "capability.reactions",
         }
     }
 }
@@ -117,6 +119,28 @@ impl RpgEntityState {
     pub fn modifier_in_group(&self, group: &str) -> Option<&ActiveRpgModifier> {
         self.modifiers.get(group)
     }
+
+    pub fn stats(&self) -> impl Iterator<Item = (&str, i32)> {
+        self.stats.iter().map(|(id, value)| (id.as_str(), *value))
+    }
+
+    pub fn defenses(&self) -> impl Iterator<Item = (&str, i32)> {
+        self.defenses
+            .iter()
+            .map(|(id, value)| (id.as_str(), *value))
+    }
+
+    pub fn resources(&self) -> impl Iterator<Item = (&str, BoundedValue)> {
+        self.resources
+            .iter()
+            .map(|(id, value)| (id.as_str(), *value))
+    }
+
+    pub fn modifiers(&self) -> impl Iterator<Item = (&str, &ActiveRpgModifier)> {
+        self.modifiers
+            .iter()
+            .map(|(group, modifier)| (group.as_str(), modifier))
+    }
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -159,6 +183,10 @@ impl RpgCapabilityState {
 
     pub fn revision(&self) -> u64 {
         self.revision
+    }
+
+    pub fn entities(&self) -> impl Iterator<Item = &RpgEntityState> {
+        self.entities.values()
     }
 
     pub fn insert_entity(&mut self, entity: RpgEntityState) -> Option<RpgEntityState> {
@@ -492,6 +520,29 @@ pub struct RpgRandomRequest {
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
+pub struct RpgReactionOption {
+    pub id: String,
+    pub label: String,
+    pub damage_reduction: u32,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct RpgReactionRequest {
+    pub reaction_id: String,
+    pub actor_id: String,
+    pub target_id: String,
+    pub action_id: String,
+    pub options: Vec<RpgReactionOption>,
+    pub path: String,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct RpgReactionDecision {
+    pub reaction_id: String,
+    pub option_id: Option<String>,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
 pub enum RpgDomainEvent {
     ResourceSpent {
         entity_id: String,
@@ -550,6 +601,17 @@ pub enum RpgDomainEvent {
         current: GridPosition,
         provokes: bool,
     },
+    ReactionOpened {
+        reaction_id: String,
+        actor_id: String,
+        target_id: String,
+        action_id: String,
+    },
+    ReactionResolved {
+        reaction_id: String,
+        option_id: Option<String>,
+        damage_reduction: u32,
+    },
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -577,7 +639,8 @@ pub struct RpgResolutionRejection {
     pub message: String,
     pub trace: Vec<RpgTraceStep>,
     pub random_attempted: usize,
-    pub random_request: Option<RpgRandomRequest>,
+    pub random_request: Option<Box<RpgRandomRequest>>,
+    pub reaction_request: Option<Box<RpgReactionRequest>>,
 }
 
 #[cfg(test)]

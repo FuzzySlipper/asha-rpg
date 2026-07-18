@@ -11,6 +11,8 @@ export type RpgResourceId = RpgIdentifier<'resource'>;
 export type RpgModifierId = RpgIdentifier<'modifier'>;
 export type RpgDamageType = RpgIdentifier<'damageType'>;
 export type RpgStackingGroup = RpgIdentifier<'stackingGroup'>;
+export type RpgReactionId = RpgIdentifier<'reaction'>;
+export type RpgReactionOptionId = RpgIdentifier<'reactionOption'>;
 export interface RpgIrSchema {
     readonly identity: 'asha.rpg.ir';
     readonly major: 1;
@@ -48,6 +50,11 @@ export interface RpgIrTargetSelector {
 export interface RpgIrResourceCost {
     readonly resourceId: RpgResourceId;
     readonly amount: number;
+}
+export interface RpgIrReactionOption {
+    readonly id: RpgReactionOptionId;
+    readonly label: string;
+    readonly damageReduction: number;
 }
 export type RpgIrCheck = {
     readonly kind: 'noRoll';
@@ -122,6 +129,10 @@ export type RpgIrOperation = {
     readonly deltaY: RpgIrFormula;
     readonly maximumDistance: number;
     readonly provokes: boolean;
+} | {
+    readonly kind: 'openReaction';
+    readonly reactionId: RpgReactionId;
+    readonly options: readonly RpgIrReactionOption[];
 };
 export type RpgIrProgram = {
     readonly kind: 'operation';

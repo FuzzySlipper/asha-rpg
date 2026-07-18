@@ -10,6 +10,8 @@ import type {
   RpgIrTargetSelector,
   RpgModifierId,
   RpgResourceId,
+  RpgReactionId,
+  RpgReactionOptionId,
   RpgStackingGroup,
   RpgStatId,
 } from '@asha-rpg/ir';
@@ -52,6 +54,14 @@ export function damageType(value: string): RpgDamageType {
 
 export function stackingGroup(value: string): RpgStackingGroup {
   return value as RpgStackingGroup;
+}
+
+export function reactionId(value: string): RpgReactionId {
+  return value as RpgReactionId;
+}
+
+export function reactionOptionId(value: string): RpgReactionOptionId {
+  return value as RpgReactionOptionId;
 }
 
 export function targets(options: {
@@ -262,6 +272,25 @@ export function moveEntity(options: {
       deltaY: options.deltaY,
       maximumDistance: options.maximumDistance,
       provokes: options.provokes,
+    }),
+    options.timing,
+  );
+}
+
+export function openReaction(options: {
+  readonly id: RpgReactionId;
+  readonly options: readonly {
+    readonly id: RpgReactionOptionId;
+    readonly label: string;
+    readonly damageReduction: number;
+  }[];
+  readonly timing?: AuthoringTiming;
+}): AuthoringProgram {
+  return operation(
+    frozen({
+      kind: 'openReaction',
+      reactionId: options.id,
+      options: frozenList(options.options.map((option) => frozen({ ...option }))),
     }),
     options.timing,
   );

@@ -2,10 +2,10 @@
 
 ## Purpose
 
-Asha RPG is a portable, downstream-game-compatible RPG substrate over public
-ASHA RuntimeSession and gameplay-module surfaces. It supplies Rust-owned RPG
-semantics and a TypeScript authoring frontend that compiles data into normalized
-RPG IR. It is not a game, workbench, host, archive browser, or proof harness.
+Asha RPG is a portable, downstream-game-compatible RPG authority substrate. It
+supplies Rust-owned RPG semantics and a TypeScript authoring frontend that
+compiles data into normalized RPG IR. It is not a game, workbench, host,
+archive browser, or proof harness.
 
 ## Four representations
 
@@ -24,14 +24,18 @@ reference, and semantic validation.
 ## Authority loop
 
 ```text
-typed intent -> Rules -> staged resolution workspace -> accepted DomainEvents
+typed intent -> compiled Rules -> staged authority transaction -> accepted DomainEvents
+                         reaction decision / random evidence ^
              -> capability mutation owners -> typed views
 ```
 
 A rejected resolution commits no capability mutation. Cross-capability actions
-use composed-owner transactions with declared reads and expected revisions.
-Random requests have stable keys and canonical target order. Trace explains
-authority decisions but is not mutation input.
+use one session-owned transaction with declared reads and expected revisions.
+A reaction suspends that transaction and resumes it against the same base
+revision; no cost, randomness, or gameplay state becomes observable before the
+resumed command is accepted. Random requests preserve their declared die shape
+and canonical target order. Trace explains authority decisions but is not
+mutation input.
 
 ## Public surfaces
 
@@ -47,8 +51,9 @@ The compiled artifact contains its schema and composition identity, language
 identity, exact source and dependency lock, operation and capability
 requirements, exported roots and materialized definition closure, policy
 bindings, relationship and definition provenance, reserved derivation and
-overlay provenance slots, normalized IR, and separate source, semantic, and
-presentation fingerprints. It contains no executable TypeScript, callbacks,
+overlay provenance slots, and separate source, semantic, and presentation
+fingerprints. Runtime semantics are reconstructed from that single materialized
+definition graph. The artifact contains no executable TypeScript, callbacks,
 floating dependencies, filesystem discovery state, or private Rust plan.
 Private compiled structures, capability-store layout, ASHA routing envelopes,
 and optimization indexes are not serialization contracts.
@@ -60,8 +65,8 @@ The active compatibility profile is:
 | Surface | Supported version or vocabulary |
 | --- | --- |
 | normalized IR | `asha.rpg.ir` major 1 |
-| operations | `operation.damage@1`, `operation.heal@1`, `operation.changeResource@1`, `operation.applyModifier@1`, `operation.move@1` |
-| capabilities | vitality, stats, defenses, resources, modifiers, position, deterministic random, each at version 1 |
+| operations | `operation.damage@1`, `operation.heal@1`, `operation.changeResource@1`, `operation.applyModifier@1`, `operation.move@1`, `operation.openReaction@1` |
+| capabilities | vitality, stats, defenses, resources, modifiers, position, deterministic random, reactions, each at version 1 |
 | checks | attack, saving throw, no roll |
 | formulas | constant, typed stat read, add, bounded dice, half |
 | predicates | always, comparison, not, all, any |
@@ -77,11 +82,12 @@ program and capability plan are private; consumers receive identity,
 requirement, intent, event, trace, rejection, receipt, state-view, and session
 surfaces only.
 
-Resolution clones capability state and the deterministic random stream into a
-workspace. Costs, checks, branches, and owner mutations are staged there. A
-successful action advances both authoritative surfaces and emits accepted
-DomainEvents plus explanatory trace. A rejection returns stable code/path
-evidence while leaving both authoritative surfaces unchanged.
+The persistent authority session clones capability state and explicit random
+evidence into a workspace. Costs, checks, branches, reaction decisions, and
+owner mutations are staged there. A successful action advances the state
+revision and emits accepted DomainEvents plus explanatory trace. A rejection
+returns stable code/path evidence while leaving the authoritative state
+unchanged. A pending reaction blocks other commands until it is resolved.
 
 ## TypeScript authoring profile
 

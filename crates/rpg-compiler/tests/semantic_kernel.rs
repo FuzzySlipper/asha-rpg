@@ -212,12 +212,12 @@ fn dice_requests_preserve_declared_shape_without_a_probe_limit() {
         .unwrap_err();
     assert_eq!(
         rejection.random_request,
-        Some(RpgRandomRequest {
+        Some(Box::new(RpgRandomRequest {
             kind: RpgRandomRequestKind::FormulaDice,
             count: 2,
             sides: 6,
             path: "$.action.program.body.selected.steps[0].amount".to_owned(),
-        })
+        }))
     );
 
     let five_d4 = single_target_source().replace(
@@ -232,12 +232,12 @@ fn dice_requests_preserve_declared_shape_without_a_probe_limit() {
         .unwrap_err();
     assert_eq!(
         rejection.random_request,
-        Some(RpgRandomRequest {
+        Some(Box::new(RpgRandomRequest {
             kind: RpgRandomRequestKind::FormulaDice,
             count: 5,
             sides: 4,
             path: "$.action.program.body.selected.steps[0].amount".to_owned(),
-        })
+        }))
     );
 }
 

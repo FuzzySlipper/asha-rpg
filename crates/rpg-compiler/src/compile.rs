@@ -1,5 +1,6 @@
 use std::collections::{BTreeMap, BTreeSet};
 
+use rpg_core::{RpgRandomRequest, RpgRandomRequestKind};
 use rpg_ir::{
     NormalizedRpgIr, RpgIrAction, RpgIrCheck, RpgIrFormula, RpgIrOperation, RpgIrPredicate,
     RpgIrProgram, RpgIrRequirementKind, RpgIrResourceCost, RpgIrRollScope, RpgIrSubject,
@@ -62,6 +63,19 @@ impl CompiledRpgRuleset {
         self.actions.keys().map(String::as_str)
     }
 
+    pub fn actions(&self) -> impl Iterator<Item = CompiledRpgAction> + '_ {
+        self.actions.iter().map(|(id, action)| CompiledRpgAction {
+            id: id.clone(),
+            name: action.name.clone(),
+            source_path: action.source_path.clone(),
+            targets: action.targets.clone(),
+            check: action.check.clone(),
+            roll_scope: action.roll_scope,
+            costs: action.costs.clone(),
+            random_requests: action.random_requests.clone(),
+        })
+    }
+
     pub fn required_capabilities(&self) -> impl Iterator<Item = (&str, u32)> {
         self.capability_plan
             .iter()
@@ -73,13 +87,28 @@ impl CompiledRpgRuleset {
     }
 }
 
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct CompiledRpgAction {
+    pub id: String,
+    pub name: String,
+    pub source_path: String,
+    pub targets: RpgIrTargetSelector,
+    pub check: RpgIrCheck,
+    pub roll_scope: RpgIrRollScope,
+    pub costs: Vec<RpgIrResourceCost>,
+    pub random_requests: Vec<RpgRandomRequest>,
+}
+
 #[derive(Debug, Clone)]
 pub(crate) struct CompiledAction {
+    pub(crate) name: String,
+    pub(crate) source_path: String,
     pub(crate) targets: RpgIrTargetSelector,
     pub(crate) check: RpgIrCheck,
     pub(crate) roll_scope: RpgIrRollScope,
     pub(crate) costs: Vec<RpgIrResourceCost>,
     pub(crate) program: CompiledProgram,
+    pub(crate) random_requests: Vec<RpgRandomRequest>,
 }
 
 #[derive(Debug, Clone)]
@@ -160,12 +189,165 @@ pub fn compile_normalized_rpg_ir(
 }
 
 fn compile_action(action: RpgIrAction) -> CompiledAction {
+    let random_requests = collect_action_random_requests(&action);
     CompiledAction {
+        name: action.name,
+        source_path: action.source_path,
         targets: action.targets,
         check: action.check,
         roll_scope: action.roll_scope,
         costs: action.costs,
         program: compile_program(action.program),
+        random_requests,
+    }
+}
+
+fn collect_action_random_requests(action: &RpgIrAction) -> Vec<RpgRandomRequest> {
+    let mut requests = Vec::new();
+    if !matches!(action.check, RpgIrCheck::NoRoll) {
+        let kind = match action.check {
+            RpgIrCheck::Attack { .. } => RpgRandomRequestKind::AttackCheck,
+            RpgIrCheck::SavingThrow { .. } => RpgRandomRequestKind::SavingThrowCheck,
+            RpgIrCheck::NoRoll => unreachable!(),
+        };
+        let count = match action.roll_scope {
+            RpgIrRollScope::Shared => 1,
+            RpgIrRollScope::PerTarget => action.targets.maximum_targets,
+            RpgIrRollScope::None => 0,
+        };
+        requests.push(RpgRandomRequest {
+            kind,
+            count,
+            sides: 20,
+            path: "$.action.check".to_owned(),
+        });
+    }
+    collect_program_random_requests(&action.program, "$.action.program", &mut requests);
+    requests
+}
+
+fn collect_program_random_requests(
+    program: &RpgIrProgram,
+    path: &str,
+    requests: &mut Vec<RpgRandomRequest>,
+) {
+    match program {
+        RpgIrProgram::Operation { operation } => match operation {
+            RpgIrOperation::Damage { amount, .. } | RpgIrOperation::Heal { amount } => {
+                collect_formula_random_requests(amount, &format!("{path}.amount"), requests);
+            }
+            RpgIrOperation::ChangeResource { delta, .. } => {
+                collect_formula_random_requests(delta, &format!("{path}.delta"), requests);
+            }
+            RpgIrOperation::ApplyModifier { value, .. } => {
+                collect_formula_random_requests(value, &format!("{path}.value"), requests);
+            }
+            RpgIrOperation::Move {
+                delta_x, delta_y, ..
+            } => {
+                collect_formula_random_requests(delta_x, &format!("{path}.deltaX"), requests);
+                collect_formula_random_requests(delta_y, &format!("{path}.deltaY"), requests);
+            }
+            RpgIrOperation::OpenReaction { .. } => {}
+        },
+        RpgIrProgram::Sequence { steps } => {
+            for (index, step) in steps.iter().enumerate() {
+                collect_program_random_requests(step, &format!("{path}.steps[{index}]"), requests);
+            }
+        }
+        RpgIrProgram::When {
+            predicate,
+            then,
+            otherwise,
+        } => {
+            collect_predicate_random_requests(predicate, &format!("{path}.predicate"), requests);
+            collect_program_random_requests(then, &format!("{path}.then"), requests);
+            if let Some(otherwise) = otherwise {
+                collect_program_random_requests(otherwise, &format!("{path}.otherwise"), requests);
+            }
+        }
+        RpgIrProgram::Repeat { count, body } => {
+            let start = requests.len();
+            collect_program_random_requests(body, &format!("{path}.body"), requests);
+            for request in &mut requests[start..] {
+                request.count = request.count.saturating_mul(*count);
+            }
+        }
+        RpgIrProgram::ForEachTarget { maximum, body } => {
+            let start = requests.len();
+            collect_program_random_requests(body, &format!("{path}.body"), requests);
+            for request in &mut requests[start..] {
+                request.count = request.count.saturating_mul(*maximum);
+            }
+        }
+        RpgIrProgram::OnCheck {
+            hit,
+            miss,
+            saved,
+            failed,
+            no_roll,
+        } => {
+            for (label, branch) in [
+                ("hit", hit),
+                ("miss", miss),
+                ("saved", saved),
+                ("failed", failed),
+                ("noRoll", no_roll),
+            ] {
+                if let Some(branch) = branch {
+                    collect_program_random_requests(branch, &format!("{path}.{label}"), requests);
+                }
+            }
+        }
+        RpgIrProgram::Atomic { body } => {
+            collect_program_random_requests(body, &format!("{path}.body"), requests);
+        }
+    }
+}
+
+fn collect_predicate_random_requests(
+    predicate: &RpgIrPredicate,
+    path: &str,
+    requests: &mut Vec<RpgRandomRequest>,
+) {
+    match predicate {
+        RpgIrPredicate::Always => {}
+        RpgIrPredicate::Compare { left, right, .. } => {
+            collect_formula_random_requests(left, &format!("{path}.left"), requests);
+            collect_formula_random_requests(right, &format!("{path}.right"), requests);
+        }
+        RpgIrPredicate::Not { predicate } => {
+            collect_predicate_random_requests(predicate, &format!("{path}.predicate"), requests);
+        }
+        RpgIrPredicate::All { predicates } | RpgIrPredicate::Any { predicates } => {
+            for (index, predicate) in predicates.iter().enumerate() {
+                collect_predicate_random_requests(predicate, &format!("{path}[{index}]"), requests);
+            }
+        }
+    }
+}
+
+fn collect_formula_random_requests(
+    formula: &RpgIrFormula,
+    path: &str,
+    requests: &mut Vec<RpgRandomRequest>,
+) {
+    match formula {
+        RpgIrFormula::Dice { count, sides, .. } => requests.push(RpgRandomRequest {
+            kind: RpgRandomRequestKind::FormulaDice,
+            count: *count,
+            sides: *sides,
+            path: path.to_owned(),
+        }),
+        RpgIrFormula::Add { terms } => {
+            for (index, term) in terms.iter().enumerate() {
+                collect_formula_random_requests(term, &format!("{path}.terms[{index}]"), requests);
+            }
+        }
+        RpgIrFormula::Half { value } => {
+            collect_formula_random_requests(value, &format!("{path}.value"), requests);
+        }
+        RpgIrFormula::Constant { .. } | RpgIrFormula::ReadStat { .. } => {}
     }
 }
 
@@ -784,6 +966,50 @@ impl<'a> Validator<'a> {
                 }
                 self.validate_formula_at(delta_x, &format!("{path}.deltaX"), has_target_binding);
                 self.validate_formula_at(delta_y, &format!("{path}.deltaY"), has_target_binding);
+            }
+            RpgIrOperation::OpenReaction {
+                reaction_id,
+                options,
+            } => {
+                self.require_target_binding(path, target_bound, action_target_maximum);
+                self.require_identifier(reaction_id, &format!("{path}.reactionId"));
+                if options.is_empty() || options.len() > 16 {
+                    self.error(
+                        RpgDiagnosticStage::Semantics,
+                        "RPG_IR_REACTION_OPTIONS_INVALID",
+                        format!("{path}.options"),
+                        "a reaction must declare between 1 and 16 options",
+                    );
+                }
+                let mut option_ids = BTreeSet::new();
+                for (index, option) in options.iter().enumerate() {
+                    let option_path = format!("{path}.options[{index}]");
+                    self.require_identifier(&option.id, &format!("{option_path}.id"));
+                    if !option_ids.insert(&option.id) {
+                        self.error(
+                            RpgDiagnosticStage::Semantics,
+                            "RPG_IR_REACTION_OPTION_DUPLICATE",
+                            format!("{option_path}.id"),
+                            "reaction option ids must be unique",
+                        );
+                    }
+                    if option.label.trim().is_empty() {
+                        self.error(
+                            RpgDiagnosticStage::Semantics,
+                            "RPG_IR_REACTION_OPTION_LABEL_EMPTY",
+                            format!("{option_path}.label"),
+                            "reaction option label must not be empty",
+                        );
+                    }
+                    if option.damage_reduction > 10_000 {
+                        self.error(
+                            RpgDiagnosticStage::Semantics,
+                            "RPG_IR_REACTION_REDUCTION_INVALID",
+                            format!("{option_path}.damageReduction"),
+                            "reaction damage reduction exceeds the supported bound",
+                        );
+                    }
+                }
             }
         }
     }

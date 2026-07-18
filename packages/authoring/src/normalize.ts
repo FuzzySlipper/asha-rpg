@@ -38,6 +38,7 @@ const OPERATION_IDS: Record<RpgIrOperation['kind'], RpgOperationId> = {
   changeResource: 'operation.changeResource',
   applyModifier: 'operation.applyModifier',
   move: 'operation.move',
+  openReaction: 'operation.openReaction',
 };
 
 const NO_DIAGNOSTICS: readonly [] = Object.freeze([]);
@@ -419,6 +420,42 @@ function validateOperation(
       ),
     );
   }
+  if (operation.kind === 'openReaction') {
+    if (operation.options.length < 1 || operation.options.length > 16) {
+      diagnostics.push(
+        diagnostic(
+          'normalization.reactionOptionsInvalid',
+          `${path}.operation.options`,
+          'a reaction must declare between 1 and 16 options',
+          sourcePath,
+        ),
+      );
+    }
+    const optionIds = new Set<string>();
+    for (const [index, option] of operation.options.entries()) {
+      if (optionIds.has(option.id)) {
+        diagnostics.push(
+          diagnostic(
+            'normalization.reactionOptionDuplicate',
+            `${path}.operation.options[${index}].id`,
+            `duplicate reaction option ${option.id}`,
+            sourcePath,
+          ),
+        );
+      }
+      optionIds.add(option.id);
+      if (!integerInRange(option.damageReduction, 0, 10_000)) {
+        diagnostics.push(
+          diagnostic(
+            'normalization.reactionReductionInvalid',
+            `${path}.operation.options[${index}].damageReduction`,
+            'reaction damage reduction must be a bounded non-negative integer',
+            sourcePath,
+          ),
+        );
+      }
+    }
+  }
 }
 
 function collectAction(action: AuthoredAction, collection: Collection): void {
@@ -506,6 +543,9 @@ function collectOperation(operation: RpgIrOperation, collection: Collection): vo
       collection.capabilities.add('capability.position');
       collectFormula(operation.deltaX, collection);
       collectFormula(operation.deltaY, collection);
+      return;
+    case 'openReaction':
+      collection.capabilities.add('capability.reactions');
   }
 }
 

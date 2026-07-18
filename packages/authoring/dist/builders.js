@@ -19,6 +19,12 @@ export function damageType(value) {
 export function stackingGroup(value) {
     return value;
 }
+export function reactionId(value) {
+    return value;
+}
+export function reactionOptionId(value) {
+    return value;
+}
 export function targets(options) {
     return frozen({
         team: options.team,
@@ -143,6 +149,13 @@ export function moveEntity(options) {
         deltaY: options.deltaY,
         maximumDistance: options.maximumDistance,
         provokes: options.provokes,
+    }), options.timing);
+}
+export function openReaction(options) {
+    return operation(frozen({
+        kind: 'openReaction',
+        reactionId: options.id,
+        options: frozenList(options.options.map((option) => frozen({ ...option }))),
     }), options.timing);
 }
 export function sequence(...steps) {

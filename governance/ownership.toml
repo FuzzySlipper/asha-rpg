@@ -20,7 +20,7 @@ owns = ["semantic compilation", "private compiled plans", "ruleset artifact vali
 [crate."crates/rpg-runtime"]
 lane = "rust-authority"
 implementation_status = "active"
-may_depend_on = ["rpg-core", "rpg-ir", "rpg-compiler", "asha-runtime-session-composition"]
+may_depend_on = ["rpg-core", "rpg-compiler"]
 
 [crate."crates/rpg-replay"]
 lane = "rust-authority"

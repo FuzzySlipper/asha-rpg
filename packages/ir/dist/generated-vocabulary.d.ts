@@ -6,6 +6,7 @@ export declare const RPG_OPERATION_VERSIONS: {
     readonly "operation.damage": 1;
     readonly "operation.heal": 1;
     readonly "operation.move": 1;
+    readonly "operation.openReaction": 1;
 };
 export type RpgOperationId = keyof typeof RPG_OPERATION_VERSIONS;
 export declare const RPG_CAPABILITY_VERSIONS: {
@@ -13,6 +14,7 @@ export declare const RPG_CAPABILITY_VERSIONS: {
     readonly "capability.modifiers": 1;
     readonly "capability.position": 1;
     readonly "capability.random": 1;
+    readonly "capability.reactions": 1;
     readonly "capability.resources": 1;
     readonly "capability.stats": 1;
     readonly "capability.vitality": 1;

@@ -1,6 +1,6 @@
 use asha_rpg::{
-    compile_normalized_rpg_json, DeterministicRandomStream, GridPosition, RpgAuthoritySession,
-    RpgCapabilityState, RpgEntityState, RpgIntent, Team,
+    compile_normalized_rpg_json, GridPosition, RpgAuthorityCommand, RpgAuthoritySession,
+    RpgCapabilityState, RpgCommandOutcome, RpgEntityState, RpgIntent, Team,
 };
 
 #[test]
@@ -34,16 +34,20 @@ fn public_facade_compiles_and_executes_a_no_roll_action() {
     state.insert_entity(actor);
     state.insert_entity(target);
     state.vitality_owner().apply_damage("target", 7).unwrap();
-    let mut session =
-        RpgAuthoritySession::new(ruleset, state, DeterministicRandomStream::new(Vec::new()));
+    let mut session = RpgAuthoritySession::new(ruleset, state);
 
-    let receipt = session
-        .submit(&RpgIntent {
+    let outcome = session.submit(RpgAuthorityCommand {
+        expected_revision: 0,
+        intent: RpgIntent {
             action_id: "action.heal".to_owned(),
             actor_id: "actor".to_owned(),
             target_ids: vec!["target".to_owned()],
-        })
-        .unwrap();
+        },
+        random_values: Vec::new(),
+    });
+    let RpgCommandOutcome::Accepted(receipt) = outcome else {
+        panic!("public command should be accepted: {outcome:?}");
+    };
 
     assert_eq!(receipt.random_consumed, 0);
     assert_eq!(

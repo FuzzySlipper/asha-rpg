@@ -595,11 +595,11 @@ fn normalized_ir_from_materialized(
                 ),
             ));
         }
-        resolve_program_catalogs(
-            &mut action.program,
+        resolve_action_catalogs(
+            &mut action,
             definition,
             &definitions,
-            &format!("{path}.program"),
+            &path,
             &mut diagnostics,
         );
         collect_action_catalogs(&action, &mut catalogs);
@@ -654,6 +654,78 @@ fn normalized_ir_from_materialized(
     })
 }
 
+fn resolve_action_catalogs(
+    action: &mut RpgIrAction,
+    action_definition: &MaterializedRulesetDefinition,
+    definitions: &BTreeMap<&str, &MaterializedRulesetDefinition>,
+    path: &str,
+    diagnostics: &mut Vec<RpgDiagnostic>,
+) {
+    for (index, cost) in action.costs.iter_mut().enumerate() {
+        resolve_catalog_reference(
+            &mut cost.resource_id,
+            "resource",
+            "RESOURCE",
+            action_definition,
+            definitions,
+            &format!("{path}.costs[{index}].resourceId"),
+            diagnostics,
+        );
+    }
+    match &mut action.check {
+        RpgIrCheck::NoRoll => {}
+        RpgIrCheck::Attack {
+            modifier,
+            defense_id,
+        } => {
+            resolve_catalog_reference(
+                defense_id,
+                "defense",
+                "DEFENSE",
+                action_definition,
+                definitions,
+                &format!("{path}.check.defenseId"),
+                diagnostics,
+            );
+            resolve_formula_catalogs(
+                modifier,
+                action_definition,
+                definitions,
+                &format!("{path}.check.modifier"),
+                diagnostics,
+            );
+        }
+        RpgIrCheck::SavingThrow {
+            difficulty,
+            defense_id,
+        } => {
+            resolve_catalog_reference(
+                defense_id,
+                "defense",
+                "DEFENSE",
+                action_definition,
+                definitions,
+                &format!("{path}.check.defenseId"),
+                diagnostics,
+            );
+            resolve_formula_catalogs(
+                difficulty,
+                action_definition,
+                definitions,
+                &format!("{path}.check.difficulty"),
+                diagnostics,
+            );
+        }
+    }
+    resolve_program_catalogs(
+        &mut action.program,
+        action_definition,
+        definitions,
+        &format!("{path}.program"),
+        diagnostics,
+    );
+}
+
 fn resolve_program_catalogs(
     program: &mut RpgIrProgram,
     action_definition: &MaterializedRulesetDefinition,
@@ -663,15 +735,13 @@ fn resolve_program_catalogs(
 ) {
     match program {
         RpgIrProgram::Operation { operation } => {
-            if let RpgIrOperation::Damage { damage_type, .. } = operation {
-                resolve_damage_type(
-                    damage_type,
-                    action_definition,
-                    definitions,
-                    &format!("{path}.operation.damageType"),
-                    diagnostics,
-                );
-            }
+            resolve_operation_catalogs(
+                operation,
+                action_definition,
+                definitions,
+                &format!("{path}.operation"),
+                diagnostics,
+            );
         }
         RpgIrProgram::Sequence { steps } => {
             for (index, step) in steps.iter_mut().enumerate() {
@@ -685,8 +755,17 @@ fn resolve_program_catalogs(
             }
         }
         RpgIrProgram::When {
-            then, otherwise, ..
+            predicate,
+            then,
+            otherwise,
         } => {
+            resolve_predicate_catalogs(
+                predicate,
+                action_definition,
+                definitions,
+                &format!("{path}.predicate"),
+                diagnostics,
+            );
             resolve_program_catalogs(
                 then,
                 action_definition,
@@ -741,8 +820,193 @@ fn resolve_program_catalogs(
     }
 }
 
-fn resolve_damage_type(
-    damage_type: &mut String,
+fn resolve_operation_catalogs(
+    operation: &mut RpgIrOperation,
+    action_definition: &MaterializedRulesetDefinition,
+    definitions: &BTreeMap<&str, &MaterializedRulesetDefinition>,
+    path: &str,
+    diagnostics: &mut Vec<RpgDiagnostic>,
+) {
+    match operation {
+        RpgIrOperation::Damage {
+            amount,
+            damage_type,
+        } => {
+            resolve_catalog_reference(
+                damage_type,
+                "damageType",
+                "DAMAGE_TYPE",
+                action_definition,
+                definitions,
+                &format!("{path}.damageType"),
+                diagnostics,
+            );
+            resolve_formula_catalogs(
+                amount,
+                action_definition,
+                definitions,
+                &format!("{path}.amount"),
+                diagnostics,
+            );
+        }
+        RpgIrOperation::Heal { amount } => resolve_formula_catalogs(
+            amount,
+            action_definition,
+            definitions,
+            &format!("{path}.amount"),
+            diagnostics,
+        ),
+        RpgIrOperation::ChangeResource {
+            resource_id, delta, ..
+        } => {
+            resolve_catalog_reference(
+                resource_id,
+                "resource",
+                "RESOURCE",
+                action_definition,
+                definitions,
+                &format!("{path}.resourceId"),
+                diagnostics,
+            );
+            resolve_formula_catalogs(
+                delta,
+                action_definition,
+                definitions,
+                &format!("{path}.delta"),
+                diagnostics,
+            );
+        }
+        RpgIrOperation::ApplyModifier {
+            modifier_id, value, ..
+        } => {
+            resolve_catalog_reference(
+                modifier_id,
+                "modifier",
+                "MODIFIER",
+                action_definition,
+                definitions,
+                &format!("{path}.modifierId"),
+                diagnostics,
+            );
+            resolve_formula_catalogs(
+                value,
+                action_definition,
+                definitions,
+                &format!("{path}.value"),
+                diagnostics,
+            );
+        }
+        RpgIrOperation::Move {
+            delta_x, delta_y, ..
+        } => {
+            resolve_formula_catalogs(
+                delta_x,
+                action_definition,
+                definitions,
+                &format!("{path}.deltaX"),
+                diagnostics,
+            );
+            resolve_formula_catalogs(
+                delta_y,
+                action_definition,
+                definitions,
+                &format!("{path}.deltaY"),
+                diagnostics,
+            );
+        }
+        RpgIrOperation::OpenReaction { .. } => {}
+    }
+}
+
+fn resolve_formula_catalogs(
+    formula: &mut RpgIrFormula,
+    action_definition: &MaterializedRulesetDefinition,
+    definitions: &BTreeMap<&str, &MaterializedRulesetDefinition>,
+    path: &str,
+    diagnostics: &mut Vec<RpgDiagnostic>,
+) {
+    match formula {
+        RpgIrFormula::ReadStat { stat_id, .. } => resolve_catalog_reference(
+            stat_id,
+            "stat",
+            "STAT",
+            action_definition,
+            definitions,
+            &format!("{path}.statId"),
+            diagnostics,
+        ),
+        RpgIrFormula::Add { terms } => {
+            for (index, term) in terms.iter_mut().enumerate() {
+                resolve_formula_catalogs(
+                    term,
+                    action_definition,
+                    definitions,
+                    &format!("{path}.terms[{index}]"),
+                    diagnostics,
+                );
+            }
+        }
+        RpgIrFormula::Half { value } => resolve_formula_catalogs(
+            value,
+            action_definition,
+            definitions,
+            &format!("{path}.value"),
+            diagnostics,
+        ),
+        RpgIrFormula::Constant { .. } | RpgIrFormula::Dice { .. } => {}
+    }
+}
+
+fn resolve_predicate_catalogs(
+    predicate: &mut RpgIrPredicate,
+    action_definition: &MaterializedRulesetDefinition,
+    definitions: &BTreeMap<&str, &MaterializedRulesetDefinition>,
+    path: &str,
+    diagnostics: &mut Vec<RpgDiagnostic>,
+) {
+    match predicate {
+        RpgIrPredicate::Always => {}
+        RpgIrPredicate::Compare { left, right, .. } => {
+            resolve_formula_catalogs(
+                left,
+                action_definition,
+                definitions,
+                &format!("{path}.left"),
+                diagnostics,
+            );
+            resolve_formula_catalogs(
+                right,
+                action_definition,
+                definitions,
+                &format!("{path}.right"),
+                diagnostics,
+            );
+        }
+        RpgIrPredicate::Not { predicate } => resolve_predicate_catalogs(
+            predicate,
+            action_definition,
+            definitions,
+            &format!("{path}.predicate"),
+            diagnostics,
+        ),
+        RpgIrPredicate::All { predicates } | RpgIrPredicate::Any { predicates } => {
+            for (index, predicate) in predicates.iter_mut().enumerate() {
+                resolve_predicate_catalogs(
+                    predicate,
+                    action_definition,
+                    definitions,
+                    &format!("{path}.predicates[{index}]"),
+                    diagnostics,
+                );
+            }
+        }
+    }
+}
+
+fn resolve_catalog_reference(
+    value: &mut String,
+    expected_catalog: &str,
+    diagnostic_kind: &str,
     action_definition: &MaterializedRulesetDefinition,
     definitions: &BTreeMap<&str, &MaterializedRulesetDefinition>,
     path: &str,
@@ -751,34 +1015,34 @@ fn resolve_damage_type(
     if !action_definition
         .references
         .iter()
-        .any(|reference| reference == damage_type)
+        .any(|reference| reference == value)
     {
         diagnostics.push(RpgDiagnostic::error(
             RpgDiagnosticStage::References,
-            "RULESET_DAMAGE_TYPE_REFERENCE_UNDECLARED",
+            catalog_diagnostic_code(diagnostic_kind, CatalogDiagnostic::ReferenceUndeclared),
             path,
             format!(
-                "damage type {damage_type} must be a direct definition reference from {}",
+                "{expected_catalog} {value} must be a direct definition reference from {}",
                 action_definition.id
             ),
         ));
         return;
     }
-    let Some(definition) = definitions.get(damage_type.as_str()) else {
+    let Some(definition) = definitions.get(value.as_str()) else {
         diagnostics.push(RpgDiagnostic::error(
             RpgDiagnosticStage::References,
-            "RULESET_DAMAGE_TYPE_DEFINITION_MISSING",
+            catalog_diagnostic_code(diagnostic_kind, CatalogDiagnostic::DefinitionMissing),
             path,
-            format!("damage type definition {damage_type} is absent"),
+            format!("{expected_catalog} definition {value} is absent"),
         ));
         return;
     };
     if definition.kind != MaterializedRulesetDefinitionKind::Support {
         diagnostics.push(RpgDiagnostic::error(
             RpgDiagnosticStage::References,
-            "RULESET_DAMAGE_TYPE_DEFINITION_KIND_INVALID",
+            catalog_diagnostic_code(diagnostic_kind, CatalogDiagnostic::DefinitionKindInvalid),
             path,
-            format!("damage type definition {damage_type} must be support data"),
+            format!("{expected_catalog} definition {value} must be support data"),
         ));
         return;
     }
@@ -788,26 +1052,60 @@ fn resolve_damage_type(
             Err(error) => {
                 diagnostics.push(RpgDiagnostic::error(
                     RpgDiagnosticStage::Semantics,
-                    "RULESET_DAMAGE_TYPE_SEMANTIC_INVALID",
+                    catalog_diagnostic_code(diagnostic_kind, CatalogDiagnostic::SemanticInvalid),
                     path,
                     error.to_string(),
                 ));
                 return;
             }
         };
-    if semantic.catalog != "damageType" {
+    if semantic.catalog != expected_catalog {
         diagnostics.push(RpgDiagnostic::error(
             RpgDiagnosticStage::References,
-            "RULESET_DAMAGE_TYPE_CATALOG_MISMATCH",
+            catalog_diagnostic_code(diagnostic_kind, CatalogDiagnostic::CatalogMismatch),
             path,
             format!(
-                "definition {} belongs to catalog {}, not damageType",
-                definition.id, semantic.catalog
+                "definition {} belongs to catalog {}, not {expected_catalog}",
+                definition.id, semantic.catalog,
             ),
         ));
         return;
     }
-    *damage_type = semantic.id;
+    *value = semantic.id;
+}
+
+#[derive(Clone, Copy)]
+enum CatalogDiagnostic {
+    ReferenceUndeclared,
+    DefinitionMissing,
+    DefinitionKindInvalid,
+    SemanticInvalid,
+    CatalogMismatch,
+}
+
+fn catalog_diagnostic_code(kind: &str, diagnostic: CatalogDiagnostic) -> &'static str {
+    match (kind, diagnostic) {
+        ("DAMAGE_TYPE", CatalogDiagnostic::ReferenceUndeclared) => {
+            "RULESET_DAMAGE_TYPE_REFERENCE_UNDECLARED"
+        }
+        ("DAMAGE_TYPE", CatalogDiagnostic::DefinitionMissing) => {
+            "RULESET_DAMAGE_TYPE_DEFINITION_MISSING"
+        }
+        ("DAMAGE_TYPE", CatalogDiagnostic::DefinitionKindInvalid) => {
+            "RULESET_DAMAGE_TYPE_DEFINITION_KIND_INVALID"
+        }
+        ("DAMAGE_TYPE", CatalogDiagnostic::SemanticInvalid) => {
+            "RULESET_DAMAGE_TYPE_SEMANTIC_INVALID"
+        }
+        ("DAMAGE_TYPE", CatalogDiagnostic::CatalogMismatch) => {
+            "RULESET_DAMAGE_TYPE_CATALOG_MISMATCH"
+        }
+        (_, CatalogDiagnostic::ReferenceUndeclared) => "RULESET_CATALOG_REFERENCE_UNDECLARED",
+        (_, CatalogDiagnostic::DefinitionMissing) => "RULESET_CATALOG_DEFINITION_MISSING",
+        (_, CatalogDiagnostic::DefinitionKindInvalid) => "RULESET_CATALOG_DEFINITION_KIND_INVALID",
+        (_, CatalogDiagnostic::SemanticInvalid) => "RULESET_CATALOG_SEMANTIC_INVALID",
+        (_, CatalogDiagnostic::CatalogMismatch) => "RULESET_CATALOG_MISMATCH",
+    }
 }
 
 fn collect_action_catalogs(action: &RpgIrAction, catalogs: &mut DerivedCatalogs) {
@@ -863,10 +1161,8 @@ fn collect_program_catalogs(program: &RpgIrProgram, catalogs: &mut DerivedCatalo
             failed,
             no_roll,
         } => {
-            for branch in [hit, miss, saved, failed, no_roll] {
-                if let Some(branch) = branch {
-                    collect_program_catalogs(branch, catalogs);
-                }
+            for branch in [hit, miss, saved, failed, no_roll].into_iter().flatten() {
+                collect_program_catalogs(branch, catalogs);
             }
         }
     }
@@ -895,6 +1191,7 @@ fn collect_operation_catalogs(operation: &RpgIrOperation, catalogs: &mut Derived
             collect_formula_catalogs(delta_x, catalogs);
             collect_formula_catalogs(delta_y, catalogs);
         }
+        RpgIrOperation::OpenReaction { .. } => {}
     }
 }
 

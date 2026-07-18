@@ -101,6 +101,14 @@ pub struct RpgIrResourceCost {
     pub amount: i32,
 }
 
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase", deny_unknown_fields)]
+pub struct RpgIrReactionOption {
+    pub id: String,
+    pub label: String,
+    pub damage_reduction: u32,
+}
+
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
 pub enum RpgIrRollScope {
@@ -233,6 +241,10 @@ pub enum RpgIrOperation {
         maximum_distance: u32,
         provokes: bool,
     },
+    OpenReaction {
+        reaction_id: String,
+        options: Vec<RpgIrReactionOption>,
+    },
 }
 
 impl RpgIrOperation {
@@ -243,6 +255,7 @@ impl RpgIrOperation {
             Self::ChangeResource { .. } => "operation.changeResource",
             Self::ApplyModifier { .. } => "operation.applyModifier",
             Self::Move { .. } => "operation.move",
+            Self::OpenReaction { .. } => "operation.openReaction",
         }
     }
 }

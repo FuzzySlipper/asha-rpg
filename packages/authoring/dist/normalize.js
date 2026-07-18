@@ -5,6 +5,7 @@ const OPERATION_IDS = {
     changeResource: 'operation.changeResource',
     applyModifier: 'operation.applyModifier',
     move: 'operation.move',
+    openReaction: 'operation.openReaction',
 };
 const NO_DIAGNOSTICS = Object.freeze([]);
 export function normalizePackage(source) {
@@ -211,6 +212,21 @@ function validateOperation(operation, path, diagnostics, sourcePath) {
         !integerInRange(operation.maximumDistance, 1, 64)) {
         diagnostics.push(diagnostic('normalization.movementBoundInvalid', `${path}.operation.maximumDistance`, 'movement maximum must be an integer between 1 and 64', sourcePath));
     }
+    if (operation.kind === 'openReaction') {
+        if (operation.options.length < 1 || operation.options.length > 16) {
+            diagnostics.push(diagnostic('normalization.reactionOptionsInvalid', `${path}.operation.options`, 'a reaction must declare between 1 and 16 options', sourcePath));
+        }
+        const optionIds = new Set();
+        for (const [index, option] of operation.options.entries()) {
+            if (optionIds.has(option.id)) {
+                diagnostics.push(diagnostic('normalization.reactionOptionDuplicate', `${path}.operation.options[${index}].id`, `duplicate reaction option ${option.id}`, sourcePath));
+            }
+            optionIds.add(option.id);
+            if (!integerInRange(option.damageReduction, 0, 10_000)) {
+                diagnostics.push(diagnostic('normalization.reactionReductionInvalid', `${path}.operation.options[${index}].damageReduction`, 'reaction damage reduction must be a bounded non-negative integer', sourcePath));
+            }
+        }
+    }
 }
 function collectAction(action, collection) {
     for (const cost of action.costs) {
@@ -298,6 +314,9 @@ function collectOperation(operation, collection) {
             collection.capabilities.add('capability.position');
             collectFormula(operation.deltaX, collection);
             collectFormula(operation.deltaY, collection);
+            return;
+        case 'openReaction':
+            collection.capabilities.add('capability.reactions');
     }
 }
 function collectFormula(formula, collection) {

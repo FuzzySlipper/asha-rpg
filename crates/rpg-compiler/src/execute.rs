@@ -3,7 +3,8 @@ use std::collections::BTreeMap;
 use rpg_core::{
     DeterministicRandomStream, RpgCapabilityId, RpgCapabilityMutationError, RpgCapabilityState,
     RpgCapabilityWorkspace, RpgDomainEvent, RpgIntent, RpgModifierStackingPolicy, RpgRandomRequest,
-    RpgRandomRequestKind, RpgResolutionReceipt, RpgResolutionRejection, RpgTraceStep,
+    RpgRandomRequestKind, RpgReactionDecision, RpgReactionOption, RpgReactionRequest,
+    RpgResolutionReceipt, RpgResolutionRejection, RpgTraceStep,
 };
 use rpg_ir::{
     RpgIrCheck, RpgIrComparison, RpgIrFormula, RpgIrOperation, RpgIrPredicate, RpgIrRollScope,
@@ -29,6 +30,26 @@ impl CompiledRpgRuleset {
         random: &mut DeterministicRandomStream,
         intent: &RpgIntent,
     ) -> Result<RpgResolutionReceipt, RpgResolutionRejection> {
+        self.resolve_internal(state, random, intent, None)
+    }
+
+    pub fn resolve_with_reaction_decision(
+        &self,
+        state: &mut RpgCapabilityState,
+        random: &mut DeterministicRandomStream,
+        intent: &RpgIntent,
+        reaction: &RpgReactionDecision,
+    ) -> Result<RpgResolutionReceipt, RpgResolutionRejection> {
+        self.resolve_internal(state, random, intent, Some(reaction))
+    }
+
+    fn resolve_internal(
+        &self,
+        state: &mut RpgCapabilityState,
+        random: &mut DeterministicRandomStream,
+        intent: &RpgIntent,
+        reaction: Option<&RpgReactionDecision>,
+    ) -> Result<RpgResolutionReceipt, RpgResolutionRejection> {
         let action = self.action(&intent.action_id).ok_or_else(|| {
             rejection(
                 "RPG_INTENT_ACTION_UNKNOWN",
@@ -47,11 +68,21 @@ impl CompiledRpgRuleset {
             events: Vec::new(),
             trace: Vec::new(),
             current_target: None,
+            reaction,
+            reaction_consumed: false,
+            pending_damage_reduction: 0,
         };
 
         execution.spend_costs()?;
         execution.resolve_checks()?;
         execution.execute_program(&action.program, "$.action.program")?;
+        if reaction.is_some() && !execution.reaction_consumed {
+            return Err(execution.fail(
+                "RPG_REACTION_DECISION_UNUSED",
+                "$.reaction",
+                "the staged transaction did not reach its reaction window",
+            ));
+        }
         let revision = execution.workspace.advance_revision();
         execution.trace.push(RpgTraceStep {
             path: "$.resolution.commit".to_owned(),
@@ -74,6 +105,60 @@ impl CompiledRpgRuleset {
         };
         execution.workspace.commit(state, random);
         Ok(receipt)
+    }
+
+    pub fn candidate_ids(
+        &self,
+        state: &RpgCapabilityState,
+        actor_id: &str,
+        action_id: &str,
+    ) -> Result<Vec<String>, RpgResolutionRejection> {
+        let action = self.action(action_id).ok_or_else(|| {
+            rejection(
+                "RPG_INTENT_ACTION_UNKNOWN",
+                "$.actionId",
+                format!("unknown action {action_id}"),
+            )
+        })?;
+        let actor = state.entity(actor_id).ok_or_else(|| {
+            rejection(
+                "RPG_INTENT_ACTOR_UNKNOWN",
+                "$.actorId",
+                format!("unknown actor {actor_id}"),
+            )
+        })?;
+        Ok(state
+            .entities()
+            .filter(|target| {
+                let team_allowed = match action.targets.team {
+                    RpgIrTeamConstraint::Hostile => target.team() != actor.team(),
+                    RpgIrTeamConstraint::Ally => target.team() == actor.team(),
+                    RpgIrTeamConstraint::Any => true,
+                };
+                let distance = actor
+                    .position()
+                    .x
+                    .abs_diff(target.position().x)
+                    .saturating_add(actor.position().y.abs_diff(target.position().y));
+                team_allowed && distance <= action.targets.maximum_range
+            })
+            .map(|target| target.id().to_owned())
+            .collect())
+    }
+
+    pub fn preflight(
+        &self,
+        state: &RpgCapabilityState,
+        intent: &RpgIntent,
+    ) -> Result<(), RpgResolutionRejection> {
+        let action = self.action(&intent.action_id).ok_or_else(|| {
+            rejection(
+                "RPG_INTENT_ACTION_UNKNOWN",
+                "$.intent.actionId",
+                format!("unknown action {}", intent.action_id),
+            )
+        })?;
+        validate_intent(action, state, intent).map(|_| ())
     }
 }
 
@@ -183,6 +268,9 @@ struct Execution<'a> {
     events: Vec<RpgDomainEvent>,
     trace: Vec<RpgTraceStep>,
     current_target: Option<String>,
+    reaction: Option<&'a RpgReactionDecision>,
+    reaction_consumed: bool,
+    pending_damage_reduction: u32,
 }
 
 impl Execution<'_> {
@@ -430,6 +518,7 @@ impl Execution<'_> {
             RpgIrOperation::ChangeResource { .. } => RpgCapabilityId::Resources,
             RpgIrOperation::ApplyModifier { .. } => RpgCapabilityId::Modifiers,
             RpgIrOperation::Move { .. } => RpgCapabilityId::Position,
+            RpgIrOperation::OpenReaction { .. } => RpgCapabilityId::Reactions,
         };
         if operation
             .binding
@@ -453,7 +542,11 @@ impl Execution<'_> {
                 damage_type,
             } => {
                 let target_id = self.target_id(path)?;
-                let amount = self.eval_nonnegative_formula(amount, &format!("{path}.amount"))?;
+                let requested_amount =
+                    self.eval_nonnegative_formula(amount, &format!("{path}.amount"))?;
+                let reduction = i32::try_from(self.pending_damage_reduction).unwrap_or(i32::MAX);
+                let amount = requested_amount.saturating_sub(reduction).max(0);
+                self.pending_damage_reduction = 0;
                 let remaining_vitality = self
                     .workspace
                     .vitality_owner()
@@ -556,6 +649,88 @@ impl Execution<'_> {
                     previous,
                     current,
                     provokes: *provokes,
+                });
+            }
+            RpgIrOperation::OpenReaction {
+                reaction_id,
+                options,
+            } => {
+                if self.reaction_consumed {
+                    return Err(self.fail(
+                        "RPG_REACTION_MULTIPLE_WINDOWS_UNSUPPORTED",
+                        path,
+                        "one command may open only one reaction window",
+                    ));
+                }
+                let target_id = self.target_id(path)?;
+                let request = RpgReactionRequest {
+                    reaction_id: reaction_id.clone(),
+                    actor_id: self.intent.actor_id.clone(),
+                    target_id: target_id.clone(),
+                    action_id: self.intent.action_id.clone(),
+                    options: options
+                        .iter()
+                        .map(|option| RpgReactionOption {
+                            id: option.id.clone(),
+                            label: option.label.clone(),
+                            damage_reduction: option.damage_reduction,
+                        })
+                        .collect(),
+                    path: path.to_owned(),
+                };
+                let decision = match self.reaction {
+                    Some(decision) => decision,
+                    None => {
+                        let mut rejection = self.fail(
+                            "RPG_REACTION_REQUIRED",
+                            path,
+                            "the staged command is awaiting a reaction decision",
+                        );
+                        rejection.reaction_request = Some(Box::new(request));
+                        return Err(rejection);
+                    }
+                };
+                if decision.reaction_id != *reaction_id {
+                    return Err(self.fail(
+                        "RPG_REACTION_ID_MISMATCH",
+                        "$.reaction.reactionId",
+                        format!("expected reaction {reaction_id}"),
+                    ));
+                }
+                let damage_reduction = match &decision.option_id {
+                    Some(option_id) => options
+                        .iter()
+                        .find(|option| option.id == *option_id)
+                        .map(|option| option.damage_reduction)
+                        .ok_or_else(|| {
+                            self.fail(
+                                "RPG_REACTION_OPTION_UNKNOWN",
+                                "$.reaction.optionId",
+                                format!("unknown reaction option {option_id}"),
+                            )
+                        })?,
+                    None => 0,
+                };
+                self.reaction_consumed = true;
+                self.pending_damage_reduction = damage_reduction;
+                self.events.push(RpgDomainEvent::ReactionOpened {
+                    reaction_id: reaction_id.clone(),
+                    actor_id: self.intent.actor_id.clone(),
+                    target_id,
+                    action_id: self.intent.action_id.clone(),
+                });
+                self.events.push(RpgDomainEvent::ReactionResolved {
+                    reaction_id: reaction_id.clone(),
+                    option_id: decision.option_id.clone(),
+                    damage_reduction,
+                });
+                self.trace.push(RpgTraceStep {
+                    path: path.to_owned(),
+                    code: "RPG_REACTION_RESOLVED".to_owned(),
+                    detail: format!(
+                        "{} selected with damage reduction {damage_reduction}",
+                        decision.option_id.as_deref().unwrap_or("decline")
+                    ),
                 });
             }
         }
@@ -751,12 +926,12 @@ impl Execution<'_> {
             path,
             "deterministic random stream is exhausted",
         );
-        rejection.random_request = Some(RpgRandomRequest {
+        rejection.random_request = Some(Box::new(RpgRandomRequest {
             kind,
             count,
             sides,
             path: path.to_owned(),
-        });
+        }));
         rejection
     }
 
@@ -843,6 +1018,7 @@ impl Execution<'_> {
                 .random_consumed()
                 .saturating_sub(self.random_start),
             random_request: None,
+            reaction_request: None,
         }
     }
 }
@@ -859,5 +1035,6 @@ fn rejection(
         trace: Vec::new(),
         random_attempted: 0,
         random_request: None,
+        reaction_request: None,
     }
 }
