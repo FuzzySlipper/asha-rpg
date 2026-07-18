@@ -6,11 +6,16 @@
 
 #![forbid(unsafe_code)]
 
+mod artifact;
 mod compile;
 mod diagnostic;
 mod execute;
 mod registry;
 
+pub use artifact::{
+    compile_prepared_ruleset, compile_prepared_ruleset_json, load_compiled_ruleset_artifact,
+    load_compiled_ruleset_artifact_json, CompiledRulesetBundle,
+};
 pub use compile::{compile_normalized_rpg_ir, compile_normalized_rpg_json, CompiledRpgRuleset};
 pub use diagnostic::{RpgCompileFailure, RpgDiagnostic, RpgDiagnosticSeverity, RpgDiagnosticStage};
 pub use registry::{

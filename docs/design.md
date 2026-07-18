@@ -10,8 +10,10 @@ RPG IR. It is not a game, workbench, host, archive browser, or proof harness.
 ## Four representations
 
 1. TypeScript authoring AST and immutable builders optimize for composition.
-2. Versioned normalized RPG IR optimizes for canonical interchange.
-3. Private Rust compiled rulesets optimize for authority execution.
+2. Explicit package manifests resolve into a closed prepared definition graph
+   and version lock, then normalize to versioned RPG IR.
+3. Rust validates that graph, builds a private compiled ruleset, and emits a
+   closed portable artifact for interchange and activation.
 4. Runtime capability state, workspaces, accepted DomainEvents, trace, replay
    inputs, and typed views implement the ECRP loop.
 
@@ -41,6 +43,13 @@ The permanent public surface includes:
 - typed intents, accepted DomainEvents, replayable authority records, and views;
 - TypeScript packages `@asha-rpg/ir` and `@asha-rpg/authoring`.
 
+The compiled artifact contains its schema and composition identity, language
+identity, exact source and dependency lock, operation and capability
+requirements, exported roots and materialized definition closure, policy
+bindings, relationship and definition provenance, reserved derivation and
+overlay provenance slots, normalized IR, and separate source, semantic, and
+presentation fingerprints. It contains no executable TypeScript, callbacks,
+floating dependencies, filesystem discovery state, or private Rust plan.
 Private compiled structures, capability-store layout, ASHA routing envelopes,
 and optimization indexes are not serialization contracts.
 
@@ -89,6 +98,21 @@ wraps each action in one atomic root, and emits recursively key-sorted canonical
 JSON. It does not roll dice, compare formulas, choose branches, test legality,
 apply stacking, move entities, or mutate state. Every representative artifact
 is passed to the Rust compiler as the final acceptance authority.
+
+Package selection is equally explicit and deterministic. A composition names
+one base plus additions, overlays, and configuration values. The caller passes
+the available immutable package sources directly; there is no ambient registry
+or directory scan. Resolution produces exact versions and fingerprints,
+validates dependency aliases and compatibility, walks exported-root closure,
+rejects private cross-package access and unreachable public definitions, and
+materializes only the reachable graph. Rust then repeats artifact-level
+compatibility and closure checks before semantic compilation. Loading a stored
+artifact recompiles those contents and requires an exact artifact match.
+
+Relationship records for derivation and patch/configure execution are carried
+as reserved versioned declarations but fail closed until that Rust-owned
+semantic phase is implemented. This prevents TypeScript from becoming a second
+compiler while leaving an explicit extension point.
 
 Archetype, item, and scenario authoring helpers are pure action-composition
 sources in the initial profile. Their helper identities do not become new IR

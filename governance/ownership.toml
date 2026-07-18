@@ -9,11 +9,13 @@ may_depend_on = []
 lane = "rust-language"
 implementation_status = "active"
 may_depend_on = ["rpg-core", "serde"]
+owns = ["normalized RPG IR", "closed ruleset artifact wire contract"]
 
 [crate."crates/rpg-compiler"]
 lane = "rust-language"
 implementation_status = "active"
-may_depend_on = ["rpg-core", "rpg-ir", "serde_json"]
+may_depend_on = ["rpg-core", "rpg-ir", "serde", "serde_json"]
+owns = ["semantic compilation", "private compiled plans", "ruleset artifact validation and fingerprints"]
 
 [crate."crates/rpg-runtime"]
 lane = "rust-authority"
@@ -45,3 +47,4 @@ type = "lib"
 layer = "domain"
 implementation_status = "active"
 may_depend_on = ["@asha-rpg/ir"]
+owns = ["immutable authoring AST", "explicit package composition and resolution", "deterministic materialization into prepared rulesets"]

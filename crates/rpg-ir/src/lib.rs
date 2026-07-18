@@ -5,8 +5,10 @@
 //! effect application.
 
 mod normalized;
+mod ruleset_artifact;
 
 pub use normalized::*;
+pub use ruleset_artifact::*;
 
 /// Identity and compatibility metadata for an authored ruleset.
 #[derive(Debug, Clone, PartialEq, Eq)]

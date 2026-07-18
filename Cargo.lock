@@ -762,6 +762,7 @@ version = "0.1.0"
 dependencies = [
  "rpg-core",
  "rpg-ir",
+ "serde",
  "serde_json",
 ]
 

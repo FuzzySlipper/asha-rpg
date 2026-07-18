@@ -46,10 +46,20 @@ they are never delegated to consumer callbacks.
 vocabulary generated from the Rust registry. `@asha-rpg/authoring` publishes
 immutable branded ids, selectors, checks, formulas, predicates, costs,
 duration/stacking/timing data, operations, bounded composition, consumer source
-composition, diagnostics, and canonical normalization. It does not evaluate
-any of those semantics. Representative consumer code lives in
+composition, explicit versioned ruleset package manifests, exact dependency
+resolution, exported-root closure, diagnostics, and canonical normalization.
+It does not evaluate any gameplay semantics or discover packages from global
+registries or the filesystem. Rust validates the prepared graph, creates the
+private executable plan, and emits the closed `asha.rpg.ruleset.compiled@1`
+artifact with independent source, semantic, and presentation fingerprints.
+Representative consumer code lives in
 `examples/representative-actions.ts`; its normalized artifact is sent through
 the Rust compiler during `npm test`.
+
+Derivation, mixin, and overlay records are reserved and rejected until their
+Rust-owned execution contract lands. Runtime activation remains a downstream
+host responsibility; the portable loader only accepts a closed artifact after
+recompiling and matching its identity and fingerprint planes.
 
 No Rulebench crate or package is part of this workspace. The independent
 `consumers/minimal-game` workspace verifies consumption through the public Git

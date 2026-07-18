@@ -11,4 +11,5 @@ workspace = true
 [dependencies]
 rpg-core = { path = "../rpg-core" }
 rpg-ir = { path = "../rpg-ir" }
+serde.workspace = true
 serde_json.workspace = true
