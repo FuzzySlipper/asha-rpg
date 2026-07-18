@@ -6,7 +6,10 @@
 
 #![forbid(unsafe_code)]
 
+mod replay;
 mod semantic_session;
+
+pub use replay::*;
 
 pub use semantic_session::{
     RpgAuthorityCommand, RpgAuthoritySession, RpgCommandOutcome, RpgPendingReaction,

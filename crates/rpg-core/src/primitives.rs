@@ -1,12 +1,16 @@
+use serde::{Deserialize, Serialize};
+
 /// A current value constrained by its declared maximum.
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase", deny_unknown_fields)]
 pub struct BoundedValue {
     pub current: i32,
     pub max: i32,
 }
 
 /// A stable identifier, display label, and integer value.
-#[derive(Debug, Clone, PartialEq, Eq)]
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase", deny_unknown_fields)]
 pub struct NamedNumber {
     pub id: String,
     pub label: String,
@@ -14,21 +18,24 @@ pub struct NamedNumber {
 }
 
 /// A position on a rectangular combat grid.
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase", deny_unknown_fields)]
 pub struct GridPosition {
     pub x: u32,
     pub y: u32,
 }
 
 /// The side a combat participant belongs to.
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
 pub enum Team {
     Ally,
     Enemy,
 }
 
 /// A deterministic, non-cryptographic state identity emitted by Rust authority.
-#[derive(Debug, Clone, PartialEq, Eq)]
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase", deny_unknown_fields)]
 pub struct StateFingerprint {
     pub algorithm: String,
     pub value: String,

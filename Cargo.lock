@@ -55,6 +55,9 @@ dependencies = [
 [[package]]
 name = "rpg-core"
 version = "0.1.0"
+dependencies = [
+ "serde",
+]
 
 [[package]]
 name = "rpg-ir"
@@ -71,6 +74,9 @@ version = "0.1.0"
 dependencies = [
  "rpg-compiler",
  "rpg-core",
+ "rpg-ir",
+ "serde",
+ "serde_json",
 ]
 
 [[package]]

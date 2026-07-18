@@ -22,7 +22,7 @@ for (const path of requiredFiles) {
 }
 
 const ownership = read('governance/ownership.toml');
-for (const cell of ['rpg-core', 'rpg-ir', 'rpg-compiler', 'rpg-runtime', 'rpg-replay', 'asha-rpg', '@asha-rpg/ir', '@asha-rpg/authoring']) {
+for (const cell of ['rpg-core', 'rpg-ir', 'rpg-compiler', 'rpg-runtime', 'asha-rpg', '@asha-rpg/ir', '@asha-rpg/authoring']) {
   if (!ownership.includes(cell)) failures.push(`ownership cell is missing: ${cell}`);
 }
 

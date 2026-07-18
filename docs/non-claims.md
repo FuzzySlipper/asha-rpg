@@ -14,9 +14,10 @@ Asha RPG is not:
 The initial semantic profile does not yet claim contested checks, critical
 outcomes, area selectors, terrain/occupancy pathfinding, conditions, temporary vitality,
 permanent or scheduler-relative durations, stack/highest-wins policies,
-reaction-window authoring, or a portable replay crate. Unknown requirements for
-those meanings fail closed. The replay ownership cell remains planned and is
-not an implementation claim.
+or reaction-window authoring. Unknown requirements for those meanings fail
+closed. Portable checkpoint and replay are part of the existing authority
+session; a separate replay engine, event-applier, or state path is not an
+implementation claim.
 
 The TypeScript packages do not provide semantic preview, target evaluation,
 dice execution, predicate evaluation, state access, effect execution, or a

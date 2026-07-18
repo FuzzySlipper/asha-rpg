@@ -65,6 +65,19 @@ source-to-effective-value provenance. Rust independently validates those
 closed records and recompiles gameplay semantics from the materialized graph.
 Runtime activation remains a downstream host responsibility.
 
+The same artifact-bound authority session now owns the supported portable
+checkpoint and replay contract. A checkpoint embeds the exact validated
+compiled artifact, a stable capability-state projection, the accepted random
+position, the full ready or awaiting-reaction phase, operation/capability/event
+schema versions, and a canonical session-state hash. Replay restores the
+embedded artifact without executing authoring code or resolving packages, then
+re-enters the normal Rust submit/reaction paths and verifies structured random
+evidence, accepted events, revisions, phases, and hashes. Restore and replay
+construct a temporary session and replace a target only after complete
+validation, so corrupt input is atomic. Compatibility inspection classifies
+source, presentation, semantic, package-lock, and artifact drift without ever
+substituting a candidate for historical authority.
+
 No Rulebench crate or package is part of this workspace. The independent
 `consumers/minimal-game` workspace verifies consumption through the public Git
 boundary rather than an unpublished sibling path.
@@ -76,7 +89,8 @@ npm test
 npm run build
 cargo test --workspace
 cargo clippy --workspace --all-targets -- -D warnings
-cargo test --manifest-path consumers/minimal-game/Cargo.toml
+node examples/generate-portable-replay-source.ts | \
+  cargo run --manifest-path consumers/minimal-game/Cargo.toml
 ```
 
 The canonical architecture is [docs/design.md](docs/design.md). The language

@@ -7,3 +7,6 @@ description = "Dependency-free values shared by portable RPG authority crates."
 
 [lints]
 workspace = true
+
+[dependencies]
+serde.workspace = true

@@ -1,5 +1,7 @@
 use std::collections::BTreeMap;
 
+use serde::{Deserialize, Serialize};
+
 use crate::{BoundedValue, GridPosition, Team};
 
 /// Closed identities for the private capability workspaces owned by RPG authority.
@@ -84,6 +86,94 @@ impl RpgEntityState {
         self
     }
 
+    pub fn restore(
+        id: impl Into<String>,
+        team: Team,
+        position: GridPosition,
+        vitality: BoundedValue,
+    ) -> Result<Self, RpgStateRestoreError> {
+        let id = id.into();
+        if id.is_empty() {
+            return Err(RpgStateRestoreError::EmptyIdentity);
+        }
+        if vitality.max < 0 || vitality.current < 0 || vitality.current > vitality.max {
+            return Err(RpgStateRestoreError::ValueOutOfBounds);
+        }
+        Ok(Self {
+            id,
+            team,
+            position,
+            vitality,
+            stats: BTreeMap::new(),
+            defenses: BTreeMap::new(),
+            resources: BTreeMap::new(),
+            modifiers: BTreeMap::new(),
+        })
+    }
+
+    pub fn restore_resource(
+        &mut self,
+        id: impl Into<String>,
+        value: BoundedValue,
+    ) -> Result<(), RpgStateRestoreError> {
+        let id = id.into();
+        if id.is_empty() {
+            return Err(RpgStateRestoreError::EmptyIdentity);
+        }
+        if value.max < 0 || value.current < 0 || value.current > value.max {
+            return Err(RpgStateRestoreError::ValueOutOfBounds);
+        }
+        if self.resources.insert(id, value).is_some() {
+            return Err(RpgStateRestoreError::DuplicateIdentity);
+        }
+        Ok(())
+    }
+
+    pub fn restore_stat(
+        &mut self,
+        id: impl Into<String>,
+        value: i32,
+    ) -> Result<(), RpgStateRestoreError> {
+        let id = id.into();
+        if id.is_empty() {
+            return Err(RpgStateRestoreError::EmptyIdentity);
+        }
+        if self.stats.insert(id, value).is_some() {
+            return Err(RpgStateRestoreError::DuplicateIdentity);
+        }
+        Ok(())
+    }
+
+    pub fn restore_defense(
+        &mut self,
+        id: impl Into<String>,
+        value: i32,
+    ) -> Result<(), RpgStateRestoreError> {
+        let id = id.into();
+        if id.is_empty() {
+            return Err(RpgStateRestoreError::EmptyIdentity);
+        }
+        if self.defenses.insert(id, value).is_some() {
+            return Err(RpgStateRestoreError::DuplicateIdentity);
+        }
+        Ok(())
+    }
+
+    pub fn restore_modifier(
+        &mut self,
+        stacking_group: impl Into<String>,
+        modifier: ActiveRpgModifier,
+    ) -> Result<(), RpgStateRestoreError> {
+        let stacking_group = stacking_group.into();
+        if stacking_group.is_empty() || modifier.id.is_empty() {
+            return Err(RpgStateRestoreError::EmptyIdentity);
+        }
+        if self.modifiers.insert(stacking_group, modifier).is_some() {
+            return Err(RpgStateRestoreError::DuplicateIdentity);
+        }
+        Ok(())
+    }
+
     pub fn id(&self) -> &str {
         &self.id
     }
@@ -150,13 +240,22 @@ pub struct ActiveRpgModifier {
     remaining_turns: u32,
 }
 
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
 pub enum RpgModifierStackingPolicy {
     Replace,
     Refresh,
 }
 
 impl ActiveRpgModifier {
+    pub fn restore(id: impl Into<String>, value: i32, remaining_turns: u32) -> Self {
+        Self {
+            id: id.into(),
+            value,
+            remaining_turns,
+        }
+    }
+
     pub fn id(&self) -> &str {
         &self.id
     }
@@ -177,6 +276,26 @@ pub struct RpgCapabilityState {
 }
 
 impl RpgCapabilityState {
+    pub fn restore(
+        revision: u64,
+        entities: impl IntoIterator<Item = RpgEntityState>,
+    ) -> Result<Self, RpgStateRestoreError> {
+        let mut restored = Self {
+            revision,
+            entities: BTreeMap::new(),
+        };
+        for entity in entities {
+            if restored
+                .entities
+                .insert(entity.id.clone(), entity)
+                .is_some()
+            {
+                return Err(RpgStateRestoreError::DuplicateIdentity);
+            }
+        }
+        Ok(restored)
+    }
+
     pub fn entity(&self, id: &str) -> Option<&RpgEntityState> {
         self.entities.get(id)
     }
@@ -233,6 +352,13 @@ impl RpgCapabilityState {
             .get_mut(resource_id)
             .ok_or(RpgCapabilityMutationError::UnknownResource)
     }
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum RpgStateRestoreError {
+    EmptyIdentity,
+    DuplicateIdentity,
+    ValueOutOfBounds,
 }
 
 /// One atomic transaction over all RPG capability owners and deterministic
@@ -467,7 +593,8 @@ pub enum RpgCapabilityMutationError {
     PositionOutOfBounds,
 }
 
-#[derive(Debug, Clone, PartialEq, Eq)]
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase", deny_unknown_fields)]
 pub struct RpgIntent {
     pub action_id: String,
     pub actor_id: String,
@@ -504,14 +631,16 @@ impl DeterministicRandomStream {
     }
 }
 
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
 pub enum RpgRandomRequestKind {
     AttackCheck,
     SavingThrowCheck,
     FormulaDice,
 }
 
-#[derive(Debug, Clone, PartialEq, Eq)]
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase", deny_unknown_fields)]
 pub struct RpgRandomRequest {
     pub kind: RpgRandomRequestKind,
     pub count: u32,
@@ -519,14 +648,23 @@ pub struct RpgRandomRequest {
     pub path: String,
 }
 
-#[derive(Debug, Clone, PartialEq, Eq)]
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase", deny_unknown_fields)]
+pub struct RpgRandomEvidence {
+    pub request: RpgRandomRequest,
+    pub values: Vec<u32>,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase", deny_unknown_fields)]
 pub struct RpgReactionOption {
     pub id: String,
     pub label: String,
     pub damage_reduction: u32,
 }
 
-#[derive(Debug, Clone, PartialEq, Eq)]
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase", deny_unknown_fields)]
 pub struct RpgReactionRequest {
     pub reaction_id: String,
     pub actor_id: String,
@@ -536,13 +674,19 @@ pub struct RpgReactionRequest {
     pub path: String,
 }
 
-#[derive(Debug, Clone, PartialEq, Eq)]
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase", deny_unknown_fields)]
 pub struct RpgReactionDecision {
     pub reaction_id: String,
     pub option_id: Option<String>,
 }
 
-#[derive(Debug, Clone, PartialEq, Eq)]
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(
+    tag = "kind",
+    rename_all = "camelCase",
+    rename_all_fields = "camelCase"
+)]
 pub enum RpgDomainEvent {
     ResourceSpent {
         entity_id: String,
@@ -614,31 +758,36 @@ pub enum RpgDomainEvent {
     },
 }
 
-#[derive(Debug, Clone, PartialEq, Eq)]
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase", deny_unknown_fields)]
 pub struct RpgTraceStep {
     pub path: String,
     pub code: String,
     pub detail: String,
 }
 
-#[derive(Debug, Clone, PartialEq, Eq)]
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase", deny_unknown_fields)]
 pub struct RpgResolutionReceipt {
     pub action_id: String,
     pub actor_id: String,
     pub target_ids: Vec<String>,
     pub events: Vec<RpgDomainEvent>,
     pub trace: Vec<RpgTraceStep>,
-    pub random_consumed: usize,
+    pub random_evidence: Vec<RpgRandomEvidence>,
+    pub random_consumed: u64,
     pub state_revision: u64,
 }
 
-#[derive(Debug, Clone, PartialEq, Eq)]
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase", deny_unknown_fields)]
 pub struct RpgResolutionRejection {
     pub code: String,
     pub path: String,
     pub message: String,
-    pub trace: Vec<RpgTraceStep>,
-    pub random_attempted: usize,
+    pub trace: Box<Vec<RpgTraceStep>>,
+    pub random_evidence: Box<Vec<RpgRandomEvidence>>,
+    pub random_attempted: u64,
     pub random_request: Option<Box<RpgRandomRequest>>,
     pub reaction_request: Option<Box<RpgReactionRequest>>,
 }

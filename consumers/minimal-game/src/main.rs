@@ -1,79 +1,99 @@
+use std::io::{self, Read};
+
 use asha_rpg::{
-    compile_normalized_rpg_json, GridPosition, RpgAuthorityCommand, RpgAuthoritySession,
-    RpgCapabilityState, RpgCommandOutcome, RpgEntityState, RpgIntent, RpgReactionCommand, Team,
+    compile_prepared_ruleset_json, decode_replay_entries, encode_replay_entries, GridPosition,
+    RpgAuthorityCommand, RpgAuthoritySession, RpgCapabilityState, RpgCommandOutcome,
+    RpgDomainEvent, RpgEntityState, RpgIntent, RpgReactionCommand, Team,
 };
 
 fn main() {
-    run_authority_session();
-    println!("minimal consumer resumed one staged reaction and committed damage=5");
-}
+    let mut prepared_source = Vec::new();
+    io::stdin()
+        .read_to_end(&mut prepared_source)
+        .expect("read prepared ruleset from stdin");
+    let bundle =
+        compile_prepared_ruleset_json(&prepared_source).expect("compile exact prepared artifact");
+    let mut initial_state = RpgCapabilityState::default();
+    initial_state.insert_entity(RpgEntityState::new(
+        "hero",
+        Team::Ally,
+        GridPosition { x: 0, y: 0 },
+        20,
+    ));
+    initial_state.insert_entity(RpgEntityState::new(
+        "guardian",
+        Team::Enemy,
+        GridPosition { x: 1, y: 0 },
+        20,
+    ));
+    let session = RpgAuthoritySession::from_compiled_ruleset(bundle, initial_state);
+    let initial_checkpoint = session.checkpoint().expect("create checkpoint");
+    let initial_json = session.checkpoint_json().expect("serialize checkpoint");
+    let mut recording =
+        RpgAuthoritySession::restore_checkpoint_json(&initial_json).expect("clean restore");
 
-fn run_authority_session() {
-    let source = br#"{
-      "schema":{"identity":"asha.rpg.ir","major":1},
-      "package":{"id":"minimal.game","version":"1.0.0"},
-      "catalogs":{
-        "defenses":["guard"],
-        "capabilities":["capability.vitality","capability.defenses","capability.random","capability.reactions"]
-      },
-      "requirements":[
-        {"kind":"operation","id":"operation.damage","version":1},
-        {"kind":"operation","id":"operation.openReaction","version":1},
-        {"kind":"capability","id":"capability.vitality","version":1},
-        {"kind":"capability","id":"capability.defenses","version":1},
-        {"kind":"capability","id":"capability.random","version":1},
-        {"kind":"capability","id":"capability.reactions","version":1}
-      ],
-      "actions":[{
-        "id":"minimal.strike","name":"Minimal Strike","sourcePath":"actions/minimal-strike",
-        "targets":{"team":"hostile","maximumRange":3,"maximumTargets":1},
-        "check":{"kind":"attack","modifier":{"kind":"constant","value":2},"defenseId":"guard"},
-        "rollScope":"perTarget","costs":[],
-        "program":{"kind":"atomic","body":{"kind":"onCheck","hit":
-          {"kind":"sequence","steps":[
-            {"kind":"operation","operation":{"kind":"openReaction","reactionId":"minimal.ward","options":[
-              {"id":"ward","label":"Raise ward","damageReduction":2}
-            ]}},
-            {"kind":"operation","operation":{"kind":"damage","amount":{"kind":"constant","value":7},"damageType":"force"}}
-          ]}
-        }}
-      }]
-    }"#;
-    let ruleset = compile_normalized_rpg_json(source).expect("consumer RPG IR compiles");
-    let actor = RpgEntityState::new("hero", Team::Ally, GridPosition { x: 0, y: 0 }, 20);
-    let target = RpgEntityState::new("guardian", Team::Enemy, GridPosition { x: 1, y: 0 }, 20)
-        .with_defense("guard", 12);
-    let mut state = RpgCapabilityState::default();
-    state.insert_entity(actor);
-    state.insert_entity(target);
-    let mut session = RpgAuthoritySession::new(ruleset, state);
-
-    let suspended = session.submit(RpgAuthorityCommand {
-        expected_revision: 0,
-        intent: RpgIntent {
-            action_id: "minimal.strike".to_owned(),
-            actor_id: "hero".to_owned(),
-            target_ids: vec!["guardian".to_owned()],
-        },
-        random_values: vec![10],
-    });
-    let RpgCommandOutcome::AwaitingReaction(pending) = suspended else {
-        panic!("consumer command should suspend: {suspended:?}");
+    let (pending_outcome, submit_entry) = recording
+        .submit_recorded(RpgAuthorityCommand {
+            expected_revision: 0,
+            intent: RpgIntent {
+                action_id: "portable.reactive-strike".to_owned(),
+                actor_id: "hero".to_owned(),
+                target_ids: vec!["guardian".to_owned()],
+            },
+            random_values: Vec::new(),
+        })
+        .expect("record suspended command");
+    let RpgCommandOutcome::AwaitingReaction(pending) = pending_outcome else {
+        panic!("consumer command should suspend: {pending_outcome:?}");
     };
-    assert_eq!(session.state().revision(), 0);
+    let pending_json = recording
+        .checkpoint_json()
+        .expect("serialize complete pending transaction");
+    let mut pending_restore =
+        RpgAuthoritySession::restore_checkpoint_json(&pending_json).expect("restore pending phase");
 
-    let resumed = session.react(RpgReactionCommand {
+    let reaction = RpgReactionCommand {
         expected_revision: 0,
         reaction_id: pending.request.reaction_id,
         option_id: Some("ward".to_owned()),
-        additional_random_values: Vec::new(),
-    });
-    let RpgCommandOutcome::Accepted(receipt) = resumed else {
-        panic!("consumer reaction should commit: {resumed:?}");
+        additional_random_values: vec![2, 2],
     };
-    assert_eq!(receipt.random_consumed, 1);
+    let (accepted, reaction_entry) = recording
+        .react_recorded(reaction.clone())
+        .expect("record resumed reaction");
+    let restored_accepted = pending_restore.react(reaction);
+    assert_eq!(accepted, restored_accepted);
+
+    let entries_json =
+        encode_replay_entries(&[submit_entry, reaction_entry]).expect("serialize replay entries");
+    let entries = decode_replay_entries(&entries_json).expect("decode replay entries");
+    let replayed =
+        RpgAuthoritySession::replay(initial_checkpoint, &entries).expect("deterministic replay");
+    assert_eq!(replayed.state(), recording.state());
     assert_eq!(
-        session.state().entity("guardian").unwrap().vitality().current,
-        15
+        replayed.state_hash().expect("replay hash"),
+        recording.state_hash().expect("recording hash")
+    );
+    let RpgCommandOutcome::Accepted(receipt) = accepted else {
+        panic!("reaction should commit: {accepted:?}");
+    };
+    assert_eq!(receipt.random_consumed, 2);
+    assert!(receipt.events.iter().any(|event| matches!(
+        event,
+        RpgDomainEvent::DamageApplied { amount: 1, .. }
+    )));
+    assert_eq!(
+        replayed
+            .state()
+            .entity("guardian")
+            .expect("guardian state")
+            .vitality()
+            .current,
+        19
+    );
+    println!(
+        "minimal consumer checkpointed, restored pending reaction, and replayed {} records at hash {}",
+        entries.len(),
+        replayed.state_hash().expect("final hash").value
     );
 }

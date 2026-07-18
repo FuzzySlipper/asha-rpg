@@ -3,7 +3,8 @@
 [crate."crates/rpg-core"]
 lane = "rust-domain"
 implementation_status = "active"
-may_depend_on = []
+may_depend_on = ["serde"]
+owns = ["authority values", "accepted DomainEvents", "stable portable state construction"]
 
 [crate."crates/rpg-ir"]
 lane = "rust-language"
@@ -20,17 +21,13 @@ owns = ["semantic compilation", "private compiled plans", "ruleset artifact vali
 [crate."crates/rpg-runtime"]
 lane = "rust-authority"
 implementation_status = "active"
-may_depend_on = ["rpg-core", "rpg-compiler"]
-
-[crate."crates/rpg-replay"]
-lane = "rust-authority"
-implementation_status = "planned"
-may_depend_on = ["rpg-core", "rpg-ir", "rpg-runtime"]
+may_depend_on = ["rpg-core", "rpg-ir", "rpg-compiler", "serde", "serde_json"]
+owns = ["single authority session", "portable checkpoint and replay contracts", "canonical session state hash", "pending reaction restore"]
 
 [crate."crates/asha-rpg"]
 lane = "rust-api"
 implementation_status = "active"
-may_depend_on = ["rpg-core", "rpg-ir", "rpg-compiler", "rpg-runtime", "rpg-replay"]
+may_depend_on = ["rpg-core", "rpg-ir", "rpg-compiler", "rpg-runtime"]
 
 [package."packages/ir"]
 name = "@asha-rpg/ir"

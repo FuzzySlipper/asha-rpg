@@ -1426,7 +1426,7 @@ fn validate_patch_changes(
     }
 }
 
-fn materialized_definition_fingerprint(
+pub fn materialized_definition_fingerprint(
     definition: &MaterializedRulesetDefinition,
 ) -> Result<String, RpgCompileFailure> {
     fingerprint(&json!({

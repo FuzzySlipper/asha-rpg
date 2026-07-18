@@ -2,9 +2,10 @@ use std::collections::BTreeMap;
 
 use rpg_core::{
     DeterministicRandomStream, RpgCapabilityId, RpgCapabilityMutationError, RpgCapabilityState,
-    RpgCapabilityWorkspace, RpgDomainEvent, RpgIntent, RpgModifierStackingPolicy, RpgRandomRequest,
-    RpgRandomRequestKind, RpgReactionDecision, RpgReactionOption, RpgReactionRequest,
-    RpgResolutionReceipt, RpgResolutionRejection, RpgTraceStep,
+    RpgCapabilityWorkspace, RpgDomainEvent, RpgIntent, RpgModifierStackingPolicy,
+    RpgRandomEvidence, RpgRandomRequest, RpgRandomRequestKind, RpgReactionDecision,
+    RpgReactionOption, RpgReactionRequest, RpgResolutionReceipt, RpgResolutionRejection,
+    RpgTraceStep,
 };
 use rpg_ir::{
     RpgIrCheck, RpgIrComparison, RpgIrFormula, RpgIrOperation, RpgIrPredicate, RpgIrRollScope,
@@ -67,6 +68,7 @@ impl CompiledRpgRuleset {
             outcomes: BTreeMap::new(),
             events: Vec::new(),
             trace: Vec::new(),
+            random_evidence: Vec::new(),
             current_target: None,
             reaction,
             reaction_consumed: false,
@@ -90,16 +92,20 @@ impl CompiledRpgRuleset {
             detail: format!("state revision {revision}"),
         });
 
-        let random_consumed = execution
-            .workspace
-            .random_consumed()
-            .saturating_sub(execution.random_start);
+        let random_consumed = u64::try_from(
+            execution
+                .workspace
+                .random_consumed()
+                .saturating_sub(execution.random_start),
+        )
+        .unwrap_or(u64::MAX);
         let receipt = RpgResolutionReceipt {
             action_id: intent.action_id.clone(),
             actor_id: intent.actor_id.clone(),
             target_ids: execution.target_ids.clone(),
             events: execution.events,
             trace: execution.trace,
+            random_evidence: execution.random_evidence,
             random_consumed,
             state_revision: revision,
         };
@@ -267,6 +273,7 @@ struct Execution<'a> {
     outcomes: BTreeMap<String, CheckOutcome>,
     events: Vec<RpgDomainEvent>,
     trace: Vec<RpgTraceStep>,
+    random_evidence: Vec<RpgRandomEvidence>,
     current_target: Option<String>,
     reaction: Option<&'a RpgReactionDecision>,
     reaction_consumed: bool,
@@ -911,6 +918,15 @@ impl Execution<'_> {
             code: "RPG_RANDOM_CONSUMED".to_owned(),
             detail: format!("d{sides}={value}"),
         });
+        self.random_evidence.push(RpgRandomEvidence {
+            request: RpgRandomRequest {
+                kind,
+                count: 1,
+                sides,
+                path: path.to_owned(),
+            },
+            values: vec![value],
+        });
         Ok(value)
     }
 
@@ -1012,11 +1028,14 @@ impl Execution<'_> {
             code: code.to_owned(),
             path: path.to_owned(),
             message: message.into(),
-            trace: self.trace.clone(),
-            random_attempted: self
-                .workspace
-                .random_consumed()
-                .saturating_sub(self.random_start),
+            trace: Box::new(self.trace.clone()),
+            random_evidence: Box::new(self.random_evidence.clone()),
+            random_attempted: u64::try_from(
+                self.workspace
+                    .random_consumed()
+                    .saturating_sub(self.random_start),
+            )
+            .unwrap_or(u64::MAX),
             random_request: None,
             reaction_request: None,
         }
@@ -1032,7 +1051,8 @@ fn rejection(
         code: code.to_owned(),
         path: path.into(),
         message: message.into(),
-        trace: Vec::new(),
+        trace: Box::new(Vec::new()),
+        random_evidence: Box::new(Vec::new()),
         random_attempted: 0,
         random_request: None,
         reaction_request: None,

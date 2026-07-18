@@ -6,13 +6,13 @@ the machine-governed lane shape used during extraction.
 Rust layer order is:
 
 ```text
-rpg-core -> rpg-ir -> rpg-compiler -> rpg-runtime -> rpg-replay -> asha-rpg
+rpg-core -> rpg-ir -> rpg-compiler -> rpg-runtime -> asha-rpg
 ```
 
-During the staged extraction, `rpg-core`, `rpg-ir`, `rpg-compiler`,
-`rpg-runtime`, and the public facade are active. The replay cell remains
-reserved for its owner task; active crates do not conceal it behind a
-placeholder API.
+`rpg-runtime` owns the single artifact-bound authority session, including its
+portable checkpoint and replay surface. Keeping replay on that session avoids
+a second state or event-application path. All listed crates and the public
+facade are active.
 
 The TypeScript authoring layer is:
 

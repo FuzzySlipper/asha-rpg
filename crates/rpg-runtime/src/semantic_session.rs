@@ -1,17 +1,22 @@
-use rpg_compiler::CompiledRpgRuleset;
+use rpg_compiler::{CompiledRpgRuleset, CompiledRulesetBundle};
 use rpg_core::{
-    DeterministicRandomStream, RpgCapabilityState, RpgIntent, RpgReactionDecision,
-    RpgReactionRequest, RpgResolutionReceipt, RpgResolutionRejection, RpgTraceStep,
+    DeterministicRandomStream, RpgCapabilityState, RpgIntent, RpgRandomEvidence,
+    RpgReactionDecision, RpgReactionRequest, RpgResolutionReceipt, RpgResolutionRejection,
+    RpgTraceStep,
 };
+use rpg_ir::CompiledRulesetArtifact;
+use serde::{Deserialize, Serialize};
 
-#[derive(Debug, Clone, PartialEq, Eq)]
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase", deny_unknown_fields)]
 pub struct RpgAuthorityCommand {
     pub expected_revision: u64,
     pub intent: RpgIntent,
     pub random_values: Vec<u32>,
 }
 
-#[derive(Debug, Clone, PartialEq, Eq)]
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase", deny_unknown_fields)]
 pub struct RpgReactionCommand {
     pub expected_revision: u64,
     pub reaction_id: String,
@@ -19,15 +24,18 @@ pub struct RpgReactionCommand {
     pub additional_random_values: Vec<u32>,
 }
 
-#[derive(Debug, Clone, PartialEq, Eq)]
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase", deny_unknown_fields)]
 pub struct RpgPendingReaction {
     pub expected_revision: u64,
     pub request: RpgReactionRequest,
     pub trace: Vec<RpgTraceStep>,
-    pub random_attempted: usize,
+    pub random_evidence: Vec<RpgRandomEvidence>,
+    pub random_attempted: u64,
 }
 
-#[derive(Debug, Clone, PartialEq, Eq)]
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(tag = "phase", content = "result", rename_all = "camelCase")]
 pub enum RpgCommandOutcome {
     Accepted(RpgResolutionReceipt),
     AwaitingReaction(RpgPendingReaction),
@@ -35,31 +43,50 @@ pub enum RpgCommandOutcome {
 }
 
 #[derive(Debug, Clone)]
-struct PendingTransaction {
-    expected_revision: u64,
-    intent: RpgIntent,
-    random_values: Vec<u32>,
-    pending: RpgPendingReaction,
+pub(crate) struct PendingTransaction {
+    pub(crate) expected_revision: u64,
+    pub(crate) intent: RpgIntent,
+    pub(crate) random_values: Vec<u32>,
+    pub(crate) pending: RpgPendingReaction,
 }
 
 /// Owner of one compiled artifact's persistent capability state and staged
 /// reaction transaction.
 #[derive(Debug)]
 pub struct RpgAuthoritySession {
-    ruleset: CompiledRpgRuleset,
-    state: RpgCapabilityState,
-    pending: Option<PendingTransaction>,
-    accepted_random_values: usize,
+    pub(crate) artifact: Option<CompiledRulesetArtifact>,
+    pub(crate) ruleset: CompiledRpgRuleset,
+    pub(crate) state: RpgCapabilityState,
+    pub(crate) pending: Option<PendingTransaction>,
+    pub(crate) accepted_random_values: u64,
 }
 
 impl RpgAuthoritySession {
     pub fn new(ruleset: CompiledRpgRuleset, initial_state: RpgCapabilityState) -> Self {
         Self {
+            artifact: None,
             ruleset,
             state: initial_state,
             pending: None,
             accepted_random_values: 0,
         }
+    }
+
+    pub fn from_compiled_ruleset(
+        bundle: CompiledRulesetBundle,
+        initial_state: RpgCapabilityState,
+    ) -> Self {
+        Self {
+            artifact: Some(bundle.artifact().clone()),
+            ruleset: bundle.ruleset().clone(),
+            state: initial_state,
+            pending: None,
+            accepted_random_values: 0,
+        }
+    }
+
+    pub fn artifact(&self) -> Option<&CompiledRulesetArtifact> {
+        self.artifact.as_ref()
     }
 
     pub fn ruleset(&self) -> &CompiledRpgRuleset {
@@ -76,7 +103,7 @@ impl RpgAuthoritySession {
             .map(|transaction| &transaction.pending)
     }
 
-    pub fn accepted_random_values(&self) -> usize {
+    pub fn accepted_random_values(&self) -> u64 {
         self.accepted_random_values
     }
 
@@ -120,7 +147,8 @@ impl RpgAuthoritySession {
                 let pending = RpgPendingReaction {
                     expected_revision: command.expected_revision,
                     request: *request,
-                    trace: error.trace,
+                    trace: *error.trace,
+                    random_evidence: *error.random_evidence,
                     random_attempted: error.random_attempted,
                 };
                 self.pending = Some(PendingTransaction {
@@ -218,7 +246,8 @@ fn rejection(
         code: code.to_owned(),
         path: path.into(),
         message: message.into(),
-        trace: Vec::new(),
+        trace: Box::new(Vec::new()),
+        random_evidence: Box::new(Vec::new()),
         random_attempted: 0,
         random_request: None,
         reaction_request: None,
