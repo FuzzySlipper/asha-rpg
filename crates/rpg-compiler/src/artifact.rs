@@ -494,7 +494,7 @@ fn validate_definition_commitments<'a>(
         }
     }
 
-    let expected = prepared
+    let mut expected = prepared
         .derivation_provenance
         .iter()
         .flat_map(|provenance| {
@@ -520,13 +520,20 @@ fn validate_definition_commitments<'a>(
             identities
         })
         .collect::<BTreeSet<_>>();
+    expected.extend(prepared.overlay_provenance.iter().map(|provenance| {
+        definition_commitment_identity(
+            &provenance.target_package_id,
+            &provenance.target_package_version,
+            &provenance.target_definition_id,
+        )
+    }));
     let actual = commitments.keys().cloned().collect::<BTreeSet<_>>();
     if actual != expected {
         diagnostics.push(RpgDiagnostic::error(
             RpgDiagnosticStage::References,
             "RULESET_DEFINITION_COMMITMENT_COVERAGE_MISMATCH",
             "$.definitionCommitments",
-            "derivation targets, bases, and named mixins require exactly one source commitment",
+            "derivation targets, bases, named mixins, and overlay targets require exactly one source commitment",
         ));
     }
     commitments
@@ -1695,7 +1702,19 @@ fn validate_materialization_provenance(
         }
         let initial_stage = committed_stage.or(derivation_stage);
         if let Some(entries) = overlays_by_definition.get(definition_id) {
-            validate_overlay_fingerprint_chain(definition, initial_stage, entries, diagnostics);
+            match initial_stage {
+                Some(stage) => {
+                    validate_overlay_fingerprint_chain(definition, stage, entries, diagnostics);
+                }
+                None => diagnostics.push(RpgDiagnostic::error(
+                    RpgDiagnosticStage::References,
+                    "RULESET_OVERLAY_INITIAL_COMMITMENT_MISSING",
+                    "$.definitionCommitments",
+                    format!(
+                        "overlay target {definition_id} requires a committed pre-overlay stage"
+                    ),
+                )),
+            }
         } else if let Some(stage) = initial_stage {
             let final_stage = materialization_stage(definition);
             if stage != final_stage {
@@ -2071,14 +2090,10 @@ fn materialize_derived_identity(
 
 fn validate_overlay_fingerprint_chain(
     final_definition: &MaterializedRulesetDefinition,
-    derivation_stage: Option<RulesetMaterializationStage>,
+    mut stage: RulesetMaterializationStage,
     overlays: &[&rpg_ir::RulesetOverlayProvenance],
     diagnostics: &mut Vec<RpgDiagnostic>,
 ) {
-    let Some(first) = overlays.first() else {
-        return;
-    };
-    let mut stage = derivation_stage.unwrap_or_else(|| first.before.clone());
     for provenance in overlays {
         let path = format!("$.overlayProvenance[order={}]", provenance.order);
         if stage != provenance.before {

@@ -50,7 +50,7 @@ export function prepareRulesetCompilation(options) {
     const definitionProvenance = graph.materialized
         .map((record) => provenance(record))
         .sort((left, right) => left.definitionId.localeCompare(right.definitionId));
-    const definitionCommitments = selectedDefinitionCommitments(materialization.definitionCommitments, materialization.derivationProvenance);
+    const definitionCommitments = selectedDefinitionCommitments(materialization.definitionCommitments, materialization.derivationProvenance, materialization.overlayProvenance);
     const materializedDefinitions = materializeDefinitions(graph.materialized, graph.resolvedReferences, graph.exportedRoots, normalized.actions);
     const relationships = [
         ...context.relationships,
@@ -1106,7 +1106,7 @@ function mixinDefinitionCommitment(record) {
         value,
     });
 }
-function selectedDefinitionCommitments(commitments, derivations) {
+function selectedDefinitionCommitments(commitments, derivations, overlays) {
     const selected = new Set();
     for (const provenance of derivations) {
         selected.add(definitionCommitmentIdentity(provenance.packageId, provenance.packageVersion, provenance.definitionId));
@@ -1114,6 +1114,9 @@ function selectedDefinitionCommitments(commitments, derivations) {
         for (const mixin of provenance.mixins) {
             selected.add(definitionCommitmentIdentity(mixin.packageId, mixin.packageVersion, mixin.definitionId));
         }
+    }
+    for (const provenance of overlays) {
+        selected.add(definitionCommitmentIdentity(provenance.targetPackageId, provenance.targetPackageVersion, provenance.targetDefinitionId));
     }
     return immutable(commitments
         .filter((commitment) => selected.has(definitionCommitmentIdentity(commitment.packageId, commitment.packageVersion, commitment.definitionId)))

@@ -305,6 +305,117 @@ test('Rust rejects provenance fingerprints and coverage that do not match materi
     missingOverlayProvenance,
     'RULESET_OVERLAY_PROVENANCE_COVERAGE_MISMATCH',
   );
+
+  const directDefinition = defineSupportDefinition({
+    kind: 'support',
+    id: 'catalog.stat.direct-overlay-target',
+    visibility: 'public',
+    extensionPolicy: 'patchable',
+    source: { module: 'direct/catalog.ts', declaration: 'directTarget' },
+    semantic: { catalog: 'stat', id: 'direct-overlay-target' },
+    presentation: { label: 'Direct target' },
+  });
+  const directSource = rulesetPackageSource(defineRulesetPackage({
+    identity: { id: 'sample.direct', version: '1.0.0' },
+    entry: { module: 'direct/index.ts', declaration: 'default' },
+    language: { id: 'asha-rpg', version: '^1.0.0' },
+    dependencies: [],
+    requirements: { operations: [], capabilities: [] },
+    definitions: [directDefinition],
+    exports: [directDefinition.id],
+    policyBindings: [],
+    relationships: [],
+  }));
+  const directStage = {
+    id: directDefinition.id,
+    kind: directDefinition.kind,
+    extensionPolicy: directDefinition.extensionPolicy,
+    value: {
+      semantic: directDefinition.semantic,
+      presentation: directDefinition.presentation ?? null,
+    },
+    references: [],
+  } as const;
+  const directOverlay = rulesetPackageSource(defineRulesetPackage({
+    identity: { id: 'sample.direct-overlay', version: '1.0.0' },
+    entry: { module: 'direct-overlay.ts', declaration: 'default' },
+    language: { id: 'asha-rpg', version: '^1.0.0' },
+    dependencies: [
+      rulesetDependency({
+        id: 'sample.direct',
+        version: '1.0.0',
+        importAs: 'direct',
+      }),
+    ],
+    requirements: { operations: [], capabilities: [] },
+    definitions: [],
+    exports: [],
+    policyBindings: [],
+    relationships: [defineRulesetRelationship({
+      kind: 'patches',
+      definitionId: 'sample.direct-overlay.patch',
+      target: definitionReference({
+        importAs: 'direct',
+        definitionId: directDefinition.id,
+      }),
+      targetPackage: { id: 'sample.direct', version: '1.0.0' },
+      expectedFingerprint: stableFingerprint(directStage),
+      patch: actionPatch.presentation.label.set('Direct target overlaid'),
+      plane: 'presentation',
+      conflictPolicy: 'reject',
+      version: 1,
+    })],
+  }));
+  const directPrepared = acceptedPrepared(
+    composeRuleset({
+      identity: { id: 'sample.direct-composition', version: '1.0.0' },
+      language: { id: 'asha-rpg', version: '^1.0.0' },
+      base: rulesetPackageRequest({ id: 'sample.direct', version: '1.0.0' }),
+      add: [],
+      overlays: [
+        rulesetPackageRequest({ id: 'sample.direct-overlay', version: '1.0.0' }),
+      ],
+      configure: {},
+    }),
+    [directSource, directOverlay],
+  );
+  const directProvenance = directPrepared.overlayProvenance[0];
+  const directFinal = directPrepared.materializedDefinitions.find(
+    (definition) => definition.id === directDefinition.id,
+  );
+  assert.ok(directProvenance);
+  assert.ok(directFinal);
+  assert.equal(directPrepared.definitionCommitments.length, 1);
+  assertCompilationFailsWith(
+    { ...directPrepared, definitionCommitments: [] },
+    'RULESET_OVERLAY_INITIAL_COMMITMENT_MISSING',
+  );
+  const fabricatedFinalStage = {
+    ...directProvenance.before,
+    value: {
+      semantic: directFinal.semantic,
+      presentation: directFinal.presentation,
+    },
+    references: directFinal.references,
+  };
+  const fabricatedFinalFingerprint = stableFingerprint(fabricatedFinalStage);
+  const concreteOverlaySubstitution: PreparedRulesetCompilation = {
+    ...directPrepared,
+    overlayProvenance: [{
+      ...directProvenance,
+      expectedFingerprint: fabricatedFinalFingerprint,
+      beforeFingerprint: fabricatedFinalFingerprint,
+      afterFingerprint: fabricatedFinalFingerprint,
+      patchFingerprint: stableFingerprint(emptyPatch),
+      patch: emptyPatch,
+      before: fabricatedFinalStage,
+      changes: [],
+    }],
+  };
+  assertCompilationFailsWith(
+    concreteOverlaySubstitution,
+    'RULESET_OVERLAY_BEFORE_STAGE_MISMATCH',
+  );
 });
 
 test('derivation and overlay errors retain exact path and policy diagnostics', () => {

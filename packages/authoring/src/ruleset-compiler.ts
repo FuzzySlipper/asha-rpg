@@ -151,6 +151,7 @@ export function prepareRulesetCompilation(options: {
   const definitionCommitments = selectedDefinitionCommitments(
     materialization.definitionCommitments,
     materialization.derivationProvenance,
+    materialization.overlayProvenance,
   );
   const materializedDefinitions = materializeDefinitions(
     graph.materialized,
@@ -1754,6 +1755,7 @@ function mixinDefinitionCommitment(
 function selectedDefinitionCommitments(
   commitments: readonly RulesetDefinitionCommitment[],
   derivations: readonly RulesetDerivationProvenance[],
+  overlays: readonly import('./ruleset-types.js').RulesetOverlayProvenance[],
 ): readonly RulesetDefinitionCommitment[] {
   const selected = new Set<string>();
   for (const provenance of derivations) {
@@ -1780,6 +1782,15 @@ function selectedDefinitionCommitments(
         ),
       );
     }
+  }
+  for (const provenance of overlays) {
+    selected.add(
+      definitionCommitmentIdentity(
+        provenance.targetPackageId,
+        provenance.targetPackageVersion,
+        provenance.targetDefinitionId,
+      ),
+    );
   }
   return immutable(
     commitments
