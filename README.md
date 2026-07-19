@@ -34,6 +34,9 @@ compiled program with closed operation bindings, and `rpg-runtime` owns an
 authority session that stages state, explicit random evidence, and typed
 reaction decisions together. The `asha-rpg` crate is the supported consumer
 facade. There is no parallel gameplay fabric or disposable preview session.
+There is also no predecessor provider/module/action-definition compatibility
+surface: normalized RPG IR, the compiled artifact, and the artifact-bound
+authority session are the single supported Rust ruleset path.
 
 The initial operation set is deliberately closed: damage, healing, resource
 change, bounded grid movement, turn-bounded modifier application with explicit

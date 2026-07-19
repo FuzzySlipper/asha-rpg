@@ -47,6 +47,13 @@ The permanent public surface includes:
 - typed intents, accepted DomainEvents, replayable authority records, and views;
 - TypeScript packages `@asha-rpg/ir` and `@asha-rpg/authoring`.
 
+There is one public Rust ruleset model: normalized RPG IR is independently
+validated and semantically compiled into a closed artifact, and that artifact
+is loaded by the persistent authority session. Predecessor provider catalogs,
+static ruleset modules, ability/spell kinds, action-resource kinds, targeting
+declarations, and effect declarations are not compatibility surfaces. Closed
+executor enums remain private to their semantic owners.
+
 The compiled artifact contains its schema and composition identity, language
 identity, exact source and dependency lock, operation and capability
 requirements, exported roots and materialized definition closure, policy
