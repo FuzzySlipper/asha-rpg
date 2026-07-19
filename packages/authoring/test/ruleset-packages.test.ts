@@ -24,6 +24,7 @@ import {
   rulesetDependency,
   rulesetPackageRequest,
   rulesetPackageSource,
+  withLowLevelDefinitionReferences,
 } from '@asha-rpg/authoring';
 import type {
   PreparedRulesetCompilation,
@@ -382,7 +383,7 @@ test('Rust emits byte-stable closed artifacts and separates fingerprint planes',
   );
 });
 
-test('Rust derives runtime semantics from the closed definition graph only', () => {
+test('the closed definition graph is derived from runtime semantics only', () => {
   const baseline = acceptedPrepared(packageFixture());
   const missingSupport = {
     ...baseline,
@@ -405,17 +406,22 @@ test('Rust derives runtime semantics from the closed definition graph only', () 
     /RULESET_ARTIFACT_REFERENCE_MISSING|RULESET_DAMAGE_TYPE_DEFINITION_MISSING/,
   );
 
-  const undeclaredRuntimeType = acceptedPrepared(
-    packageFixture({ runtimeDamageDefinitionId: 'catalog.damage.shadow' }),
-  );
-  const undeclaredCompilation = runCompilation(undeclaredRuntimeType);
-  const undeclaredDiagnostics = failedCompilationDiagnostics(
-    undeclaredCompilation,
-  );
-  assert.match(
-    undeclaredDiagnostics,
-    /RULESET_DAMAGE_TYPE_REFERENCE_UNDECLARED/,
-  );
+  const undeclaredFixture = packageFixture({
+    runtimeDamageDefinitionId: 'catalog.damage.shadow',
+  });
+  const undeclaredRuntimeType = prepareRulesetCompilation({
+    composition: undeclaredFixture.composition,
+    packages: undeclaredFixture.packages,
+  });
+  assert.equal(undeclaredRuntimeType.ok, false);
+  if (!undeclaredRuntimeType.ok) {
+    assert.ok(
+      undeclaredRuntimeType.diagnostics.some(
+        (diagnostic) =>
+          diagnostic.code === 'RULESET_DEFINITION_REFERENCE_MISSING',
+      ),
+    );
+  }
 
   const parallelRuntimeStructure = {
     ...baseline,
@@ -549,7 +555,6 @@ function packageFixture(options: FixtureOptions = {}): {
     visibility: options.unreachableVisibility ?? 'private',
     extensionPolicy: 'derivable',
     source: { module: 'foundation/templates.ts', declaration: 'privateTemplate' },
-    references: [],
   });
   const arcane = defineSupportDefinition({
     kind: 'support',
@@ -557,7 +562,6 @@ function packageFixture(options: FixtureOptions = {}): {
     visibility: 'public',
     extensionPolicy: 'sealed',
     source: { module: 'foundation/damage-types.ts', declaration: 'arcane' },
-    references: [],
     semantic: { catalog: 'damageType', id: options.damageSemanticId ?? 'arcane' },
   });
   const foundationManifest: RulesetPackageManifest = defineRulesetPackage({
@@ -579,7 +583,6 @@ function packageFixture(options: FixtureOptions = {}): {
               visibility: 'public',
               extensionPolicy: 'sealed',
               source: { module: 'foundation/conflict.ts', declaration: 'spark' },
-              references: [],
               semantic: { catalog: 'damageType', id: 'spark' },
             }),
           ]
@@ -610,7 +613,7 @@ function packageFixture(options: FixtureOptions = {}): {
       }),
     }),
   });
-  const spark = defineActionDefinition({
+  const ordinarySpark = defineActionDefinition({
     kind: 'action',
     id: 'sample.spark',
     visibility: 'public',
@@ -619,17 +622,21 @@ function packageFixture(options: FixtureOptions = {}): {
       module: options.sourceModule ?? 'core/actions/spark.ts',
       declaration: 'spark',
     },
-    references: [
-      definitionReference({
-        importAs: 'foundation',
-        definitionId: options.referencePrivateDefinition
-          ? 'sample.private-template'
-          : options.referenceId ?? 'catalog.damage.arcane',
-      }),
-    ],
     presentation: { label: options.label ?? 'Spark' },
     action: sparkAction,
   });
+  const explicitReferenceId = options.referencePrivateDefinition
+    ? 'sample.private-template'
+    : options.referenceId;
+  const spark =
+    explicitReferenceId === undefined
+      ? ordinarySpark
+      : withLowLevelDefinitionReferences(ordinarySpark, [
+          definitionReference({
+            importAs: 'foundation',
+            definitionId: explicitReferenceId,
+          }),
+        ]);
   const coreManifest = defineRulesetPackage({
     identity: { id: 'sample.core', version: '1.0.0' },
     entry: { module: 'core/ruleset.ts', declaration: 'default' },

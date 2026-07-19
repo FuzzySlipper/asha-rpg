@@ -1,29 +1,29 @@
 export function actionId(value) {
-    return value;
+    return checkedIdentifier(value, 'action id');
 }
 export function statId(value) {
-    return value;
+    return checkedIdentifier(value, 'stat id');
 }
 export function defenseId(value) {
-    return value;
+    return checkedIdentifier(value, 'defense id');
 }
 export function resourceId(value) {
-    return value;
+    return checkedIdentifier(value, 'resource id');
 }
 export function modifierId(value) {
-    return value;
+    return checkedIdentifier(value, 'modifier id');
 }
 export function damageType(value) {
-    return value;
+    return checkedIdentifier(value, 'damage type');
 }
 export function stackingGroup(value) {
-    return value;
+    return checkedIdentifier(value, 'stacking group');
 }
 export function reactionId(value) {
-    return value;
+    return checkedIdentifier(value, 'reaction id');
 }
 export function reactionOptionId(value) {
-    return value;
+    return checkedIdentifier(value, 'reaction option id');
 }
 export function targets(options) {
     return frozen({
@@ -218,5 +218,11 @@ function frozen(value) {
 }
 function frozenList(values) {
     return Object.freeze([...values]);
+}
+function checkedIdentifier(value, label) {
+    if (!/^[A-Za-z0-9][A-Za-z0-9._:-]*$/.test(value)) {
+        throw new Error(`${label} must be a non-empty portable identifier`);
+    }
+    return value;
 }
 //# sourceMappingURL=builders.js.map

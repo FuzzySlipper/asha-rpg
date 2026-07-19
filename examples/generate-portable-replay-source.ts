@@ -8,7 +8,6 @@ import {
   defineActionDefinition,
   defineRulesetPackage,
   defineSupportDefinition,
-  definitionReference,
   dice,
   hostile,
   noRoll,
@@ -31,7 +30,6 @@ const force = defineSupportDefinition({
     module: 'examples/generate-portable-replay-source.ts',
     declaration: 'force',
   },
-  references: [],
   presentation: { label: 'Force' },
   semantic: { catalog: 'damageType', id: 'force' },
 });
@@ -71,7 +69,6 @@ const actionDefinition = defineActionDefinition({
     module: 'examples/generate-portable-replay-source.ts',
     declaration: 'reactiveStrike',
   },
-  references: [definitionReference({ definitionId: force.id })],
   presentation: {
     label: reactiveStrike.name,
     description: 'Independent portable checkpoint and replay consumer source.',

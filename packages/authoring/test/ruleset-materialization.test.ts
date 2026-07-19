@@ -27,6 +27,7 @@ import {
   rulesetDependency,
   rulesetPackageRequest,
   rulesetPackageSource,
+  withLowLevelDefinitionReferences,
 } from '@asha-rpg/authoring';
 import type {
   PreparedRulesetCompilation,
@@ -353,7 +354,6 @@ test('configuration applies only an explicitly exposed typed option', () => {
     visibility: 'public',
     extensionPolicy: 'configurable',
     source: { module: 'config/catalog.ts', declaration: 'damage' },
-    references: [],
     semantic: { catalog: 'damageType', id: 'storm' },
     presentation: { label: 'Configurable damage' },
   });
@@ -436,7 +436,6 @@ function materializationSources(
     visibility: 'private',
     extensionPolicy: 'sealed',
     source: { module: 'foundation/catalog.ts', declaration: 'storm' },
-    references: [],
     semantic: { catalog: 'damageType', id: 'storm' },
     presentation: { label: 'Storm' },
   });
@@ -446,7 +445,6 @@ function materializationSources(
     visibility: 'private',
     extensionPolicy: 'sealed',
     source: { module: 'foundation/catalog.ts', declaration: 'rangeTuning' },
-    references: [],
     semantic: { catalog: 'stat', id: 'range-tuning' },
     presentation: { label: 'Range tuning' },
   });
@@ -456,7 +454,6 @@ function materializationSources(
     visibility: 'public',
     extensionPolicy: 'derivable',
     source: { module: 'foundation/actions.ts', declaration: 'arcBase' },
-    references: [definitionReference({ definitionId: 'catalog.damage.storm' })],
     presentation: { label: 'Arc Base', description: 'Foundation action' },
     action: action({
       id: actionId('sample.arc-base'),
@@ -469,13 +466,12 @@ function materializationSources(
       }),
     }),
   });
-  const multiply = defineMixinDefinition({
+  const multiply = withLowLevelDefinitionReferences(defineMixinDefinition({
     kind: 'mixin',
     id: 'sample.multiply-range',
     visibility: 'public',
     extensionPolicy: 'sealed',
     source: { module: 'foundation/mixins.ts', declaration: 'multiplyRange' },
-    references: [definitionReference({ definitionId: mixinSupportDefinition.id })],
     parameters: [{ id: 'factor', type: 'number' }],
     patch: {
       version: 1,
@@ -487,14 +483,13 @@ function materializationSources(
         add: 0,
       }],
     },
-  });
+  }), [definitionReference({ definitionId: mixinSupportDefinition.id })]);
   const add = defineMixinDefinition({
     kind: 'mixin',
     id: 'sample.add-range',
     visibility: 'public',
     extensionPolicy: 'sealed',
     source: { module: 'foundation/mixins.ts', declaration: 'addRange' },
-    references: [],
     parameters: [{ id: 'amount', type: 'number', default: 1 }],
     patch: {
       version: 1,
@@ -542,7 +537,6 @@ function materializationSources(
     visibility: 'public',
     extensionPolicy: 'patchable',
     source: { module: 'core/derived.ts', declaration: 'arcVariant' },
-    references: [],
     presentation: { label: 'ignored authored placeholder' },
   });
   const core = rulesetPackageSource(defineRulesetPackage({
@@ -642,11 +636,11 @@ function forbiddenOverlayPackage(): RulesetPackageSource {
 function cyclePackage(): RulesetPackageSource {
   const a = defineDerivedDefinition({
     kind: 'derived', id: 'sample.a', materializesAs: 'action', visibility: 'public', extensionPolicy: 'derivable',
-    source: { module: 'cycle.ts', declaration: 'a' }, references: [],
+    source: { module: 'cycle.ts', declaration: 'a' },
   });
   const b = defineDerivedDefinition({
     kind: 'derived', id: 'sample.b', materializesAs: 'action', visibility: 'public', extensionPolicy: 'derivable',
-    source: { module: 'cycle.ts', declaration: 'b' }, references: [],
+    source: { module: 'cycle.ts', declaration: 'b' },
   });
   return rulesetPackageSource(defineRulesetPackage({
     identity: { id: 'sample.cycle', version: '1.0.0' },
@@ -668,7 +662,6 @@ function incompatibleBasePackage(): RulesetPackageSource {
     visibility: 'private',
     extensionPolicy: 'derivable',
     source: { module: 'incompatible.ts', declaration: 'templateBase' },
-    references: [],
   });
   const derived = defineDerivedDefinition({
     kind: 'derived',
@@ -677,7 +670,6 @@ function incompatibleBasePackage(): RulesetPackageSource {
     visibility: 'public',
     extensionPolicy: 'sealed',
     source: { module: 'incompatible.ts', declaration: 'invalidDerived' },
-    references: [],
   });
   return rulesetPackageSource(defineRulesetPackage({
     identity: { id: 'sample.incompatible', version: '1.0.0' },

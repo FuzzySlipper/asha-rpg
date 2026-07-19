@@ -29,39 +29,39 @@ import type {
 } from './types.js';
 
 export function actionId(value: string): RpgActionId {
-  return value as RpgActionId;
+  return checkedIdentifier(value, 'action id') as RpgActionId;
 }
 
 export function statId(value: string): RpgStatId {
-  return value as RpgStatId;
+  return checkedIdentifier(value, 'stat id') as RpgStatId;
 }
 
 export function defenseId(value: string): RpgDefenseId {
-  return value as RpgDefenseId;
+  return checkedIdentifier(value, 'defense id') as RpgDefenseId;
 }
 
 export function resourceId(value: string): RpgResourceId {
-  return value as RpgResourceId;
+  return checkedIdentifier(value, 'resource id') as RpgResourceId;
 }
 
 export function modifierId(value: string): RpgModifierId {
-  return value as RpgModifierId;
+  return checkedIdentifier(value, 'modifier id') as RpgModifierId;
 }
 
 export function damageType(value: string): RpgDamageType {
-  return value as RpgDamageType;
+  return checkedIdentifier(value, 'damage type') as RpgDamageType;
 }
 
 export function stackingGroup(value: string): RpgStackingGroup {
-  return value as RpgStackingGroup;
+  return checkedIdentifier(value, 'stacking group') as RpgStackingGroup;
 }
 
 export function reactionId(value: string): RpgReactionId {
-  return value as RpgReactionId;
+  return checkedIdentifier(value, 'reaction id') as RpgReactionId;
 }
 
 export function reactionOptionId(value: string): RpgReactionOptionId {
-  return value as RpgReactionOptionId;
+  return checkedIdentifier(value, 'reaction option id') as RpgReactionOptionId;
 }
 
 export function targets(options: {
@@ -391,4 +391,11 @@ function frozen<Value extends object>(value: Value): Readonly<Value> {
 
 function frozenList<Value>(values: readonly Value[]): readonly Value[] {
   return Object.freeze([...values]);
+}
+
+function checkedIdentifier(value: string, label: string): string {
+  if (!/^[A-Za-z0-9][A-Za-z0-9._:-]*$/.test(value)) {
+    throw new Error(`${label} must be a non-empty portable identifier`);
+  }
+  return value;
 }

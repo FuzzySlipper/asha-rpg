@@ -735,7 +735,7 @@ function definitionValue(record) {
 function concreteDerivedRecord(derived, base, value, inheritedReferenceIds, diagnostics) {
     if (derived.definition.kind !== 'derived')
         return undefined;
-    const references = uniqueReferences(derived.definition.references);
+    const references = uniqueReferences(derived.definition.lowLevelReferences ?? []);
     if (derived.definition.materializesAs === 'action') {
         if (!isRecord(value.semantic)) {
             diagnostics.push(diagnostic('materialization', 'RULESET_DERIVED_ACTION_INVALID', '$.semantic', 'derived action semantic value must be an object', { definitionId: derived.definition.id }));
@@ -1031,7 +1031,7 @@ export function rulesetDefinitionMaterializationFingerprint(definition) {
         value: definition.kind === 'action'
             ? { semantic: normalizeAction(definition.action), presentation: definition.presentation ?? null }
             : { semantic: definition.semantic, presentation: definition.presentation ?? null },
-        references: [...new Set(definition.references.map((reference) => reference.definitionId))].sort(),
+        references: authoredDefinitionReferenceIds(definition),
     });
 }
 function normalizedDefinitionValue(record) {
@@ -1052,10 +1052,91 @@ function normalizedDefinitionValue(record) {
 function materializationReferenceIds(record) {
     return [
         ...new Set([
-            ...record.definition.references.map((reference) => reference.definitionId),
+            ...authoredDefinitionReferenceIds(record.definition),
             ...(record.inheritedReferenceIds ?? []).map(localDefinitionId),
         ]),
     ].sort();
+}
+const CATALOG_REFERENCE_FIELDS = {
+    statId: 'stat',
+    defenseId: 'defense',
+    resourceId: 'resource',
+    modifierId: 'modifier',
+    damageType: 'damageType',
+};
+function authoredDefinitionReferenceIds(definition) {
+    return [
+        ...new Set([
+            ...(definition.lowLevelReferences ?? []).map((reference) => reference.definitionId),
+            ...authoredCatalogReferences(definition).map((reference) => reference.definitionId),
+        ]),
+    ].sort();
+}
+function authoredCatalogReferences(definition) {
+    if (definition.kind !== 'action')
+        return [];
+    const byIdentity = new Map();
+    collectCatalogReferences(definition.action, '$.action', byIdentity);
+    return [...byIdentity.values()].sort((left, right) => `${left.category}#${left.definitionId}`.localeCompare(`${right.category}#${right.definitionId}`));
+}
+function collectCatalogReferences(value, path, references) {
+    if (Array.isArray(value)) {
+        value.forEach((entry, index) => collectCatalogReferences(entry, `${path}[${index}]`, references));
+        return;
+    }
+    if (!isRecord(value))
+        return;
+    for (const [key, child] of Object.entries(value)) {
+        const childPath = `${path}.${key}`;
+        const category = CATALOG_REFERENCE_FIELDS[key];
+        if (category !== undefined && typeof child === 'string') {
+            references.set(`${category}#${child}`, {
+                definitionId: child,
+                category,
+                path: childPath,
+            });
+            continue;
+        }
+        collectCatalogReferences(child, childPath, references);
+    }
+}
+function definitionReferences(record, definitionsByPackage, diagnostics) {
+    const references = [...(record.definition.lowLevelReferences ?? [])];
+    const inheritedLocalIds = new Set((record.inheritedReferenceIds ?? []).map(localDefinitionId));
+    for (const catalogReference of authoredCatalogReferences(record.definition)) {
+        const definitionId = catalogReference.definitionId;
+        if (inheritedLocalIds.has(definitionId))
+            continue;
+        if (definitionsByPackage.get(record.package.key)?.has(definitionId) === true) {
+            references.push({ definitionId });
+            continue;
+        }
+        const matches = [...record.package.aliases.entries()].filter(([, packageKey]) => definitionsByPackage.get(packageKey)?.has(definitionId) === true);
+        if (matches.length === 1) {
+            for (const [importAs] of matches) {
+                references.push({ importAs, definitionId });
+            }
+            continue;
+        }
+        if (matches.length > 1) {
+            diagnostics.push(diagnostic('graph', 'RULESET_CATALOG_REFERENCE_AMBIGUOUS', catalogReference.path, `catalog definition ${definitionId} is provided by more than one dependency`, {
+                packageId: record.package.source.manifest.identity.id,
+                definitionId: record.definition.id,
+                source: record.definition.source,
+            }));
+            continue;
+        }
+        const aliases = [...record.package.aliases.keys()];
+        if (aliases.length === 1) {
+            for (const importAs of aliases) {
+                references.push({ importAs, definitionId });
+            }
+        }
+        else {
+            references.push({ definitionId });
+        }
+    }
+    return uniqueReferences(references);
 }
 function cloneJsonValue(value) {
     if (Array.isArray(value))
@@ -1116,7 +1197,7 @@ function closeDefinitionGraph(context, rootKeys, sourceRecords) {
             return;
         visiting.push(globalId);
         const references = new Set();
-        for (const [index, reference] of record.definition.references.entries()) {
+        for (const [index, reference] of definitionReferences(record, definitionsByPackage, context.diagnostics).entries()) {
             const target = resolveDefinitionReference(record, reference, index, definitionsByPackage, context.diagnostics);
             if (target !== undefined) {
                 references.add(globalDefinitionId(target));
@@ -1188,7 +1269,7 @@ function closeDefinitionGraph(context, rootKeys, sourceRecords) {
 }
 function resolveMaterializationReferenceIds(record, definitionsByPackage, diagnostics) {
     const resolved = new Set(record.inheritedReferenceIds ?? []);
-    for (const [index, reference] of record.definition.references.entries()) {
+    for (const [index, reference] of definitionReferences(record, definitionsByPackage, diagnostics).entries()) {
         const target = resolveDefinitionReference(record, reference, index, definitionsByPackage, diagnostics);
         if (target !== undefined)
             resolved.add(globalDefinitionId(target));
@@ -1218,11 +1299,27 @@ function resolveDefinitionReference(source, reference, index, definitionsByPacka
         return undefined;
     }
     if (targetPackageKey !== source.package.key &&
-        (!target.exported || target.definition.visibility === 'private')) {
+        (!target.exported || target.definition.visibility === 'private') &&
+        !source.inheritedReferenceIds?.includes(globalDefinitionId(target))) {
         diagnostics.push(diagnostic('graph', 'RULESET_PRIVATE_CROSS_PACKAGE_REFERENCE', path, `definition ${target.definition.id} is not exported for cross-package use`, {
             packageId: target.package.source.manifest.identity.id,
             definitionId: target.definition.id,
             source: source.definition.source,
+        }));
+        return undefined;
+    }
+    const catalogReference = authoredCatalogReferences(source.definition).find((candidate) => candidate.definitionId === reference.definitionId);
+    if (catalogReference !== undefined &&
+        (target.definition.kind !== 'support' ||
+            target.definition.semantic.catalog !== catalogReference.category)) {
+        diagnostics.push(diagnostic('graph', 'RULESET_CATALOG_REFERENCE_KIND_MISMATCH', catalogReference.path, `catalog reference ${reference.definitionId} requires ${catalogReference.category} support`, {
+            packageId: source.package.source.manifest.identity.id,
+            definitionId: source.definition.id,
+            source: source.definition.source,
+            expected: catalogReference.category,
+            actual: target.definition.kind === 'support'
+                ? target.definition.semantic.catalog
+                : target.definition.kind,
         }));
         return undefined;
     }
@@ -1257,20 +1354,20 @@ function normalizeMaterializedActions(composition, graph, diagnostics) {
 function collectRequirements(context, normalizedRequirements, target) {
     const operations = new Map();
     const capabilities = new Map();
+    for (const requirement of normalizedRequirements) {
+        if (requirement.kind === 'operation') {
+            operations.set(requirement.id, requirement.version);
+        }
+        else {
+            capabilities.set(requirement.id, requirement.version);
+        }
+    }
     for (const entry of context.selected.values()) {
         for (const requirement of entry.source.manifest.requirements.operations) {
             operations.set(requirement.id, requirement.version);
         }
         for (const requirement of entry.source.manifest.requirements.capabilities) {
             capabilities.set(requirement.id, requirement.version);
-        }
-    }
-    for (const requirement of normalizedRequirements) {
-        const declared = requirement.kind === 'operation'
-            ? operations.get(requirement.id)
-            : capabilities.get(requirement.id);
-        if (declared !== requirement.version) {
-            context.diagnostics.push(diagnostic('compatibility', 'RULESET_DERIVED_REQUIREMENT_UNDECLARED', '$.requirements', `materialized rules require ${requirement.id}@${requirement.version}, but the package graph did not declare it`, { expected: `${requirement.id}@${requirement.version}` }));
         }
     }
     if (context.diagnostics.length > 0)

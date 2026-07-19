@@ -114,7 +114,11 @@ interface RulesetDefinitionBase {
     readonly visibility: RulesetDefinitionVisibility;
     readonly extensionPolicy: RulesetExtensionPolicy;
     readonly source: RulesetSourceLocation;
-    readonly references: readonly RulesetDefinitionReference[];
+    /**
+     * Explicit graph edges for low-level compiler fixtures and non-action data.
+     * Ordinary action dependencies are derived from the authored action AST.
+     */
+    readonly lowLevelReferences?: readonly RulesetDefinitionReference[];
     readonly presentation?: RulesetPresentation;
 }
 export interface RulesetActionDefinition extends RulesetDefinitionBase {

@@ -119,11 +119,14 @@ consumer helper identity are eliminated during normalization.
 
 The normalizer performs deterministic structural work only: it expands
 consumer-composed action sources, sorts semantic catalogs and actions, derives
-exact requirements from data use, attaches stable path/source-path diagnostics,
-wraps each action in one atomic root, and emits recursively key-sorted canonical
-JSON. It does not roll dice, compare formulas, choose branches, test legality,
-apply stacking, move entities, or mutate state. Every representative artifact
-is passed to the Rust compiler as the final acceptance authority.
+exact requirements and definition-graph edges from data use, attaches stable
+path/source-path diagnostics, wraps each action in one atomic root, and emits
+recursively key-sorted canonical JSON. Catalog builders return nominal
+category- and package-owned references, so a stat cannot accidentally stand in
+for a defense and ordinary actions do not maintain parallel reference arrays.
+It does not roll dice, compare formulas, choose branches, test legality, apply
+stacking, move entities, or mutate state. Every representative artifact is
+passed to the Rust compiler as the final acceptance authority.
 
 Package selection is equally explicit and deterministic. A composition names
 one base plus additions, overlays, and configuration values. The caller passes
@@ -137,13 +140,16 @@ artifact recompiles those contents and requires an exact artifact match.
 
 The authoring compiler now materializes one primary base, explicitly ordered
 typed mixins, local relational patches, authorized composition-ordered package
-overlays, and deliberately exposed configuration options. Patch paths use
-fields and stable member selectors rather than array indexes. Every applied
-step records before/after values, exact package and definition identities,
-parameters, order, conflict policy, impact plane, and fingerprints. Cycles,
-excessive depth, private or sealed targets, missing parameters, ambiguous
-members, conflicting writes, and expected-fingerprint drift fail before
-normalization.
+overlays, and deliberately exposed configuration options. Ordinary authoring
+uses schema-aware patch builders: valid fields and operations are fixed by the
+builder, semantic versus presentation planes are derived, and list edits use
+stable member selectors rather than indexes. Raw patch AST and explicit graph
+edges remain named low-level escape hatches for compiler fixtures. Every
+applied step records before/after values, exact package and definition
+identities, parameters, order, conflict policy, impact plane, and fingerprints.
+Cycles, excessive depth, private or sealed targets, missing parameters,
+ambiguous members, conflicting writes, and expected-fingerprint drift fail
+before normalization.
 
 This phase remains deterministic structural compilation over immutable data; it
 does not evaluate gameplay meaning. The portable artifact contains only fully

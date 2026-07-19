@@ -48,10 +48,13 @@ they are never delegated to consumer callbacks.
 
 `@asha-rpg/ir` publishes the strict normalized data contract and a checked
 vocabulary generated from the Rust registry. `@asha-rpg/authoring` publishes
-immutable branded ids, selectors, checks, formulas, predicates, costs,
+immutable catalog-bound ids, selectors, checks, formulas, predicates, costs,
 duration/stacking/timing data, operations, bounded composition, consumer source
 composition, explicit versioned ruleset package manifests, exact dependency
 resolution, exported-root closure, diagnostics, and canonical normalization.
+Action AST traversal derives package closure and semantic requirements without
+consumer-maintained reference ledgers, while schema-aware patch builders own
+valid paths, operations, stable member selectors, and impact planes.
 It does not evaluate any gameplay semantics or discover packages from global
 registries or the filesystem. Rust validates the prepared graph, creates the
 private executable plan, and emits the closed `asha.rpg.ruleset.compiled@1`
