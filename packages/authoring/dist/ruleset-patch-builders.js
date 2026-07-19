@@ -1,4 +1,5 @@
 import { immutable } from './canonical.js';
+import { catalogDefinitionId } from './catalogs.js';
 export function patchParameter(id) {
     return immutable({ parameter: id });
 }
@@ -13,7 +14,7 @@ export const actionPatch = immutable({
             const member = {
                 kind: 'member',
                 key: 'resourceId',
-                value: resource,
+                value: catalogDefinitionId(resource),
             };
             return immutable({
                 amount: numberField('semantic', ['costs', member, 'amount']),
@@ -32,7 +33,7 @@ export const actionPatch = immutable({
     }),
     presentation: immutable({
         label: scalarField('presentation', ['label']),
-        description: scalarField('presentation', ['description']),
+        description: upsertScalarField('presentation', ['description']),
     }),
 });
 function numberField(plane, path) {
@@ -60,6 +61,15 @@ function scalarField(plane, path) {
         set(value) {
             return patch([
                 { kind: 'setScalar', plane, path: segments(path), value },
+            ]);
+        },
+    });
+}
+function upsertScalarField(plane, path) {
+    return immutable({
+        set(value) {
+            return patch([
+                { kind: 'upsertScalar', plane, path: segments(path), value },
             ]);
         },
     });

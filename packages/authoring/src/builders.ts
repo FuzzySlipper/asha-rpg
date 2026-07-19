@@ -27,6 +27,11 @@ import type {
   AuthoringTiming,
   CheckBranchInput,
 } from './types.js';
+import {
+  catalogDefinitionId,
+  retainCatalogOwnership,
+} from './catalogs.js';
+import type { RulesetCatalogInput } from './catalogs.js';
 
 export function actionId(value: string): RpgActionId {
   return checkedIdentifier(value, 'action id') as RpgActionId;
@@ -106,8 +111,15 @@ export function constant(value: number): RpgIrFormula {
   return frozen({ kind: 'constant', value });
 }
 
-export function readStat(subject: RpgIrSubject, id: RpgStatId): RpgIrFormula {
-  return frozen({ kind: 'readStat', subject, statId: id });
+export function readStat(
+  subject: RpgIrSubject,
+  id: RulesetCatalogInput<'stat'>,
+): RpgIrFormula {
+  return frozenWithCatalogOwnership(
+    { kind: 'readStat' as const, subject, statId: catalogDefinitionId(id) },
+    'statId',
+    id,
+  );
 }
 
 export function add(...terms: readonly RpgIrFormula[]): RpgIrFormula {
@@ -161,28 +173,43 @@ export function noRoll(): Extract<import('@asha-rpg/ir').RpgIrCheck, { kind: 'no
 
 export function attack(options: {
   readonly modifier: RpgIrFormula;
-  readonly defense: RpgDefenseId;
+  readonly defense: RulesetCatalogInput<'defense'>;
 }): Extract<import('@asha-rpg/ir').RpgIrCheck, { kind: 'attack' }> {
-  return frozen({
-    kind: 'attack',
-    modifier: options.modifier,
-    defenseId: options.defense,
-  });
+  return frozenWithCatalogOwnership(
+    {
+      kind: 'attack' as const,
+      modifier: options.modifier,
+      defenseId: catalogDefinitionId(options.defense),
+    },
+    'defenseId',
+    options.defense,
+  );
 }
 
 export function savingThrow(options: {
   readonly difficulty: RpgIrFormula;
-  readonly defense: RpgDefenseId;
+  readonly defense: RulesetCatalogInput<'defense'>;
 }): Extract<import('@asha-rpg/ir').RpgIrCheck, { kind: 'savingThrow' }> {
-  return frozen({
-    kind: 'savingThrow',
-    difficulty: options.difficulty,
-    defenseId: options.defense,
-  });
+  return frozenWithCatalogOwnership(
+    {
+      kind: 'savingThrow' as const,
+      difficulty: options.difficulty,
+      defenseId: catalogDefinitionId(options.defense),
+    },
+    'defenseId',
+    options.defense,
+  );
 }
 
-export function spend(resource: RpgResourceId, amount: number): RpgIrResourceCost {
-  return frozen({ resourceId: resource, amount });
+export function spend(
+  resource: RulesetCatalogInput<'resource'>,
+  amount: number,
+): RpgIrResourceCost {
+  return frozenWithCatalogOwnership(
+    { resourceId: catalogDefinitionId(resource), amount },
+    'resourceId',
+    resource,
+  );
 }
 
 export function immediate(): AuthoringTiming {
@@ -203,11 +230,19 @@ export function refresh(group: RpgStackingGroup): AuthoringStacking {
 
 export function damage(options: {
   readonly amount: RpgIrFormula;
-  readonly type: RpgDamageType;
+  readonly type: RulesetCatalogInput<'damageType'>;
   readonly timing?: AuthoringTiming;
 }): AuthoringProgram {
   return operation(
-    frozen({ kind: 'damage', amount: options.amount, damageType: options.type }),
+    frozenWithCatalogOwnership(
+      {
+        kind: 'damage' as const,
+        amount: options.amount,
+        damageType: catalogDefinitionId(options.type),
+      },
+      'damageType',
+      options.type,
+    ),
     options.timing,
   );
 }
@@ -221,37 +256,45 @@ export function heal(options: {
 
 export function changeResource(options: {
   readonly subject: RpgIrSubject;
-  readonly resource: RpgResourceId;
+  readonly resource: RulesetCatalogInput<'resource'>;
   readonly delta: RpgIrFormula;
   readonly timing?: AuthoringTiming;
 }): AuthoringProgram {
   return operation(
-    frozen({
-      kind: 'changeResource',
-      subject: options.subject,
-      resourceId: options.resource,
-      delta: options.delta,
-    }),
+    frozenWithCatalogOwnership(
+      {
+        kind: 'changeResource' as const,
+        subject: options.subject,
+        resourceId: catalogDefinitionId(options.resource),
+        delta: options.delta,
+      },
+      'resourceId',
+      options.resource,
+    ),
     options.timing,
   );
 }
 
 export function applyModifier(options: {
-  readonly modifier: RpgModifierId;
+  readonly modifier: RulesetCatalogInput<'modifier'>;
   readonly value: RpgIrFormula;
   readonly duration: AuthoringDuration;
   readonly stacking: AuthoringStacking;
   readonly timing?: AuthoringTiming;
 }): AuthoringProgram {
   return operation(
-    frozen({
-      kind: 'applyModifier',
-      modifierId: options.modifier,
-      stackingGroup: options.stacking.group,
-      stacking: options.stacking.kind,
-      value: options.value,
-      durationTurns: options.duration.count,
-    }),
+    frozenWithCatalogOwnership(
+      {
+        kind: 'applyModifier' as const,
+        modifierId: catalogDefinitionId(options.modifier),
+        stackingGroup: options.stacking.group,
+        stacking: options.stacking.kind,
+        value: options.value,
+        durationTurns: options.duration.count,
+      },
+      'modifierId',
+      options.modifier,
+    ),
     options.timing,
   );
 }
@@ -387,6 +430,15 @@ function source(
 
 function frozen<Value extends object>(value: Value): Readonly<Value> {
   return Object.freeze(value);
+}
+
+function frozenWithCatalogOwnership<Value extends object>(
+  value: Value,
+  field: string,
+  reference: unknown,
+): Readonly<Value> {
+  retainCatalogOwnership(value, [{ field, reference }]);
+  return frozen(value);
 }
 
 function frozenList<Value>(values: readonly Value[]): readonly Value[] {

@@ -83,6 +83,12 @@ export type RulesetPatchOperation =
       readonly value: RulesetPatchScalar | { readonly parameter: string };
     }
   | {
+      readonly kind: 'upsertScalar';
+      readonly plane: 'semantic' | 'presentation';
+      readonly path: readonly RulesetPatchPathSegment[];
+      readonly value: RulesetPatchScalar | { readonly parameter: string };
+    }
+  | {
       readonly kind: 'adjustNumber';
       readonly plane: 'semantic' | 'presentation';
       readonly path: readonly RulesetPatchPathSegment[];

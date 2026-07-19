@@ -6,6 +6,7 @@ import type { RpgCapabilityId, RpgOperationId } from '@asha-rpg/ir';
 
 import { canonicalJson, immutable, stableFingerprint } from './canonical.js';
 import { defineActions, definePackage } from './builders.js';
+import { catalogOwnershipOf } from './catalogs.js';
 import { normalizeAction, normalizePackage } from './normalize.js';
 import type {
   MaterializedRulesetDefinition,
@@ -1408,11 +1409,44 @@ function applyRulesetPatch(
   for (const [index, operation] of patch.operations.entries()) {
     const operationPath = `${path}.operations[${index}]`;
     const root = operation.plane === 'semantic' ? semantic : presentation;
-    const before = cloneJsonValue(readPatchPath(root, operation.path, operationPath, diagnostics));
-    if (operation.kind === 'setScalar') {
+    if (
+      operation.kind === 'upsertScalar' &&
+      !isSupportedPatchUpsert(operation.plane, operation.path)
+    ) {
+      diagnostics.push(
+        diagnostic(
+          'materialization',
+          'RULESET_PATCH_UPSERT_UNSUPPORTED',
+          operationPath,
+          `upsertScalar is not supported at ${operation.plane}.${patchPath(operation.path)}`,
+        ),
+      );
+      continue;
+    }
+    const before = cloneJsonValue(
+      operation.kind === 'upsertScalar'
+        ? readUpsertPatchPath(root, operation.path, operationPath, diagnostics)
+        : readPatchPath(root, operation.path, operationPath, diagnostics),
+    );
+    if (operation.kind === 'setScalar' || operation.kind === 'upsertScalar') {
       const replacement = resolvePatchScalar(operation.value, parameters, operationPath, diagnostics);
       if (replacement === undefined && operation.value !== null) continue;
-      if (!writePatchPath(root, operation.path, replacement ?? null, operationPath, diagnostics)) continue;
+      const written = operation.kind === 'upsertScalar'
+        ? writeUpsertPatchPath(
+            root,
+            operation.path,
+            replacement ?? null,
+            operationPath,
+            diagnostics,
+          )
+        : writePatchPath(
+            root,
+            operation.path,
+            replacement ?? null,
+            operationPath,
+            diagnostics,
+          );
+      if (!written) continue;
     } else if (operation.kind === 'adjustNumber') {
       const current = readPatchPath(root, operation.path, operationPath, diagnostics);
       const multiply = resolvePatchNumber(operation.multiply, parameters, operationPath, diagnostics);
@@ -1481,6 +1515,30 @@ function applyRulesetPatch(
   };
 }
 
+function readUpsertPatchPath(
+  root: unknown,
+  path: readonly RulesetPatchPathSegment[],
+  diagnosticPath: string,
+  diagnostics: RulesetCompilerDiagnostic[],
+): unknown {
+  if (path.length === 0) {
+    diagnostics.push(diagnostic('materialization', 'RULESET_PATCH_ROOT_WRITE_FORBIDDEN', diagnosticPath, 'patch operations must name a field or stable member'));
+    return undefined;
+  }
+  const parent = readPatchPath(
+    root,
+    path.slice(0, -1),
+    diagnosticPath,
+    diagnostics,
+  );
+  const leaf = path[path.length - 1];
+  if (leaf?.kind !== 'field' || !isRecord(parent)) {
+    diagnostics.push(diagnostic('materialization', 'RULESET_PATCH_PATH_MISSING', diagnosticPath, `upsert field is invalid at ${patchPath(path)}`));
+    return undefined;
+  }
+  return leaf.name in parent ? parent[leaf.name] : null;
+}
+
 function readPatchPath(
   root: unknown,
   path: readonly RulesetPatchPathSegment[],
@@ -1533,6 +1591,32 @@ function writePatchPath(
   return true;
 }
 
+function writeUpsertPatchPath(
+  root: unknown,
+  path: readonly RulesetPatchPathSegment[],
+  value: unknown,
+  diagnosticPath: string,
+  diagnostics: RulesetCompilerDiagnostic[],
+): boolean {
+  if (path.length === 0) {
+    diagnostics.push(diagnostic('materialization', 'RULESET_PATCH_ROOT_WRITE_FORBIDDEN', diagnosticPath, 'patch operations must name a field or stable member'));
+    return false;
+  }
+  const parent = readPatchPath(
+    root,
+    path.slice(0, -1),
+    diagnosticPath,
+    diagnostics,
+  );
+  const leaf = path[path.length - 1];
+  if (leaf?.kind !== 'field' || !isRecord(parent)) {
+    diagnostics.push(diagnostic('materialization', 'RULESET_PATCH_PATH_MISSING', diagnosticPath, `upsert field is invalid at ${patchPath(path)}`));
+    return false;
+  }
+  parent[leaf.name] = value;
+  return true;
+}
+
 function resolvePatchScalar(
   value: RulesetPatchOperation extends infer _Unused ? RulesetPatchScalar | { readonly parameter: string } : never,
   parameters: Readonly<Record<string, string | number | boolean>>,
@@ -1565,6 +1649,18 @@ function isParameterReference(value: unknown): value is { readonly parameter: st
 
 function patchMatchesPlane(patch: RulesetPatch, plane: 'semantic' | 'presentation' | 'both'): boolean {
   return patch.operations.every((operation) => plane === 'both' || operation.plane === plane);
+}
+
+function isSupportedPatchUpsert(
+  plane: 'semantic' | 'presentation',
+  path: readonly RulesetPatchPathSegment[],
+): boolean {
+  return (
+    plane === 'presentation' &&
+    path.length === 1 &&
+    path[0]?.kind === 'field' &&
+    path[0].name === 'description'
+  );
 }
 
 function patchPath(path: readonly RulesetPatchPathSegment[]): string {
@@ -1640,6 +1736,7 @@ function materializationReferenceIds(record: DefinitionRecord): readonly string[
 interface AuthoredCatalogReference {
   readonly definitionId: string;
   readonly category: import('./catalogs.js').RulesetCatalogCategory;
+  readonly packageId?: string;
   readonly path: string;
 }
 
@@ -1675,8 +1772,8 @@ function authoredCatalogReferences(
   const byIdentity = new Map<string, AuthoredCatalogReference>();
   collectCatalogReferences(definition.action, '$.action', byIdentity);
   return [...byIdentity.values()].sort((left, right) =>
-    `${left.category}#${left.definitionId}`.localeCompare(
-      `${right.category}#${right.definitionId}`,
+    `${left.category}#${left.packageId ?? ''}#${left.definitionId}`.localeCompare(
+      `${right.category}#${right.packageId ?? ''}#${right.definitionId}`,
     ),
   );
 }
@@ -1693,10 +1790,27 @@ function collectCatalogReferences(
     return;
   }
   if (!isRecord(value)) return;
+  const ownedFields = new Set<string>();
+  for (const ownership of catalogOwnershipOf(value)) {
+    ownedFields.add(ownership.field);
+    references.set(
+      `${ownership.category}#${ownership.packageId}#${ownership.definitionId}`,
+      {
+        definitionId: ownership.definitionId,
+        category: ownership.category,
+        packageId: ownership.packageId,
+        path: `${path}.${ownership.field}`,
+      },
+    );
+  }
   for (const [key, child] of Object.entries(value)) {
     const childPath = `${path}.${key}`;
     const category = CATALOG_REFERENCE_FIELDS[key];
-    if (category !== undefined && typeof child === 'string') {
+    if (
+      category !== undefined &&
+      typeof child === 'string' &&
+      !ownedFields.has(key)
+    ) {
       references.set(`${category}#${child}`, {
         definitionId: child,
         category,
@@ -1723,6 +1837,37 @@ function definitionReferences(
   for (const catalogReference of authoredCatalogReferences(record.definition)) {
     const definitionId = catalogReference.definitionId;
     if (inheritedLocalIds.has(definitionId)) continue;
+    if (catalogReference.packageId !== undefined) {
+      const ownerPackageId = catalogReference.packageId;
+      if (record.package.source.manifest.identity.id === ownerPackageId) {
+        references.push({ definitionId });
+        continue;
+      }
+      const ownerAliases = [...record.package.aliases.entries()]
+        .filter(([, packageKey]) => packageIdFromIdentityKey(packageKey) === ownerPackageId)
+        .map(([importAs]) => importAs)
+        .sort();
+      const importAs = ownerAliases[0];
+      if (importAs !== undefined) {
+        references.push({ importAs, definitionId });
+        continue;
+      }
+      diagnostics.push(
+        diagnostic(
+          'graph',
+          'RULESET_CATALOG_REFERENCE_OWNER_UNAVAILABLE',
+          catalogReference.path,
+          `catalog owner ${ownerPackageId} is not a direct package dependency`,
+          {
+            packageId: record.package.source.manifest.identity.id,
+            definitionId: record.definition.id,
+            source: record.definition.source,
+            expected: ownerPackageId,
+          },
+        ),
+      );
+      continue;
+    }
     if (
       definitionsByPackage.get(record.package.key)?.has(definitionId) === true
     ) {
@@ -2064,7 +2209,10 @@ function resolveDefinitionReference(
     return undefined;
   }
   const catalogReference = authoredCatalogReferences(source.definition).find(
-    (candidate) => candidate.definitionId === reference.definitionId,
+    (candidate) =>
+      candidate.definitionId === reference.definitionId &&
+      (candidate.packageId === undefined ||
+        candidate.packageId === target.package.source.manifest.identity.id),
   );
   if (
     catalogReference !== undefined &&
@@ -2388,6 +2536,11 @@ function compareSegments(
 
 function identityKey(id: string, version: string): string {
   return `${id}@${version}`;
+}
+
+function packageIdFromIdentityKey(key: string): string {
+  const separator = key.lastIndexOf('@');
+  return separator < 0 ? key : key.slice(0, separator);
 }
 
 function compareText(left: string, right: string): number {

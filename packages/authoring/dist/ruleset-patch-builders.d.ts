@@ -1,4 +1,4 @@
-import type { RpgResourceId } from '@asha-rpg/ir';
+import type { RulesetCatalogInput } from './catalogs.js';
 import type { RulesetPatch, RulesetPatchNumber } from './ruleset-types.js';
 export interface NumberAdjustment {
     readonly multiply?: RulesetPatchNumber;
@@ -22,7 +22,7 @@ export declare const actionPatch: {
             }): RulesetPatch;
             adjust(options: NumberAdjustment): RulesetPatch;
         };
-        cost(resource: RpgResourceId): {
+        cost(resource: RulesetCatalogInput<'resource'>): {
             amount: {
                 set(value: number | {
                     readonly parameter: string;

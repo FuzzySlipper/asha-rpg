@@ -7,10 +7,12 @@ import {
   actionPatch,
   attack,
   changeResource,
+  canonicalJson,
   constant,
   defineActionDefinition,
   defineRulesetCatalog,
   defineRulesetPackage,
+  noRoll,
   onCheck,
   prepareRulesetCompilation,
   readStat,
@@ -77,6 +79,114 @@ test('action AST references close the package graph without a second ledger', ()
       'sample.strike',
     ],
   );
+});
+
+test('catalog owner identity selects one same-ID dependency deterministically', () => {
+  const first = defineRulesetCatalog({
+    packageId: 'sample.first-primitives',
+    sourceModule: 'sample/first-primitives.ts',
+    entries: {
+      focus: {
+        definitionId: 'catalog.resource.focus',
+        category: 'resource',
+        id: 'first-focus',
+        label: 'First focus',
+      },
+    },
+  });
+  const second = defineRulesetCatalog({
+    packageId: 'sample.second-primitives',
+    sourceModule: 'sample/second-primitives.ts',
+    entries: {
+      focus: {
+        definitionId: 'catalog.resource.focus',
+        category: 'resource',
+        id: 'second-focus',
+        label: 'Second focus',
+      },
+    },
+  });
+  const focused = action({
+    id: actionId('sample.focused'),
+    name: 'Focused',
+    sourcePath: 'sample/focused.ts',
+    targets: { team: 'ally', maximumRange: 0, maximumTargets: 1 },
+    check: noRoll(),
+    costs: [spend(first.references.focus, 1)],
+    program: onCheck({
+      noRoll: changeResource({
+        subject: 'actor',
+        resource: first.references.focus,
+        delta: constant(1),
+      }),
+    }),
+  });
+  const content = defineRulesetPackage({
+    identity: { id: 'sample.same-id-content', version: '1.0.0' },
+    entry: { module: 'sample/content.ts', declaration: 'default' },
+    dependencies: [
+      rulesetDependency({
+        id: 'sample.first-primitives',
+        version: '1.0.0',
+        importAs: 'first',
+      }),
+      rulesetDependency({
+        id: 'sample.second-primitives',
+        version: '1.0.0',
+        importAs: 'second',
+      }),
+    ],
+    definitions: [
+      defineActionDefinition({
+        id: focused.id,
+        visibility: 'public',
+        extensionPolicy: 'sealed',
+        source: { module: 'sample/focused.ts', declaration: 'focused' },
+        action: focused,
+      }),
+    ],
+  });
+  assert.equal(canonicalJson(focused).includes('sample.first-primitives'), false);
+  const result = prepareRulesetCompilation({
+    composition: {
+      identity: { id: 'sample.same-id-composition', version: '1.0.0' },
+      language: { id: 'asha-rpg', version: '^1.0.0' },
+      base: rulesetPackageRequest({
+        id: 'sample.same-id-content',
+        version: '1.0.0',
+      }),
+      add: [],
+      overlays: [],
+      configure: {},
+    },
+    packages: [
+      rulesetPackageSource(content),
+      rulesetPackageSource(
+        defineRulesetPackage({
+          identity: { id: first.packageId, version: '1.0.0' },
+          entry: { module: 'sample/first-primitives.ts', declaration: 'default' },
+          definitions: first.definitions,
+        }),
+      ),
+      rulesetPackageSource(
+        defineRulesetPackage({
+          identity: { id: second.packageId, version: '1.0.0' },
+          entry: { module: 'sample/second-primitives.ts', declaration: 'default' },
+          definitions: second.definitions,
+        }),
+      ),
+    ],
+  });
+
+  assert.equal(result.ok, true, JSON.stringify(result));
+  if (!result.ok) return;
+  const selected = result.prepared.materializedDefinitions.find(
+    (definition) => definition.id === 'catalog.resource.focus',
+  );
+  assert.deepEqual(selected?.semantic, {
+    catalog: 'resource',
+    id: 'first-focus',
+  });
 });
 
 test('catalog references retain nominal category and package ownership', () => {

@@ -1,3 +1,4 @@
+import { catalogDefinitionId, retainCatalogOwnership, } from './catalogs.js';
 export function actionId(value) {
     return checkedIdentifier(value, 'action id');
 }
@@ -54,7 +55,7 @@ export function constant(value) {
     return frozen({ kind: 'constant', value });
 }
 export function readStat(subject, id) {
-    return frozen({ kind: 'readStat', subject, statId: id });
+    return frozenWithCatalogOwnership({ kind: 'readStat', subject, statId: catalogDefinitionId(id) }, 'statId', id);
 }
 export function add(...terms) {
     return frozen({ kind: 'add', terms: frozenList(terms) });
@@ -89,21 +90,21 @@ export function noRoll() {
     return frozen({ kind: 'noRoll' });
 }
 export function attack(options) {
-    return frozen({
+    return frozenWithCatalogOwnership({
         kind: 'attack',
         modifier: options.modifier,
-        defenseId: options.defense,
-    });
+        defenseId: catalogDefinitionId(options.defense),
+    }, 'defenseId', options.defense);
 }
 export function savingThrow(options) {
-    return frozen({
+    return frozenWithCatalogOwnership({
         kind: 'savingThrow',
         difficulty: options.difficulty,
-        defenseId: options.defense,
-    });
+        defenseId: catalogDefinitionId(options.defense),
+    }, 'defenseId', options.defense);
 }
 export function spend(resource, amount) {
-    return frozen({ resourceId: resource, amount });
+    return frozenWithCatalogOwnership({ resourceId: catalogDefinitionId(resource), amount }, 'resourceId', resource);
 }
 export function immediate() {
     return frozen({ kind: 'immediate' });
@@ -118,28 +119,32 @@ export function refresh(group) {
     return frozen({ kind: 'refresh', group });
 }
 export function damage(options) {
-    return operation(frozen({ kind: 'damage', amount: options.amount, damageType: options.type }), options.timing);
+    return operation(frozenWithCatalogOwnership({
+        kind: 'damage',
+        amount: options.amount,
+        damageType: catalogDefinitionId(options.type),
+    }, 'damageType', options.type), options.timing);
 }
 export function heal(options) {
     return operation(frozen({ kind: 'heal', amount: options.amount }), options.timing);
 }
 export function changeResource(options) {
-    return operation(frozen({
+    return operation(frozenWithCatalogOwnership({
         kind: 'changeResource',
         subject: options.subject,
-        resourceId: options.resource,
+        resourceId: catalogDefinitionId(options.resource),
         delta: options.delta,
-    }), options.timing);
+    }, 'resourceId', options.resource), options.timing);
 }
 export function applyModifier(options) {
-    return operation(frozen({
+    return operation(frozenWithCatalogOwnership({
         kind: 'applyModifier',
-        modifierId: options.modifier,
+        modifierId: catalogDefinitionId(options.modifier),
         stackingGroup: options.stacking.group,
         stacking: options.stacking.kind,
         value: options.value,
         durationTurns: options.duration.count,
-    }), options.timing);
+    }, 'modifierId', options.modifier), options.timing);
 }
 export function moveEntity(options) {
     return operation(frozen({
@@ -215,6 +220,10 @@ function source(kind, id, actions) {
 }
 function frozen(value) {
     return Object.freeze(value);
+}
+function frozenWithCatalogOwnership(value, field, reference) {
+    retainCatalogOwnership(value, [{ field, reference }]);
+    return frozen(value);
 }
 function frozenList(values) {
     return Object.freeze([...values]);

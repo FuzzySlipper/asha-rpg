@@ -1,6 +1,6 @@
-import type { RpgResourceId } from '@asha-rpg/ir';
-
 import { immutable } from './canonical.js';
+import { catalogDefinitionId } from './catalogs.js';
+import type { RulesetCatalogInput } from './catalogs.js';
 import type {
   RulesetPatch,
   RulesetPatchNumber,
@@ -32,11 +32,11 @@ export const actionPatch = immutable({
   semantic: immutable({
     maximumRange: numberField('semantic', ['targets', 'maximumRange']),
     maximumTargets: numberField('semantic', ['targets', 'maximumTargets']),
-    cost(resource: RpgResourceId) {
+    cost(resource: RulesetCatalogInput<'resource'>) {
       const member = {
         kind: 'member' as const,
         key: 'resourceId' as const,
-        value: resource,
+        value: catalogDefinitionId(resource),
       };
       return immutable({
         amount: numberField('semantic', ['costs', member, 'amount']),
@@ -55,7 +55,7 @@ export const actionPatch = immutable({
   }),
   presentation: immutable({
     label: scalarField<string>('presentation', ['label']),
-    description: scalarField<string>('presentation', ['description']),
+    description: upsertScalarField<string>('presentation', ['description']),
   }),
 });
 
@@ -91,6 +91,19 @@ function scalarField<Value extends RulesetPatchScalar>(
     set(value: Value | { readonly parameter: string }): RulesetPatch {
       return patch([
         { kind: 'setScalar', plane, path: segments(path), value },
+      ]);
+    },
+  });
+}
+
+function upsertScalarField<Value extends RulesetPatchScalar>(
+  plane: 'semantic' | 'presentation',
+  path: readonly string[],
+) {
+  return immutable({
+    set(value: Value | { readonly parameter: string }): RulesetPatch {
+      return patch([
+        { kind: 'upsertScalar', plane, path: segments(path), value },
       ]);
     },
   });

@@ -184,6 +184,11 @@ pub enum RulesetPatchOperation {
         path: Vec<RulesetPatchPathSegment>,
         value: Value,
     },
+    UpsertScalar {
+        plane: RulesetImpactPlane,
+        path: Vec<RulesetPatchPathSegment>,
+        value: Value,
+    },
     AdjustNumber {
         plane: RulesetImpactPlane,
         path: Vec<RulesetPatchPathSegment>,

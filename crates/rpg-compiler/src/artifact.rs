@@ -1806,11 +1806,29 @@ fn apply_ruleset_patch(
         }
         let root = patch_plane_root_mut(&mut next, plane)?;
         let path = patch_operation_path(operation);
-        let before = read_patch_path(root, path)?.clone();
+        if matches!(operation, RulesetPatchOperation::UpsertScalar { .. })
+            && !supported_patch_upsert(plane, path)
+        {
+            return Err(format!(
+                "upsertScalar is not supported at {:?}.{}",
+                plane,
+                patch_change_path(path)
+            ));
+        }
+        let before = match operation {
+            RulesetPatchOperation::UpsertScalar { .. } => read_upsert_patch_path(root, path)?
+                .cloned()
+                .unwrap_or(Value::Null),
+            _ => read_patch_path(root, path)?.clone(),
+        };
         match operation {
             RulesetPatchOperation::SetScalar { value, .. } => {
                 let replacement = resolve_patch_scalar(value, parameters)?;
                 write_patch_path(root, path, replacement)?;
+            }
+            RulesetPatchOperation::UpsertScalar { value, .. } => {
+                let replacement = resolve_patch_scalar(value, parameters)?;
+                write_upsert_patch_path(root, path, replacement)?;
             }
             RulesetPatchOperation::AdjustNumber { multiply, add, .. } => {
                 let current = read_patch_path(root, path)?
@@ -1854,6 +1872,7 @@ fn apply_ruleset_patch(
 fn patch_operation_plane(operation: &RulesetPatchOperation) -> RulesetImpactPlane {
     match operation {
         RulesetPatchOperation::SetScalar { plane, .. }
+        | RulesetPatchOperation::UpsertScalar { plane, .. }
         | RulesetPatchOperation::AdjustNumber { plane, .. }
         | RulesetPatchOperation::AppendMember { plane, .. }
         | RulesetPatchOperation::RemoveMember { plane, .. } => *plane,
@@ -1863,6 +1882,7 @@ fn patch_operation_plane(operation: &RulesetPatchOperation) -> RulesetImpactPlan
 fn patch_operation_path(operation: &RulesetPatchOperation) -> &[RulesetPatchPathSegment] {
     match operation {
         RulesetPatchOperation::SetScalar { path, .. }
+        | RulesetPatchOperation::UpsertScalar { path, .. }
         | RulesetPatchOperation::AdjustNumber { path, .. }
         | RulesetPatchOperation::AppendMember { path, .. }
         | RulesetPatchOperation::RemoveMember { path, .. } => path,
@@ -1873,6 +1893,14 @@ fn patch_matches_plane(patch: &RulesetPatch, plane: RulesetImpactPlane) -> bool 
     patch.operations.iter().all(|operation| {
         plane == RulesetImpactPlane::Both || patch_operation_plane(operation) == plane
     })
+}
+
+fn supported_patch_upsert(plane: RulesetImpactPlane, path: &[RulesetPatchPathSegment]) -> bool {
+    plane == RulesetImpactPlane::Presentation
+        && matches!(
+            path,
+            [RulesetPatchPathSegment::Field { name }] if name == "description"
+        )
 }
 
 fn patch_plane_root_mut(
@@ -1905,6 +1933,23 @@ fn read_patch_path<'a>(
         };
     }
     Ok(current)
+}
+
+fn read_upsert_patch_path<'a>(
+    root: &'a Value,
+    path: &[RulesetPatchPathSegment],
+) -> Result<Option<&'a Value>, String> {
+    let Some((leaf, parent_path)) = path.split_last() else {
+        return Err("patch operations must not write the root".to_owned());
+    };
+    let RulesetPatchPathSegment::Field { name } = leaf else {
+        return Err("patch upserts must end in a writable field".to_owned());
+    };
+    let parent = read_patch_path(root, parent_path)?;
+    let object = parent
+        .as_object()
+        .ok_or_else(|| format!("upsert parent for {name} must be an object"))?;
+    Ok(object.get(name))
 }
 
 fn read_patch_path_mut<'a>(
@@ -1943,6 +1988,25 @@ fn write_patch_path(
         .and_then(|object| object.get_mut(name))
         .ok_or_else(|| format!("writable field {name} is missing"))?;
     *current = replacement;
+    Ok(())
+}
+
+fn write_upsert_patch_path(
+    root: &mut Value,
+    path: &[RulesetPatchPathSegment],
+    replacement: Value,
+) -> Result<(), String> {
+    let Some((leaf, parent_path)) = path.split_last() else {
+        return Err("patch operations must not write the root".to_owned());
+    };
+    let RulesetPatchPathSegment::Field { name } = leaf else {
+        return Err("patch upserts must end in a writable field".to_owned());
+    };
+    let parent = read_patch_path_mut(root, parent_path)?;
+    let object = parent
+        .as_object_mut()
+        .ok_or_else(|| format!("upsert parent for {name} must be an object"))?;
+    object.insert(name.clone(), replacement);
     Ok(())
 }
 

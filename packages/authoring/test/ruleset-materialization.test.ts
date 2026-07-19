@@ -7,6 +7,7 @@ import { join } from 'node:path';
 import {
   action,
   actionId,
+  actionPatch,
   canonicalJson,
   composeRuleset,
   constant,
@@ -67,6 +68,14 @@ test('ordered mixins, local patches, and overlays materialize deterministically'
     ['sample.multiply-range', 'sample.add-range'],
   );
   assert.equal(derived.changes.length, 3);
+  assert.deepEqual(derived.changes[2], {
+    plane: 'presentation',
+    path: 'description',
+    pathSegments: [{ kind: 'field', name: 'description' }],
+    before: null,
+    after: 'Derived locally after ordered mixins',
+    effective: true,
+  });
   assert.equal(derived.materializedFingerprint.startsWith('fnv1a64:'), true);
 
   const semanticOverlay = overlayPackage({
@@ -454,7 +463,7 @@ function materializationSources(
     visibility: 'public',
     extensionPolicy: 'derivable',
     source: { module: 'foundation/actions.ts', declaration: 'arcBase' },
-    presentation: { label: 'Arc Base', description: 'Foundation action' },
+    presentation: { label: 'Arc Base' },
     action: action({
       id: actionId('sample.arc-base'),
       name: 'Arc Base',
@@ -556,15 +565,9 @@ function materializationSources(
       definitionId: derived.id,
       target: definitionReference({ importAs: 'foundation', definitionId: baseAction.id }),
       mixins,
-      localPatch: {
-        version: 1,
-        operations: [{
-          kind: 'setScalar',
-          plane: 'presentation',
-          path: fields('description'),
-          value: 'Derived locally after ordered mixins',
-        }],
-      },
+      localPatch: actionPatch.presentation.description.set(
+        'Derived locally after ordered mixins',
+      ),
       version: 1,
     })],
   }));

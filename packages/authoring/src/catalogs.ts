@@ -16,9 +16,12 @@ export type RulesetCatalogCategory =
   | 'modifier'
   | 'damageType';
 
-declare const catalogReferenceBrand: unique symbol;
+const catalogReferenceBrand: unique symbol = Symbol('asha-rpg.catalog-reference');
+const authoredCatalogOwnership: unique symbol = Symbol(
+  'asha-rpg.authored-catalog-ownership',
+);
 
-type CatalogValue<Category extends RulesetCatalogCategory> =
+export type RulesetCatalogValue<Category extends RulesetCatalogCategory> =
   Category extends 'stat'
     ? RpgStatId
     : Category extends 'defense'
@@ -33,12 +36,23 @@ type CatalogValue<Category extends RulesetCatalogCategory> =
 export type RulesetCatalogReference<
   Category extends RulesetCatalogCategory,
   PackageId extends string,
-> = CatalogValue<Category> & {
-  readonly [catalogReferenceBrand]: {
-    readonly category: Category;
-    readonly packageId: PackageId;
-  };
-};
+> = Readonly<{
+  readonly definitionId: RulesetCatalogValue<Category>;
+  readonly category: Category;
+  readonly packageId: PackageId;
+  readonly [catalogReferenceBrand]: true;
+}>;
+
+export type RulesetCatalogInput<Category extends RulesetCatalogCategory> =
+  | RulesetCatalogValue<Category>
+  | RulesetCatalogReference<Category, string>;
+
+export interface AuthoredCatalogOwnership {
+  readonly field: string;
+  readonly definitionId: string;
+  readonly category: RulesetCatalogCategory;
+  readonly packageId: string;
+}
 
 export interface RulesetCatalogEntry<
   Category extends RulesetCatalogCategory = RulesetCatalogCategory,
@@ -79,7 +93,7 @@ export function defineRulesetCatalog<
   }
 
   const definitions: RulesetSupportDefinition[] = [];
-  const references: Record<string, string> = {};
+  const references: Record<string, unknown> = {};
   for (const [name, entry] of Object.entries(input.entries)) {
     assertIdentifier(name, 'catalog entry name');
     assertIdentifier(entry.definitionId, 'catalog definition id');
@@ -105,7 +119,12 @@ export function defineRulesetCatalog<
         semantic: { catalog: entry.category, id: entry.id },
       }),
     );
-    references[name] = entry.definitionId;
+    references[name] = immutable({
+      definitionId: entry.definitionId,
+      category: entry.category,
+      packageId: input.packageId,
+      [catalogReferenceBrand]: true as const,
+    });
   }
 
   definitions.sort((left, right) => left.id.localeCompare(right.id));
@@ -114,6 +133,60 @@ export function defineRulesetCatalog<
     definitions: immutable(definitions),
     references: immutable(references),
   }) as unknown as RulesetCatalog<PackageId, Entries>;
+}
+
+export function catalogDefinitionId<Category extends RulesetCatalogCategory>(
+  reference: RulesetCatalogInput<Category>,
+): RulesetCatalogValue<Category> {
+  return typeof reference === 'string' ? reference : reference.definitionId;
+}
+
+/** @internal Retains authored owner identity on an AST node without serializing it. */
+export function retainCatalogOwnership<Value extends object>(
+  value: Value,
+  fields: readonly {
+    readonly field: string;
+    readonly reference: unknown;
+  }[],
+): Value {
+  const ownership = fields.flatMap(({ field, reference }) =>
+    isCatalogReference(reference)
+      ? [
+          immutable({
+            field,
+            definitionId: reference.definitionId,
+            category: reference.category,
+            packageId: reference.packageId,
+          }),
+        ]
+      : [],
+  );
+  if (ownership.length > 0) {
+    Object.defineProperty(value, authoredCatalogOwnership, {
+      value: immutable(ownership),
+      enumerable: false,
+      configurable: false,
+      writable: false,
+    });
+  }
+  return value;
+}
+
+/** @internal Reads owner identity retained by the typed authoring builders. */
+export function catalogOwnershipOf(value: object): readonly AuthoredCatalogOwnership[] {
+  if (!(authoredCatalogOwnership in value)) return [];
+  const ownership = value[authoredCatalogOwnership];
+  return Array.isArray(ownership) ? ownership : [];
+}
+
+function isCatalogReference(
+  value: unknown,
+): value is RulesetCatalogReference<RulesetCatalogCategory, string> {
+  return (
+    value !== null &&
+    typeof value === 'object' &&
+    catalogReferenceBrand in value
+  );
 }
 
 function assertIdentifier(value: string, label: string): void {
