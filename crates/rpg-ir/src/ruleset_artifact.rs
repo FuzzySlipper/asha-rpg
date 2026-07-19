@@ -233,6 +233,57 @@ pub struct RulesetMaterializationStage {
     pub references: Vec<String>,
 }
 
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub enum RulesetMixinParameterType {
+    String,
+    Number,
+    Boolean,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase", deny_unknown_fields)]
+pub struct RulesetMixinParameterCommitment {
+    pub id: String,
+    #[serde(rename = "type")]
+    pub value_type: RulesetMixinParameterType,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub default: Option<Value>,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase", deny_unknown_fields)]
+pub struct RulesetMixinDefinitionCommitmentValue {
+    pub parameters: Vec<RulesetMixinParameterCommitment>,
+    pub patch: RulesetPatch,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(
+    tag = "kind",
+    rename_all = "camelCase",
+    rename_all_fields = "camelCase",
+    deny_unknown_fields
+)]
+pub enum RulesetDefinitionCommitment {
+    Concrete {
+        package_id: String,
+        package_version: String,
+        package_source_fingerprint: String,
+        definition_id: String,
+        fingerprint: String,
+        stage: RulesetMaterializationStage,
+    },
+    Mixin {
+        package_id: String,
+        package_version: String,
+        package_source_fingerprint: String,
+        definition_id: String,
+        fingerprint: String,
+        value: RulesetMixinDefinitionCommitmentValue,
+    },
+}
+
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase", deny_unknown_fields)]
 pub struct RulesetDerivationMixinProvenance {
@@ -331,6 +382,8 @@ pub struct PreparedRulesetCompilation {
     pub materialized_definitions: Vec<MaterializedRulesetDefinition>,
     pub compiled_policy_bindings: Vec<CompiledRulesetPolicyBinding>,
     pub definition_provenance: Vec<RulesetDefinitionProvenance>,
+    #[serde(default)]
+    pub definition_commitments: Vec<RulesetDefinitionCommitment>,
     pub relationships: Vec<RulesetRelationshipProvenance>,
     #[serde(default)]
     pub derivation_provenance: Vec<RulesetDerivationProvenance>,
@@ -361,6 +414,8 @@ pub struct CompiledRulesetArtifact {
     pub materialized_definitions: Vec<MaterializedRulesetDefinition>,
     pub compiled_policy_bindings: Vec<CompiledRulesetPolicyBinding>,
     pub definition_provenance: Vec<RulesetDefinitionProvenance>,
+    #[serde(default)]
+    pub definition_commitments: Vec<RulesetDefinitionCommitment>,
     pub relationships: Vec<RulesetRelationshipProvenance>,
     pub derivation_provenance: Vec<RulesetDerivationProvenance>,
     pub overlay_provenance: Vec<RulesetOverlayProvenance>,

@@ -9,6 +9,7 @@ import {
   actionId,
   actionPatch,
   canonicalJson,
+  combineRulesetPatches,
   composeRuleset,
   constant,
   damage,
@@ -28,6 +29,7 @@ import {
   rulesetDependency,
   rulesetPackageRequest,
   rulesetPackageSource,
+  stableFingerprint,
   withLowLevelDefinitionReferences,
 } from '@asha-rpg/authoring';
 import type {
@@ -67,8 +69,16 @@ test('ordered mixins, local patches, and overlays materialize deterministically'
     derived.mixins.map((mixin) => mixin.definitionId),
     ['sample.multiply-range', 'sample.add-range'],
   );
-  assert.equal(derived.changes.length, 3);
+  assert.equal(derived.changes.length, 4);
   assert.deepEqual(derived.changes[2], {
+    plane: 'presentation',
+    path: 'label',
+    pathSegments: [{ kind: 'field', name: 'label' }],
+    before: 'Arc Base',
+    after: 'Arc Base',
+    effective: false,
+  });
+  assert.deepEqual(derived.changes[3], {
     plane: 'presentation',
     path: 'description',
     pathSegments: [{ kind: 'field', name: 'description' }],
@@ -178,6 +188,36 @@ test('Rust rejects provenance fingerprints and coverage that do not match materi
 
   const derived = baseline.derivationProvenance[0];
   assert.ok(derived);
+  const emptyPatch = { version: 1 as const, operations: [] };
+  const fabricatedBase = {
+    ...derived.materialized,
+    id: derived.baseDefinitionId,
+  };
+  const coordinatedSourceSubstitution: PreparedRulesetCompilation = {
+    ...baseline,
+    derivationProvenance: baseline.derivationProvenance.map(
+      (provenance, index) =>
+        index === 0
+          ? {
+              ...provenance,
+              base: fabricatedBase,
+              baseFingerprint: stableFingerprint(fabricatedBase),
+              mixins: provenance.mixins.map((mixin) => ({
+                ...mixin,
+                patch: emptyPatch,
+                fingerprint: stableFingerprint(emptyPatch),
+              })),
+              localPatch: emptyPatch,
+              localPatchFingerprint: stableFingerprint(emptyPatch),
+              changes: [],
+            }
+          : provenance,
+    ),
+  };
+  assertCompilationFailsWith(
+    coordinatedSourceSubstitution,
+    'RULESET_DERIVATION_BASE_COMMITMENT_MISMATCH',
+  );
   const semanticOverlay = overlayPackage({
     id: 'sample.semantic-overlay',
     expectedFingerprint: derived.materializedFingerprint,
@@ -565,8 +605,11 @@ function materializationSources(
       definitionId: derived.id,
       target: definitionReference({ importAs: 'foundation', definitionId: baseAction.id }),
       mixins,
-      localPatch: actionPatch.presentation.description.set(
-        'Derived locally after ordered mixins',
+      localPatch: combineRulesetPatches(
+        actionPatch.presentation.label.set('Arc Base'),
+        actionPatch.presentation.description.set(
+          'Derived locally after ordered mixins',
+        ),
       ),
       version: 1,
     })],

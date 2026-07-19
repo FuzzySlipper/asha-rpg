@@ -273,6 +273,26 @@ export interface RulesetMaterializationStage {
     };
     readonly references: readonly string[];
 }
+export type RulesetDefinitionCommitment = {
+    readonly kind: 'concrete';
+    readonly packageId: string;
+    readonly packageVersion: string;
+    readonly packageSourceFingerprint: string;
+    readonly definitionId: string;
+    readonly fingerprint: string;
+    readonly stage: RulesetMaterializationStage;
+} | {
+    readonly kind: 'mixin';
+    readonly packageId: string;
+    readonly packageVersion: string;
+    readonly packageSourceFingerprint: string;
+    readonly definitionId: string;
+    readonly fingerprint: string;
+    readonly value: {
+        readonly parameters: readonly RulesetMixinParameter[];
+        readonly patch: RulesetPatch;
+    };
+};
 export interface RulesetDerivationMixinProvenance {
     readonly definitionId: string;
     readonly packageId: string;
@@ -347,6 +367,7 @@ export interface PreparedRulesetCompilation {
     readonly materializedDefinitions: readonly MaterializedRulesetDefinition[];
     readonly compiledPolicyBindings: readonly RulesetPolicyBinding[];
     readonly definitionProvenance: readonly RulesetDefinitionProvenance[];
+    readonly definitionCommitments: readonly RulesetDefinitionCommitment[];
     readonly relationships: readonly RulesetRelationshipProvenance[];
     readonly derivationProvenance: readonly RulesetDerivationProvenance[];
     readonly overlayProvenance: readonly RulesetOverlayProvenance[];

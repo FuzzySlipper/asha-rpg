@@ -5,8 +5,9 @@ use rpg_ir::{
     MaterializedRulesetVisibility, NormalizedRpgIr, PreparedRulesetCompilation, RpgIrAction,
     RpgIrCatalogs, RpgIrCheck, RpgIrFormula, RpgIrOperation, RpgIrPackage, RpgIrPredicate,
     RpgIrProgram, RpgIrRequirement, RpgIrRequirementKind, RpgIrSchema, RulesetArtifactFingerprints,
-    RulesetArtifactSchema, RulesetImpactPlane, RulesetMaterializationStage,
-    RulesetMaterializationValue, RulesetPatch, RulesetPatchChangeProvenance, RulesetPatchMemberKey,
+    RulesetArtifactSchema, RulesetDefinitionCommitment, RulesetImpactPlane,
+    RulesetMaterializationStage, RulesetMaterializationValue, RulesetMixinParameterCommitment,
+    RulesetMixinParameterType, RulesetPatch, RulesetPatchChangeProvenance, RulesetPatchMemberKey,
     RulesetPatchMemberSelector, RulesetPatchOperation, RulesetPatchPathSegment,
     RulesetPatchPosition, RulesetRelationshipKind, VersionedRulesetRequirement,
     COMPILED_RULESET_IDENTITY, PREPARED_RULESET_IDENTITY, RPG_IR_IDENTITY, RPG_IR_MAJOR,
@@ -84,6 +85,7 @@ pub fn compile_prepared_ruleset(
         "materializedDefinitions": &prepared.materialized_definitions,
         "compiledPolicyBindings": &prepared.compiled_policy_bindings,
         "definitionProvenance": &prepared.definition_provenance,
+        "definitionCommitments": &prepared.definition_commitments,
         "relationships": &prepared.relationships,
         "derivationProvenance": &prepared.derivation_provenance,
         "overlayProvenance": &prepared.overlay_provenance,
@@ -105,6 +107,7 @@ pub fn compile_prepared_ruleset(
         materialized_definitions: prepared.materialized_definitions,
         compiled_policy_bindings: prepared.compiled_policy_bindings,
         definition_provenance: prepared.definition_provenance,
+        definition_commitments: prepared.definition_commitments,
         relationships: prepared.relationships,
         derivation_provenance: prepared.derivation_provenance,
         overlay_provenance: prepared.overlay_provenance,
@@ -176,6 +179,7 @@ fn prepared_from_artifact(artifact: &CompiledRulesetArtifact) -> PreparedRuleset
         materialized_definitions: artifact.materialized_definitions.clone(),
         compiled_policy_bindings: artifact.compiled_policy_bindings.clone(),
         definition_provenance: artifact.definition_provenance.clone(),
+        definition_commitments: artifact.definition_commitments.clone(),
         relationships: artifact.relationships.clone(),
         derivation_provenance: artifact.derivation_provenance.clone(),
         overlay_provenance: artifact.overlay_provenance.clone(),
@@ -212,7 +216,8 @@ fn validate_prepared(prepared: &PreparedRulesetCompilation) -> Vec<RpgDiagnostic
     validate_sources_and_lock(prepared, &mut diagnostics);
     validate_requirements(prepared, &mut diagnostics);
     validate_definitions(prepared, &mut diagnostics);
-    validate_materialization_provenance(prepared, &mut diagnostics);
+    let definition_commitments = validate_definition_commitments(prepared, &mut diagnostics);
+    validate_materialization_provenance(prepared, &definition_commitments, &mut diagnostics);
     diagnostics
 }
 
@@ -376,6 +381,276 @@ fn validate_sorted_requirements(
         }
         previous = Some(identity);
     }
+}
+
+fn validate_definition_commitments<'a>(
+    prepared: &'a PreparedRulesetCompilation,
+    diagnostics: &mut Vec<RpgDiagnostic>,
+) -> BTreeMap<String, &'a RulesetDefinitionCommitment> {
+    let source_fingerprints = prepared
+        .source_packages
+        .iter()
+        .map(|source| {
+            (
+                format!("{}@{}", source.id, source.version),
+                source.source_fingerprint.as_str(),
+            )
+        })
+        .collect::<BTreeMap<_, _>>();
+    let mut commitments = BTreeMap::new();
+    let mut previous_identity = None::<String>;
+    for (index, commitment) in prepared.definition_commitments.iter().enumerate() {
+        let (package_id, package_version, package_source_fingerprint, definition_id, fingerprint) =
+            definition_commitment_header(commitment);
+        let path = format!("$.definitionCommitments[{index}]");
+        validate_identity(package_id, package_version, &path, diagnostics);
+        if !valid_identifier(definition_id) {
+            diagnostics.push(RpgDiagnostic::error(
+                RpgDiagnosticStage::Artifact,
+                "RULESET_DEFINITION_COMMITMENT_ID_INVALID",
+                format!("{path}.definitionId"),
+                format!("invalid committed definition identity {definition_id}"),
+            ));
+        }
+        if !valid_fingerprint(fingerprint) {
+            diagnostics.push(RpgDiagnostic::error(
+                RpgDiagnosticStage::Artifact,
+                "RULESET_DEFINITION_COMMITMENT_FINGERPRINT_INVALID",
+                format!("{path}.fingerprint"),
+                "definition commitment fingerprints must be fnv1a64 with sixteen lowercase hex digits",
+            ));
+        }
+        let package_identity = format!("{package_id}@{package_version}");
+        if source_fingerprints.get(&package_identity).copied() != Some(package_source_fingerprint) {
+            diagnostics.push(RpgDiagnostic::error(
+                RpgDiagnosticStage::References,
+                "RULESET_DEFINITION_COMMITMENT_SOURCE_MISMATCH",
+                format!("{path}.packageSourceFingerprint"),
+                format!("definition commitment does not match source package {package_identity}"),
+            ));
+        }
+        let identity = definition_commitment_identity(package_id, package_version, definition_id);
+        if previous_identity
+            .as_ref()
+            .is_some_and(|previous| previous >= &identity)
+        {
+            diagnostics.push(RpgDiagnostic::error(
+                RpgDiagnosticStage::Artifact,
+                "RULESET_DEFINITION_COMMITMENTS_NOT_CANONICAL",
+                path.clone(),
+                "definition commitments must be strictly identity-sorted",
+            ));
+        }
+        previous_identity = Some(identity.clone());
+        if commitments.insert(identity, commitment).is_some() {
+            diagnostics.push(RpgDiagnostic::error(
+                RpgDiagnosticStage::References,
+                "RULESET_DUPLICATE_DEFINITION_COMMITMENT",
+                path.clone(),
+                "definition commitments must have unique package-qualified identities",
+            ));
+        }
+        match commitment {
+            RulesetDefinitionCommitment::Concrete {
+                definition_id,
+                fingerprint,
+                stage,
+                ..
+            } => {
+                if stage.id != *definition_id {
+                    diagnostics.push(RpgDiagnostic::error(
+                        RpgDiagnosticStage::Artifact,
+                        "RULESET_CONCRETE_COMMITMENT_STAGE_MISMATCH",
+                        format!("{path}.stage.id"),
+                        "a concrete commitment stage must retain its named definition identity",
+                    ));
+                }
+                match canonical_fingerprint(stage) {
+                    Ok(actual) if actual != *fingerprint => diagnostics.push(RpgDiagnostic::error(
+                        RpgDiagnosticStage::Artifact,
+                        "RULESET_CONCRETE_COMMITMENT_FINGERPRINT_MISMATCH",
+                        format!("{path}.fingerprint"),
+                        format!("the committed concrete stage fingerprints as {actual}"),
+                    )),
+                    Err(failure) => diagnostics.extend(failure.diagnostics),
+                    _ => {}
+                }
+            }
+            RulesetDefinitionCommitment::Mixin {
+                fingerprint, value, ..
+            } => {
+                validate_mixin_parameter_commitments(&value.parameters, &path, diagnostics);
+                match canonical_fingerprint(value) {
+                    Ok(actual) if actual != *fingerprint => diagnostics.push(RpgDiagnostic::error(
+                        RpgDiagnosticStage::Artifact,
+                        "RULESET_MIXIN_COMMITMENT_FINGERPRINT_MISMATCH",
+                        format!("{path}.fingerprint"),
+                        format!("the committed mixin definition fingerprints as {actual}"),
+                    )),
+                    Err(failure) => diagnostics.extend(failure.diagnostics),
+                    _ => {}
+                }
+            }
+        }
+    }
+
+    let expected = prepared
+        .derivation_provenance
+        .iter()
+        .flat_map(|provenance| {
+            let mut identities = vec![
+                definition_commitment_identity(
+                    &provenance.package_id,
+                    &provenance.package_version,
+                    &provenance.definition_id,
+                ),
+                definition_commitment_identity(
+                    &provenance.base_package_id,
+                    &provenance.base_package_version,
+                    &provenance.base_definition_id,
+                ),
+            ];
+            identities.extend(provenance.mixins.iter().map(|mixin| {
+                definition_commitment_identity(
+                    &mixin.package_id,
+                    &mixin.package_version,
+                    &mixin.definition_id,
+                )
+            }));
+            identities
+        })
+        .collect::<BTreeSet<_>>();
+    let actual = commitments.keys().cloned().collect::<BTreeSet<_>>();
+    if actual != expected {
+        diagnostics.push(RpgDiagnostic::error(
+            RpgDiagnosticStage::References,
+            "RULESET_DEFINITION_COMMITMENT_COVERAGE_MISMATCH",
+            "$.definitionCommitments",
+            "derivation targets, bases, and named mixins require exactly one source commitment",
+        ));
+    }
+    commitments
+}
+
+fn definition_commitment_header(
+    commitment: &RulesetDefinitionCommitment,
+) -> (&str, &str, &str, &str, &str) {
+    match commitment {
+        RulesetDefinitionCommitment::Concrete {
+            package_id,
+            package_version,
+            package_source_fingerprint,
+            definition_id,
+            fingerprint,
+            ..
+        }
+        | RulesetDefinitionCommitment::Mixin {
+            package_id,
+            package_version,
+            package_source_fingerprint,
+            definition_id,
+            fingerprint,
+            ..
+        } => (
+            package_id,
+            package_version,
+            package_source_fingerprint,
+            definition_id,
+            fingerprint,
+        ),
+    }
+}
+
+fn validate_mixin_parameter_commitments(
+    parameters: &[RulesetMixinParameterCommitment],
+    path: &str,
+    diagnostics: &mut Vec<RpgDiagnostic>,
+) {
+    let mut previous = None::<&str>;
+    for (index, parameter) in parameters.iter().enumerate() {
+        if !valid_identifier(&parameter.id) {
+            diagnostics.push(RpgDiagnostic::error(
+                RpgDiagnosticStage::Artifact,
+                "RULESET_MIXIN_COMMITMENT_PARAMETER_ID_INVALID",
+                format!("{path}.value.parameters[{index}].id"),
+                format!("invalid mixin parameter identity {}", parameter.id),
+            ));
+        }
+        if previous.is_some_and(|value| value >= parameter.id.as_str()) {
+            diagnostics.push(RpgDiagnostic::error(
+                RpgDiagnosticStage::Artifact,
+                "RULESET_MIXIN_COMMITMENT_PARAMETERS_NOT_CANONICAL",
+                format!("{path}.value.parameters[{index}]"),
+                "committed mixin parameters must be strictly identity-sorted",
+            ));
+        }
+        previous = Some(&parameter.id);
+        if let Some(default) = &parameter.default {
+            if !mixin_parameter_value_matches(default, parameter.value_type) {
+                diagnostics.push(RpgDiagnostic::error(
+                    RpgDiagnosticStage::Artifact,
+                    "RULESET_MIXIN_COMMITMENT_PARAMETER_DEFAULT_INVALID",
+                    format!("{path}.value.parameters[{index}].default"),
+                    "a committed mixin parameter default must match its declared type",
+                ));
+            }
+        }
+    }
+}
+
+fn validate_applied_mixin_parameters(
+    definitions: &[RulesetMixinParameterCommitment],
+    supplied: &BTreeMap<String, Value>,
+    path: &str,
+    diagnostics: &mut Vec<RpgDiagnostic>,
+) {
+    let declared = definitions
+        .iter()
+        .map(|parameter| (parameter.id.as_str(), parameter))
+        .collect::<BTreeMap<_, _>>();
+    if supplied
+        .keys()
+        .any(|id| !declared.contains_key(id.as_str()))
+    {
+        diagnostics.push(RpgDiagnostic::error(
+            RpgDiagnosticStage::Artifact,
+            "RULESET_DERIVATION_MIXIN_PARAMETER_COMMITMENT_MISMATCH",
+            path,
+            "applied mixin parameters contain an undeclared parameter",
+        ));
+        return;
+    }
+    for parameter in definitions {
+        let resolved = supplied.get(&parameter.id);
+        if !resolved.is_some_and(|value| mixin_parameter_value_matches(value, parameter.value_type))
+        {
+            diagnostics.push(RpgDiagnostic::error(
+                RpgDiagnosticStage::Artifact,
+                "RULESET_DERIVATION_MIXIN_PARAMETER_COMMITMENT_MISMATCH",
+                path,
+                format!(
+                    "applied mixin parameter {} is not explicitly resolved or has the wrong committed type",
+                    parameter.id
+                ),
+            ));
+        }
+    }
+}
+
+fn mixin_parameter_value_matches(value: &Value, value_type: RulesetMixinParameterType) -> bool {
+    match value_type {
+        RulesetMixinParameterType::String => value.is_string(),
+        RulesetMixinParameterType::Number => value.is_number(),
+        RulesetMixinParameterType::Boolean => value.is_boolean(),
+    }
+}
+
+fn definition_commitment_identity(
+    package_id: &str,
+    package_version: &str,
+    definition_id: &str,
+) -> String {
+    format!("{package_id}@{package_version}#{definition_id}")
 }
 
 fn validate_definitions(
@@ -1246,6 +1521,7 @@ fn collect_predicate_catalogs(predicate: &RpgIrPredicate, catalogs: &mut Derived
 
 fn validate_materialization_provenance(
     prepared: &PreparedRulesetCompilation,
+    definition_commitments: &BTreeMap<String, &RulesetDefinitionCommitment>,
     diagnostics: &mut Vec<RpgDiagnostic>,
 ) {
     let definitions = prepared
@@ -1324,7 +1600,9 @@ fn validate_materialization_provenance(
             &format!("$.derivationProvenance[{index}].changes"),
             diagnostics,
         );
-        if let Some(stage) = validate_derivation_semantics(provenance, index, diagnostics) {
+        if let Some(stage) =
+            validate_derivation_semantics(provenance, index, definition_commitments, diagnostics)
+        {
             validated_derivation_stages.insert(provenance.definition_id.as_str(), stage);
         }
     }
@@ -1394,9 +1672,31 @@ fn validate_materialization_provenance(
     }
     for (definition_id, definition) in &definitions {
         let derivation_stage = validated_derivation_stages.get(definition_id).cloned();
+        let commitment_identity = definition_commitment_identity(
+            &definition.provenance.package_id,
+            &definition.provenance.package_version,
+            definition_id,
+        );
+        let committed_stage = match definition_commitments.get(&commitment_identity) {
+            Some(RulesetDefinitionCommitment::Concrete { stage, .. }) => Some(stage.clone()),
+            _ => None,
+        };
+        if let (Some(replayed), Some(committed)) = (&derivation_stage, &committed_stage) {
+            if replayed != committed {
+                diagnostics.push(RpgDiagnostic::error(
+                    RpgDiagnosticStage::Artifact,
+                    "RULESET_DERIVATION_COMMITMENT_REPLAY_MISMATCH",
+                    "$.definitionCommitments",
+                    format!(
+                        "the replayed derivation stage for {definition_id} does not equal its committed pre-overlay stage"
+                    ),
+                ));
+            }
+        }
+        let initial_stage = committed_stage.or(derivation_stage);
         if let Some(entries) = overlays_by_definition.get(definition_id) {
-            validate_overlay_fingerprint_chain(definition, derivation_stage, entries, diagnostics);
-        } else if let Some(stage) = derivation_stage {
+            validate_overlay_fingerprint_chain(definition, initial_stage, entries, diagnostics);
+        } else if let Some(stage) = initial_stage {
             let final_stage = materialization_stage(definition);
             if stage != final_stage {
                 diagnostics.push(RpgDiagnostic::error(
@@ -1529,6 +1829,7 @@ fn canonical_fingerprint(value: &impl Serialize) -> Result<String, RpgCompileFai
 fn validate_derivation_semantics(
     provenance: &rpg_ir::RulesetDerivationProvenance,
     provenance_index: usize,
+    definition_commitments: &BTreeMap<String, &RulesetDefinitionCommitment>,
     diagnostics: &mut Vec<RpgDiagnostic>,
 ) -> Option<RulesetMaterializationStage> {
     let path = format!("$.derivationProvenance[{provenance_index}]");
@@ -1539,6 +1840,37 @@ fn validate_derivation_semantics(
             format!("{path}.base.id"),
             "the base stage identity must match baseDefinitionId",
         ));
+    }
+    let base_commitment_identity = definition_commitment_identity(
+        &provenance.base_package_id,
+        &provenance.base_package_version,
+        &provenance.base_definition_id,
+    );
+    match definition_commitments.get(&base_commitment_identity) {
+        Some(RulesetDefinitionCommitment::Concrete {
+            fingerprint, stage, ..
+        }) => {
+            if stage != &provenance.base || fingerprint != &provenance.base_fingerprint {
+                diagnostics.push(RpgDiagnostic::error(
+                    RpgDiagnosticStage::Artifact,
+                    "RULESET_DERIVATION_BASE_COMMITMENT_MISMATCH",
+                    format!("{path}.base"),
+                    "the replay base must equal the independently committed named definition",
+                ));
+            }
+        }
+        Some(RulesetDefinitionCommitment::Mixin { .. }) => diagnostics.push(RpgDiagnostic::error(
+            RpgDiagnosticStage::Artifact,
+            "RULESET_DERIVATION_BASE_COMMITMENT_KIND_MISMATCH",
+            format!("{path}.baseDefinitionId"),
+            "a derivation base must resolve to a concrete definition commitment",
+        )),
+        None => diagnostics.push(RpgDiagnostic::error(
+            RpgDiagnosticStage::References,
+            "RULESET_DERIVATION_BASE_COMMITMENT_MISSING",
+            format!("{path}.baseDefinitionId"),
+            format!("missing source commitment {base_commitment_identity}"),
+        )),
     }
     match canonical_fingerprint(&provenance.base) {
         Ok(actual) if actual != provenance.base_fingerprint => {
@@ -1556,6 +1888,43 @@ fn validate_derivation_semantics(
     let mut stage = provenance.base.clone();
     let mut computed_changes = Vec::new();
     for (mixin_index, mixin) in provenance.mixins.iter().enumerate() {
+        let mixin_commitment_identity = definition_commitment_identity(
+            &mixin.package_id,
+            &mixin.package_version,
+            &mixin.definition_id,
+        );
+        match definition_commitments.get(&mixin_commitment_identity) {
+            Some(RulesetDefinitionCommitment::Mixin { value, .. }) => {
+                if value.patch != mixin.patch {
+                    diagnostics.push(RpgDiagnostic::error(
+                        RpgDiagnosticStage::Artifact,
+                        "RULESET_DERIVATION_MIXIN_COMMITMENT_MISMATCH",
+                        format!("{path}.mixins[{mixin_index}].patch"),
+                        "the replay patch must equal the independently committed named mixin definition",
+                    ));
+                }
+                validate_applied_mixin_parameters(
+                    &value.parameters,
+                    &mixin.parameters,
+                    &format!("{path}.mixins[{mixin_index}].parameters"),
+                    diagnostics,
+                );
+            }
+            Some(RulesetDefinitionCommitment::Concrete { .. }) => {
+                diagnostics.push(RpgDiagnostic::error(
+                    RpgDiagnosticStage::Artifact,
+                    "RULESET_DERIVATION_MIXIN_COMMITMENT_KIND_MISMATCH",
+                    format!("{path}.mixins[{mixin_index}].definitionId"),
+                    "a derivation mixin must resolve to a mixin definition commitment",
+                ))
+            }
+            None => diagnostics.push(RpgDiagnostic::error(
+                RpgDiagnosticStage::References,
+                "RULESET_DERIVATION_MIXIN_COMMITMENT_MISSING",
+                format!("{path}.mixins[{mixin_index}].definitionId"),
+                format!("missing source commitment {mixin_commitment_identity}"),
+            )),
+        }
         match canonical_fingerprint(&mixin.patch) {
             Ok(actual) if actual != mixin.fingerprint => diagnostics.push(RpgDiagnostic::error(
                 RpgDiagnosticStage::Artifact,
@@ -1619,6 +1988,41 @@ fn validate_derivation_semantics(
             format!("{path}.materialized"),
             "replaying the base, mixins, and local patch does not produce the claimed materialized stage",
         ));
+    }
+    let target_commitment_identity = definition_commitment_identity(
+        &provenance.package_id,
+        &provenance.package_version,
+        &provenance.definition_id,
+    );
+    match definition_commitments.get(&target_commitment_identity) {
+        Some(RulesetDefinitionCommitment::Concrete {
+            fingerprint,
+            stage: committed_stage,
+            ..
+        }) => {
+            if committed_stage != &provenance.materialized
+                || fingerprint != &provenance.materialized_fingerprint
+            {
+                diagnostics.push(RpgDiagnostic::error(
+                    RpgDiagnosticStage::Artifact,
+                    "RULESET_DERIVATION_TARGET_COMMITMENT_MISMATCH",
+                    format!("{path}.materialized"),
+                    "the derived stage must equal its independent pre-overlay commitment",
+                ));
+            }
+        }
+        Some(RulesetDefinitionCommitment::Mixin { .. }) => diagnostics.push(RpgDiagnostic::error(
+            RpgDiagnosticStage::Artifact,
+            "RULESET_DERIVATION_TARGET_COMMITMENT_KIND_MISMATCH",
+            format!("{path}.definitionId"),
+            "a derived target must resolve to a concrete definition commitment",
+        )),
+        None => diagnostics.push(RpgDiagnostic::error(
+            RpgDiagnosticStage::References,
+            "RULESET_DERIVATION_TARGET_COMMITMENT_MISSING",
+            format!("{path}.definitionId"),
+            format!("missing source commitment {target_commitment_identity}"),
+        )),
     }
     if computed_changes != provenance.changes {
         diagnostics.push(RpgDiagnostic::error(
@@ -2296,6 +2700,7 @@ fn fingerprints(
         &prepared.source_packages,
         &prepared.dependency_lock,
         &prepared.definition_provenance,
+        &prepared.definition_commitments,
         &prepared.relationships,
         &prepared.derivation_provenance,
         &prepared.overlay_provenance,

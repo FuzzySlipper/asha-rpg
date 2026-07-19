@@ -50,6 +50,7 @@ export function prepareRulesetCompilation(options) {
     const definitionProvenance = graph.materialized
         .map((record) => provenance(record))
         .sort((left, right) => left.definitionId.localeCompare(right.definitionId));
+    const definitionCommitments = selectedDefinitionCommitments(materialization.definitionCommitments, materialization.derivationProvenance);
     const materializedDefinitions = materializeDefinitions(graph.materialized, graph.resolvedReferences, graph.exportedRoots, normalized.actions);
     const relationships = [
         ...context.relationships,
@@ -87,6 +88,7 @@ export function prepareRulesetCompilation(options) {
         materializedDefinitions,
         compiledPolicyBindings: policyBindings,
         definitionProvenance,
+        definitionCommitments,
         relationships,
         derivationProvenance: materialization.derivationProvenance,
         overlayProvenance: materialization.overlayProvenance,
@@ -403,6 +405,7 @@ function materializeSelectedDefinitions(context, composition, overlayPackages) {
         }
     }
     const records = new Map();
+    const definitionCommitments = new Map();
     const derivationProvenance = [];
     const relationshipProvenance = [];
     const visiting = [];
@@ -427,6 +430,7 @@ function materializeSelectedDefinitions(context, composition, overlayPackages) {
                 return undefined;
             }
             records.set(key, record);
+            definitionCommitments.set(key, concreteDefinitionCommitment(record));
             return record;
         }
         if (record.definition.kind === 'mixin' || record.definition.kind === 'template') {
@@ -492,6 +496,7 @@ function materializeSelectedDefinitions(context, composition, overlayPackages) {
             const parameters = resolveMixinParameters(mixinRecord.definition, application.parameters, `$.packages[${record.package.key}].relationships.${record.definition.id}.mixins[${order}].parameters`, context.diagnostics);
             if (parameters === undefined)
                 continue;
+            definitionCommitments.set(globalDefinitionId(mixinRecord), mixinDefinitionCommitment(mixinRecord));
             for (const referenceId of resolveMaterializationReferenceIds(mixinRecord, definitionsByPackage, context.diagnostics)) {
                 inheritedReferenceIds.add(referenceId);
             }
@@ -526,6 +531,7 @@ function materializeSelectedDefinitions(context, composition, overlayPackages) {
         if (concrete === undefined)
             return undefined;
         records.set(key, concrete);
+        definitionCommitments.set(key, concreteDefinitionCommitment(concrete));
         const baseIdentity = base.package.source.manifest.identity;
         const identity = record.package.source.manifest.identity;
         derivationProvenance.push({
@@ -699,6 +705,7 @@ function materializeSelectedDefinitions(context, composition, overlayPackages) {
         return undefined;
     return {
         records: [...records.values()].sort((left, right) => globalDefinitionId(left).localeCompare(globalDefinitionId(right))),
+        definitionCommitments: [...definitionCommitments.values()].sort(compareDefinitionCommitment),
         derivationProvenance: derivationProvenance.sort((left, right) => left.definitionId.localeCompare(right.definitionId)),
         overlayProvenance: overlayProvenance.sort((left, right) => left.order - right.order),
         relationships: relationshipProvenance,
@@ -1066,6 +1073,57 @@ function definitionMaterializationStage(record) {
         value: normalizedDefinitionValue(record),
         references: materializationReferenceIds(record),
     };
+}
+function concreteDefinitionCommitment(record) {
+    const stage = definitionMaterializationStage(record);
+    const identity = record.package.source.manifest.identity;
+    return immutable({
+        kind: 'concrete',
+        packageId: identity.id,
+        packageVersion: identity.version,
+        packageSourceFingerprint: record.package.source.sourceFingerprint,
+        definitionId: record.definition.id,
+        fingerprint: stableFingerprint(stage),
+        stage,
+    });
+}
+function mixinDefinitionCommitment(record) {
+    if (record.definition.kind !== 'mixin') {
+        throw new Error(`definition ${record.definition.id} is not a mixin`);
+    }
+    const identity = record.package.source.manifest.identity;
+    const value = immutable({
+        parameters: [...record.definition.parameters].sort((left, right) => left.id.localeCompare(right.id)),
+        patch: record.definition.patch,
+    });
+    return immutable({
+        kind: 'mixin',
+        packageId: identity.id,
+        packageVersion: identity.version,
+        packageSourceFingerprint: record.package.source.sourceFingerprint,
+        definitionId: record.definition.id,
+        fingerprint: stableFingerprint(value),
+        value,
+    });
+}
+function selectedDefinitionCommitments(commitments, derivations) {
+    const selected = new Set();
+    for (const provenance of derivations) {
+        selected.add(definitionCommitmentIdentity(provenance.packageId, provenance.packageVersion, provenance.definitionId));
+        selected.add(definitionCommitmentIdentity(provenance.basePackageId, provenance.basePackageVersion, provenance.baseDefinitionId));
+        for (const mixin of provenance.mixins) {
+            selected.add(definitionCommitmentIdentity(mixin.packageId, mixin.packageVersion, mixin.definitionId));
+        }
+    }
+    return immutable(commitments
+        .filter((commitment) => selected.has(definitionCommitmentIdentity(commitment.packageId, commitment.packageVersion, commitment.definitionId)))
+        .sort(compareDefinitionCommitment));
+}
+function compareDefinitionCommitment(left, right) {
+    return definitionCommitmentIdentity(left.packageId, left.packageVersion, left.definitionId).localeCompare(definitionCommitmentIdentity(right.packageId, right.packageVersion, right.definitionId));
+}
+function definitionCommitmentIdentity(packageId, packageVersion, definitionId) {
+    return `${packageId}@${packageVersion}#${definitionId}`;
 }
 export function rulesetDefinitionMaterializationFingerprint(definition) {
     return stableFingerprint({

@@ -1429,6 +1429,7 @@ mod tests {
             materialized_definitions: vec![action, support],
             compiled_policy_bindings: Vec::new(),
             definition_provenance: vec![provenance, support_provenance],
+            definition_commitments: Vec::new(),
             relationships: vec![
                 RulesetRelationshipProvenance {
                     kind: RulesetRelationshipKind::Exports,
