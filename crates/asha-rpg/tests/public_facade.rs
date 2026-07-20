@@ -4,10 +4,11 @@ use asha_rpg::{
     MaterializedRulesetDefinitionKind, MaterializedRulesetVisibility, PreparedRulesetCompilation,
     ResolvedRulesetSourcePackage, RpgActionProposal, RpgAuthoritySession, RpgBoardSetup,
     RpgCommandOutcome, RpgEncounterSetup, RpgInitialCapability, RpgParticipantSetup,
-    RpgRandomSourceBinding, RpgRollTapeSource, RpgTeamId, RpgTurnInitialization,
-    RulesetArtifactSchema, RulesetDefinitionProvenance, RulesetExtensionPolicy,
-    RulesetRelationshipKind, RulesetRelationshipProvenance, RulesetSourceLocation,
-    VersionedRulesetRequirement, PREPARED_RULESET_IDENTITY, RULESET_ARTIFACT_MAJOR,
+    RpgRandomSourceBinding, RpgRollTapeSource, RpgTeamId, RpgTurnControl, RpgTurnControlProposal,
+    RpgTurnInitialization, RulesetArtifactSchema, RulesetDefinitionProvenance,
+    RulesetExtensionPolicy, RulesetRelationshipKind, RulesetRelationshipProvenance,
+    RulesetSourceLocation, VersionedRulesetRequirement, PREPARED_RULESET_IDENTITY,
+    RULESET_ARTIFACT_MAJOR,
 };
 use serde_json::json;
 
@@ -69,6 +70,20 @@ fn public_facade_builds_an_artifact_bound_setup_and_executes_a_turn() {
     );
     assert_eq!(session.turn().current_actor_id, "target");
     assert_eq!(session.encounter_view().log.len(), 1);
+
+    let (control_outcome, _) = session
+        .control_recorded(RpgTurnControlProposal {
+            expected_revision: 1,
+            actor_id: "target".to_owned(),
+            control: RpgTurnControl::EndTurn,
+        })
+        .unwrap();
+    assert!(matches!(
+        control_outcome,
+        RpgCommandOutcome::ControlAccepted(_)
+    ));
+    assert_eq!(session.turn().current_actor_id, "opponent");
+    assert_eq!(session.encounter_view().log.len(), 2);
 }
 
 fn participant(

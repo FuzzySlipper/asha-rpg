@@ -11,7 +11,7 @@ creates mutable authority state.
 The setup schema is `asha.rpg.encounter.setup@1`. Its `artifactId` must exactly
 match the compiled artifact. Checkpoint schema
 `asha.rpg.session.checkpoint@2` stores the complete setup and its
-`fnv1a64.rpg-encounter-setup.v1` fingerprint. Replay entry schema version 2
+`fnv1a64.rpg-encounter-setup.v1` fingerprint. Replay entry schema version 3
 binds every before/after boundary to that setup fingerprint, the exact random
 source binding, current turn, state revision, and state hash.
 
@@ -44,9 +44,13 @@ be smuggled into setup version 1.
 
 An accepted action advances capability state, appends an accepted-event log
 entry, and advances to the next living initiative participant in the same
-session transaction. A reaction keeps that transaction suspended; the turn
-does not advance until the resumed action is accepted. Rejections preserve
-state, log, turn, pending reaction, and accepted-random position.
+session transaction. The explicit `endTurn` control is a separate typed
+authority proposal. When legal, it advances state revision, modifier tenure,
+the accepted log, and the next living initiative participant atomically
+without inventing a gameplay action. A reaction keeps an action transaction
+suspended; neither an action nor turn control can proceed until the reaction
+is resolved. Rejections preserve state, log, turn, pending reaction, and
+accepted-random position.
 
 Every accepted transition to a next turn ages each unchanged active modifier
 exactly once. Positive tenure decrements through a
@@ -67,13 +71,16 @@ readback. It provides:
   target candidates;
 - typed extension slots for cell and area choices (empty in the initial entity
   target profile);
+- authority-provided turn controls with availability and rejection readback;
 - a pending reaction with its exact options;
 - accepted DomainEvents in the encounter log;
 - in-progress or completed outcome data.
 
-The view is descriptive output. A host still sends an `RpgActionProposal` or
-`RpgReactionProposal` tied to the expected state revision. Rust repeats all
-legality checks and is the only state/turn mutation authority.
+The view is descriptive output. A host sends an `RpgActionProposal`,
+`RpgReactionProposal`, or `RpgTurnControlProposal` tied to the expected state
+revision. Rust repeats all legality checks and is the only state/turn mutation
+authority. Turn controls are rejected for a stale revision, wrong or inactive
+actor, completed encounter, or pending reaction.
 
 ## Random evidence
 
@@ -98,8 +105,10 @@ and unconsumed entries through `require_exhausted`. Invalid entries are not
 removed from the tape. No seeded generator or unspecified default RNG is a
 portability claim in version 1.
 
-Replay executes the recorded commands through the ordinary session paths. It
-does not call a random source or regenerate evidence.
+Replay executes recorded action, reaction, and turn-control commands through
+the ordinary session paths. It does not call a random source or regenerate
+evidence. Replay entry schema version 3 adds the typed `turnControl` operation
+and `controlAccepted` outcome.
 
 ## Compatibility
 

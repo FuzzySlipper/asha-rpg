@@ -14,7 +14,7 @@ use serde::{Deserialize, Serialize};
 
 use crate::semantic_session::{
     PendingTransaction, RpgAuthorityCommand, RpgAuthoritySession, RpgCommandOutcome,
-    RpgPendingReaction, RpgReactionCommand,
+    RpgPendingReaction, RpgReactionCommand, RpgTurnControlCommand,
 };
 use crate::{
     encounter::validate_restored_encounter, RpgEncounterLogEntry, RpgEncounterSetup,
@@ -24,7 +24,7 @@ use crate::{
 pub const RPG_CHECKPOINT_SCHEMA_ID: &str = "asha.rpg.session.checkpoint";
 pub const RPG_REPLAY_ENTRY_SCHEMA_ID: &str = "asha.rpg.session.replay-entry";
 pub const RPG_CHECKPOINT_SCHEMA_VERSION: u32 = 2;
-pub const RPG_REPLAY_ENTRY_SCHEMA_VERSION: u32 = 2;
+pub const RPG_REPLAY_ENTRY_SCHEMA_VERSION: u32 = 3;
 pub const RPG_EVENT_SCHEMA_VERSION: u32 = 2;
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
@@ -170,6 +170,7 @@ pub struct RpgReplayBoundary {
 pub enum RpgReplayOperation {
     Submit { command: RpgAuthorityCommand },
     React { command: RpgReactionCommand },
+    TurnControl { command: RpgTurnControlCommand },
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
@@ -402,6 +403,13 @@ impl RpgAuthoritySession {
         self.record_operation(RpgReplayOperation::React { command })
     }
 
+    pub(crate) fn record_turn_control(
+        &mut self,
+        command: RpgTurnControlCommand,
+    ) -> Result<(RpgCommandOutcome, RpgReplayEntry), RpgReplayFailure> {
+        self.record_operation(RpgReplayOperation::TurnControl { command })
+    }
+
     pub fn replay(
         checkpoint: RpgSessionCheckpoint,
         entries: &[RpgReplayEntry],
@@ -452,6 +460,7 @@ impl RpgAuthoritySession {
         let outcome = match &operation {
             RpgReplayOperation::Submit { command } => self.submit(command.clone()),
             RpgReplayOperation::React { command } => self.react(command.clone()),
+            RpgReplayOperation::TurnControl { command } => self.control(command.clone()),
         };
         let after = replay_boundary(self)?;
         let entry = RpgReplayEntry {
@@ -493,6 +502,7 @@ impl RpgAuthoritySession {
         let outcome = match &expected.operation {
             RpgReplayOperation::Submit { command } => self.submit(command.clone()),
             RpgReplayOperation::React { command } => self.react(command.clone()),
+            RpgReplayOperation::TurnControl { command } => self.control(command.clone()),
         };
         compare_outcome(&expected.outcome, &outcome, &format!("{base_path}.outcome"))?;
         let after = replay_boundary(self)?;
@@ -1065,6 +1075,19 @@ fn compare_outcome(
     match (expected, actual) {
         (RpgCommandOutcome::Accepted(expected), RpgCommandOutcome::Accepted(actual)) => {
             compare_receipt(expected, actual, path)?;
+        }
+        (
+            RpgCommandOutcome::ControlAccepted(expected),
+            RpgCommandOutcome::ControlAccepted(actual),
+        ) => {
+            if expected != actual {
+                return Err(replay_mismatch(
+                    "RPG_REPLAY_CONTROL_OUTCOME_MISMATCH",
+                    path,
+                    expected,
+                    actual,
+                ));
+            }
         }
         (
             RpgCommandOutcome::AwaitingReaction(expected),
@@ -1658,6 +1681,87 @@ mod tests {
             replayed.state_hash().unwrap(),
             session.state_hash().unwrap()
         );
+    }
+
+    #[test]
+    fn explicit_turn_controls_are_authoritative_atomic_and_replayable() {
+        let mut recorded = artifact_session();
+        let initial = recorded.checkpoint().expect("initial checkpoint");
+        let initial_hash = recorded.state_hash().expect("initial hash");
+        let control = recorded.encounter_view().controls[0].clone();
+        assert_eq!(control.control, crate::RpgTurnControl::EndTurn);
+        assert!(control.available);
+
+        let rejected = recorded
+            .control_recorded(crate::RpgTurnControlProposal {
+                expected_revision: 0,
+                actor_id: "guardian".to_owned(),
+                control: crate::RpgTurnControl::EndTurn,
+            })
+            .expect("rejected controls are recorded");
+        let RpgCommandOutcome::Rejected(rejection) = rejected.0 else {
+            panic!("wrong actor must reject");
+        };
+        assert_eq!(rejection.code, "RPG_TURN_ACTOR_MISMATCH");
+        assert_eq!(recorded.state_hash().unwrap(), initial_hash);
+
+        let (first_outcome, first_entry) = recorded
+            .control_recorded(crate::RpgTurnControlProposal {
+                expected_revision: 0,
+                actor_id: "hero".to_owned(),
+                control: crate::RpgTurnControl::EndTurn,
+            })
+            .expect("first control records");
+        let RpgCommandOutcome::ControlAccepted(first_receipt) = first_outcome else {
+            panic!("end turn must be accepted");
+        };
+        assert_eq!(first_receipt.state_revision, 1);
+        assert!(first_receipt.events.iter().any(|event| matches!(
+            event,
+            RpgDomainEvent::ModifierDurationChanged {
+                target_id,
+                modifier_id,
+                remaining_turns: 1,
+                ..
+            } if target_id == "hero" && modifier_id == "impeded"
+        )));
+        assert_eq!(recorded.turn().current_actor_id, "guardian");
+        assert_eq!(
+            recorded.encounter.log[0].action_id,
+            crate::RPG_END_TURN_CONTROL_ID
+        );
+
+        let (second_outcome, second_entry) = recorded
+            .control_recorded(crate::RpgTurnControlProposal {
+                expected_revision: 1,
+                actor_id: "guardian".to_owned(),
+                control: crate::RpgTurnControl::EndTurn,
+            })
+            .expect("second control records");
+        let RpgCommandOutcome::ControlAccepted(second_receipt) = second_outcome else {
+            panic!("second end turn must be accepted");
+        };
+        assert_eq!(second_receipt.state_revision, 2);
+        assert!(second_receipt.events.iter().any(|event| matches!(
+            event,
+            RpgDomainEvent::ModifierExpired {
+                target_id,
+                modifier_id,
+                ..
+            } if target_id == "hero" && modifier_id == "impeded"
+        )));
+        assert_eq!(recorded.turn().current_actor_id, "hero");
+        assert_eq!(recorded.turn().round, 2);
+        assert_eq!(recorded.turn().turn, 3);
+
+        let replayed = RpgAuthoritySession::replay(initial, &[first_entry, second_entry])
+            .expect("turn controls replay through the ordinary authority path");
+        assert_eq!(
+            replayed.state_hash().unwrap(),
+            recorded.state_hash().unwrap()
+        );
+        assert_eq!(replayed.turn(), recorded.turn());
+        assert_eq!(replayed.encounter_view().log, recorded.encounter_view().log);
     }
 
     #[test]

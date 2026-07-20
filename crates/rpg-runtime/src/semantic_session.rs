@@ -14,7 +14,8 @@ use crate::encounter::{
     random_failure, runtime_board_rejection, RpgActionProposal, RpgEncounterAuthority,
     RpgEncounterOutcomeView, RpgEncounterSetup, RpgEncounterSetupFailure, RpgEncounterView,
     RpgRandomSource, RpgRandomSourceFailure, RpgReactionProposal, RpgSchemaIdentity,
-    RPG_ENCOUNTER_VIEW_SCHEMA_ID, RPG_ENCOUNTER_VIEW_SCHEMA_VERSION,
+    RpgTurnControl, RpgTurnControlProposal, RpgTurnControlView, RPG_ENCOUNTER_VIEW_SCHEMA_ID,
+    RPG_ENCOUNTER_VIEW_SCHEMA_VERSION,
 };
 use crate::{RpgReplayEntry, RpgReplayFailure};
 
@@ -40,6 +41,23 @@ pub struct RpgReactionCommand {
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase", deny_unknown_fields)]
+pub struct RpgTurnControlCommand {
+    pub expected_revision: u64,
+    pub actor_id: String,
+    pub control: RpgTurnControl,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase", deny_unknown_fields)]
+pub struct RpgTurnControlReceipt {
+    pub control: RpgTurnControl,
+    pub actor_id: String,
+    pub events: Vec<rpg_core::RpgDomainEvent>,
+    pub state_revision: u64,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase", deny_unknown_fields)]
 pub struct RpgPendingReaction {
     pub expected_revision: u64,
     pub request: RpgReactionRequest,
@@ -52,6 +70,7 @@ pub struct RpgPendingReaction {
 #[serde(tag = "phase", content = "result", rename_all = "camelCase")]
 pub enum RpgCommandOutcome {
     Accepted(RpgResolutionReceipt),
+    ControlAccepted(RpgTurnControlReceipt),
     AwaitingReaction(RpgPendingReaction),
     Rejected(RpgResolutionRejection),
 }
@@ -214,6 +233,35 @@ impl RpgAuthoritySession {
                 )
             })
             .collect();
+        let control_unavailable = if self.pending.is_some() {
+            Some(rejection(
+                "RPG_SESSION_REACTION_PENDING",
+                "$.control",
+                "resolve the pending reaction before ending the turn",
+            ))
+        } else if !matches!(
+            encounter_outcome(&self.state),
+            RpgEncounterOutcomeView::InProgress
+        ) {
+            Some(rejection(
+                "RPG_ENCOUNTER_COMPLETED",
+                "$.control",
+                "the encounter has already completed",
+            ))
+        } else if self
+            .state
+            .entity(actor_id)
+            .map(|participant| participant.vitality().current <= 0)
+            .unwrap_or(true)
+        {
+            Some(rejection(
+                "RPG_TURN_ACTOR_INACTIVE",
+                "$.control.actorId",
+                "the current actor must have positive vitality",
+            ))
+        } else {
+            None
+        };
         RpgEncounterView {
             schema: RpgSchemaIdentity {
                 id: RPG_ENCOUNTER_VIEW_SCHEMA_ID.to_owned(),
@@ -231,6 +279,12 @@ impl RpgAuthoritySession {
             participants,
             turn: self.encounter.turn.clone(),
             actions,
+            controls: vec![RpgTurnControlView {
+                control: RpgTurnControl::EndTurn,
+                label: "End turn".to_owned(),
+                available: control_unavailable.is_none(),
+                unavailable: control_unavailable,
+            }],
             pending_reaction: self
                 .pending_reaction()
                 .map(|pending| pending.request.clone()),
@@ -421,6 +475,65 @@ impl RpgAuthoritySession {
         }
     }
 
+    pub(crate) fn control(&mut self, command: RpgTurnControlCommand) -> RpgCommandOutcome {
+        if self.pending.is_some() {
+            return RpgCommandOutcome::Rejected(rejection(
+                "RPG_SESSION_REACTION_PENDING",
+                "$.control",
+                "resolve the pending reaction before ending the turn",
+            ));
+        }
+        if command.expected_revision != self.state.revision() {
+            return RpgCommandOutcome::Rejected(revision_rejection(
+                command.expected_revision,
+                self.state.revision(),
+            ));
+        }
+        if !matches!(
+            encounter_outcome(&self.state),
+            RpgEncounterOutcomeView::InProgress
+        ) {
+            return RpgCommandOutcome::Rejected(rejection(
+                "RPG_ENCOUNTER_COMPLETED",
+                "$.control",
+                "the encounter has already completed",
+            ));
+        }
+        if command.actor_id != self.encounter.current_actor_id() {
+            return RpgCommandOutcome::Rejected(rejection(
+                "RPG_TURN_ACTOR_MISMATCH",
+                "$.control.actorId",
+                format!("current actor is {}", self.encounter.current_actor_id()),
+            ));
+        }
+        if self
+            .state
+            .entity(&command.actor_id)
+            .map(|participant| participant.vitality().current <= 0)
+            .unwrap_or(true)
+        {
+            return RpgCommandOutcome::Rejected(rejection(
+                "RPG_TURN_ACTOR_INACTIVE",
+                "$.control.actorId",
+                "the current actor must have positive vitality",
+            ));
+        }
+
+        let mut staged_state = self.state.clone();
+        let events = modifier_turn_events(&self.state, &mut staged_state, &BTreeSet::new());
+        let state_revision = staged_state.advance_revision();
+        let receipt = RpgTurnControlReceipt {
+            control: command.control,
+            actor_id: command.actor_id,
+            events,
+            state_revision,
+        };
+        self.state = staged_state;
+        self.encounter.record_control(&receipt);
+        self.encounter.advance_turn(&self.state);
+        RpgCommandOutcome::ControlAccepted(receipt)
+    }
+
     pub fn submit_with_random_source_recorded(
         &mut self,
         proposal: RpgActionProposal,
@@ -484,6 +597,17 @@ impl RpgAuthoritySession {
             "$.randomRequest",
             "authority did not reach a terminal result within the random request limit",
         )))
+    }
+
+    pub fn control_recorded(
+        &mut self,
+        proposal: RpgTurnControlProposal,
+    ) -> Result<(RpgCommandOutcome, RpgReplayEntry), RpgReplayFailure> {
+        self.record_turn_control(RpgTurnControlCommand {
+            expected_revision: proposal.expected_revision,
+            actor_id: proposal.actor_id,
+            control: proposal.control,
+        })
     }
 
     fn require_random_source(
@@ -596,12 +720,23 @@ fn append_modifier_turn_events(
             _ => None,
         })
         .collect::<BTreeSet<_>>();
-    let changes = staged_state
+    receipt.events.extend(modifier_turn_events(
+        previous_state,
+        staged_state,
+        &refreshed_modifiers,
+    ));
+}
+
+fn modifier_turn_events(
+    previous_state: &RpgCapabilityState,
+    staged_state: &mut RpgCapabilityState,
+    refreshed_modifiers: &BTreeSet<(String, String)>,
+) -> Vec<rpg_core::RpgDomainEvent> {
+    staged_state
         .modifiers_owner()
-        .advance_turn(previous_state, &refreshed_modifiers);
-    receipt
-        .events
-        .extend(changes.into_iter().map(|change| match change {
+        .advance_turn(previous_state, refreshed_modifiers)
+        .into_iter()
+        .map(|change| match change {
             RpgModifierTurnChange::Aged {
                 entity_id,
                 stacking_group,
@@ -622,7 +757,8 @@ fn append_modifier_turn_events(
                 modifier_id,
                 stacking_group,
             },
-        }));
+        })
+        .collect()
 }
 
 fn required_random_request(outcome: &RpgCommandOutcome) -> Option<&rpg_core::RpgRandomRequest> {

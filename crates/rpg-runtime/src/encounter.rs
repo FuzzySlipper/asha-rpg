@@ -15,7 +15,8 @@ use serde::{Deserialize, Serialize};
 pub const RPG_ENCOUNTER_SETUP_SCHEMA_ID: &str = "asha.rpg.encounter.setup";
 pub const RPG_ENCOUNTER_SETUP_SCHEMA_VERSION: u32 = 1;
 pub const RPG_ENCOUNTER_VIEW_SCHEMA_ID: &str = "asha.rpg.encounter.view";
-pub const RPG_ENCOUNTER_VIEW_SCHEMA_VERSION: u32 = 1;
+pub const RPG_ENCOUNTER_VIEW_SCHEMA_VERSION: u32 = 2;
+pub const RPG_END_TURN_CONTROL_ID: &str = "control.end-turn";
 
 const MAXIMUM_BOARD_EXTENT: u32 = 1_024;
 
@@ -261,6 +262,29 @@ pub struct RpgActionView {
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(tag = "kind", rename_all = "camelCase", deny_unknown_fields)]
+pub enum RpgTurnControl {
+    EndTurn,
+}
+
+impl RpgTurnControl {
+    pub fn id(&self) -> &'static str {
+        match self {
+            Self::EndTurn => RPG_END_TURN_CONTROL_ID,
+        }
+    }
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase", deny_unknown_fields)]
+pub struct RpgTurnControlView {
+    pub control: RpgTurnControl,
+    pub label: String,
+    pub available: bool,
+    pub unavailable: Option<RpgResolutionRejection>,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(tag = "status", rename_all = "camelCase", deny_unknown_fields)]
 pub enum RpgEncounterOutcomeView {
     InProgress,
@@ -279,6 +303,7 @@ pub struct RpgEncounterView {
     pub participants: Vec<RpgParticipantView>,
     pub turn: RpgTurnState,
     pub actions: Vec<RpgActionView>,
+    pub controls: Vec<RpgTurnControlView>,
     pub pending_reaction: Option<RpgReactionRequest>,
     pub log: Vec<RpgEncounterLogEntry>,
     pub outcome: RpgEncounterOutcomeView,
@@ -299,6 +324,14 @@ pub struct RpgReactionProposal {
     pub expected_revision: u64,
     pub reaction_id: String,
     pub option_id: Option<String>,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase", deny_unknown_fields)]
+pub struct RpgTurnControlProposal {
+    pub expected_revision: u64,
+    pub actor_id: String,
+    pub control: RpgTurnControl,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
@@ -511,6 +544,19 @@ impl RpgEncounterAuthority {
             state_revision: receipt.state_revision,
             actor_id: receipt.actor_id.clone(),
             action_id: receipt.action_id.clone(),
+            events: receipt.events.clone(),
+        });
+    }
+
+    pub(crate) fn record_control(&mut self, receipt: &crate::RpgTurnControlReceipt) {
+        let sequence = u64::try_from(self.log.len())
+            .unwrap_or(u64::MAX)
+            .saturating_add(1);
+        self.log.push(RpgEncounterLogEntry {
+            sequence,
+            state_revision: receipt.state_revision,
+            actor_id: receipt.actor_id.clone(),
+            action_id: receipt.control.id().to_owned(),
             events: receipt.events.clone(),
         });
     }
@@ -1139,7 +1185,9 @@ pub(crate) fn validate_restored_encounter(
         let action_owned = authority
             .participant_definitions
             .get(&entry.actor_id)
-            .map(|definitions| definitions.contains(&entry.action_id))
+            .map(|definitions| {
+                entry.action_id == RPG_END_TURN_CONTROL_ID || definitions.contains(&entry.action_id)
+            })
             .unwrap_or(false);
         if entry.sequence != expected_sequence
             || entry.state_revision == 0

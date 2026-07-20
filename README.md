@@ -34,9 +34,10 @@ compiled program with closed operation bindings, and `rpg-runtime` owns a
 versioned, artifact-bound encounter setup and authority session that stages
 state, explicit random evidence, typed reaction decisions, and turn
 progression together. Structured readbacks expose the board, participants,
-current actor, legal actions/targets, reaction, log, and outcome without
-moving rule interpretation into a host. The `asha-rpg` crate is the supported
-consumer facade. There is no parallel gameplay fabric or disposable preview session.
+current actor, legal actions/targets, explicit end-turn control, reaction, log,
+and outcome without moving rule interpretation into a host. The `asha-rpg`
+crate is the supported consumer facade. There is no parallel gameplay fabric
+or disposable preview session.
 There is also no predecessor provider/module/action-definition compatibility
 surface: normalized RPG IR, the compiled artifact, and the artifact-bound
 authority session are the single supported Rust ruleset path.
