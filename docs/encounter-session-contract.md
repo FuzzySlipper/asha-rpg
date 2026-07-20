@@ -31,7 +31,9 @@ Participant capability entries are tagged by their Rust owner (`vitality`,
 `stat`, `defense`, `resource`, or `modifier`). An entry whose owner is not
 declared by the artifact fails before session construction. Every participant
 requires exactly one bounded vitality value and at least one referenced action
-from the materialized artifact.
+from the materialized artifact. The initialized current actor must have
+positive vitality; inactive participants remain in initiative order but are
+skipped by turn authority and cannot act or be submitted as targets.
 
 Setup is not an execution script. It has no action order, target order,
 reaction decisions, random results, expected events, or expected outcomes.
@@ -45,6 +47,15 @@ entry, and advances to the next living initiative participant in the same
 session transaction. A reaction keeps that transaction suspended; the turn
 does not advance until the resumed action is accepted. Rejections preserve
 state, log, turn, pending reaction, and accepted-random position.
+
+Every accepted transition to a next turn ages each unchanged active modifier
+exactly once. Positive tenure decrements through a
+`modifierDurationChanged` event and tenure one expires through a
+`modifierExpired` event. A modifier applied, replaced, or refreshed by the
+accepted action begins its full authored 1-to-1000-turn tenure and first ages
+on a later accepted turn transition. A completed encounter does not advance a
+turn or age modifiers. Event schema version 2 adds these authority-owned turn
+events; checkpoint and replay schema bindings reject older event vocabularies.
 
 `RpgAuthoritySession::encounter_view` is the renderer-facing structured
 readback. It provides:

@@ -25,7 +25,7 @@ pub const RPG_CHECKPOINT_SCHEMA_ID: &str = "asha.rpg.session.checkpoint";
 pub const RPG_REPLAY_ENTRY_SCHEMA_ID: &str = "asha.rpg.session.replay-entry";
 pub const RPG_CHECKPOINT_SCHEMA_VERSION: u32 = 2;
 pub const RPG_REPLAY_ENTRY_SCHEMA_VERSION: u32 = 2;
-pub const RPG_EVENT_SCHEMA_VERSION: u32 = 1;
+pub const RPG_EVENT_SCHEMA_VERSION: u32 = 2;
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase", deny_unknown_fields)]
@@ -818,7 +818,8 @@ fn restore_state(
                         modifier.id.clone(),
                         modifier.value,
                         modifier.remaining_turns,
-                    ),
+                    )
+                    .map_err(|error| state_restore_failure(&format!("{path}.modifiers"), error))?,
                 )
                 .map_err(|error| state_restore_failure(&format!("{path}.modifiers"), error))?;
         }
@@ -1566,6 +1567,118 @@ mod tests {
     }
 
     #[test]
+    fn accepted_turns_age_expire_checkpoint_and_replay_modifiers() {
+        let mut session = artifact_session();
+        let initial = session.checkpoint().unwrap();
+        assert_eq!(initial.schemas.event, RPG_EVENT_SCHEMA_VERSION);
+
+        let (pending, first_submit) = session.submit_recorded(command()).unwrap();
+        assert!(matches!(pending, RpgCommandOutcome::AwaitingReaction(_)));
+        let (accepted, first_reaction) = session
+            .react_recorded(reaction_command())
+            .expect("first turn records");
+        let RpgCommandOutcome::Accepted(first_receipt) = accepted else {
+            panic!("first turn must be accepted: {accepted:?}");
+        };
+        assert!(first_receipt.events.iter().any(|event| matches!(
+            event,
+            RpgDomainEvent::ModifierDurationChanged {
+                target_id,
+                modifier_id,
+                remaining_turns: 1,
+                ..
+            } if target_id == "hero" && modifier_id == "impeded"
+        )));
+        assert_eq!(
+            session
+                .state()
+                .entity("hero")
+                .unwrap()
+                .modifier("impeded")
+                .unwrap()
+                .remaining_turns(),
+            1
+        );
+        let mid_checkpoint = session.checkpoint().unwrap();
+        let mid_restored = RpgAuthoritySession::restore_checkpoint(mid_checkpoint).unwrap();
+        assert_eq!(
+            mid_restored.state_hash().unwrap(),
+            session.state_hash().unwrap()
+        );
+
+        let guardian_command = RpgAuthorityCommand {
+            expected_revision: 1,
+            intent: RpgIntent {
+                action_id: "action.reactive".to_owned(),
+                actor_id: "guardian".to_owned(),
+                target_ids: vec!["hero".to_owned()],
+            },
+            random_values: vec![12],
+        };
+        let (pending, second_submit) = session.submit_recorded(guardian_command).unwrap();
+        assert!(matches!(pending, RpgCommandOutcome::AwaitingReaction(_)));
+        let (accepted, second_reaction) = session
+            .react_recorded(RpgReactionCommand {
+                expected_revision: 1,
+                reaction_id: "reaction.ward".to_owned(),
+                option_id: Some("ward".to_owned()),
+                additional_random_values: vec![2, 2],
+            })
+            .expect("second turn records");
+        let RpgCommandOutcome::Accepted(second_receipt) = accepted else {
+            panic!("second turn must be accepted: {accepted:?}");
+        };
+        assert!(second_receipt.events.iter().any(|event| matches!(
+            event,
+            RpgDomainEvent::ModifierExpired {
+                target_id,
+                modifier_id,
+                ..
+            } if target_id == "hero" && modifier_id == "impeded"
+        )));
+        assert!(session
+            .state()
+            .entity("hero")
+            .unwrap()
+            .modifier("impeded")
+            .is_none());
+
+        let final_checkpoint = session.checkpoint().unwrap();
+        let final_restored = RpgAuthoritySession::restore_checkpoint(final_checkpoint).unwrap();
+        assert_eq!(
+            final_restored.state_hash().unwrap(),
+            session.state_hash().unwrap()
+        );
+        let replayed = RpgAuthoritySession::replay(
+            initial,
+            &[first_submit, first_reaction, second_submit, second_reaction],
+        )
+        .expect("modifier aging replays from recorded evidence");
+        assert_eq!(
+            replayed.state_hash().unwrap(),
+            session.state_hash().unwrap()
+        );
+    }
+
+    #[test]
+    fn portable_restore_rejects_modifier_tenure_above_the_runtime_bound() {
+        let mut state = artifact_session().checkpoint().unwrap().state;
+        let entity_index = state
+            .entities
+            .iter()
+            .position(|entity| !entity.modifiers.is_empty())
+            .expect("fixture has an active modifier");
+        state.entities[entity_index].modifiers[0].remaining_turns =
+            rpg_core::MAXIMUM_RPG_MODIFIER_TURNS + 1;
+        let failure = restore_state(&state).unwrap_err();
+        assert_eq!(failure.diagnostics[0].code, "RPG_CHECKPOINT_STATE_INVALID");
+        assert_eq!(
+            failure.diagnostics[0].path,
+            format!("$.state.entities[{entity_index}].modifiers")
+        );
+    }
+
+    #[test]
     fn invalid_setup_reports_all_authority_diagnostics_before_session_exists() {
         let bundle = artifact_bundle();
         let mut invalid = standard_setup(&bundle);
@@ -1591,6 +1704,15 @@ mod tests {
                 id: "focus".to_owned(),
                 value: BoundedValue { current: 1, max: 1 },
             });
+        for capability in &mut invalid.participants[0].capabilities {
+            match capability {
+                crate::RpgInitialCapability::Vitality { value } => value.current = 0,
+                crate::RpgInitialCapability::Modifier {
+                    remaining_turns, ..
+                } => *remaining_turns = rpg_core::MAXIMUM_RPG_MODIFIER_TURNS + 1,
+                _ => {}
+            }
+        }
         invalid.turn.initiative_order = vec!["hero".to_owned(), "hero".to_owned()];
 
         let failure = RpgAuthoritySession::from_setup(bundle.clone(), invalid).unwrap_err();
@@ -1604,6 +1726,8 @@ mod tests {
         assert!(codes.contains("RPG_SETUP_POSITION_OUT_OF_BOUNDS"));
         assert!(codes.contains("RPG_SETUP_POSITION_BLOCKED"));
         assert!(codes.contains("RPG_SETUP_CAPABILITY_OWNER_INCOMPATIBLE"));
+        assert!(codes.contains("RPG_SETUP_MODIFIER_INVALID"));
+        assert!(codes.contains("RPG_SETUP_CURRENT_ACTOR_INACTIVE"));
         assert!(codes.contains("RPG_SETUP_TURN_PARTICIPANT_DUPLICATE"));
         assert!(codes.contains("RPG_SETUP_TURN_ORDER_INCOMPLETE"));
 
@@ -1888,6 +2012,10 @@ mod tests {
                 version: 1,
             },
             VersionedRulesetRequirement {
+                id: "capability.modifiers".to_owned(),
+                version: 1,
+            },
+            VersionedRulesetRequirement {
                 id: "capability.random".to_owned(),
                 version: 1,
             },
@@ -1989,6 +2117,12 @@ mod tests {
                         crate::RpgInitialCapability::Defense {
                             id: "guard".to_owned(),
                             value: 10,
+                        },
+                        crate::RpgInitialCapability::Modifier {
+                            stacking_group: "movement-control".to_owned(),
+                            id: "impeded".to_owned(),
+                            value: -2,
+                            remaining_turns: 2,
                         },
                     ],
                 },

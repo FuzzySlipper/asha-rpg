@@ -78,7 +78,7 @@ The active compatibility profile is:
 | formulas | constant, typed stat read, add, bounded dice, half |
 | predicates | always, comparison, not, all, any |
 | composition | atomic root, sequence, when, bounded repeat, bounded per-target, check branch |
-| modifier tenure | 1 to 1000 turns with replace or refresh stacking |
+| modifier tenure | 1 to 1000 turns with replace or refresh stacking; unchanged modifiers age once per accepted encounter turn transition and emit duration/expiry events |
 | movement | bounded signed grid delta with explicit provoke behavior |
 
 Strict decode rejects unknown semantic fields. Compatibility requires exact

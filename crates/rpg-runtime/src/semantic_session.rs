@@ -1,20 +1,20 @@
-use std::fmt;
+use std::{collections::BTreeSet, fmt};
 
 use rpg_compiler::{CompiledRpgRuleset, CompiledRulesetBundle};
 use rpg_core::{
-    DeterministicRandomStream, RpgCapabilityState, RpgIntent, RpgRandomEvidence,
-    RpgReactionDecision, RpgReactionRequest, RpgResolutionReceipt, RpgResolutionRejection,
-    RpgTraceStep,
+    DeterministicRandomStream, RpgCapabilityState, RpgIntent, RpgModifierTurnChange,
+    RpgRandomEvidence, RpgReactionDecision, RpgReactionRequest, RpgResolutionReceipt,
+    RpgResolutionRejection, RpgTraceStep,
 };
 use rpg_ir::CompiledRulesetArtifact;
 use serde::{Deserialize, Serialize};
 
 use crate::encounter::{
-    action_view, build_encounter, encounter_outcome, participant_view, random_failure,
-    runtime_board_rejection, RpgActionProposal, RpgEncounterAuthority, RpgEncounterOutcomeView,
-    RpgEncounterSetup, RpgEncounterSetupFailure, RpgEncounterView, RpgRandomSource,
-    RpgRandomSourceFailure, RpgReactionProposal, RpgSchemaIdentity, RPG_ENCOUNTER_VIEW_SCHEMA_ID,
-    RPG_ENCOUNTER_VIEW_SCHEMA_VERSION,
+    action_view, build_encounter, encounter_outcome, living_intent_rejection, participant_view,
+    random_failure, runtime_board_rejection, RpgActionProposal, RpgEncounterAuthority,
+    RpgEncounterOutcomeView, RpgEncounterSetup, RpgEncounterSetupFailure, RpgEncounterView,
+    RpgRandomSource, RpgRandomSourceFailure, RpgReactionProposal, RpgSchemaIdentity,
+    RPG_ENCOUNTER_VIEW_SCHEMA_ID, RPG_ENCOUNTER_VIEW_SCHEMA_VERSION,
 };
 use crate::{RpgReplayEntry, RpgReplayFailure};
 
@@ -152,27 +152,31 @@ impl RpgAuthoritySession {
             .actions()
             .filter(|action| action_definitions.contains(&action.id))
             .map(|action| {
+                let actor_intent = RpgIntent {
+                    action_id: action.id.clone(),
+                    actor_id: actor_id.to_owned(),
+                    target_ids: Vec::new(),
+                };
+                let actor_rejection = living_intent_rejection(&self.state, &actor_intent);
                 let candidates = self
                     .ruleset
                     .candidate_ids(&self.state, actor_id, &action.id)
                     .unwrap_or_default()
-                    .into_iter()
-                    .filter(|participant_id| {
-                        self.state
-                            .entity(participant_id)
-                            .map(|participant| participant.vitality().current > 0)
-                            .unwrap_or(false)
-                    })
-                    .collect::<Vec<_>>();
-                let mut first_rejection = None;
+                    .into_iter();
+                let mut first_rejection = actor_rejection;
                 let legal_candidates = candidates
-                    .into_iter()
                     .filter(|target_id| {
                         let intent = RpgIntent {
                             action_id: action.id.clone(),
                             actor_id: actor_id.to_owned(),
                             target_ids: vec![target_id.clone()],
                         };
+                        if let Some(rejection) = living_intent_rejection(&self.state, &intent) {
+                            if first_rejection.is_none() {
+                                first_rejection = Some(rejection);
+                            }
+                            return false;
+                        }
                         match self.ruleset.preflight(&self.state, &intent) {
                             Ok(()) => true,
                             Err(rejection) => {
@@ -266,6 +270,9 @@ impl RpgAuthoritySession {
                 format!("current actor is {}", self.encounter.current_actor_id()),
             ));
         }
+        if let Some(rejection) = living_intent_rejection(&self.state, &command.intent) {
+            return RpgCommandOutcome::Rejected(rejection);
+        }
         let actor_definitions = self
             .encounter
             .participant_definitions
@@ -290,7 +297,7 @@ impl RpgAuthoritySession {
             .ruleset
             .resolve(&mut staged_state, &mut random, &command.intent)
         {
-            Ok(receipt) => {
+            Ok(mut receipt) => {
                 if random.remaining() != 0 {
                     return RpgCommandOutcome::Rejected(unused_random_rejection(
                         random.remaining(),
@@ -301,15 +308,19 @@ impl RpgAuthoritySession {
                 {
                     return RpgCommandOutcome::Rejected(rejection);
                 }
+                let advances_turn = matches!(
+                    encounter_outcome(&staged_state),
+                    RpgEncounterOutcomeView::InProgress
+                );
+                if advances_turn {
+                    append_modifier_turn_events(&self.state, &mut staged_state, &mut receipt);
+                }
                 self.state = staged_state;
                 self.accepted_random_values = self
                     .accepted_random_values
                     .saturating_add(receipt.random_consumed);
                 self.encounter.record(&receipt);
-                if matches!(
-                    encounter_outcome(&self.state),
-                    RpgEncounterOutcomeView::InProgress
-                ) {
+                if advances_turn {
                     self.encounter.advance_turn(&self.state);
                 }
                 RpgCommandOutcome::Accepted(receipt)
@@ -377,7 +388,7 @@ impl RpgAuthoritySession {
             &transaction.intent,
             &decision,
         ) {
-            Ok(receipt) => {
+            Ok(mut receipt) => {
                 if random.remaining() != 0 {
                     return RpgCommandOutcome::Rejected(unused_random_rejection(
                         random.remaining(),
@@ -388,16 +399,20 @@ impl RpgAuthoritySession {
                 {
                     return RpgCommandOutcome::Rejected(rejection);
                 }
+                let advances_turn = matches!(
+                    encounter_outcome(&staged_state),
+                    RpgEncounterOutcomeView::InProgress
+                );
+                if advances_turn {
+                    append_modifier_turn_events(&self.state, &mut staged_state, &mut receipt);
+                }
                 self.pending = None;
                 self.state = staged_state;
                 self.accepted_random_values = self
                     .accepted_random_values
                     .saturating_add(receipt.random_consumed);
                 self.encounter.record(&receipt);
-                if matches!(
-                    encounter_outcome(&self.state),
-                    RpgEncounterOutcomeView::InProgress
-                ) {
+                if advances_turn {
                     self.encounter.advance_turn(&self.state);
                 }
                 RpgCommandOutcome::Accepted(receipt)
@@ -564,6 +579,52 @@ impl RpgAuthoritySession {
     }
 }
 
+fn append_modifier_turn_events(
+    previous_state: &RpgCapabilityState,
+    staged_state: &mut RpgCapabilityState,
+    receipt: &mut RpgResolutionReceipt,
+) {
+    let refreshed_modifiers = receipt
+        .events
+        .iter()
+        .filter_map(|event| match event {
+            rpg_core::RpgDomainEvent::ModifierApplied {
+                target_id,
+                stacking_group,
+                ..
+            } => Some((target_id.clone(), stacking_group.clone())),
+            _ => None,
+        })
+        .collect::<BTreeSet<_>>();
+    let changes = staged_state
+        .modifiers_owner()
+        .advance_turn(previous_state, &refreshed_modifiers);
+    receipt
+        .events
+        .extend(changes.into_iter().map(|change| match change {
+            RpgModifierTurnChange::Aged {
+                entity_id,
+                stacking_group,
+                modifier_id,
+                remaining_turns,
+            } => rpg_core::RpgDomainEvent::ModifierDurationChanged {
+                target_id: entity_id,
+                modifier_id,
+                stacking_group,
+                remaining_turns,
+            },
+            RpgModifierTurnChange::Expired {
+                entity_id,
+                stacking_group,
+                modifier_id,
+            } => rpg_core::RpgDomainEvent::ModifierExpired {
+                target_id: entity_id,
+                modifier_id,
+                stacking_group,
+            },
+        }));
+}
+
 fn required_random_request(outcome: &RpgCommandOutcome) -> Option<&rpg_core::RpgRandomRequest> {
     let RpgCommandOutcome::Rejected(rejection) = outcome else {
         return None;
@@ -657,7 +718,7 @@ mod tests {
 
     use super::*;
 
-    fn reaction_session() -> RpgAuthoritySession {
+    fn reaction_ruleset() -> CompiledRpgRuleset {
         let source = br#"{
           "schema":{"identity":"asha.rpg.ir","major":1},
           "package":{"id":"session.test","version":"1.0.0"},
@@ -685,7 +746,11 @@ mod tests {
             ]}}
           }]
         }"#;
-        let ruleset = compile_normalized_rpg_json(source).expect("reaction ruleset compiles");
+        compile_normalized_rpg_json(source).expect("reaction ruleset compiles")
+    }
+
+    fn reaction_session() -> RpgAuthoritySession {
+        let ruleset = reaction_ruleset();
         let actor = RpgEntityState::new("hero", Team::ally(), GridPosition { x: 0, y: 0 }, 20)
             .with_resource("focus", 2, 2);
         let target =
@@ -694,6 +759,30 @@ mod tests {
         state.insert_entity(actor);
         state.insert_entity(target);
         RpgAuthoritySession::for_test(ruleset, state)
+    }
+
+    fn living_legality_session(actor_vitality: i32, target_vitality: i32) -> RpgAuthoritySession {
+        let actor = RpgEntityState::new(
+            "hero",
+            Team::ally(),
+            GridPosition { x: 0, y: 0 },
+            actor_vitality,
+        )
+        .with_resource("focus", 2, 2);
+        let ally = RpgEntityState::new("scout", Team::ally(), GridPosition { x: 0, y: 1 }, 20);
+        let target = RpgEntityState::new(
+            "guardian",
+            Team::enemy(),
+            GridPosition { x: 1, y: 0 },
+            target_vitality,
+        );
+        let enemy = RpgEntityState::new("raider", Team::enemy(), GridPosition { x: 1, y: 1 }, 20);
+        let mut state = RpgCapabilityState::default();
+        state.insert_entity(actor);
+        state.insert_entity(ally);
+        state.insert_entity(target);
+        state.insert_entity(enemy);
+        RpgAuthoritySession::for_test(reaction_ruleset(), state)
     }
 
     fn command() -> RpgAuthorityCommand {
@@ -806,5 +895,58 @@ mod tests {
         });
         assert!(matches!(accepted, RpgCommandOutcome::Accepted(_)));
         assert_eq!(session.state().revision(), 1);
+    }
+
+    #[test]
+    fn inactive_current_actor_is_unavailable_and_cannot_submit() {
+        let mut session = living_legality_session(0, 20);
+        let before_state = session.state().clone();
+        let before_turn = session.turn().clone();
+        let view = session.encounter_view();
+        assert_eq!(view.actions.len(), 1);
+        assert!(!view.actions[0].available);
+        assert_eq!(
+            view.actions[0].unavailable.as_ref().unwrap().code,
+            "RPG_TURN_ACTOR_INACTIVE"
+        );
+
+        let outcome = session.submit(command());
+        let RpgCommandOutcome::Rejected(rejection) = outcome else {
+            panic!("inactive actor must be rejected: {outcome:?}");
+        };
+        assert_eq!(rejection.code, "RPG_TURN_ACTOR_INACTIVE");
+        assert_eq!(rejection.path, "$.command.intent.actorId");
+        assert_eq!(session.state(), &before_state);
+        assert_eq!(session.turn(), &before_turn);
+        assert!(session.encounter.log.is_empty());
+        assert!(session.pending_reaction().is_none());
+    }
+
+    #[test]
+    fn target_omitted_from_living_candidates_cannot_be_submitted() {
+        let mut session = living_legality_session(20, 0);
+        let before_state = session.state().clone();
+        let before_turn = session.turn().clone();
+        let view = session.encounter_view();
+        assert_eq!(view.actions.len(), 1);
+        assert!(!view.actions[0]
+            .options
+            .participant_ids
+            .contains(&"guardian".to_owned()));
+        assert!(view.actions[0]
+            .options
+            .participant_ids
+            .contains(&"raider".to_owned()));
+
+        let outcome = session.submit(command());
+        let RpgCommandOutcome::Rejected(rejection) = outcome else {
+            panic!("inactive target must be rejected: {outcome:?}");
+        };
+        assert_eq!(rejection.code, "RPG_INTENT_TARGET_INACTIVE");
+        assert_eq!(rejection.path, "$.command.intent.targetIds[0]");
+        assert_eq!(session.state(), &before_state);
+        assert_eq!(session.turn(), &before_turn);
+        assert!(session.encounter.log.is_empty());
+        assert!(session.pending_reaction().is_none());
     }
 }

@@ -1011,6 +1011,10 @@ impl Execution<'_> {
                 "RPG_MUTATION_RESOURCE_OUT_OF_BOUNDS",
                 "resource transition exceeds its declared bounds",
             ),
+            RpgCapabilityMutationError::ModifierTenureInvalid => (
+                "RPG_MUTATION_MODIFIER_TENURE_INVALID",
+                "modifier tenure is outside the supported turn bounds",
+            ),
             RpgCapabilityMutationError::MovementDistanceInvalid => (
                 "RPG_MUTATION_MOVEMENT_DISTANCE_INVALID",
                 "movement distance is zero or exceeds its bound",

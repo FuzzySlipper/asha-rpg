@@ -1,6 +1,6 @@
 use std::collections::{BTreeMap, BTreeSet};
 
-use rpg_core::{RpgRandomRequest, RpgRandomRequestKind};
+use rpg_core::{RpgRandomRequest, RpgRandomRequestKind, MAXIMUM_RPG_MODIFIER_TURNS};
 use rpg_ir::{
     NormalizedRpgIr, RpgIrAction, RpgIrCheck, RpgIrFormula, RpgIrOperation, RpgIrPredicate,
     RpgIrProgram, RpgIrRequirementKind, RpgIrResourceCost, RpgIrRollScope, RpgIrSubject,
@@ -1057,12 +1057,14 @@ impl<'a> Validator<'a> {
                     "modifier",
                 );
                 self.require_identifier(stacking_group, &format!("{path}.stackingGroup"));
-                if *duration_turns == 0 || *duration_turns > 1_000 {
+                if !(1..=MAXIMUM_RPG_MODIFIER_TURNS).contains(duration_turns) {
                     self.error(
                         RpgDiagnosticStage::Semantics,
                         "RPG_IR_DURATION_INVALID",
                         format!("{path}.durationTurns"),
-                        "modifier duration must be between 1 and 1000 turns",
+                        format!(
+                            "modifier duration must be between 1 and {MAXIMUM_RPG_MODIFIER_TURNS} turns"
+                        ),
                     );
                 }
                 self.validate_formula_at(value, &format!("{path}.value"), has_target_binding);

@@ -1,8 +1,10 @@
-use std::collections::BTreeMap;
+use std::collections::{BTreeMap, BTreeSet};
 
 use serde::{Deserialize, Serialize};
 
 use crate::{BoundedValue, GridPosition, Team};
+
+pub const MAXIMUM_RPG_MODIFIER_TURNS: u32 = 1_000;
 
 /// Closed identities for the private capability workspaces owned by RPG authority.
 ///
@@ -248,12 +250,23 @@ pub enum RpgModifierStackingPolicy {
 }
 
 impl ActiveRpgModifier {
-    pub fn restore(id: impl Into<String>, value: i32, remaining_turns: u32) -> Self {
-        Self {
-            id: id.into(),
+    pub fn restore(
+        id: impl Into<String>,
+        value: i32,
+        remaining_turns: u32,
+    ) -> Result<Self, RpgStateRestoreError> {
+        let id = id.into();
+        if id.is_empty() {
+            return Err(RpgStateRestoreError::EmptyIdentity);
+        }
+        if !(1..=MAXIMUM_RPG_MODIFIER_TURNS).contains(&remaining_turns) {
+            return Err(RpgStateRestoreError::ValueOutOfBounds);
+        }
+        Ok(Self {
+            id,
             value,
             remaining_turns,
-        }
+        })
     }
 
     pub fn id(&self) -> &str {
@@ -513,6 +526,21 @@ pub struct RpgModifiersOwner<'a> {
     state: &'a mut RpgCapabilityState,
 }
 
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum RpgModifierTurnChange {
+    Aged {
+        entity_id: String,
+        stacking_group: String,
+        modifier_id: String,
+        remaining_turns: u32,
+    },
+    Expired {
+        entity_id: String,
+        stacking_group: String,
+        modifier_id: String,
+    },
+}
+
 impl RpgModifiersOwner<'_> {
     pub fn apply(
         &mut self,
@@ -523,6 +551,9 @@ impl RpgModifiersOwner<'_> {
         value: i32,
         remaining_turns: u32,
     ) -> Result<(), RpgCapabilityMutationError> {
+        if !(1..=MAXIMUM_RPG_MODIFIER_TURNS).contains(&remaining_turns) {
+            return Err(RpgCapabilityMutationError::ModifierTenureInvalid);
+        }
         let entity = self.state.entity_mut_for_owner(entity_id)?;
         match stacking {
             RpgModifierStackingPolicy::Replace => {
@@ -550,6 +581,56 @@ impl RpgModifiersOwner<'_> {
             }
         }
         Ok(())
+    }
+
+    /// Ages only modifiers that were present and unchanged before the accepted
+    /// action. A modifier applied, replaced, or refreshed by that action starts
+    /// its full authored tenure at the new turn boundary.
+    pub fn advance_turn(
+        &mut self,
+        previous_state: &RpgCapabilityState,
+        refreshed_modifiers: &BTreeSet<(String, String)>,
+    ) -> Vec<RpgModifierTurnChange> {
+        let mut changes = Vec::new();
+        for previous_entity in previous_state.entities() {
+            for (stacking_group, previous_modifier) in previous_entity.modifiers() {
+                if refreshed_modifiers
+                    .contains(&(previous_entity.id().to_owned(), stacking_group.to_owned()))
+                {
+                    continue;
+                }
+                let Some(entity) = self.state.entities.get_mut(previous_entity.id()) else {
+                    continue;
+                };
+                if entity.modifiers.get(stacking_group) != Some(previous_modifier) {
+                    continue;
+                }
+                if previous_modifier.remaining_turns > 1 {
+                    let modifier = entity
+                        .modifiers
+                        .get_mut(stacking_group)
+                        .expect("unchanged modifier remains present");
+                    modifier.remaining_turns -= 1;
+                    changes.push(RpgModifierTurnChange::Aged {
+                        entity_id: previous_entity.id().to_owned(),
+                        stacking_group: stacking_group.to_owned(),
+                        modifier_id: modifier.id.clone(),
+                        remaining_turns: modifier.remaining_turns,
+                    });
+                } else {
+                    let modifier = entity
+                        .modifiers
+                        .remove(stacking_group)
+                        .expect("unchanged modifier remains present");
+                    changes.push(RpgModifierTurnChange::Expired {
+                        entity_id: previous_entity.id().to_owned(),
+                        stacking_group: stacking_group.to_owned(),
+                        modifier_id: modifier.id,
+                    });
+                }
+            }
+        }
+        changes
     }
 }
 
@@ -589,6 +670,7 @@ pub enum RpgCapabilityMutationError {
     InvalidAmount,
     InsufficientResource,
     ResourceOutOfBounds,
+    ModifierTenureInvalid,
     MovementDistanceInvalid,
     PositionOutOfBounds,
 }
@@ -738,6 +820,17 @@ pub enum RpgDomainEvent {
         value: i32,
         remaining_turns: u32,
     },
+    ModifierDurationChanged {
+        target_id: String,
+        modifier_id: String,
+        stacking_group: String,
+        remaining_turns: u32,
+    },
+    ModifierExpired {
+        target_id: String,
+        modifier_id: String,
+        stacking_group: String,
+    },
     PositionChanged {
         source_id: String,
         entity_id: String,
@@ -870,6 +963,101 @@ mod tests {
         assert_eq!(
             state.position_owner().move_entity("hero", -9, 0, 9),
             Err(RpgCapabilityMutationError::PositionOutOfBounds)
+        );
+    }
+
+    #[test]
+    fn modifier_owner_ages_unchanged_tenure_and_expires_at_zero() {
+        let entity = RpgEntityState::new("hero", Team::ally(), GridPosition { x: 0, y: 0 }, 20);
+        let mut state = RpgCapabilityState::default();
+        state.insert_entity(entity);
+        assert_eq!(
+            state.modifiers_owner().apply(
+                "hero",
+                "impeded",
+                "movement-control",
+                RpgModifierStackingPolicy::Refresh,
+                -2,
+                2,
+            ),
+            Ok(())
+        );
+        assert_eq!(
+            state.modifiers_owner().apply(
+                "hero",
+                "invalid",
+                "invalid",
+                RpgModifierStackingPolicy::Replace,
+                0,
+                MAXIMUM_RPG_MODIFIER_TURNS + 1,
+            ),
+            Err(RpgCapabilityMutationError::ModifierTenureInvalid)
+        );
+
+        let refreshed_baseline = state.clone();
+        assert_eq!(
+            state.modifiers_owner().apply(
+                "hero",
+                "impeded",
+                "movement-control",
+                RpgModifierStackingPolicy::Refresh,
+                -2,
+                2,
+            ),
+            Ok(())
+        );
+        let refreshed = BTreeSet::from([("hero".to_owned(), "movement-control".to_owned())]);
+        assert!(state
+            .modifiers_owner()
+            .advance_turn(&refreshed_baseline, &refreshed)
+            .is_empty());
+        assert_eq!(
+            state
+                .entity("hero")
+                .unwrap()
+                .modifier("impeded")
+                .unwrap()
+                .remaining_turns(),
+            2
+        );
+
+        let first_baseline = state.clone();
+        assert_eq!(
+            state
+                .modifiers_owner()
+                .advance_turn(&first_baseline, &BTreeSet::new()),
+            vec![RpgModifierTurnChange::Aged {
+                entity_id: "hero".to_owned(),
+                stacking_group: "movement-control".to_owned(),
+                modifier_id: "impeded".to_owned(),
+                remaining_turns: 1,
+            }]
+        );
+        assert_eq!(
+            state
+                .entity("hero")
+                .unwrap()
+                .modifier("impeded")
+                .unwrap()
+                .remaining_turns(),
+            1
+        );
+
+        let second_baseline = state.clone();
+        assert_eq!(
+            state
+                .modifiers_owner()
+                .advance_turn(&second_baseline, &BTreeSet::new()),
+            vec![RpgModifierTurnChange::Expired {
+                entity_id: "hero".to_owned(),
+                stacking_group: "movement-control".to_owned(),
+                modifier_id: "impeded".to_owned(),
+            }]
+        );
+        assert!(state.entity("hero").unwrap().modifier("impeded").is_none());
+        assert_eq!(
+            ActiveRpgModifier::restore("impeded", -2, 0),
+            Err(RpgStateRestoreError::ValueOutOfBounds)
         );
     }
 }

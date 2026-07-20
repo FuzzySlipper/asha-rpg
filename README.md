@@ -43,7 +43,8 @@ authority session are the single supported Rust ruleset path.
 
 The initial operation set is deliberately closed: damage, healing, resource
 change, bounded grid movement, turn-bounded modifier application with explicit
-replace or refresh stacking, and a typed before-damage reaction window. Checks
+replace or refresh stacking and authority-owned turn aging/expiry events, and
+a typed before-damage reaction window. Checks
 support attack, saving throw, and no-roll flows. Programs
 support bounded sequence, predicate branch, repeat, per-target branch, check
 outcome branch, and one atomic root. Unavailable semantics fail compilation;

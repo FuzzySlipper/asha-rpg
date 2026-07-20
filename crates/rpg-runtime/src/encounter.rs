@@ -5,8 +5,9 @@ use std::{
 
 use rpg_compiler::{CompiledRpgAction, CompiledRulesetBundle};
 use rpg_core::{
-    ActiveRpgModifier, BoundedValue, GridPosition, RpgCapabilityState, RpgEntityState,
+    ActiveRpgModifier, BoundedValue, GridPosition, RpgCapabilityState, RpgEntityState, RpgIntent,
     RpgRandomRequest, RpgReactionRequest, RpgResolutionRejection, RpgTeamId,
+    MAXIMUM_RPG_MODIFIER_TURNS,
 };
 use rpg_ir::{MaterializedRulesetDefinitionKind, MaterializedRulesetVisibility};
 use serde::{Deserialize, Serialize};
@@ -561,7 +562,8 @@ pub(crate) fn build_encounter(
                 } => entity
                     .restore_modifier(
                         stacking_group.clone(),
-                        ActiveRpgModifier::restore(id.clone(), *value, *remaining_turns),
+                        ActiveRpgModifier::restore(id.clone(), *value, *remaining_turns)
+                            .expect("validated modifier restores"),
                     )
                     .expect("validated modifier restores"),
             }
@@ -912,11 +914,15 @@ fn validate_participant_capabilities(
                 remaining_turns,
                 ..
             } => {
-                if id.trim().is_empty() || *remaining_turns == 0 {
+                if id.trim().is_empty()
+                    || !(1..=MAXIMUM_RPG_MODIFIER_TURNS).contains(remaining_turns)
+                {
                     diagnostics.push(setup_diagnostic(
                         "RPG_SETUP_MODIFIER_INVALID",
                         &capability_path,
-                        "modifier identity and positive remaining turns are required",
+                        format!(
+                            "modifier identity and remaining turns within 1..={MAXIMUM_RPG_MODIFIER_TURNS} are required"
+                        ),
                     ));
                 }
                 (owner, stacking_group.as_str())
@@ -986,6 +992,26 @@ fn validate_turn(
             "RPG_SETUP_CURRENT_ACTOR_UNKNOWN",
             "$.turn.currentActorId",
             "current actor must appear in initiative order",
+        ));
+    } else if !setup
+        .participants
+        .iter()
+        .find(|participant| participant.id == setup.turn.current_actor_id)
+        .and_then(|participant| {
+            participant
+                .capabilities
+                .iter()
+                .find_map(|capability| match capability {
+                    RpgInitialCapability::Vitality { value } => Some(value.current > 0),
+                    _ => None,
+                })
+        })
+        .unwrap_or(false)
+    {
+        diagnostics.push(setup_diagnostic(
+            "RPG_SETUP_CURRENT_ACTOR_INACTIVE",
+            "$.turn.currentActorId",
+            "current actor must have positive vitality",
         ));
     }
     if setup.turn.round == 0 || setup.turn.turn == 0 {
@@ -1083,14 +1109,22 @@ pub(crate) fn validate_restored_encounter(
             "checkpoint initiative order must match the setup binding",
         ));
     }
+    let current_actor_active = state
+        .entity(&authority.turn.current_actor_id)
+        .map(|entity| entity.vitality().current > 0)
+        .unwrap_or(false);
     if !setup_ids.contains(authority.turn.current_actor_id.as_str())
         || authority.turn.round == 0
         || authority.turn.turn == 0
+        || (matches!(
+            encounter_outcome(state),
+            RpgEncounterOutcomeView::InProgress
+        ) && !current_actor_active)
     {
         diagnostics.push(setup_diagnostic(
             "RPG_CHECKPOINT_TURN_STATE_INVALID",
             "$.turn",
-            "checkpoint turn state must identify a setup participant with positive counters",
+            "checkpoint turn state must identify an active setup participant with positive counters",
         ));
     }
     if let Some(rejection) = runtime_board_rejection(&authority.setup.board, state) {
@@ -1120,6 +1154,46 @@ pub(crate) fn validate_restored_encounter(
         }
     }
     diagnostics
+}
+
+pub(crate) fn living_intent_rejection(
+    state: &RpgCapabilityState,
+    intent: &RpgIntent,
+) -> Option<RpgResolutionRejection> {
+    if !participant_is_living(state, &intent.actor_id) {
+        return Some(resolution_rejection(
+            "RPG_TURN_ACTOR_INACTIVE",
+            "$.command.intent.actorId",
+            format!(
+                "participant {} cannot act without positive vitality",
+                intent.actor_id
+            ),
+        ));
+    }
+    intent
+        .target_ids
+        .iter()
+        .enumerate()
+        .find_map(|(index, target_id)| {
+            state.entity(target_id).and_then(|_| {
+                (!participant_is_living(state, target_id)).then(|| {
+                    resolution_rejection(
+                        "RPG_INTENT_TARGET_INACTIVE",
+                        format!("$.command.intent.targetIds[{index}]"),
+                        format!(
+                            "participant {target_id} cannot be targeted without positive vitality"
+                        ),
+                    )
+                })
+            })
+        })
+}
+
+fn participant_is_living(state: &RpgCapabilityState, participant_id: &str) -> bool {
+    state
+        .entity(participant_id)
+        .map(|participant| participant.vitality().current > 0)
+        .unwrap_or(false)
 }
 
 pub(crate) fn action_view(
