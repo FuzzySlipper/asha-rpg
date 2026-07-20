@@ -1178,10 +1178,16 @@ function authoredDefinitionReferenceIds(definition) {
     ].sort();
 }
 function authoredCatalogReferences(definition) {
-    if (definition.kind !== 'action')
-        return [];
     const byIdentity = new Map();
-    collectCatalogReferences(definition.action, '$.action', byIdentity);
+    if (definition.kind === 'action') {
+        collectCatalogReferences(definition.action, '$.action', byIdentity);
+    }
+    else if (definition.kind === 'mixin') {
+        collectCatalogReferences(definition.patch, '$.patch', byIdentity);
+    }
+    else {
+        return [];
+    }
     return [...byIdentity.values()].sort((left, right) => `${left.category}#${left.packageId ?? ''}#${left.definitionId}`.localeCompare(`${right.category}#${right.packageId ?? ''}#${right.definitionId}`));
 }
 function collectCatalogReferences(value, path, references) {
@@ -1217,7 +1223,7 @@ function collectCatalogReferences(value, path, references) {
         collectCatalogReferences(child, childPath, references);
     }
 }
-function definitionReferences(record, definitionsByPackage, diagnostics) {
+function definitionReferences(record, diagnostics) {
     const references = [...(record.definition.lowLevelReferences ?? [])];
     const inheritedLocalIds = new Set((record.inheritedReferenceIds ?? []).map(localDefinitionId));
     for (const catalogReference of authoredCatalogReferences(record.definition)) {
@@ -1247,34 +1253,23 @@ function definitionReferences(record, definitionsByPackage, diagnostics) {
             }));
             continue;
         }
-        if (definitionsByPackage.get(record.package.key)?.has(definitionId) === true) {
-            references.push({ definitionId });
+        const explicitMatches = references.filter((reference) => reference.definitionId === definitionId);
+        if (explicitMatches.length === 1) {
             continue;
         }
-        const matches = [...record.package.aliases.entries()].filter(([, packageKey]) => definitionsByPackage.get(packageKey)?.has(definitionId) === true);
-        if (matches.length === 1) {
-            for (const [importAs] of matches) {
-                references.push({ importAs, definitionId });
-            }
-            continue;
-        }
-        if (matches.length > 1) {
-            diagnostics.push(diagnostic('graph', 'RULESET_CATALOG_REFERENCE_AMBIGUOUS', catalogReference.path, `catalog definition ${definitionId} is provided by more than one dependency`, {
+        if (explicitMatches.length > 1) {
+            diagnostics.push(diagnostic('graph', 'RULESET_CATALOG_REFERENCE_AMBIGUOUS', catalogReference.path, `bare catalog definition ${definitionId} has more than one explicit low-level owner`, {
                 packageId: record.package.source.manifest.identity.id,
                 definitionId: record.definition.id,
                 source: record.definition.source,
             }));
             continue;
         }
-        const aliases = [...record.package.aliases.keys()];
-        if (aliases.length === 1) {
-            for (const importAs of aliases) {
-                references.push({ importAs, definitionId });
-            }
-        }
-        else {
-            references.push({ definitionId });
-        }
+        diagnostics.push(diagnostic('graph', 'RULESET_CATALOG_REFERENCE_OWNER_REQUIRED', catalogReference.path, `bare catalog definition ${definitionId} has no owner; use defineRulesetCatalog or an explicit low-level definition reference`, {
+            packageId: record.package.source.manifest.identity.id,
+            definitionId: record.definition.id,
+            source: record.definition.source,
+        }));
     }
     return uniqueReferences(references);
 }
@@ -1337,7 +1332,7 @@ function closeDefinitionGraph(context, rootKeys, sourceRecords) {
             return;
         visiting.push(globalId);
         const references = new Set();
-        for (const [index, reference] of definitionReferences(record, definitionsByPackage, context.diagnostics).entries()) {
+        for (const [index, reference] of definitionReferences(record, context.diagnostics).entries()) {
             const target = resolveDefinitionReference(record, reference, index, definitionsByPackage, context.diagnostics);
             if (target !== undefined) {
                 references.add(globalDefinitionId(target));
@@ -1409,7 +1404,7 @@ function closeDefinitionGraph(context, rootKeys, sourceRecords) {
 }
 function resolveMaterializationReferenceIds(record, definitionsByPackage, diagnostics) {
     const resolved = new Set(record.inheritedReferenceIds ?? []);
-    for (const [index, reference] of definitionReferences(record, definitionsByPackage, diagnostics).entries()) {
+    for (const [index, reference] of definitionReferences(record, diagnostics).entries()) {
         const target = resolveDefinitionReference(record, reference, index, definitionsByPackage, diagnostics);
         if (target !== undefined)
             resolved.add(globalDefinitionId(target));

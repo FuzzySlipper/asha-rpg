@@ -1906,9 +1906,14 @@ function authoredDefinitionReferenceIds(
 function authoredCatalogReferences(
   definition: RulesetDefinition,
 ): readonly AuthoredCatalogReference[] {
-  if (definition.kind !== 'action') return [];
   const byIdentity = new Map<string, AuthoredCatalogReference>();
-  collectCatalogReferences(definition.action, '$.action', byIdentity);
+  if (definition.kind === 'action') {
+    collectCatalogReferences(definition.action, '$.action', byIdentity);
+  } else if (definition.kind === 'mixin') {
+    collectCatalogReferences(definition.patch, '$.patch', byIdentity);
+  } else {
+    return [];
+  }
   return [...byIdentity.values()].sort((left, right) =>
     `${left.category}#${left.packageId ?? ''}#${left.definitionId}`.localeCompare(
       `${right.category}#${right.packageId ?? ''}#${right.definitionId}`,
@@ -1962,10 +1967,6 @@ function collectCatalogReferences(
 
 function definitionReferences(
   record: DefinitionRecord,
-  definitionsByPackage: ReadonlyMap<
-    string,
-    ReadonlyMap<string, DefinitionRecord>
-  >,
   diagnostics: RulesetCompilerDiagnostic[],
 ): readonly RulesetDefinitionReference[] {
   const references = [...(record.definition.lowLevelReferences ?? [])];
@@ -2006,29 +2007,19 @@ function definitionReferences(
       );
       continue;
     }
-    if (
-      definitionsByPackage.get(record.package.key)?.has(definitionId) === true
-    ) {
-      references.push({ definitionId });
-      continue;
-    }
-    const matches = [...record.package.aliases.entries()].filter(
-      ([, packageKey]) =>
-        definitionsByPackage.get(packageKey)?.has(definitionId) === true,
+    const explicitMatches = references.filter(
+      (reference) => reference.definitionId === definitionId,
     );
-    if (matches.length === 1) {
-      for (const [importAs] of matches) {
-        references.push({ importAs, definitionId });
-      }
+    if (explicitMatches.length === 1) {
       continue;
     }
-    if (matches.length > 1) {
+    if (explicitMatches.length > 1) {
       diagnostics.push(
         diagnostic(
           'graph',
           'RULESET_CATALOG_REFERENCE_AMBIGUOUS',
           catalogReference.path,
-          `catalog definition ${definitionId} is provided by more than one dependency`,
+          `bare catalog definition ${definitionId} has more than one explicit low-level owner`,
           {
             packageId: record.package.source.manifest.identity.id,
             definitionId: record.definition.id,
@@ -2038,14 +2029,19 @@ function definitionReferences(
       );
       continue;
     }
-    const aliases = [...record.package.aliases.keys()];
-    if (aliases.length === 1) {
-      for (const importAs of aliases) {
-        references.push({ importAs, definitionId });
-      }
-    } else {
-      references.push({ definitionId });
-    }
+    diagnostics.push(
+      diagnostic(
+        'graph',
+        'RULESET_CATALOG_REFERENCE_OWNER_REQUIRED',
+        catalogReference.path,
+        `bare catalog definition ${definitionId} has no owner; use defineRulesetCatalog or an explicit low-level definition reference`,
+        {
+          packageId: record.package.source.manifest.identity.id,
+          definitionId: record.definition.id,
+          source: record.definition.source,
+        },
+      ),
+    );
   }
   return uniqueReferences(references);
 }
@@ -2144,7 +2140,6 @@ function closeDefinitionGraph(
     const references = new Set<string>();
     for (const [index, reference] of definitionReferences(
       record,
-      definitionsByPackage,
       context.diagnostics,
     ).entries()) {
       const target = resolveDefinitionReference(
@@ -2266,7 +2261,6 @@ function resolveMaterializationReferenceIds(
   const resolved = new Set(record.inheritedReferenceIds ?? []);
   for (const [index, reference] of definitionReferences(
     record,
-    definitionsByPackage,
     diagnostics,
   ).entries()) {
     const target = resolveDefinitionReference(

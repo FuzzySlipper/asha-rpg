@@ -7,42 +7,52 @@ import {
   attack,
   constant,
   damage,
-  damageType,
-  defenseId,
   defineArchetype,
   defineItem,
   definePackage,
+  defineRulesetCatalog,
   defineScenario,
   dice,
   forEachTarget,
   half,
   hostile,
   immediate,
-  modifierId,
   moveEntity,
   noRoll,
   onCheck,
   readStat,
   refresh,
-  resourceId,
   savingThrow,
   sequence,
   spend,
   stackingGroup,
-  statId,
   turns,
 } from '@asha-rpg/authoring';
 import type {
   AuthoredAction,
   RpgActionId,
-  RpgDamageType,
-  RpgModifierId,
+  RulesetCatalogReference,
 } from '@asha-rpg/authoring';
 
-const guard = defenseId('guard');
-const resolve = defenseId('resolve');
-const power = statId('power');
-const focus = resourceId('focus');
+const catalogs = defineRulesetCatalog({
+  packageId: 'example.rules',
+  sourceModule: 'examples/catalogs.ts',
+  entries: {
+    guard: { definitionId: 'guard', category: 'defense', id: 'guard', label: 'Guard' },
+    resolve: { definitionId: 'resolve', category: 'defense', id: 'resolve', label: 'Resolve' },
+    power: { definitionId: 'power', category: 'stat', id: 'power', label: 'Power' },
+    focus: { definitionId: 'focus', category: 'resource', id: 'focus', label: 'Focus' },
+    kinetic: { definitionId: 'kinetic', category: 'damageType', id: 'kinetic', label: 'Kinetic' },
+    storm: { definitionId: 'storm', category: 'damageType', id: 'storm', label: 'Storm' },
+    bound: { definitionId: 'example.bound', category: 'modifier', id: 'bound', label: 'Bound' },
+    cold: { definitionId: 'cold', category: 'damageType', id: 'cold', label: 'Cold' },
+    slowed: { definitionId: 'example.slowed', category: 'modifier', id: 'slowed', label: 'Slowed' },
+    fire: { definitionId: 'fire', category: 'damageType', id: 'fire', label: 'Fire' },
+    singed: { definitionId: 'example.singed', category: 'modifier', id: 'singed', label: 'Singed' },
+  },
+});
+
+const { guard, resolve, power, focus } = catalogs.references;
 
 export const bindingStrike = action({
   id: actionId('example.binding-strike'),
@@ -56,11 +66,11 @@ export const bindingStrike = action({
     hit: sequence(
       damage({
         amount: dice({ count: 1, sides: 8, bonus: 2 }),
-        type: damageType('kinetic'),
+        type: catalogs.references.kinetic,
         timing: immediate(),
       }),
       applyModifier({
-        modifier: modifierId('example.bound'),
+        modifier: catalogs.references.bound,
         value: constant(-2),
         duration: turns(2),
         stacking: refresh(stackingGroup('movement-control')),
@@ -81,11 +91,11 @@ export const stormBurst = action({
     onCheck({
       failed: damage({
         amount: dice({ count: 2, sides: 6 }),
-        type: damageType('storm'),
+        type: catalogs.references.storm,
       }),
       saved: damage({
         amount: half(dice({ count: 2, sides: 6 })),
-        type: damageType('storm'),
+        type: catalogs.references.storm,
       }),
     }),
   ),
@@ -111,8 +121,8 @@ export const tacticalShift = action({
 /** A consumer-owned helper. Its identity disappears during normalization. */
 export function typedStrike(
   id: RpgActionId,
-  type: RpgDamageType,
-  modifier: RpgModifierId,
+  type: RulesetCatalogReference<'damageType', 'example.rules'>,
+  modifier: RulesetCatalogReference<'modifier', 'example.rules'>,
 ): AuthoredAction {
   return action({
     id,
@@ -128,7 +138,7 @@ export function typedStrike(
           modifier,
           value: constant(-1),
           duration: turns(1),
-          stacking: refresh(stackingGroup(modifier)),
+          stacking: refresh(stackingGroup(modifier.definitionId)),
         }),
       ),
     }),
@@ -137,13 +147,13 @@ export function typedStrike(
 
 export const frostJab = typedStrike(
   actionId('example.frost-jab'),
-  damageType('cold'),
-  modifierId('example.slowed'),
+  catalogs.references.cold,
+  catalogs.references.slowed,
 );
 export const emberJab = typedStrike(
   actionId('example.ember-jab'),
-  damageType('fire'),
-  modifierId('example.singed'),
+  catalogs.references.fire,
+  catalogs.references.singed,
 );
 
 export const representativePackage = definePackage({

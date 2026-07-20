@@ -10,7 +10,6 @@ export type RulesetCatalogReference<Category extends RulesetCatalogCategory, Pac
     readonly packageId: PackageId;
     readonly [catalogReferenceBrand]: true;
 }>;
-export type RulesetCatalogInput<Category extends RulesetCatalogCategory> = RulesetCatalogValue<Category> | RulesetCatalogReference<Category, string>;
 export interface AuthoredCatalogOwnership {
     readonly field: string;
     readonly definitionId: string;
@@ -37,7 +36,13 @@ export declare function defineRulesetCatalog<const PackageId extends string, con
     readonly sourceModule: string;
     readonly entries: Entries;
 }): RulesetCatalog<PackageId, Entries>;
-export declare function catalogDefinitionId<Category extends RulesetCatalogCategory>(reference: RulesetCatalogInput<Category>): RulesetCatalogValue<Category>;
+export declare function catalogDefinitionId<Category extends RulesetCatalogCategory>(reference: RulesetCatalogReference<Category, string>): RulesetCatalogValue<Category>;
+/** @internal Used only by the explicit low-level authoring subpath. */
+export declare function createLowLevelCatalogReference<const Category extends RulesetCatalogCategory, const PackageId extends string>(input: {
+    readonly category: Category;
+    readonly packageId: PackageId;
+    readonly definitionId: string;
+}): RulesetCatalogReference<Category, PackageId>;
 /** @internal Retains authored owner identity on an AST node without serializing it. */
 export declare function retainCatalogOwnership<Value extends object>(value: Value, fields: readonly {
     readonly field: string;

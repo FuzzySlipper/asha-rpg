@@ -47,7 +47,18 @@ export function defineRulesetCatalog(input) {
     });
 }
 export function catalogDefinitionId(reference) {
-    return typeof reference === 'string' ? reference : reference.definitionId;
+    return reference.definitionId;
+}
+/** @internal Used only by the explicit low-level authoring subpath. */
+export function createLowLevelCatalogReference(input) {
+    assertIdentifier(input.packageId, 'catalog package id');
+    assertIdentifier(input.definitionId, 'catalog definition id');
+    return immutable({
+        definitionId: input.definitionId,
+        category: input.category,
+        packageId: input.packageId,
+        [catalogReferenceBrand]: true,
+    });
 }
 /** @internal Retains authored owner identity on an AST node without serializing it. */
 export function retainCatalogOwnership(value, fields) {

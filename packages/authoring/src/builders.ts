@@ -1,19 +1,14 @@
 import type {
   RpgActionId,
-  RpgDamageType,
-  RpgDefenseId,
   RpgIrComparison,
   RpgIrFormula,
   RpgIrPredicate,
   RpgIrResourceCost,
   RpgIrSubject,
   RpgIrTargetSelector,
-  RpgModifierId,
-  RpgResourceId,
   RpgReactionId,
   RpgReactionOptionId,
   RpgStackingGroup,
-  RpgStatId,
 } from '@asha-rpg/ir';
 
 import type {
@@ -31,30 +26,10 @@ import {
   catalogDefinitionId,
   retainCatalogOwnership,
 } from './catalogs.js';
-import type { RulesetCatalogInput } from './catalogs.js';
+import type { RulesetCatalogReference } from './catalogs.js';
 
 export function actionId(value: string): RpgActionId {
   return checkedIdentifier(value, 'action id') as RpgActionId;
-}
-
-export function statId(value: string): RpgStatId {
-  return checkedIdentifier(value, 'stat id') as RpgStatId;
-}
-
-export function defenseId(value: string): RpgDefenseId {
-  return checkedIdentifier(value, 'defense id') as RpgDefenseId;
-}
-
-export function resourceId(value: string): RpgResourceId {
-  return checkedIdentifier(value, 'resource id') as RpgResourceId;
-}
-
-export function modifierId(value: string): RpgModifierId {
-  return checkedIdentifier(value, 'modifier id') as RpgModifierId;
-}
-
-export function damageType(value: string): RpgDamageType {
-  return checkedIdentifier(value, 'damage type') as RpgDamageType;
 }
 
 export function stackingGroup(value: string): RpgStackingGroup {
@@ -113,7 +88,7 @@ export function constant(value: number): RpgIrFormula {
 
 export function readStat(
   subject: RpgIrSubject,
-  id: RulesetCatalogInput<'stat'>,
+  id: RulesetCatalogReference<'stat', string>,
 ): RpgIrFormula {
   return frozenWithCatalogOwnership(
     { kind: 'readStat' as const, subject, statId: catalogDefinitionId(id) },
@@ -173,7 +148,7 @@ export function noRoll(): Extract<import('@asha-rpg/ir').RpgIrCheck, { kind: 'no
 
 export function attack(options: {
   readonly modifier: RpgIrFormula;
-  readonly defense: RulesetCatalogInput<'defense'>;
+  readonly defense: RulesetCatalogReference<'defense', string>;
 }): Extract<import('@asha-rpg/ir').RpgIrCheck, { kind: 'attack' }> {
   return frozenWithCatalogOwnership(
     {
@@ -188,7 +163,7 @@ export function attack(options: {
 
 export function savingThrow(options: {
   readonly difficulty: RpgIrFormula;
-  readonly defense: RulesetCatalogInput<'defense'>;
+  readonly defense: RulesetCatalogReference<'defense', string>;
 }): Extract<import('@asha-rpg/ir').RpgIrCheck, { kind: 'savingThrow' }> {
   return frozenWithCatalogOwnership(
     {
@@ -202,7 +177,7 @@ export function savingThrow(options: {
 }
 
 export function spend(
-  resource: RulesetCatalogInput<'resource'>,
+  resource: RulesetCatalogReference<'resource', string>,
   amount: number,
 ): RpgIrResourceCost {
   return frozenWithCatalogOwnership(
@@ -230,7 +205,7 @@ export function refresh(group: RpgStackingGroup): AuthoringStacking {
 
 export function damage(options: {
   readonly amount: RpgIrFormula;
-  readonly type: RulesetCatalogInput<'damageType'>;
+  readonly type: RulesetCatalogReference<'damageType', string>;
   readonly timing?: AuthoringTiming;
 }): AuthoringProgram {
   return operation(
@@ -256,7 +231,7 @@ export function heal(options: {
 
 export function changeResource(options: {
   readonly subject: RpgIrSubject;
-  readonly resource: RulesetCatalogInput<'resource'>;
+  readonly resource: RulesetCatalogReference<'resource', string>;
   readonly delta: RpgIrFormula;
   readonly timing?: AuthoringTiming;
 }): AuthoringProgram {
@@ -276,7 +251,7 @@ export function changeResource(options: {
 }
 
 export function applyModifier(options: {
-  readonly modifier: RulesetCatalogInput<'modifier'>;
+  readonly modifier: RulesetCatalogReference<'modifier', string>;
   readonly value: RpgIrFormula;
   readonly duration: AuthoringDuration;
   readonly stacking: AuthoringStacking;

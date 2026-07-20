@@ -4,10 +4,9 @@ import {
   canonicalJson,
   composeRuleset,
   damage,
-  damageType,
   defineActionDefinition,
+  defineRulesetCatalog,
   defineRulesetPackage,
-  defineSupportDefinition,
   dice,
   hostile,
   noRoll,
@@ -21,17 +20,17 @@ import {
   sequence,
 } from '@asha-rpg/authoring';
 
-const force = defineSupportDefinition({
-  kind: 'support',
-  id: 'catalog.damage.force',
-  visibility: 'public',
-  extensionPolicy: 'sealed',
-  source: {
-    module: 'examples/generate-portable-replay-source.ts',
-    declaration: 'force',
+const catalogs = defineRulesetCatalog({
+  packageId: 'portable.replay-content',
+  sourceModule: 'examples/generate-portable-replay-source.ts',
+  entries: {
+    force: {
+      definitionId: 'catalog.damage.force',
+      category: 'damageType',
+      id: 'force',
+      label: 'Force',
+    },
   },
-  presentation: { label: 'Force' },
-  semantic: { catalog: 'damageType', id: 'force' },
 });
 
 const reactiveStrike = action({
@@ -54,7 +53,7 @@ const reactiveStrike = action({
       }),
       damage({
         amount: dice({ count: 2, sides: 6 }),
-        type: damageType('catalog.damage.force'),
+        type: catalogs.references.force,
       }),
     ),
   }),
@@ -96,8 +95,8 @@ const contentPackage = defineRulesetPackage({
       { id: 'capability.vitality', version: 1 },
     ],
   },
-  definitions: [actionDefinition, force],
-  exports: [actionDefinition.id, force.id],
+  definitions: [actionDefinition, ...catalogs.definitions],
+  exports: [actionDefinition.id, catalogs.references.force.definitionId],
   policyBindings: [],
   relationships: [],
 });

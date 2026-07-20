@@ -2,21 +2,6 @@ import { catalogDefinitionId, retainCatalogOwnership, } from './catalogs.js';
 export function actionId(value) {
     return checkedIdentifier(value, 'action id');
 }
-export function statId(value) {
-    return checkedIdentifier(value, 'stat id');
-}
-export function defenseId(value) {
-    return checkedIdentifier(value, 'defense id');
-}
-export function resourceId(value) {
-    return checkedIdentifier(value, 'resource id');
-}
-export function modifierId(value) {
-    return checkedIdentifier(value, 'modifier id');
-}
-export function damageType(value) {
-    return checkedIdentifier(value, 'damage type');
-}
 export function stackingGroup(value) {
     return checkedIdentifier(value, 'stacking group');
 }

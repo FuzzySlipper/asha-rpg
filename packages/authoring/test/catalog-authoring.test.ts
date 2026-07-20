@@ -12,6 +12,7 @@ import {
   defineActionDefinition,
   defineRulesetCatalog,
   defineRulesetPackage,
+  definitionReference,
   noRoll,
   onCheck,
   prepareRulesetCompilation,
@@ -20,8 +21,10 @@ import {
   rulesetPackageRequest,
   rulesetPackageSource,
   spend,
+  withLowLevelDefinitionReferences,
 } from '@asha-rpg/authoring';
 import type { RulesetCatalogReference } from '@asha-rpg/authoring';
+import { unsafeNormalizedCatalogId } from '@asha-rpg/authoring/low-level';
 
 const primitives = defineRulesetCatalog({
   packageId: 'sample.primitives',
@@ -215,6 +218,86 @@ test('catalog references retain nominal category and package ownership', () => {
   readStat('actor', primitives.references.guard);
 });
 
+test('bare normalized catalog IDs require an explicit low-level graph edge', () => {
+  const rawFocus = unsafeNormalizedCatalogId({
+    category: 'resource',
+    packageId: 'sample.primitives',
+    definitionId: 'catalog.resource.focus',
+  });
+  const rawAction = action({
+    id: actionId('sample.raw-focus'),
+    name: 'Raw focus',
+    sourcePath: 'sample/raw-focus.ts',
+    targets: { team: 'ally', maximumRange: 0, maximumTargets: 1 },
+    check: noRoll(),
+    program: {
+      kind: 'operation',
+      timing: { kind: 'immediate' },
+      operation: {
+        kind: 'changeResource',
+        subject: 'actor',
+        resourceId: rawFocus,
+        delta: { kind: 'constant', value: 1 },
+      },
+    },
+  });
+  const definition = defineActionDefinition({
+    id: rawAction.id,
+    visibility: 'public',
+    extensionPolicy: 'sealed',
+    source: { module: 'sample/raw-focus.ts', declaration: 'rawAction' },
+    action: rawAction,
+  });
+
+  const compile = (explicit: boolean) => prepareRulesetCompilation({
+    composition: {
+      identity: { id: 'sample.raw-composition', version: '1.0.0' },
+      language: { id: 'asha-rpg', version: '^1.0.0' },
+      base: rulesetPackageRequest({ id: 'sample.raw-content', version: '1.0.0' }),
+      add: [],
+      overlays: [],
+      configure: {},
+    },
+    packages: [
+      rulesetPackageSource(defineRulesetPackage({
+        identity: { id: 'sample.raw-content', version: '1.0.0' },
+        entry: { module: 'sample/raw-content.ts', declaration: 'default' },
+        dependencies: [rulesetDependency({
+          id: 'sample.primitives',
+          version: '1.0.0',
+          importAs: 'primitives',
+        })],
+        definitions: [
+          explicit
+            ? withLowLevelDefinitionReferences(definition, [
+                definitionReference({
+                  importAs: 'primitives',
+                  definitionId: rawFocus,
+                }),
+              ])
+            : definition,
+        ],
+      })),
+      rulesetPackageSource(defineRulesetPackage({
+        identity: { id: primitives.packageId, version: '1.0.0' },
+        entry: { module: 'sample/primitives.ts', declaration: 'default' },
+        definitions: primitives.definitions,
+      })),
+    ],
+  });
+
+  const rejected = compile(false);
+  assert.equal(rejected.ok, false);
+  if (!rejected.ok) {
+    assert.ok(rejected.diagnostics.some(
+      (entry) => entry.code === 'RULESET_CATALOG_REFERENCE_OWNER_REQUIRED',
+    ));
+  }
+
+  const accepted = compile(true);
+  assert.equal(accepted.ok, true, JSON.stringify(accepted));
+});
+
 test('schema-aware action patches own paths, planes, and valid operations', () => {
   const range = actionPatch.semantic.maximumRange.adjust({ multiply: 2, add: 1 });
   const label = actionPatch.presentation.label.set('Stormfront');
@@ -237,6 +320,9 @@ test('schema-aware action patches own paths, planes, and valid operations', () =
     { kind: 'member', key: 'resourceId', value: 'catalog.resource.focus' },
     { kind: 'field', name: 'amount' },
   ]);
+  const costMember = cost.operations[0]?.path[1];
+  assert.ok(costMember);
+  assert.equal(Object.getOwnPropertySymbols(costMember).length, 1);
   if (false) {
     // @ts-expect-error presentation labels do not support numeric adjustment
     actionPatch.presentation.label.adjust({ add: 1 });

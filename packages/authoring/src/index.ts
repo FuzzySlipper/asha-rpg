@@ -1,5 +1,11 @@
 export * from './builders.js';
-export * from './catalogs.js';
+export { catalogDefinitionId, defineRulesetCatalog } from './catalogs.js';
+export type {
+  RulesetCatalog,
+  RulesetCatalogCategory,
+  RulesetCatalogEntry,
+  RulesetCatalogReference,
+} from './catalogs.js';
 export * from './canonical.js';
 export * from './normalize.js';
 export * from './ruleset-builders.js';

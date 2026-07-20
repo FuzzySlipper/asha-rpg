@@ -1,12 +1,7 @@
-import type { RpgActionId, RpgDamageType, RpgDefenseId, RpgIrComparison, RpgIrFormula, RpgIrPredicate, RpgIrResourceCost, RpgIrSubject, RpgIrTargetSelector, RpgModifierId, RpgResourceId, RpgReactionId, RpgReactionOptionId, RpgStackingGroup, RpgStatId } from '@asha-rpg/ir';
+import type { RpgActionId, RpgIrComparison, RpgIrFormula, RpgIrPredicate, RpgIrResourceCost, RpgIrSubject, RpgIrTargetSelector, RpgReactionId, RpgReactionOptionId, RpgStackingGroup } from '@asha-rpg/ir';
 import type { ActionInput, AuthoredAction, AuthoredActionSource, AuthoredPackage, AuthoringDuration, AuthoringProgram, AuthoringStacking, AuthoringTiming, CheckBranchInput } from './types.js';
-import type { RulesetCatalogInput } from './catalogs.js';
+import type { RulesetCatalogReference } from './catalogs.js';
 export declare function actionId(value: string): RpgActionId;
-export declare function statId(value: string): RpgStatId;
-export declare function defenseId(value: string): RpgDefenseId;
-export declare function resourceId(value: string): RpgResourceId;
-export declare function modifierId(value: string): RpgModifierId;
-export declare function damageType(value: string): RpgDamageType;
 export declare function stackingGroup(value: string): RpgStackingGroup;
 export declare function reactionId(value: string): RpgReactionId;
 export declare function reactionOptionId(value: string): RpgReactionOptionId;
@@ -24,7 +19,7 @@ export declare function ally(options: {
     readonly maximum?: number;
 }): RpgIrTargetSelector;
 export declare function constant(value: number): RpgIrFormula;
-export declare function readStat(subject: RpgIrSubject, id: RulesetCatalogInput<'stat'>): RpgIrFormula;
+export declare function readStat(subject: RpgIrSubject, id: RulesetCatalogReference<'stat', string>): RpgIrFormula;
 export declare function add(...terms: readonly RpgIrFormula[]): RpgIrFormula;
 export declare function dice(options: {
     readonly count: number;
@@ -42,24 +37,24 @@ export declare function noRoll(): Extract<import('@asha-rpg/ir').RpgIrCheck, {
 }>;
 export declare function attack(options: {
     readonly modifier: RpgIrFormula;
-    readonly defense: RulesetCatalogInput<'defense'>;
+    readonly defense: RulesetCatalogReference<'defense', string>;
 }): Extract<import('@asha-rpg/ir').RpgIrCheck, {
     kind: 'attack';
 }>;
 export declare function savingThrow(options: {
     readonly difficulty: RpgIrFormula;
-    readonly defense: RulesetCatalogInput<'defense'>;
+    readonly defense: RulesetCatalogReference<'defense', string>;
 }): Extract<import('@asha-rpg/ir').RpgIrCheck, {
     kind: 'savingThrow';
 }>;
-export declare function spend(resource: RulesetCatalogInput<'resource'>, amount: number): RpgIrResourceCost;
+export declare function spend(resource: RulesetCatalogReference<'resource', string>, amount: number): RpgIrResourceCost;
 export declare function immediate(): AuthoringTiming;
 export declare function turns(count: number): AuthoringDuration;
 export declare function replace(group: RpgStackingGroup): AuthoringStacking;
 export declare function refresh(group: RpgStackingGroup): AuthoringStacking;
 export declare function damage(options: {
     readonly amount: RpgIrFormula;
-    readonly type: RulesetCatalogInput<'damageType'>;
+    readonly type: RulesetCatalogReference<'damageType', string>;
     readonly timing?: AuthoringTiming;
 }): AuthoringProgram;
 export declare function heal(options: {
@@ -68,12 +63,12 @@ export declare function heal(options: {
 }): AuthoringProgram;
 export declare function changeResource(options: {
     readonly subject: RpgIrSubject;
-    readonly resource: RulesetCatalogInput<'resource'>;
+    readonly resource: RulesetCatalogReference<'resource', string>;
     readonly delta: RpgIrFormula;
     readonly timing?: AuthoringTiming;
 }): AuthoringProgram;
 export declare function applyModifier(options: {
-    readonly modifier: RulesetCatalogInput<'modifier'>;
+    readonly modifier: RulesetCatalogReference<'modifier', string>;
     readonly value: RpgIrFormula;
     readonly duration: AuthoringDuration;
     readonly stacking: AuthoringStacking;

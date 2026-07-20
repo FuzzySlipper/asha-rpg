@@ -55,6 +55,13 @@ const browserGlobalNames = new Set([
   'websocket',
   'window',
 ]);
+const legacyCatalogHelperNames = new Set([
+  'damagetype',
+  'defenseid',
+  'modifierid',
+  'resourceid',
+  'statid',
+]);
 
 export function inspectAuthoringBoundary(
   source,
@@ -99,6 +106,12 @@ export function inspectAuthoringBoundary(
 
     if (ts.isCallExpression(node)) {
       const name = normalizedCallName(node.expression);
+      if (legacyCatalogHelperNames.has(name)) {
+        report(
+          node,
+          `high-level authoring may not construct a bare catalog ID with ${node.expression.getText(sourceFile)}; use an owner-bound catalog reference`,
+        );
+      }
       if (semanticCallNames.has(name)) {
         report(
           node,
@@ -117,6 +130,27 @@ export function inspectAuthoringBoundary(
       if (browserGlobalNames.has(name)) {
         report(node, `portable TypeScript may not call browser global ${name}`);
       }
+    }
+
+    if (
+      ts.isFunctionDeclaration(node) &&
+      node.name !== undefined &&
+      legacyCatalogHelperNames.has(normalizedName(node.name))
+    ) {
+      report(
+        node,
+        `the public raw catalog helper ${node.name.text} is forbidden; owner-bound references are required`,
+      );
+    }
+
+    if (
+      ts.isTypeAliasDeclaration(node) &&
+      normalizedName(node.name) === 'rulesetcataloginput'
+    ) {
+      report(
+        node,
+        'RulesetCatalogInput is forbidden because it permits a parallel bare-ID high-level API',
+      );
     }
 
     if (

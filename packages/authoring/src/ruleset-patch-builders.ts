@@ -1,6 +1,9 @@
 import { immutable } from './canonical.js';
-import { catalogDefinitionId } from './catalogs.js';
-import type { RulesetCatalogInput } from './catalogs.js';
+import {
+  catalogDefinitionId,
+  retainCatalogOwnership,
+} from './catalogs.js';
+import type { RulesetCatalogReference } from './catalogs.js';
 import type {
   RulesetPatch,
   RulesetPatchNumber,
@@ -32,12 +35,15 @@ export const actionPatch = immutable({
   semantic: immutable({
     maximumRange: numberField('semantic', ['targets', 'maximumRange']),
     maximumTargets: numberField('semantic', ['targets', 'maximumTargets']),
-    cost(resource: RulesetCatalogInput<'resource'>) {
-      const member = {
-        kind: 'member' as const,
-        key: 'resourceId' as const,
-        value: catalogDefinitionId(resource),
-      };
+    cost(resource: RulesetCatalogReference<'resource', string>) {
+      const member = retainCatalogOwnership(
+        {
+          kind: 'member' as const,
+          key: 'resourceId' as const,
+          value: catalogDefinitionId(resource),
+        },
+        [{ field: 'value', reference: resource }],
+      );
       return immutable({
         amount: numberField('semantic', ['costs', member, 'amount']),
         remove(): RulesetPatch {

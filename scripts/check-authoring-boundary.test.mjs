@@ -6,12 +6,41 @@ import { inspectAuthoringBoundary } from './check-authoring-boundary.mjs';
 test('accepts a pure authoring-time combinator over published operations', () => {
   const source = `
     import { damage, sequence } from '@asha-rpg/authoring';
-    import type { RpgIrFormula } from '@asha-rpg/ir';
-    export const doubledDamage = (amount: RpgIrFormula) =>
-      sequence(damage({ amount, type: damageType('force') }), damage({ amount, type: damageType('force') }));
+    import type { RpgIrFormula, RulesetCatalogReference } from '@asha-rpg/authoring';
+    export const doubledDamage = (
+      amount: RpgIrFormula,
+      force: RulesetCatalogReference<'damageType', 'sample.primitives'>,
+    ) => sequence(damage({ amount, type: force }), damage({ amount, type: force }));
   `;
 
   assert.deepEqual(inspectAuthoringBoundary(source), []);
+});
+
+test('rejects legacy bare catalog constructors', () => {
+  const source = `
+    export const stat = statId('power');
+    export const defense = defenseId('guard');
+    export const resource = resourceId('focus');
+    export const modifier = modifierId('slow');
+    export const type = damageType('force');
+  `;
+
+  const diagnostics = inspectAuthoringBoundary(source);
+  assert.equal(diagnostics.length, 5);
+  assert.ok(
+    diagnostics.every((entry) => entry.includes('owner-bound catalog reference')),
+  );
+});
+
+test('rejects restoration of the union high-level catalog input', () => {
+  const source = `
+    export type RulesetCatalogInput<Category> =
+      RulesetCatalogValue<Category> | RulesetCatalogReference<Category, string>;
+  `;
+
+  const diagnostics = inspectAuthoringBoundary(source);
+  assert.equal(diagnostics.length, 1);
+  assert.ok(diagnostics[0]?.includes('parallel bare-ID high-level API'));
 });
 
 test('rejects executable callbacks and semantic evaluation', () => {

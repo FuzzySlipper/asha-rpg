@@ -11,8 +11,8 @@ import {
   composeRuleset,
   constant,
   damage,
-  damageType,
   defineActionDefinition,
+  defineRulesetCatalog,
   defineRulesetPackage,
   defineSupportDefinition,
   defineTemplateDefinition,
@@ -26,6 +26,7 @@ import {
   rulesetPackageSource,
   withLowLevelDefinitionReferences,
 } from '@asha-rpg/authoring';
+import { lowLevelCatalogReference } from '@asha-rpg/authoring/low-level';
 import type {
   PreparedRulesetCompilation,
   RulesetPackageManifest,
@@ -556,13 +557,17 @@ function packageFixture(options: FixtureOptions = {}): {
     extensionPolicy: 'derivable',
     source: { module: 'foundation/templates.ts', declaration: 'privateTemplate' },
   });
-  const arcane = defineSupportDefinition({
-    kind: 'support',
-    id: 'catalog.damage.arcane',
-    visibility: 'public',
-    extensionPolicy: 'sealed',
-    source: { module: 'foundation/damage-types.ts', declaration: 'arcane' },
-    semantic: { catalog: 'damageType', id: options.damageSemanticId ?? 'arcane' },
+  const catalogs = defineRulesetCatalog({
+    packageId: 'sample.foundation',
+    sourceModule: 'foundation/damage-types.ts',
+    entries: {
+      arcane: {
+        definitionId: 'catalog.damage.arcane',
+        category: 'damageType',
+        id: options.damageSemanticId ?? 'arcane',
+        label: 'Arcane',
+      },
+    },
   });
   const foundationManifest: RulesetPackageManifest = defineRulesetPackage({
     identity: { id: 'sample.foundation', version: '1.1.0' },
@@ -573,7 +578,7 @@ function packageFixture(options: FixtureOptions = {}): {
       : [],
     requirements: { operations: [], capabilities: [] },
     definitions: [
-      arcane,
+      ...catalogs.definitions,
       privateTemplate,
       ...(options.duplicateGlobalDefinition
         ? [
@@ -607,9 +612,13 @@ function packageFixture(options: FixtureOptions = {}): {
     program: onCheck({
       noRoll: damage({
         amount: constant(options.damageAmount ?? 5),
-        type: damageType(
-          options.runtimeDamageDefinitionId ?? 'catalog.damage.arcane',
-        ),
+        type: options.runtimeDamageDefinitionId === undefined
+          ? catalogs.references.arcane
+          : lowLevelCatalogReference({
+              category: 'damageType',
+              packageId: 'sample.foundation',
+              definitionId: options.runtimeDamageDefinitionId,
+            }),
       }),
     }),
   });

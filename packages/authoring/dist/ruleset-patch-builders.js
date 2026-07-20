@@ -1,5 +1,5 @@
 import { immutable } from './canonical.js';
-import { catalogDefinitionId } from './catalogs.js';
+import { catalogDefinitionId, retainCatalogOwnership, } from './catalogs.js';
 export function patchParameter(id) {
     return immutable({ parameter: id });
 }
@@ -11,11 +11,11 @@ export const actionPatch = immutable({
         maximumRange: numberField('semantic', ['targets', 'maximumRange']),
         maximumTargets: numberField('semantic', ['targets', 'maximumTargets']),
         cost(resource) {
-            const member = {
+            const member = retainCatalogOwnership({
                 kind: 'member',
                 key: 'resourceId',
                 value: catalogDefinitionId(resource),
-            };
+            }, [{ field: 'value', reference: resource }]);
             return immutable({
                 amount: numberField('semantic', ['costs', member, 'amount']),
                 remove() {

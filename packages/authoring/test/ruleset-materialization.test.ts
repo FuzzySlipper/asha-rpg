@@ -13,11 +13,11 @@ import {
   composeRuleset,
   constant,
   damage,
-  damageType,
   defineActionDefinition,
   defineDerivedDefinition,
   defineMixinDefinition,
   defineRulesetPackage,
+  defineRulesetCatalog,
   defineRulesetRelationship,
   defineSupportDefinition,
   defineTemplateDefinition,
@@ -590,23 +590,23 @@ test('configuration applies only an explicitly exposed typed option', () => {
 function materializationSources(
   order: 'multiplyThenAdd' | 'addThenMultiply',
 ): readonly RulesetPackageSource[] {
-  const damageTypeDefinition = defineSupportDefinition({
-    kind: 'support',
-    id: 'catalog.damage.storm',
-    visibility: 'private',
-    extensionPolicy: 'sealed',
-    source: { module: 'foundation/catalog.ts', declaration: 'storm' },
-    semantic: { catalog: 'damageType', id: 'storm' },
-    presentation: { label: 'Storm' },
-  });
-  const mixinSupportDefinition = defineSupportDefinition({
-    kind: 'support',
-    id: 'catalog.stat.range-tuning',
-    visibility: 'private',
-    extensionPolicy: 'sealed',
-    source: { module: 'foundation/catalog.ts', declaration: 'rangeTuning' },
-    semantic: { catalog: 'stat', id: 'range-tuning' },
-    presentation: { label: 'Range tuning' },
+  const catalogs = defineRulesetCatalog({
+    packageId: 'sample.foundation',
+    sourceModule: 'foundation/catalog.ts',
+    entries: {
+      storm: {
+        definitionId: 'catalog.damage.storm',
+        category: 'damageType',
+        id: 'storm',
+        label: 'Storm',
+      },
+      rangeTuning: {
+        definitionId: 'catalog.stat.range-tuning',
+        category: 'stat',
+        id: 'range-tuning',
+        label: 'Range tuning',
+      },
+    },
   });
   const baseAction = defineActionDefinition({
     kind: 'action',
@@ -622,7 +622,7 @@ function materializationSources(
       targets: hostile({ range: 3 }),
       check: noRoll(),
       program: onCheck({
-        noRoll: damage({ amount: constant(4), type: damageType('catalog.damage.storm') }),
+        noRoll: damage({ amount: constant(4), type: catalogs.references.storm }),
       }),
     }),
   });
@@ -643,7 +643,7 @@ function materializationSources(
         add: 0,
       }],
     },
-  }), [definitionReference({ definitionId: mixinSupportDefinition.id })]);
+  }), [definitionReference({ definitionId: catalogs.references.rangeTuning.definitionId })]);
   const add = defineMixinDefinition({
     kind: 'mixin',
     id: 'sample.add-range',
@@ -671,7 +671,7 @@ function materializationSources(
       operations: [{ id: 'operation.damage', version: 1 }],
       capabilities: [{ id: 'capability.vitality', version: 1 }],
     },
-    definitions: [damageTypeDefinition, mixinSupportDefinition, baseAction, multiply, add],
+    definitions: [...catalogs.definitions, baseAction, multiply, add],
     exports: [
       baseAction.id,
       multiply.id,

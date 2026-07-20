@@ -7,6 +7,10 @@
     ".": {
       "types": "./dist/index.d.ts",
       "default": "./dist/index.js"
+    },
+    "./low-level": {
+      "types": "./dist/low-level.d.ts",
+      "default": "./dist/low-level.js"
     }
   },
   "types": "./dist/index.d.ts",

@@ -1,23 +1,80 @@
 import {
   action,
   actionId,
+  actionPatch,
+  applyModifier,
   attack,
+  changeResource,
   constant,
-  defenseId,
+  damage,
+  defineRulesetCatalog,
   hostile,
   moveEntity,
   noRoll,
   onCheck,
-  statId,
+  readStat,
+  refresh,
+  spend,
+  stackingGroup,
+  turns,
 } from '@asha-rpg/authoring';
+import { unsafeNormalizedCatalogId } from '@asha-rpg/authoring/low-level';
+// @ts-expect-error Bare stat constructors are not exported by the high-level package.
+import { statId as removedStatId } from '@asha-rpg/authoring';
+// @ts-expect-error Bare defense constructors are not exported by the high-level package.
+import { defenseId as removedDefenseId } from '@asha-rpg/authoring';
+// @ts-expect-error Bare resource constructors are not exported by the high-level package.
+import { resourceId as removedResourceId } from '@asha-rpg/authoring';
+// @ts-expect-error Bare modifier constructors are not exported by the high-level package.
+import { modifierId as removedModifierId } from '@asha-rpg/authoring';
+// @ts-expect-error Bare damage-type constructors are not exported by the high-level package.
+import { damageType as removedDamageType } from '@asha-rpg/authoring';
 
-const guard = defenseId('guard');
-const power = statId('power');
+const catalogs = defineRulesetCatalog({
+  packageId: 'type-contracts.catalog',
+  sourceModule: 'test/type-contracts.ts',
+  entries: {
+    guard: { definitionId: 'guard', category: 'defense', id: 'guard', label: 'Guard' },
+    power: { definitionId: 'power', category: 'stat', id: 'power', label: 'Power' },
+    focus: { definitionId: 'focus', category: 'resource', id: 'focus', label: 'Focus' },
+    force: { definitionId: 'force', category: 'damageType', id: 'force', label: 'Force' },
+    slowed: { definitionId: 'slowed', category: 'modifier', id: 'slowed', label: 'Slowed' },
+  },
+});
+const { guard, power, focus, force, slowed } = catalogs.references;
 
 attack({ modifier: constant(1), defense: guard });
 
 // @ts-expect-error Stat ids cannot be passed where a defense id is required.
 attack({ modifier: constant(1), defense: power });
+
+// @ts-expect-error A defense reference cannot be read as a stat.
+readStat('actor', guard);
+
+const rawStat = unsafeNormalizedCatalogId({ category: 'stat', packageId: 'type-contracts.catalog', definitionId: 'power' });
+const rawDefense = unsafeNormalizedCatalogId({ category: 'defense', packageId: 'type-contracts.catalog', definitionId: 'guard' });
+const rawResource = unsafeNormalizedCatalogId({ category: 'resource', packageId: 'type-contracts.catalog', definitionId: 'focus' });
+const rawDamageType = unsafeNormalizedCatalogId({ category: 'damageType', packageId: 'type-contracts.catalog', definitionId: 'force' });
+const rawModifier = unsafeNormalizedCatalogId({ category: 'modifier', packageId: 'type-contracts.catalog', definitionId: 'slowed' });
+
+// @ts-expect-error Bare normalized stat IDs are not high-level authoring references.
+readStat('actor', rawStat);
+// @ts-expect-error Bare normalized defense IDs are not high-level authoring references.
+attack({ modifier: constant(1), defense: rawDefense });
+// @ts-expect-error Bare normalized resource IDs are not high-level authoring references.
+spend(rawResource, 1);
+// @ts-expect-error Bare normalized damage types are not high-level authoring references.
+damage({ amount: constant(1), type: rawDamageType });
+// @ts-expect-error Bare normalized resource IDs cannot select a mutation target.
+changeResource({ subject: 'actor', resource: rawResource, delta: constant(1) });
+// @ts-expect-error Bare normalized modifier IDs are not high-level authoring references.
+applyModifier({ modifier: rawModifier, value: constant(-1), duration: turns(1), stacking: refresh(stackingGroup('slow')) });
+// @ts-expect-error Bare normalized resource IDs cannot select a patch member.
+actionPatch.semantic.cost(rawResource);
+
+spend(focus, 1);
+damage({ amount: constant(1), type: force });
+applyModifier({ modifier: slowed, value: constant(-1), duration: turns(1), stacking: refresh(stackingGroup('slow')) });
 
 // @ts-expect-error Rolled actions require an explicit shared or per-target scope.
 action({
