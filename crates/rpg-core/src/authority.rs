@@ -178,8 +178,8 @@ impl RpgEntityState {
         &self.id
     }
 
-    pub fn team(&self) -> Team {
-        self.team
+    pub fn team(&self) -> &Team {
+        &self.team
     }
 
     pub fn position(&self) -> GridPosition {
@@ -807,7 +807,7 @@ mod tests {
 
     #[test]
     fn capability_state_has_explicit_entity_ownership() {
-        let entity = RpgEntityState::new("hero", Team::Ally, GridPosition { x: 2, y: 3 }, 20);
+        let entity = RpgEntityState::new("hero", Team::ally(), GridPosition { x: 2, y: 3 }, 20);
         let mut state = RpgCapabilityState::default();
         state.insert_entity(entity);
 
@@ -817,7 +817,7 @@ mod tests {
 
     #[test]
     fn capability_owner_applies_bounded_mutations() {
-        let entity = RpgEntityState::new("hero", Team::Ally, GridPosition { x: 2, y: 3 }, 20)
+        let entity = RpgEntityState::new("hero", Team::ally(), GridPosition { x: 2, y: 3 }, 20)
             .with_resource("focus", 2, 3);
         let mut state = RpgCapabilityState::default();
         state.insert_entity(entity);

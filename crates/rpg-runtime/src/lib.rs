@@ -6,12 +6,14 @@
 
 #![forbid(unsafe_code)]
 
+mod encounter;
 mod replay;
 mod semantic_session;
 
+pub use encounter::*;
 pub use replay::*;
 
 pub use semantic_session::{
-    RpgAuthorityCommand, RpgAuthoritySession, RpgCommandOutcome, RpgPendingReaction,
-    RpgReactionCommand,
+    RpgAuthorityCommand, RpgAuthoritySession, RpgAutomaticCommandFailure, RpgCommandOutcome,
+    RpgPendingReaction, RpgReactionCommand,
 };

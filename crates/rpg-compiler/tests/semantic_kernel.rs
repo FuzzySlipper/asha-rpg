@@ -100,8 +100,8 @@ fn multi_target_saves_select_independent_bounded_branches() {
 #[test]
 fn movement_uses_the_position_owner_and_emits_a_replayable_event() {
     let ruleset = compile_normalized_rpg_json(movement_source().as_bytes()).unwrap();
-    let actor = RpgEntityState::new("actor", Team::Ally, GridPosition { x: 0, y: 0 }, 20);
-    let target = RpgEntityState::new("target", Team::Ally, GridPosition { x: 2, y: 2 }, 20);
+    let actor = RpgEntityState::new("actor", Team::ally(), GridPosition { x: 0, y: 0 }, 20);
+    let target = RpgEntityState::new("target", Team::ally(), GridPosition { x: 2, y: 2 }, 20);
     let mut state = RpgCapabilityState::default();
     state.insert_entity(actor);
     state.insert_entity(target);
@@ -353,10 +353,10 @@ fn resource_bounds_reject_the_whole_transaction_without_misleading_events() {
 }
 
 fn single_target_state() -> RpgCapabilityState {
-    let actor = RpgEntityState::new("actor", Team::Ally, GridPosition { x: 0, y: 0 }, 20)
+    let actor = RpgEntityState::new("actor", Team::ally(), GridPosition { x: 0, y: 0 }, 20)
         .with_stat("power", 4)
         .with_resource("focus", 2, 2);
-    let target = RpgEntityState::new("target", Team::Enemy, GridPosition { x: 2, y: 0 }, 20)
+    let target = RpgEntityState::new("target", Team::enemy(), GridPosition { x: 2, y: 0 }, 20)
         .with_defense("guard", 15);
     let mut state = RpgCapabilityState::default();
     state.insert_entity(actor);
@@ -365,11 +365,11 @@ fn single_target_state() -> RpgCapabilityState {
 }
 
 fn multi_target_state() -> RpgCapabilityState {
-    let actor = RpgEntityState::new("actor", Team::Ally, GridPosition { x: 0, y: 0 }, 20)
+    let actor = RpgEntityState::new("actor", Team::ally(), GridPosition { x: 0, y: 0 }, 20)
         .with_resource("charge", 3, 3);
-    let target_a = RpgEntityState::new("target-a", Team::Enemy, GridPosition { x: 1, y: 0 }, 20)
+    let target_a = RpgEntityState::new("target-a", Team::enemy(), GridPosition { x: 1, y: 0 }, 20)
         .with_defense("resolve", 2);
-    let target_b = RpgEntityState::new("target-b", Team::Enemy, GridPosition { x: 2, y: 0 }, 20)
+    let target_b = RpgEntityState::new("target-b", Team::enemy(), GridPosition { x: 2, y: 0 }, 20)
         .with_defense("resolve", 2);
     let mut state = RpgCapabilityState::default();
     state.insert_entity(actor);

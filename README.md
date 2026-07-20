@@ -30,10 +30,13 @@ rulesets remains in the owning game or workbench.
 
 The Rust semantic path is active. `rpg-ir` strictly decodes `asha.rpg.ir@1`,
 `rpg-compiler` resolves exact requirements and references into an opaque
-compiled program with closed operation bindings, and `rpg-runtime` owns an
-authority session that stages state, explicit random evidence, and typed
-reaction decisions together. The `asha-rpg` crate is the supported consumer
-facade. There is no parallel gameplay fabric or disposable preview session.
+compiled program with closed operation bindings, and `rpg-runtime` owns a
+versioned, artifact-bound encounter setup and authority session that stages
+state, explicit random evidence, typed reaction decisions, and turn
+progression together. Structured readbacks expose the board, participants,
+current actor, legal actions/targets, reaction, log, and outcome without
+moving rule interpretation into a host. The `asha-rpg` crate is the supported
+consumer facade. There is no parallel gameplay fabric or disposable preview session.
 There is also no predecessor provider/module/action-definition compatibility
 surface: normalized RPG IR, the compiled artifact, and the artifact-bound
 authority session are the single supported Rust ruleset path.
@@ -73,12 +76,13 @@ Runtime activation remains a downstream host responsibility.
 
 The same artifact-bound authority session now owns the supported portable
 checkpoint and replay contract. A checkpoint embeds the exact validated
-compiled artifact, a stable capability-state projection, the accepted random
-position, the full ready or awaiting-reaction phase, operation/capability/event
-schema versions, and a canonical session-state hash. Replay restores the
+compiled artifact, encounter setup and setup fingerprint, a stable
+capability-state projection, current turn and accepted-event log, the accepted
+random position and source binding, the full ready or awaiting-reaction phase,
+operation/capability/event schema versions, and a canonical session-state hash. Replay restores the
 embedded artifact without executing authoring code or resolving packages, then
 re-enters the normal Rust submit/reaction paths and verifies structured random
-evidence, accepted events, revisions, phases, and hashes. Restore and replay
+evidence, accepted events, turns, revisions, phases, and hashes. Restore and replay
 construct a temporary session and replace a target only after complete
 validation, so corrupt input is atomic. Compatibility inspection classifies
 source, presentation, semantic, package-lock, and artifact drift without ever
@@ -99,6 +103,8 @@ node examples/generate-portable-replay-source.ts | \
   cargo run --manifest-path consumers/minimal-game/Cargo.toml
 ```
 
-The canonical architecture is [docs/design.md](docs/design.md). The language
+The canonical architecture is [docs/design.md](docs/design.md), and the public
+setup/random/turn compatibility surface is documented in
+[docs/encounter-session-contract.md](docs/encounter-session-contract.md). The language
 contract is currently maintained in Den document
 `asha-rulebench/rpg-rules-language` while the #5934 extraction series runs.

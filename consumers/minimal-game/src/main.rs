@@ -1,9 +1,11 @@
 use std::io::{self, Read};
 
 use asha_rpg::{
-    compile_prepared_ruleset_json, decode_replay_entries, encode_replay_entries, GridPosition,
-    RpgAuthorityCommand, RpgAuthoritySession, RpgCapabilityState, RpgCommandOutcome,
-    RpgDomainEvent, RpgEntityState, RpgIntent, RpgReactionCommand, Team,
+    compile_prepared_ruleset_json, decode_replay_entries, encode_replay_entries, BoundedValue,
+    GridPosition, RpgActionProposal, RpgAuthoritySession, RpgBoardSetup, RpgCommandOutcome,
+    RpgDomainEvent, RpgEncounterSetup, RpgInitialCapability, RpgParticipantSetup,
+    RpgRandomRequest, RpgRandomSource, RpgRandomSourceBinding, RpgRandomSourceFailure,
+    RpgReactionProposal, RpgTeamId, RpgTurnInitialization,
 };
 
 fn main() {
@@ -13,35 +15,50 @@ fn main() {
         .expect("read prepared ruleset from stdin");
     let bundle =
         compile_prepared_ruleset_json(&prepared_source).expect("compile exact prepared artifact");
-    let mut initial_state = RpgCapabilityState::default();
-    initial_state.insert_entity(RpgEntityState::new(
-        "hero",
-        Team::Ally,
-        GridPosition { x: 0, y: 0 },
-        20,
-    ));
-    initial_state.insert_entity(RpgEntityState::new(
-        "guardian",
-        Team::Enemy,
-        GridPosition { x: 1, y: 0 },
-        20,
-    ));
-    let session = RpgAuthoritySession::from_compiled_ruleset(bundle, initial_state);
+    let setup = RpgEncounterSetup {
+        schema: RpgEncounterSetup::schema(),
+        artifact_id: bundle.artifact().artifact_id.clone(),
+        board: RpgBoardSetup {
+            width: 4,
+            height: 4,
+            cells: Vec::new(),
+        },
+        participants: vec![
+            participant("hero", "Hero", RpgTeamId::ally(), 0),
+            participant("guardian", "Guardian", RpgTeamId::enemy(), 1),
+        ],
+        turn: RpgTurnInitialization {
+            initiative_order: vec!["hero".to_owned(), "guardian".to_owned()],
+            current_actor_id: "hero".to_owned(),
+            round: 1,
+            turn: 1,
+        },
+        random_source: RpgRandomSourceBinding {
+            policy_id: "minimal-game.recorded-evidence".to_owned(),
+            policy_version: 1,
+            source_id: "minimal-game.roll-tape".to_owned(),
+            source_version: 1,
+        },
+    };
+    let session = RpgAuthoritySession::from_setup(bundle, setup).expect("validate encounter setup");
     let initial_checkpoint = session.checkpoint().expect("create checkpoint");
     let initial_json = session.checkpoint_json().expect("serialize checkpoint");
     let mut recording =
         RpgAuthoritySession::restore_checkpoint_json(&initial_json).expect("clean restore");
+    let mut source = ConstantTwoSource {
+        binding: recording.setup().random_source.clone(),
+    };
 
     let (pending_outcome, submit_entry) = recording
-        .submit_recorded(RpgAuthorityCommand {
+        .submit_with_random_source_recorded(
+            RpgActionProposal {
             expected_revision: 0,
-            intent: RpgIntent {
-                action_id: "portable.reactive-strike".to_owned(),
-                actor_id: "hero".to_owned(),
-                target_ids: vec!["guardian".to_owned()],
+            action_id: "portable.reactive-strike".to_owned(),
+            actor_id: "hero".to_owned(),
+            target_ids: vec!["guardian".to_owned()],
             },
-            random_values: Vec::new(),
-        })
+            &mut source,
+        )
         .expect("record suspended command");
     let RpgCommandOutcome::AwaitingReaction(pending) = pending_outcome else {
         panic!("consumer command should suspend: {pending_outcome:?}");
@@ -52,16 +69,20 @@ fn main() {
     let mut pending_restore =
         RpgAuthoritySession::restore_checkpoint_json(&pending_json).expect("restore pending phase");
 
-    let reaction = RpgReactionCommand {
+    let reaction = RpgReactionProposal {
         expected_revision: 0,
         reaction_id: pending.request.reaction_id,
         option_id: Some("ward".to_owned()),
-        additional_random_values: vec![2, 2],
     };
     let (accepted, reaction_entry) = recording
-        .react_recorded(reaction.clone())
+        .react_with_random_source_recorded(reaction.clone(), &mut source)
         .expect("record resumed reaction");
-    let restored_accepted = pending_restore.react(reaction);
+    let mut restored_source = ConstantTwoSource {
+        binding: pending_restore.setup().random_source.clone(),
+    };
+    let (restored_accepted, _) = pending_restore
+        .react_with_random_source_recorded(reaction, &mut restored_source)
+        .expect("restored reaction resolves through the same source contract");
     assert_eq!(accepted, restored_accepted);
 
     let entries_json =
@@ -96,4 +117,37 @@ fn main() {
         entries.len(),
         replayed.state_hash().expect("final hash").value
     );
+}
+
+struct ConstantTwoSource {
+    binding: RpgRandomSourceBinding,
+}
+
+impl RpgRandomSource for ConstantTwoSource {
+    fn binding(&self) -> &RpgRandomSourceBinding {
+        &self.binding
+    }
+
+    fn draw(
+        &mut self,
+        request: &RpgRandomRequest,
+    ) -> Result<Vec<u32>, RpgRandomSourceFailure> {
+        Ok(vec![2_u32.min(request.sides); request.count as usize])
+    }
+}
+
+fn participant(id: &str, label: &str, team_id: RpgTeamId, x: u32) -> RpgParticipantSetup {
+    RpgParticipantSetup {
+        id: id.to_owned(),
+        label: label.to_owned(),
+        team_id,
+        position: GridPosition { x, y: 0 },
+        definition_ids: vec!["portable.reactive-strike".to_owned()],
+        capabilities: vec![RpgInitialCapability::Vitality {
+            value: BoundedValue {
+                current: 20,
+                max: 20,
+            },
+        }],
+    }
 }

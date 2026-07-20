@@ -13,3 +13,6 @@ rpg-compiler = { path = "../rpg-compiler" }
 rpg-core = { path = "../rpg-core" }
 rpg-ir = { path = "../rpg-ir" }
 rpg-runtime = { path = "../rpg-runtime" }
+
+[dev-dependencies]
+serde_json.workspace = true

@@ -9,4 +9,4 @@ mod authority;
 mod primitives;
 
 pub use authority::*;
-pub use primitives::{BoundedValue, GridPosition, NamedNumber, StateFingerprint, Team};
+pub use primitives::{BoundedValue, GridPosition, NamedNumber, RpgTeamId, StateFingerprint, Team};

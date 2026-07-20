@@ -1,50 +1,63 @@
 use asha_rpg::{
-    compile_normalized_rpg_json, GridPosition, RpgAuthorityCommand, RpgAuthoritySession,
-    RpgCapabilityState, RpgCommandOutcome, RpgEntityState, RpgIntent, Team,
+    compile_prepared_ruleset, materialized_definition_fingerprint, BoundedValue,
+    CompiledRulesetIdentity, GridPosition, MaterializedRulesetDefinition,
+    MaterializedRulesetDefinitionKind, MaterializedRulesetVisibility, PreparedRulesetCompilation,
+    ResolvedRulesetSourcePackage, RpgActionProposal, RpgAuthoritySession, RpgBoardSetup,
+    RpgCommandOutcome, RpgEncounterSetup, RpgInitialCapability, RpgParticipantSetup,
+    RpgRandomSourceBinding, RpgRollTapeSource, RpgTeamId, RpgTurnInitialization,
+    RulesetArtifactSchema, RulesetDefinitionProvenance, RulesetExtensionPolicy,
+    RulesetRelationshipKind, RulesetRelationshipProvenance, RulesetSourceLocation,
+    VersionedRulesetRequirement, PREPARED_RULESET_IDENTITY, RULESET_ARTIFACT_MAJOR,
 };
+use serde_json::json;
 
 #[test]
-fn public_facade_compiles_and_executes_a_no_roll_action() {
-    let source = br#"{
-      "schema":{"identity":"asha.rpg.ir","major":1},
-      "package":{"id":"consumer.package","version":"1.0.0"},
-      "catalogs":{"capabilities":["capability.vitality"]},
-      "requirements":[
-        {"kind":"operation","id":"operation.heal","version":1},
-        {"kind":"capability","id":"capability.vitality","version":1}
-      ],
-      "actions":[{
-        "id":"action.heal","name":"action.heal","sourcePath":"actions/heal",
-        "targets":{"team":"ally","maximumRange":3,"maximumTargets":1},
-        "check":{"kind":"noRoll"},"rollScope":"none","costs":[],
-        "program":{"kind":"atomic","body":{"kind":"onCheck","noRoll":
-          {"kind":"operation","operation":{"kind":"heal","amount":{"kind":"constant","value":4}}}
-        }}
-      }]
-    }"#;
-    let ruleset = compile_normalized_rpg_json(source).unwrap();
-    assert_eq!(
-        ruleset.required_capabilities().collect::<Vec<_>>(),
-        vec![("capability.vitality", 1)]
-    );
-
-    let actor = RpgEntityState::new("actor", Team::Ally, GridPosition { x: 0, y: 0 }, 20);
-    let target = RpgEntityState::new("target", Team::Ally, GridPosition { x: 1, y: 0 }, 20);
-    let mut state = RpgCapabilityState::default();
-    state.insert_entity(actor);
-    state.insert_entity(target);
-    state.vitality_owner().apply_damage("target", 7).unwrap();
-    let mut session = RpgAuthoritySession::new(ruleset, state);
-
-    let outcome = session.submit(RpgAuthorityCommand {
-        expected_revision: 0,
-        intent: RpgIntent {
-            action_id: "action.heal".to_owned(),
-            actor_id: "actor".to_owned(),
-            target_ids: vec!["target".to_owned()],
+fn public_facade_builds_an_artifact_bound_setup_and_executes_a_turn() {
+    let bundle = healing_bundle();
+    let setup = RpgEncounterSetup {
+        schema: RpgEncounterSetup::schema(),
+        artifact_id: bundle.artifact().artifact_id.clone(),
+        board: RpgBoardSetup {
+            width: 5,
+            height: 3,
+            cells: Vec::new(),
         },
-        random_values: Vec::new(),
-    });
+        participants: vec![
+            participant("actor", "Actor", RpgTeamId::ally(), 0, 20),
+            participant("target", "Target", RpgTeamId::ally(), 1, 13),
+            participant("opponent", "Opponent", RpgTeamId::enemy(), 4, 20),
+        ],
+        turn: RpgTurnInitialization {
+            initiative_order: vec![
+                "actor".to_owned(),
+                "target".to_owned(),
+                "opponent".to_owned(),
+            ],
+            current_actor_id: "actor".to_owned(),
+            round: 1,
+            turn: 1,
+        },
+        random_source: RpgRandomSourceBinding {
+            policy_id: "consumer.recorded-evidence".to_owned(),
+            policy_version: 1,
+            source_id: "consumer.roll-tape".to_owned(),
+            source_version: 1,
+        },
+    };
+    let mut session = RpgAuthoritySession::from_setup(bundle, setup).unwrap();
+    let mut source = RpgRollTapeSource::new(session.setup().random_source.clone(), Vec::new());
+
+    let (outcome, _) = session
+        .submit_with_random_source_recorded(
+            RpgActionProposal {
+                expected_revision: 0,
+                action_id: "action.heal".to_owned(),
+                actor_id: "actor".to_owned(),
+                target_ids: vec!["target".to_owned()],
+            },
+            &mut source,
+        )
+        .unwrap();
     let RpgCommandOutcome::Accepted(receipt) = outcome else {
         panic!("public command should be accepted: {outcome:?}");
     };
@@ -54,4 +67,107 @@ fn public_facade_compiles_and_executes_a_no_roll_action() {
         session.state().entity("target").unwrap().vitality().current,
         17
     );
+    assert_eq!(session.turn().current_actor_id, "target");
+    assert_eq!(session.encounter_view().log.len(), 1);
+}
+
+fn participant(
+    id: &str,
+    label: &str,
+    team_id: RpgTeamId,
+    x: u32,
+    vitality: i32,
+) -> RpgParticipantSetup {
+    RpgParticipantSetup {
+        id: id.to_owned(),
+        label: label.to_owned(),
+        team_id,
+        position: GridPosition { x, y: 0 },
+        definition_ids: vec!["action.heal".to_owned()],
+        capabilities: vec![RpgInitialCapability::Vitality {
+            value: BoundedValue {
+                current: vitality,
+                max: 20,
+            },
+        }],
+    }
+}
+
+fn healing_bundle() -> asha_rpg::CompiledRulesetBundle {
+    let provenance = RulesetDefinitionProvenance {
+        definition_id: "action.heal".to_owned(),
+        package_id: "consumer.package".to_owned(),
+        package_version: "1.0.0".to_owned(),
+        source: RulesetSourceLocation {
+            module: "actions/heal.ts".to_owned(),
+            declaration: "heal".to_owned(),
+        },
+    };
+    let mut action = MaterializedRulesetDefinition {
+        id: "action.heal".to_owned(),
+        kind: MaterializedRulesetDefinitionKind::Action,
+        visibility: MaterializedRulesetVisibility::Exported,
+        extension_policy: RulesetExtensionPolicy::Sealed,
+        semantic: json!({
+            "id": "action.heal",
+            "name": "Heal",
+            "sourcePath": "actions/heal.ts#heal",
+            "targets": {"team": "ally", "maximumRange": 3, "maximumTargets": 1},
+            "check": {"kind": "noRoll"},
+            "rollScope": "none",
+            "costs": [],
+            "program": {"kind": "atomic", "body": {"kind": "onCheck", "noRoll": {
+                "kind": "operation",
+                "operation": {"kind": "heal", "amount": {"kind": "constant", "value": 4}}
+            }}}
+        }),
+        presentation: json!({"label": "Heal"}),
+        references: Vec::new(),
+        provenance: provenance.clone(),
+        fingerprint: String::new(),
+    };
+    action.fingerprint = materialized_definition_fingerprint(&action).unwrap();
+    let package = "consumer.package@1.0.0".to_owned();
+    compile_prepared_ruleset(PreparedRulesetCompilation {
+        schema: RulesetArtifactSchema {
+            identity: PREPARED_RULESET_IDENTITY.to_owned(),
+            major: RULESET_ARTIFACT_MAJOR,
+        },
+        composition_identity: CompiledRulesetIdentity {
+            id: "consumer.package".to_owned(),
+            version: "1.0.0".to_owned(),
+        },
+        language_identity: CompiledRulesetIdentity {
+            id: "asha-rpg".to_owned(),
+            version: "1.0.0".to_owned(),
+        },
+        source_packages: vec![ResolvedRulesetSourcePackage {
+            id: "consumer.package".to_owned(),
+            version: "1.0.0".to_owned(),
+            source_fingerprint: "fnv1a64:1111111111111111".to_owned(),
+        }],
+        dependency_lock: Vec::new(),
+        required_operations: vec![VersionedRulesetRequirement {
+            id: "operation.heal".to_owned(),
+            version: 1,
+        }],
+        required_capabilities: vec![VersionedRulesetRequirement {
+            id: "capability.vitality".to_owned(),
+            version: 1,
+        }],
+        exported_roots: vec!["action.heal".to_owned()],
+        materialized_definitions: vec![action],
+        compiled_policy_bindings: Vec::new(),
+        definition_provenance: vec![provenance],
+        definition_commitments: Vec::new(),
+        relationships: vec![RulesetRelationshipProvenance {
+            kind: RulesetRelationshipKind::Exports,
+            source: package,
+            target: "action.heal".to_owned(),
+            order: 0,
+        }],
+        derivation_provenance: Vec::new(),
+        overlay_provenance: Vec::new(),
+    })
+    .unwrap()
 }

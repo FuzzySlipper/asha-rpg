@@ -4,7 +4,7 @@
 lane = "rust-domain"
 implementation_status = "active"
 may_depend_on = ["serde"]
-owns = ["authority values", "accepted DomainEvents", "stable portable state construction"]
+owns = ["authority values", "open team identities", "accepted DomainEvents", "stable portable state construction"]
 
 [crate."crates/rpg-ir"]
 lane = "rust-language"
@@ -22,7 +22,7 @@ owns = ["semantic compilation", "private compiled plans", "ruleset artifact vali
 lane = "rust-authority"
 implementation_status = "active"
 may_depend_on = ["rpg-core", "rpg-ir", "rpg-compiler", "serde", "serde_json"]
-owns = ["single authority session", "portable checkpoint and replay contracts", "canonical session state hash", "pending reaction restore"]
+owns = ["artifact-bound encounter setup validation", "single authority session", "turn and encounter readback authority", "host-supplied random evidence interface", "bounded roll-tape source", "portable checkpoint and replay contracts", "canonical session state hash", "pending reaction restore"]
 
 [crate."crates/asha-rpg"]
 lane = "rust-api"

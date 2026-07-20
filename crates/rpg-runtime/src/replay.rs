@@ -1,6 +1,6 @@
 use std::fmt;
 
-use rpg_compiler::{load_compiled_ruleset_artifact, CompiledRulesetBundle};
+use rpg_compiler::load_compiled_ruleset_artifact;
 use rpg_core::{
     ActiveRpgModifier, BoundedValue, GridPosition, RpgCapabilityState, RpgEntityState,
     RpgResolutionReceipt, StateFingerprint, Team,
@@ -16,11 +16,15 @@ use crate::semantic_session::{
     PendingTransaction, RpgAuthorityCommand, RpgAuthoritySession, RpgCommandOutcome,
     RpgPendingReaction, RpgReactionCommand,
 };
+use crate::{
+    encounter::validate_restored_encounter, RpgEncounterLogEntry, RpgEncounterSetup,
+    RpgRandomSourceBinding, RpgTurnState,
+};
 
 pub const RPG_CHECKPOINT_SCHEMA_ID: &str = "asha.rpg.session.checkpoint";
 pub const RPG_REPLAY_ENTRY_SCHEMA_ID: &str = "asha.rpg.session.replay-entry";
-pub const RPG_CHECKPOINT_SCHEMA_VERSION: u32 = 1;
-pub const RPG_REPLAY_ENTRY_SCHEMA_VERSION: u32 = 1;
+pub const RPG_CHECKPOINT_SCHEMA_VERSION: u32 = 2;
+pub const RPG_REPLAY_ENTRY_SCHEMA_VERSION: u32 = 2;
 pub const RPG_EVENT_SCHEMA_VERSION: u32 = 1;
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
@@ -127,7 +131,11 @@ pub struct RpgSessionCheckpoint {
     pub schemas: RpgReplaySchemaVersions,
     pub artifact_binding: RpgReplayArtifactBinding,
     pub artifact: CompiledRulesetArtifact,
+    pub setup: RpgEncounterSetup,
+    pub setup_fingerprint: StateFingerprint,
     pub state: RpgPortableCapabilityState,
+    pub turn: RpgTurnState,
+    pub log: Vec<RpgEncounterLogEntry>,
     pub accepted_random_position: u64,
     pub phase: RpgCheckpointPhase,
     pub state_hash: StateFingerprint,
@@ -145,6 +153,9 @@ pub enum RpgReplayPhase {
 pub struct RpgReplayBoundary {
     pub revision: u64,
     pub accepted_random_position: u64,
+    pub setup_fingerprint: StateFingerprint,
+    pub random_source: RpgRandomSourceBinding,
+    pub turn: RpgTurnState,
     pub phase: RpgReplayPhase,
     pub state_hash: StateFingerprint,
 }
@@ -221,13 +232,25 @@ impl RpgAuthoritySession {
         let state = portable_state(&self.state);
         let phase = checkpoint_phase(self);
         let accepted_random_position = self.accepted_random_values;
-        let state_hash = session_state_hash(&state, accepted_random_position, &phase)?;
+        let state_hash = session_state_hash(
+            &self.encounter.setup,
+            &state,
+            &self.encounter.turn,
+            &self.encounter.log,
+            accepted_random_position,
+            &phase,
+        )?;
+        let setup_fingerprint = encounter_setup_fingerprint(&self.encounter.setup)?;
         Ok(RpgSessionCheckpoint {
             schema: checkpoint_schema(),
             schemas: replay_versions(&artifact),
             artifact_binding: artifact_binding(&artifact),
             artifact,
+            setup: self.encounter.setup.clone(),
+            setup_fingerprint,
             state,
+            turn: self.encounter.turn.clone(),
+            log: self.encounter.log.clone(),
             accepted_random_position,
             phase,
             state_hash,
@@ -279,8 +302,20 @@ impl RpgAuthoritySession {
             ));
         }
         let state = restore_state(&checkpoint.state)?;
+        let actual_setup_fingerprint = encounter_setup_fingerprint(&checkpoint.setup)?;
+        if checkpoint.setup_fingerprint != actual_setup_fingerprint {
+            return Err(replay_mismatch(
+                "RPG_CHECKPOINT_SETUP_FINGERPRINT_MISMATCH",
+                "$.setupFingerprint",
+                &checkpoint.setup_fingerprint,
+                &actual_setup_fingerprint,
+            ));
+        }
         let actual_hash = session_state_hash(
+            &checkpoint.setup,
             &checkpoint.state,
+            &checkpoint.turn,
+            &checkpoint.log,
             checkpoint.accepted_random_position,
             &checkpoint.phase,
         )?;
@@ -292,14 +327,44 @@ impl RpgAuthoritySession {
                 &actual_hash,
             ));
         }
-        let pending = restore_phase(&checkpoint.phase, &bundle, &state)?;
-        Ok(Self {
-            artifact: Some(bundle.artifact().clone()),
-            ruleset: bundle.ruleset().clone(),
-            state,
-            pending,
-            accepted_random_values: checkpoint.accepted_random_position,
-        })
+        let mut restored =
+            Self::from_setup(bundle, checkpoint.setup.clone()).map_err(|failure| {
+                RpgReplayFailure {
+                    diagnostics: failure
+                        .diagnostics
+                        .into_iter()
+                        .map(|diagnostic| RpgReplayDiagnostic {
+                            code: "RPG_CHECKPOINT_SETUP_INVALID".to_owned(),
+                            path: diagnostic.path,
+                            message: format!("{}: {}", diagnostic.code, diagnostic.message),
+                            expected: None,
+                            actual: None,
+                        })
+                        .collect(),
+                }
+            })?;
+        restored.state = state;
+        restored.encounter.turn = checkpoint.turn;
+        restored.encounter.log = checkpoint.log;
+        restored.accepted_random_values = checkpoint.accepted_random_position;
+        let encounter_diagnostics =
+            validate_restored_encounter(&restored.encounter, &restored.state);
+        if !encounter_diagnostics.is_empty() {
+            return Err(RpgReplayFailure {
+                diagnostics: encounter_diagnostics
+                    .into_iter()
+                    .map(|diagnostic| RpgReplayDiagnostic {
+                        code: diagnostic.code,
+                        path: diagnostic.path,
+                        message: diagnostic.message,
+                        expected: None,
+                        actual: None,
+                    })
+                    .collect(),
+            });
+        }
+        restored.pending = restore_phase(&checkpoint.phase, &restored)?;
+        Ok(restored)
     }
 
     pub fn restore_checkpoint_json(source: &[u8]) -> Result<Self, RpgReplayFailure> {
@@ -323,14 +388,14 @@ impl RpgAuthoritySession {
         Ok(())
     }
 
-    pub fn submit_recorded(
+    pub(crate) fn submit_recorded(
         &mut self,
         command: RpgAuthorityCommand,
     ) -> Result<(RpgCommandOutcome, RpgReplayEntry), RpgReplayFailure> {
         self.record_operation(RpgReplayOperation::Submit { command })
     }
 
-    pub fn react_recorded(
+    pub(crate) fn react_recorded(
         &mut self,
         command: RpgReactionCommand,
     ) -> Result<(RpgCommandOutcome, RpgReplayEntry), RpgReplayFailure> {
@@ -361,7 +426,14 @@ impl RpgAuthoritySession {
     pub fn state_hash(&self) -> Result<StateFingerprint, RpgReplayFailure> {
         let state = portable_state(&self.state);
         let phase = checkpoint_phase(self);
-        session_state_hash(&state, self.accepted_random_values, &phase)
+        session_state_hash(
+            &self.encounter.setup,
+            &state,
+            &self.encounter.turn,
+            &self.encounter.log,
+            self.accepted_random_values,
+            &phase,
+        )
     }
 
     fn record_operation(
@@ -672,7 +744,7 @@ fn portable_state(state: &RpgCapabilityState) -> RpgPortableCapabilityState {
             .entities()
             .map(|entity| RpgPortableEntityState {
                 id: entity.id().to_owned(),
-                team: entity.team(),
+                team: entity.team().clone(),
                 position: entity.position(),
                 vitality: entity.vitality(),
                 stats: entity
@@ -718,7 +790,7 @@ fn restore_state(
         let path = format!("$.state.entities[{entity_index}]");
         let mut entity = RpgEntityState::restore(
             source.id.clone(),
-            source.team,
+            source.team.clone(),
             source.position,
             source.vitality,
         )
@@ -778,8 +850,7 @@ fn checkpoint_phase(session: &RpgAuthoritySession) -> RpgCheckpointPhase {
 
 fn restore_phase(
     phase: &RpgCheckpointPhase,
-    bundle: &CompiledRulesetBundle,
-    state: &RpgCapabilityState,
+    baseline: &RpgAuthoritySession,
 ) -> Result<Option<PendingTransaction>, RpgReplayFailure> {
     match phase {
         RpgCheckpointPhase::Ready => Ok(None),
@@ -789,8 +860,8 @@ fn restore_phase(
             random_values,
             pending,
         } => {
-            let mut proof =
-                RpgAuthoritySession::from_compiled_ruleset(bundle.clone(), state.clone());
+            let mut proof = baseline.clone();
+            proof.pending = None;
             let outcome = proof.submit(RpgAuthorityCommand {
                 expected_revision: *expected_revision,
                 intent: intent.clone(),
@@ -847,6 +918,9 @@ fn replay_boundary(session: &RpgAuthoritySession) -> Result<RpgReplayBoundary, R
     Ok(RpgReplayBoundary {
         revision: session.state.revision(),
         accepted_random_position: session.accepted_random_values,
+        setup_fingerprint: encounter_setup_fingerprint(&session.encounter.setup)?,
+        random_source: session.encounter.setup.random_source.clone(),
+        turn: session.encounter.turn.clone(),
         phase,
         state_hash: session.state_hash()?,
     })
@@ -855,18 +929,27 @@ fn replay_boundary(session: &RpgAuthoritySession) -> Result<RpgReplayBoundary, R
 #[derive(Serialize)]
 #[serde(rename_all = "camelCase")]
 struct SessionHashInput<'a> {
+    setup: &'a RpgEncounterSetup,
     state: &'a RpgPortableCapabilityState,
+    turn: &'a RpgTurnState,
+    log: &'a [RpgEncounterLogEntry],
     accepted_random_position: u64,
     phase: &'a RpgCheckpointPhase,
 }
 
 fn session_state_hash(
+    setup: &RpgEncounterSetup,
     state: &RpgPortableCapabilityState,
+    turn: &RpgTurnState,
+    log: &[RpgEncounterLogEntry],
     accepted_random_position: u64,
     phase: &RpgCheckpointPhase,
 ) -> Result<StateFingerprint, RpgReplayFailure> {
     let bytes = serde_json::to_vec(&SessionHashInput {
+        setup,
         state,
+        turn,
+        log,
         accepted_random_position,
         phase,
     })
@@ -883,7 +966,28 @@ fn session_state_hash(
         hash = hash.wrapping_mul(0x100000001b3);
     }
     Ok(StateFingerprint {
-        algorithm: "fnv1a64.rpg-session.v1".to_owned(),
+        algorithm: "fnv1a64.rpg-session.v2".to_owned(),
+        value: format!("{hash:016x}"),
+    })
+}
+
+fn encounter_setup_fingerprint(
+    setup: &RpgEncounterSetup,
+) -> Result<StateFingerprint, RpgReplayFailure> {
+    let bytes = serde_json::to_vec(setup).map_err(|error| {
+        replay_failure(
+            "RPG_CHECKPOINT_SETUP_HASH_FAILED",
+            "$.setup",
+            format!("canonical setup hashing failed: {error}"),
+        )
+    })?;
+    let mut hash = 0xcbf29ce484222325u64;
+    for byte in bytes {
+        hash ^= u64::from(byte);
+        hash = hash.wrapping_mul(0x100000001b3);
+    }
+    Ok(StateFingerprint {
+        algorithm: "fnv1a64.rpg-encounter-setup.v1".to_owned(),
         value: format!("{hash:016x}"),
     })
 }
@@ -915,6 +1019,30 @@ fn compare_boundary(
             format!("{path}.acceptedRandomPosition"),
             &expected.accepted_random_position,
             &actual.accepted_random_position,
+        ));
+    }
+    if expected.setup_fingerprint != actual.setup_fingerprint {
+        return Err(replay_mismatch(
+            "RPG_REPLAY_SETUP_MISMATCH",
+            format!("{path}.setupFingerprint"),
+            &expected.setup_fingerprint,
+            &actual.setup_fingerprint,
+        ));
+    }
+    if expected.random_source != actual.random_source {
+        return Err(replay_mismatch(
+            "RPG_REPLAY_RANDOM_SOURCE_MISMATCH",
+            format!("{path}.randomSource"),
+            &expected.random_source,
+            &actual.random_source,
+        ));
+    }
+    if expected.turn != actual.turn {
+        return Err(replay_mismatch(
+            "RPG_REPLAY_TURN_MISMATCH",
+            format!("{path}.turn"),
+            &expected.turn,
+            &actual.turn,
         ));
     }
     if expected.state_hash != actual.state_hash {
@@ -1093,8 +1221,12 @@ fn replay_mismatch<Expected: fmt::Debug, Actual: fmt::Debug>(
 
 #[cfg(test)]
 mod tests {
-    use rpg_compiler::{compile_prepared_ruleset, materialized_definition_fingerprint};
-    use rpg_core::{GridPosition, RpgDomainEvent, RpgEntityState, RpgIntent, Team};
+    use std::collections::BTreeSet;
+
+    use rpg_compiler::{
+        compile_prepared_ruleset, materialized_definition_fingerprint, CompiledRulesetBundle,
+    };
+    use rpg_core::{GridPosition, RpgDomainEvent, RpgIntent, Team};
     use rpg_ir::{
         CompiledRulesetIdentity, MaterializedRulesetDefinition, MaterializedRulesetDefinitionKind,
         MaterializedRulesetVisibility, PreparedRulesetCompilation, ResolvedRulesetSourcePackage,
@@ -1149,12 +1281,20 @@ mod tests {
             replayed.state_hash().unwrap(),
             recorded.state_hash().unwrap()
         );
-        assert_eq!(replayed.accepted_random_values(), 2);
+        assert_eq!(replayed.accepted_random_values(), 3);
 
         let RpgCommandOutcome::Accepted(receipt) = recorded_outcome else {
             panic!("reaction must commit");
         };
-        assert_eq!(receipt.random_evidence.len(), 2);
+        assert_eq!(receipt.random_consumed, 3);
+        assert_eq!(
+            receipt
+                .random_evidence
+                .iter()
+                .flat_map(|evidence| evidence.values.iter().copied())
+                .collect::<Vec<_>>(),
+            vec![12, 2, 2]
+        );
         assert!(receipt
             .events
             .iter()
@@ -1178,6 +1318,15 @@ mod tests {
         assert_eq!(
             restore_error.diagnostics[0].code,
             "RPG_CHECKPOINT_STATE_HASH_MISMATCH"
+        );
+        assert_eq!(target.state_hash().unwrap(), target_hash);
+
+        let mut setup_mismatch = initial.clone();
+        setup_mismatch.setup.board.width = setup_mismatch.setup.board.width.saturating_add(1);
+        let setup_error = target.replace_from_checkpoint(setup_mismatch).unwrap_err();
+        assert_eq!(
+            setup_error.diagnostics[0].code,
+            "RPG_CHECKPOINT_SETUP_FINGERPRINT_MISMATCH"
         );
         assert_eq!(target.state_hash().unwrap(), target_hash);
 
@@ -1316,7 +1465,326 @@ mod tests {
         );
     }
 
-    fn artifact_session() -> RpgAuthoritySession {
+    #[test]
+    fn differently_shaped_setups_from_one_artifact_are_independent() {
+        let bundle = artifact_bundle();
+        let first_setup = standard_setup(&bundle);
+        let mut second_setup = standard_setup(&bundle);
+        second_setup.board.width = 8;
+        second_setup.board.height = 6;
+        second_setup.board.cells.push(crate::RpgCellSetup {
+            id: "cell.high-ground".to_owned(),
+            position: GridPosition { x: 7, y: 5 },
+            capabilities: vec![
+                crate::RpgCellCapabilitySetup {
+                    id: "terrain.traversal".to_owned(),
+                    version: 1,
+                    definition_id: None,
+                    value: crate::RpgCellCapabilityValue::Traversal {
+                        passable: true,
+                        movement_cost: 2,
+                    },
+                },
+                crate::RpgCellCapabilitySetup {
+                    id: "terrain.kind".to_owned(),
+                    version: 1,
+                    definition_id: Some("catalog.damage.force".to_owned()),
+                    value: crate::RpgCellCapabilityValue::Identifier {
+                        value_id: "terrain.high-ground".to_owned(),
+                    },
+                },
+            ],
+        });
+        second_setup.participants.push(crate::RpgParticipantSetup {
+            id: "scout".to_owned(),
+            label: "Scout".to_owned(),
+            team_id: Team::enemy(),
+            position: GridPosition { x: 5, y: 2 },
+            definition_ids: vec!["action.reactive".to_owned()],
+            capabilities: vec![
+                crate::RpgInitialCapability::Vitality {
+                    value: BoundedValue {
+                        current: 14,
+                        max: 14,
+                    },
+                },
+                crate::RpgInitialCapability::Defense {
+                    id: "guard".to_owned(),
+                    value: 11,
+                },
+            ],
+        });
+        second_setup.turn.initiative_order.push("scout".to_owned());
+
+        let mut first = RpgAuthoritySession::from_setup(bundle.clone(), first_setup).unwrap();
+        let second = RpgAuthoritySession::from_setup(bundle, second_setup).unwrap();
+        assert_eq!(first.encounter_view().participants.len(), 2);
+        assert_eq!(second.encounter_view().participants.len(), 3);
+        assert_eq!(second.encounter_view().board.cells.len(), 1);
+        assert_eq!(
+            first.artifact().unwrap().artifact_id,
+            second.artifact().unwrap().artifact_id
+        );
+
+        assert!(matches!(
+            first.submit(command()),
+            RpgCommandOutcome::AwaitingReaction(_)
+        ));
+        assert!(matches!(
+            first.react(reaction_command()),
+            RpgCommandOutcome::Accepted(_)
+        ));
+        assert_eq!(first.state().revision(), 1);
+        assert_eq!(first.turn().current_actor_id, "guardian");
+        assert!(matches!(
+            first.submit(RpgAuthorityCommand {
+                expected_revision: 1,
+                intent: RpgIntent {
+                    action_id: "action.reactive".to_owned(),
+                    actor_id: "guardian".to_owned(),
+                    target_ids: vec!["hero".to_owned()],
+                },
+                random_values: vec![12],
+            }),
+            RpgCommandOutcome::AwaitingReaction(_)
+        ));
+        assert!(matches!(
+            first.react(RpgReactionCommand {
+                expected_revision: 1,
+                reaction_id: "reaction.ward".to_owned(),
+                option_id: Some("ward".to_owned()),
+                additional_random_values: vec![2, 2],
+            }),
+            RpgCommandOutcome::Accepted(_)
+        ));
+        assert_eq!(first.state().revision(), 2);
+        assert_eq!(first.turn().current_actor_id, "hero");
+        assert_eq!(first.turn().round, 2);
+        assert_eq!(first.encounter_view().log.len(), 2);
+        assert_eq!(second.state().revision(), 0);
+        assert_eq!(second.turn().current_actor_id, "hero");
+    }
+
+    #[test]
+    fn invalid_setup_reports_all_authority_diagnostics_before_session_exists() {
+        let bundle = artifact_bundle();
+        let mut invalid = standard_setup(&bundle);
+        invalid.artifact_id = "different-artifact".to_owned();
+        invalid.participants[0].definition_ids = vec!["action.missing".to_owned()];
+        invalid.board.cells.push(crate::RpgCellSetup {
+            id: "cell.blocked".to_owned(),
+            position: GridPosition { x: 0, y: 0 },
+            capabilities: vec![crate::RpgCellCapabilitySetup {
+                id: "terrain.traversal".to_owned(),
+                version: 1,
+                definition_id: None,
+                value: crate::RpgCellCapabilityValue::Traversal {
+                    passable: false,
+                    movement_cost: 1,
+                },
+            }],
+        });
+        invalid.participants[1].position = GridPosition { x: 99, y: 99 };
+        invalid.participants[1]
+            .capabilities
+            .push(crate::RpgInitialCapability::Resource {
+                id: "focus".to_owned(),
+                value: BoundedValue { current: 1, max: 1 },
+            });
+        invalid.turn.initiative_order = vec!["hero".to_owned(), "hero".to_owned()];
+
+        let failure = RpgAuthoritySession::from_setup(bundle.clone(), invalid).unwrap_err();
+        let codes = failure
+            .diagnostics
+            .iter()
+            .map(|diagnostic| diagnostic.code.as_str())
+            .collect::<BTreeSet<_>>();
+        assert!(codes.contains("RPG_SETUP_ARTIFACT_MISMATCH"));
+        assert!(codes.contains("RPG_SETUP_DEFINITION_UNKNOWN"));
+        assert!(codes.contains("RPG_SETUP_POSITION_OUT_OF_BOUNDS"));
+        assert!(codes.contains("RPG_SETUP_POSITION_BLOCKED"));
+        assert!(codes.contains("RPG_SETUP_CAPABILITY_OWNER_INCOMPATIBLE"));
+        assert!(codes.contains("RPG_SETUP_TURN_PARTICIPANT_DUPLICATE"));
+        assert!(codes.contains("RPG_SETUP_TURN_ORDER_INCOMPLETE"));
+
+        let valid = standard_setup(&bundle);
+        let session = RpgAuthoritySession::from_setup(bundle, valid).unwrap();
+        assert_eq!(session.state().revision(), 0);
+    }
+
+    #[test]
+    fn automatic_source_follows_the_selected_random_branch_and_replays_evidence() {
+        let mut session = artifact_session();
+        let initial = session.checkpoint().unwrap();
+        let binding = session.setup().random_source.clone();
+        let check_request = required_request(session.submit(RpgAuthorityCommand {
+            expected_revision: 0,
+            intent: RpgIntent {
+                action_id: "action.reactive".to_owned(),
+                actor_id: "hero".to_owned(),
+                target_ids: vec!["guardian".to_owned()],
+            },
+            random_values: Vec::new(),
+        }));
+        assert_eq!(
+            check_request.kind,
+            rpg_core::RpgRandomRequestKind::AttackCheck
+        );
+        let before_mismatch = session.state_hash().unwrap();
+        let mut wrong_binding = binding.clone();
+        wrong_binding.source_id = "test.other-source".to_owned();
+        let mismatch = session
+            .submit_with_random_source_recorded(
+                crate::RpgActionProposal {
+                    expected_revision: 0,
+                    action_id: "action.reactive".to_owned(),
+                    actor_id: "hero".to_owned(),
+                    target_ids: vec!["guardian".to_owned()],
+                },
+                &mut crate::RpgRollTapeSource::new(wrong_binding, Vec::new()),
+            )
+            .unwrap_err();
+        let crate::RpgAutomaticCommandFailure::RandomSource(mismatch) = mismatch else {
+            panic!("binding mismatch must be a random source failure");
+        };
+        assert_eq!(mismatch.code, "RPG_RANDOM_SOURCE_BINDING_MISMATCH");
+        assert_eq!(session.state_hash().unwrap(), before_mismatch);
+        let mut submit_tape = crate::RpgRollTapeSource::new(
+            binding.clone(),
+            vec![crate::RpgRollTapeEntry {
+                request: check_request,
+                values: vec![12],
+            }],
+        );
+        let (pending, submit_entry) = session
+            .submit_with_random_source_recorded(
+                crate::RpgActionProposal {
+                    expected_revision: 0,
+                    action_id: "action.reactive".to_owned(),
+                    actor_id: "hero".to_owned(),
+                    target_ids: vec!["guardian".to_owned()],
+                },
+                &mut submit_tape,
+            )
+            .unwrap();
+        assert!(matches!(pending, RpgCommandOutcome::AwaitingReaction(_)));
+        submit_tape.require_exhausted().unwrap();
+
+        let branch_request = required_request(session.react(RpgReactionCommand {
+            expected_revision: 0,
+            reaction_id: "reaction.ward".to_owned(),
+            option_id: Some("ward".to_owned()),
+            additional_random_values: Vec::new(),
+        }));
+        assert_eq!(
+            branch_request.kind,
+            rpg_core::RpgRandomRequestKind::FormulaDice
+        );
+        assert_eq!((branch_request.count, branch_request.sides), (2, 6));
+
+        let mut tape = crate::RpgRollTapeSource::new(
+            binding,
+            vec![crate::RpgRollTapeEntry {
+                request: branch_request,
+                values: vec![2, 2],
+            }],
+        );
+        let (accepted, reaction_entry) = session
+            .react_with_random_source_recorded(
+                crate::RpgReactionProposal {
+                    expected_revision: 0,
+                    reaction_id: "reaction.ward".to_owned(),
+                    option_id: Some("ward".to_owned()),
+                },
+                &mut tape,
+            )
+            .unwrap();
+        assert!(matches!(accepted, RpgCommandOutcome::Accepted(_)));
+        tape.require_exhausted().unwrap();
+        assert_eq!(tape.consumed_entries(), 1);
+        assert_eq!(tape.consumed_values(), 2);
+        assert_eq!(session.turn().current_actor_id, "guardian");
+
+        let replayed = RpgAuthoritySession::replay(initial, &[submit_entry, reaction_entry])
+            .expect("recorded source evidence replays without regenerating rolls");
+        assert_eq!(
+            replayed.state_hash().unwrap(),
+            session.state_hash().unwrap()
+        );
+        assert_eq!(replayed.turn(), session.turn());
+    }
+
+    #[test]
+    fn bounded_roll_tape_classifies_exhaustion_range_unused_and_order_failures() {
+        use crate::RpgRandomSource as _;
+
+        let binding = crate::RpgRandomSourceBinding {
+            policy_id: "test.policy".to_owned(),
+            policy_version: 1,
+            source_id: "test.tape".to_owned(),
+            source_version: 1,
+        };
+        let request = rpg_core::RpgRandomRequest {
+            kind: rpg_core::RpgRandomRequestKind::FormulaDice,
+            count: 2,
+            sides: 6,
+            path: "$.damage".to_owned(),
+        };
+        let exhausted = crate::RpgRollTapeSource::new(binding.clone(), Vec::new())
+            .draw(&request)
+            .unwrap_err();
+        assert_eq!(exhausted.code, "RPG_RANDOM_TAPE_EXHAUSTED");
+
+        let different = rpg_core::RpgRandomRequest {
+            path: "$.other".to_owned(),
+            ..request.clone()
+        };
+        let order = crate::RpgRollTapeSource::new(
+            binding.clone(),
+            vec![crate::RpgRollTapeEntry {
+                request: different,
+                values: vec![1, 1],
+            }],
+        )
+        .draw(&request)
+        .unwrap_err();
+        assert_eq!(order.code, "RPG_RANDOM_TAPE_REQUEST_ORDER_MISMATCH");
+        assert!(order.expected_request.is_some());
+        assert!(order.actual_request.is_some());
+
+        let range = crate::RpgRollTapeSource::new(
+            binding.clone(),
+            vec![crate::RpgRollTapeEntry {
+                request: request.clone(),
+                values: vec![1, 7],
+            }],
+        )
+        .draw(&request)
+        .unwrap_err();
+        assert_eq!(range.code, "RPG_RANDOM_TAPE_VALUE_OUT_OF_RANGE");
+
+        let unused = crate::RpgRollTapeSource::new(
+            binding,
+            vec![crate::RpgRollTapeEntry {
+                request: request.clone(),
+                values: vec![1, 2, 3],
+            }],
+        )
+        .draw(&request)
+        .unwrap_err();
+        assert_eq!(unused.code, "RPG_RANDOM_TAPE_UNUSED_EVIDENCE");
+    }
+
+    fn required_request(outcome: RpgCommandOutcome) -> rpg_core::RpgRandomRequest {
+        let RpgCommandOutcome::Rejected(rejection) = outcome else {
+            panic!("expected a random request rejection: {outcome:?}");
+        };
+        *rejection
+            .random_request
+            .expect("authority rejection contains an exact random request")
+    }
+
+    fn artifact_bundle() -> CompiledRulesetBundle {
         let source_location = RulesetSourceLocation {
             module: "actions/replay.rs".to_owned(),
             declaration: "reactiveStrike".to_owned(),
@@ -1337,18 +1805,24 @@ mod tests {
                 "name": "Reactive strike",
                 "sourcePath": "actions/replay.rs#reactiveStrike",
                 "targets": {"team": "hostile", "maximumRange": 3, "maximumTargets": 1},
-                "check": {"kind": "noRoll"},
-                "rollScope": "none",
+                "check": {"kind": "attack", "modifier": {"kind": "constant", "value": 0}, "defenseId": "catalog.defense.guard"},
+                "rollScope": "shared",
                 "costs": [],
                 "program": {"kind": "atomic", "body": {"kind": "sequence", "steps": [
                     {"kind": "operation", "operation": {"kind": "openReaction", "reactionId": "reaction.ward", "options": [
                         {"id": "ward", "label": "Raise ward", "damageReduction": 3}
                     ]}},
-                    {"kind": "operation", "operation": {"kind": "damage", "amount": {"kind": "dice", "count": 2, "sides": 6, "bonus": 0}, "damageType": "catalog.damage.force"}}
+                    {"kind": "onCheck",
+                      "hit": {"kind": "operation", "operation": {"kind": "damage", "amount": {"kind": "dice", "count": 2, "sides": 6, "bonus": 0}, "damageType": "catalog.damage.force"}},
+                      "miss": {"kind": "operation", "operation": {"kind": "damage", "amount": {"kind": "dice", "count": 1, "sides": 4, "bonus": 0}, "damageType": "catalog.damage.force"}}
+                    }
                 ]}}
             }),
             presentation: json!({"label": "Reactive strike"}),
-            references: vec!["catalog.damage.force".to_owned()],
+            references: vec![
+                "catalog.damage.force".to_owned(),
+                "catalog.defense.guard".to_owned(),
+            ],
             provenance: provenance.clone(),
             fingerprint: String::new(),
         };
@@ -1376,6 +1850,28 @@ mod tests {
         };
         support.fingerprint = materialized_definition_fingerprint(&support).unwrap();
 
+        let guard_provenance = RulesetDefinitionProvenance {
+            definition_id: "catalog.defense.guard".to_owned(),
+            package_id: "replay.test".to_owned(),
+            package_version: "1.0.0".to_owned(),
+            source: RulesetSourceLocation {
+                module: "catalogs/replay.rs".to_owned(),
+                declaration: "guard".to_owned(),
+            },
+        };
+        let mut guard = MaterializedRulesetDefinition {
+            id: "catalog.defense.guard".to_owned(),
+            kind: MaterializedRulesetDefinitionKind::Support,
+            visibility: MaterializedRulesetVisibility::Exported,
+            extension_policy: RulesetExtensionPolicy::Sealed,
+            semantic: json!({"catalog": "defense", "id": "guard"}),
+            presentation: json!({"label": "Guard"}),
+            references: Vec::new(),
+            provenance: guard_provenance.clone(),
+            fingerprint: String::new(),
+        };
+        guard.fingerprint = materialized_definition_fingerprint(&guard).unwrap();
+
         let operations = vec![
             VersionedRulesetRequirement {
                 id: "operation.damage".to_owned(),
@@ -1387,6 +1883,10 @@ mod tests {
             },
         ];
         let capabilities = vec![
+            VersionedRulesetRequirement {
+                id: "capability.defenses".to_owned(),
+                version: 1,
+            },
             VersionedRulesetRequirement {
                 id: "capability.random".to_owned(),
                 version: 1,
@@ -1425,10 +1925,11 @@ mod tests {
             exported_roots: vec![
                 "action.reactive".to_owned(),
                 "catalog.damage.force".to_owned(),
+                "catalog.defense.guard".to_owned(),
             ],
-            materialized_definitions: vec![action, support],
+            materialized_definitions: vec![action, support, guard],
             compiled_policy_bindings: Vec::new(),
-            definition_provenance: vec![provenance, support_provenance],
+            definition_provenance: vec![provenance, support_provenance, guard_provenance],
             definition_commitments: Vec::new(),
             relationships: vec![
                 RulesetRelationshipProvenance {
@@ -1439,21 +1940,91 @@ mod tests {
                 },
                 RulesetRelationshipProvenance {
                     kind: RulesetRelationshipKind::Exports,
-                    source: package_identity,
+                    source: package_identity.clone(),
                     target: "catalog.damage.force".to_owned(),
                     order: 1,
+                },
+                RulesetRelationshipProvenance {
+                    kind: RulesetRelationshipKind::Exports,
+                    source: package_identity,
+                    target: "catalog.defense.guard".to_owned(),
+                    order: 2,
                 },
             ],
             derivation_provenance: Vec::new(),
             overlay_provenance: Vec::new(),
         };
-        let bundle = compile_prepared_ruleset(prepared).expect("prepared replay artifact compiles");
-        let actor = RpgEntityState::new("hero", Team::Ally, GridPosition { x: 0, y: 0 }, 20);
-        let target = RpgEntityState::new("guardian", Team::Enemy, GridPosition { x: 1, y: 0 }, 20);
-        let mut state = RpgCapabilityState::default();
-        state.insert_entity(actor);
-        state.insert_entity(target);
-        RpgAuthoritySession::from_compiled_ruleset(bundle, state)
+        compile_prepared_ruleset(prepared).expect("prepared replay artifact compiles")
+    }
+
+    fn artifact_session() -> RpgAuthoritySession {
+        let bundle = artifact_bundle();
+        let setup = standard_setup(&bundle);
+        RpgAuthoritySession::from_setup(bundle, setup).expect("replay setup is valid")
+    }
+
+    fn standard_setup(bundle: &CompiledRulesetBundle) -> RpgEncounterSetup {
+        RpgEncounterSetup {
+            schema: RpgEncounterSetup::schema(),
+            artifact_id: bundle.artifact().artifact_id.clone(),
+            board: crate::RpgBoardSetup {
+                width: 4,
+                height: 4,
+                cells: Vec::new(),
+            },
+            participants: vec![
+                crate::RpgParticipantSetup {
+                    id: "hero".to_owned(),
+                    label: "Hero".to_owned(),
+                    team_id: Team::ally(),
+                    position: GridPosition { x: 0, y: 0 },
+                    definition_ids: vec!["action.reactive".to_owned()],
+                    capabilities: vec![
+                        crate::RpgInitialCapability::Vitality {
+                            value: BoundedValue {
+                                current: 20,
+                                max: 20,
+                            },
+                        },
+                        crate::RpgInitialCapability::Defense {
+                            id: "guard".to_owned(),
+                            value: 10,
+                        },
+                    ],
+                },
+                crate::RpgParticipantSetup {
+                    id: "guardian".to_owned(),
+                    label: "Guardian".to_owned(),
+                    team_id: Team::enemy(),
+                    position: GridPosition { x: 1, y: 0 },
+                    definition_ids: vec!["action.reactive".to_owned()],
+                    capabilities: vec![
+                        crate::RpgInitialCapability::Vitality {
+                            value: BoundedValue {
+                                current: 20,
+                                max: 20,
+                            },
+                        },
+                        crate::RpgInitialCapability::Defense {
+                            id: "guard".to_owned(),
+                            value: 10,
+                        },
+                    ],
+                },
+            ],
+            turn: crate::RpgTurnInitialization {
+                initiative_order: vec!["hero".to_owned(), "guardian".to_owned()],
+                current_actor_id: "hero".to_owned(),
+                round: 1,
+                turn: 1,
+            },
+            random_source: crate::RpgRandomSourceBinding {
+                policy_id: "test.recorded-evidence".to_owned(),
+                policy_version: 1,
+                source_id: "test.roll-tape".to_owned(),
+                source_version: 1,
+            },
+        }
     }
 
     fn command() -> RpgAuthorityCommand {
@@ -1464,7 +2035,7 @@ mod tests {
                 actor_id: "hero".to_owned(),
                 target_ids: vec!["guardian".to_owned()],
             },
-            random_values: Vec::new(),
+            random_values: vec![12],
         }
     }
 

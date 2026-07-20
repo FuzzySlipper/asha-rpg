@@ -96,16 +96,30 @@ revision and emits accepted DomainEvents plus explanatory trace. A rejection
 returns stable code/path evidence while leaving the authoritative state
 unchanged. A pending reaction blocks other commands until it is resolved.
 
+Artifact-bound session construction consumes
+`asha.rpg.encounter.setup@1`, not consumer-built mutable capability state. The
+strict setup describes only the initial board, typed cell capabilities,
+participants and their artifact definition references, initial owner values,
+initiative state, and an exact random policy/source binding. Rust validates
+the whole setup before authority exists. The same session owns current actor,
+round/turn advancement, legal action and target readbacks, pending reaction,
+accepted-event log, and encounter outcome. Team identity is an open typed id,
+not a closed product enum. The detailed compatibility contract is
+`docs/encounter-session-contract.md`.
+
 That same artifact-bound session owns portable persistence. Its versioned
-checkpoint embeds the exact closed artifact, a stable list-based projection of
-capability state rather than private maps, the cumulative accepted-random
-position, and either a ready phase or the complete pending transaction needed
-to resume one reaction. The canonical hash covers state, random position, and
-phase. Replay records typed submit/reaction operations, structured random
-requests and values, accepted events, revisions, phases, and before/after
-hashes. Replay loads the embedded artifact and invokes the ordinary session
-paths; it never rematerializes content, resolves a range, or reapplies events.
-Restore/replay validate into a temporary session before replacing a target.
+checkpoint embeds the exact closed artifact, exact setup plus setup
+fingerprint, a stable list-based projection of capability state rather than
+private maps, current turn and accepted-event log, the cumulative
+accepted-random position, and either a ready phase or the complete pending
+transaction needed to resume one reaction. The canonical hash covers setup,
+state, turn, log, random position, and phase. Replay records typed
+submit/reaction operations, structured random requests and values, accepted
+events, turns, revisions, source binding, phases, and before/after hashes.
+Replay loads the embedded artifact and invokes the ordinary session paths; it
+never rematerializes content, resolves a range, regenerates randomness, or
+reapplies events. Restore/replay validate into a temporary session before
+replacing a target.
 Product storage, browsing, migration policy, and exhaustive compatibility
 matrices remain downstream responsibilities.
 

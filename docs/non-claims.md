@@ -12,12 +12,18 @@ Asha RPG is not:
 - a home for every consumer's named content catalog.
 
 The initial semantic profile does not yet claim contested checks, critical
-outcomes, area selectors, terrain/occupancy pathfinding, conditions, temporary vitality,
+outcomes, area selectors, terrain pathfinding or movement-cost evaluation, conditions, temporary vitality,
 permanent or scheduler-relative durations, stack/highest-wins policies,
 or reaction-window authoring. Unknown requirements for those meanings fail
 closed. Portable checkpoint and replay are part of the existing authority
 session; a separate replay engine, event-applier, or state path is not an
 implementation claim.
+
+Encounter setup is not a scenario script, gameplay runner, campaign save, AI
+plan, or product protocol. Cell and area option slots are typed extension
+points; version 1 claims entity target candidates, board bounds, unique
+occupancy, and impassable destination enforcement, not general cell/area
+target semantics.
 
 The TypeScript packages do not provide semantic preview, target evaluation,
 dice execution, predicate evaluation, state access, effect execution, or a
