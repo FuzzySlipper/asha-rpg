@@ -27,7 +27,10 @@ import {
   retainCatalogOwnership,
 } from './catalogs.js';
 import type { ContentCatalogReference } from './catalogs.js';
-import { rulesetValueId } from './ruleset-builders.js';
+import {
+  retainRulesetValueOwnership,
+  rulesetValueId,
+} from './ruleset-builders.js';
 import type { RulesetValueReference } from './ruleset-builders.js';
 
 type AuthoredStatReference =
@@ -415,6 +418,7 @@ function frozenWithCatalogOwnership<Value extends object>(
   reference: unknown,
 ): Readonly<Value> {
   retainCatalogOwnership(value, [{ field, reference }]);
+  retainRulesetValueOwnership(value, [{ field, reference }]);
   return frozen(value);
 }
 

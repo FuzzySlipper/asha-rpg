@@ -2,6 +2,7 @@ import { RPG_CAPABILITY_VERSIONS, RPG_OPERATION_VERSIONS, } from '@asha-rpg/ir';
 import { canonicalJson, immutable, stableFingerprint } from './canonical.js';
 import { defineActions, definePackage } from './builders.js';
 import { catalogOwnershipOf } from './catalogs.js';
+import { rulesetValueOwnershipOf } from './ruleset-builders.js';
 import { normalizeAction, normalizePackage } from './normalize.js';
 const NO_DIAGNOSTICS = Object.freeze([]);
 export const ASHA_RPG_PLAY_BUNDLE_TARGET = immutable({
@@ -1276,6 +1277,9 @@ function collectCatalogReferences(value, path, references) {
             path: `${path}.${ownership.field}`,
         });
     }
+    for (const ownership of rulesetValueOwnershipOf(value)) {
+        ownedFields.add(ownership.field);
+    }
     for (const [key, child] of Object.entries(value)) {
         const childPath = `${path}.${key}`;
         const category = CATALOG_REFERENCE_FIELDS[key];
@@ -1537,6 +1541,7 @@ function normalizeMaterializedActions(bundle, graph, diagnostics) {
         .map((record) => {
         if (record.definition.kind !== 'action')
             throw new Error('unreachable narrowing failure');
+        validateRulesetValueOwners(record, bundle.ruleset, diagnostics);
         if (record.definition.action.id !== record.definition.id) {
             diagnostics.push(diagnostic('materialization', 'CONTENT_PACK_ACTION_ID_MISMATCH', `$.definitions.${record.definition.id}.action.id`, 'definition identity must match the normalized action identity', { definitionId: record.definition.id, source: record.definition.source }));
         }
@@ -1556,6 +1561,35 @@ function normalizeMaterializedActions(bundle, graph, diagnostics) {
         return undefined;
     }
     return result.artifact;
+}
+function validateRulesetValueOwners(record, ruleset, diagnostics) {
+    if (record.definition.kind !== 'action')
+        return;
+    visitAuthoredValue(record.definition.action, '$.action', (ownership, path) => {
+        if (ownership.rulesetId === ruleset.identity.id)
+            return;
+        diagnostics.push(diagnostic('compatibility', 'RULESET_VALUE_REFERENCE_OWNER_MISMATCH', path, `value ${ownership.id} belongs to Ruleset ${ownership.rulesetId}, not ${ruleset.identity.id}`, {
+            packageId: record.package.source.manifest.identity.id,
+            definitionId: record.definition.id,
+            source: record.definition.source,
+            expected: ruleset.identity.id,
+            actual: ownership.rulesetId,
+        }));
+    });
+}
+function visitAuthoredValue(value, path, visit) {
+    if (Array.isArray(value)) {
+        value.forEach((entry, index) => visitAuthoredValue(entry, `${path}[${index}]`, visit));
+        return;
+    }
+    if (!isRecord(value))
+        return;
+    for (const ownership of rulesetValueOwnershipOf(value)) {
+        visit(ownership, `${path}.${ownership.field}`);
+    }
+    for (const [field, child] of Object.entries(value)) {
+        visitAuthoredValue(child, `${path}.${field}`, visit);
+    }
 }
 function collectRequirements(context, normalized) {
     const operations = new Map();

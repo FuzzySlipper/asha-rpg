@@ -1,5 +1,5 @@
 import { catalogDefinitionId, retainCatalogOwnership, } from './catalogs.js';
-import { rulesetValueId } from './ruleset-builders.js';
+import { retainRulesetValueOwnership, rulesetValueId, } from './ruleset-builders.js';
 export function actionId(value) {
     return checkedIdentifier(value, 'action id');
 }
@@ -206,6 +206,7 @@ function frozen(value) {
 }
 function frozenWithCatalogOwnership(value, field, reference) {
     retainCatalogOwnership(value, [{ field, reference }]);
+    retainRulesetValueOwnership(value, [{ field, reference }]);
     return frozen(value);
 }
 function authoredValueId(reference) {

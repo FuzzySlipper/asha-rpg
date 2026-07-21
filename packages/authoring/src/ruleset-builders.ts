@@ -10,6 +10,16 @@ import type {
 const rulesetValueReferenceBrand: unique symbol = Symbol(
   'asha-rpg.ruleset-value-reference',
 );
+const authoredRulesetValueOwnership: unique symbol = Symbol(
+  'asha-rpg.authored-ruleset-value-ownership',
+);
+
+export interface AuthoredRulesetValueOwnership {
+  readonly field: string;
+  readonly kind: RulesetValueKind;
+  readonly id: string;
+  readonly rulesetId: string;
+}
 
 type RulesetValueId<Kind extends RulesetValueKind> = Kind extends 'stat'
   ? RpgStatId
@@ -77,6 +87,46 @@ export function rulesetValueId<Kind extends RulesetValueKind>(
   return reference.id;
 }
 
+/** @internal Retains Ruleset owner identity on an AST node without serializing it. */
+export function retainRulesetValueOwnership<Value extends object>(
+  value: Value,
+  fields: readonly {
+    readonly field: string;
+    readonly reference: unknown;
+  }[],
+): Value {
+  const ownership = fields.flatMap(({ field, reference }) =>
+    isRulesetValueReference(reference)
+      ? [
+          immutable({
+            field,
+            kind: reference.kind,
+            id: reference.id,
+            rulesetId: reference.rulesetId,
+          }),
+        ]
+      : [],
+  );
+  if (ownership.length > 0) {
+    Object.defineProperty(value, authoredRulesetValueOwnership, {
+      value: immutable(ownership),
+      enumerable: false,
+      configurable: false,
+      writable: false,
+    });
+  }
+  return value;
+}
+
+/** @internal Reads Ruleset owner identity retained by typed authoring builders. */
+export function rulesetValueOwnershipOf(
+  value: object,
+): readonly AuthoredRulesetValueOwnership[] {
+  if (!(authoredRulesetValueOwnership in value)) return [];
+  const ownership = value[authoredRulesetValueOwnership];
+  return Array.isArray(ownership) ? ownership : [];
+}
+
 function rulesetValueReference<
   const Kind extends RulesetValueKind,
   const RulesetId extends string,
@@ -100,4 +150,14 @@ function rulesetValueReference<
     rulesetId: ruleset.identity.id,
     [rulesetValueReferenceBrand]: true as const,
   });
+}
+
+function isRulesetValueReference(
+  value: unknown,
+): value is RulesetValueReference<RulesetValueKind, string, string> {
+  return (
+    value !== null &&
+    typeof value === 'object' &&
+    rulesetValueReferenceBrand in value
+  );
 }

@@ -1,5 +1,6 @@
 import { immutable } from './canonical.js';
 const rulesetValueReferenceBrand = Symbol('asha-rpg.ruleset-value-reference');
+const authoredRulesetValueOwnership = Symbol('asha-rpg.authored-ruleset-value-ownership');
 export function defineRuleset(input) {
     return immutable({
         ...input,
@@ -24,6 +25,35 @@ export function rulesetDefense(ruleset, id) {
 export function rulesetValueId(reference) {
     return reference.id;
 }
+/** @internal Retains Ruleset owner identity on an AST node without serializing it. */
+export function retainRulesetValueOwnership(value, fields) {
+    const ownership = fields.flatMap(({ field, reference }) => isRulesetValueReference(reference)
+        ? [
+            immutable({
+                field,
+                kind: reference.kind,
+                id: reference.id,
+                rulesetId: reference.rulesetId,
+            }),
+        ]
+        : []);
+    if (ownership.length > 0) {
+        Object.defineProperty(value, authoredRulesetValueOwnership, {
+            value: immutable(ownership),
+            enumerable: false,
+            configurable: false,
+            writable: false,
+        });
+    }
+    return value;
+}
+/** @internal Reads Ruleset owner identity retained by typed authoring builders. */
+export function rulesetValueOwnershipOf(value) {
+    if (!(authoredRulesetValueOwnership in value))
+        return [];
+    const ownership = value[authoredRulesetValueOwnership];
+    return Array.isArray(ownership) ? ownership : [];
+}
 function rulesetValueReference(ruleset, kind, id) {
     const contract = ruleset.provides.values.find((candidate) => candidate.kind === kind && candidate.id === id);
     if (contract === undefined) {
@@ -35,5 +65,10 @@ function rulesetValueReference(ruleset, kind, id) {
         rulesetId: ruleset.identity.id,
         [rulesetValueReferenceBrand]: true,
     });
+}
+function isRulesetValueReference(value) {
+    return (value !== null &&
+        typeof value === 'object' &&
+        rulesetValueReferenceBrand in value);
 }
 //# sourceMappingURL=ruleset-builders.js.map

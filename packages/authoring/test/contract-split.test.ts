@@ -2,14 +2,23 @@ import assert from 'node:assert/strict';
 import { test } from 'node:test';
 
 import {
+  action,
+  actionId,
+  attack,
+  constant,
   composePlayBundle,
   contentPackRequest,
   contentPackSource,
   defineContentPack,
   defineParticipantProfileDefinition,
+  defineActionDefinition,
   defineRuleset,
   defineScenario,
+  heal,
+  hostile,
+  onCheck,
   preparePlayBundle,
+  readStat,
   rulesetDefense,
   rulesetStat,
   rulesetValueId,
@@ -46,6 +55,49 @@ test('Ruleset named values are owner-bound ergonomic references', () => {
   assert.equal(strength.rulesetId, semanticRuleset.identity.id);
   assert.equal(Object.isFrozen(strength), true);
   assert.throws(() => rulesetStat(semanticRuleset, 'dexterity'));
+});
+
+test('Ruleset value ownership survives action authoring and rejects a foreign owner', () => {
+  const actionRuleset = defineRuleset({
+    ...semanticRuleset,
+    provides: {
+      ...semanticRuleset.provides,
+      operations: [{ id: 'operation.heal', version: 1 }],
+      capabilities: [
+        { id: 'capability.defenses', version: 1 },
+        { id: 'capability.random', version: 1 },
+        { id: 'capability.stats', version: 1 },
+        { id: 'capability.vitality', version: 1 },
+      ],
+    },
+  });
+  const foreignRuleset = defineRuleset({
+    ...actionRuleset,
+    identity: { id: 'contract.foreign-values', version: '1.0.0' },
+  });
+
+  const accepted = prepareRulesetAction(
+    actionRuleset,
+    rulesetStat(actionRuleset, 'strength'),
+    rulesetDefense(actionRuleset, 'armor-class'),
+  );
+  assert.equal(
+    accepted.ok,
+    true,
+    accepted.ok ? 'expected accepted Ruleset owner' : JSON.stringify(accepted.diagnostics),
+  );
+
+  const rejected = prepareRulesetAction(
+    actionRuleset,
+    rulesetStat(foreignRuleset, 'strength'),
+    rulesetDefense(foreignRuleset, 'armor-class'),
+  );
+  assert.equal(rejected.ok, false);
+  if (rejected.ok) return;
+  assert.deepEqual(
+    [...new Set(rejected.diagnostics.map((diagnostic) => diagnostic.code))],
+    ['RULESET_VALUE_REFERENCE_OWNER_MISMATCH'],
+  );
 });
 
 test('Content Pack requirements are checked directly against Ruleset provisions', () => {
@@ -138,3 +190,42 @@ test('Scenario builder emits setup-only immutable data', () => {
   assert.equal('rolls' in scenario, false);
   assert.equal('tester' in scenario, false);
 });
+
+function prepareRulesetAction(
+  ruleset: typeof semanticRuleset,
+  stat: ReturnType<typeof rulesetStat>,
+  defense: ReturnType<typeof rulesetDefense>,
+) {
+  const authoredAction = action({
+    id: actionId('contract.ruleset-owned-action'),
+    name: 'Ruleset-owned action',
+    sourcePath: 'contract/ruleset-owned-action.ts',
+    targets: hostile({ range: 1 }),
+    check: attack({ modifier: readStat('actor', stat), defense }),
+    rollScope: 'perTarget',
+    program: onCheck({ hit: heal({ amount: constant(1) }) }),
+  });
+  const definition = defineActionDefinition({
+    id: authoredAction.id,
+    visibility: 'public',
+    extensionPolicy: 'sealed',
+    source: { module: 'contract/ruleset-owned-action.ts', declaration: 'action' },
+    action: authoredAction,
+  });
+  const contentPack = defineContentPack({
+    identity: { id: 'contract.ruleset-owned-content', version: '1.0.0' },
+    entry: { module: 'contract/ruleset-owned-action.ts', declaration: 'content' },
+    definitions: [definition],
+  });
+  return preparePlayBundle({
+    bundle: composePlayBundle({
+      identity: { id: 'contract.ruleset-owned-bundle', version: '1.0.0' },
+      ruleset,
+      base: contentPackRequest({ id: contentPack.identity.id, version: '1.0.0' }),
+      add: [],
+      overlays: [],
+      configure: {},
+    }),
+    contentPacks: [contentPackSource(contentPack)],
+  });
+}
