@@ -1,14 +1,15 @@
 use asha_rpg::{
     compile_prepared_play_bundle, materialized_definition_fingerprint, BoundedValue,
     ContentDefinitionProvenance, ContentExtensionPolicy, ContentPackRequirements,
-    ContentRelationshipKind, ContentRelationshipProvenance, ContentSourceLocation, GridPosition,
-    MaterializedContentDefinition, MaterializedContentDefinitionKind,
-    MaterializedContentVisibility, PlayBundleArtifactSchema, PreparedPlayBundle,
-    ResolvedContentPack, RpgActionProposal, RpgAuthoritySession, RpgBoardSetup, RpgCommandOutcome,
-    RpgInitialCapability, RpgParticipantSetup, RpgRandomSourceBinding, RpgRollTapeSource,
-    RpgScenario, RpgTeamId, RpgTurnControl, RpgTurnControlProposal, RpgTurnInitialization,
-    RpgVersionedIdentity, Ruleset, RulesetModels, RulesetProvisions, RulesetSchema,
-    VersionedRpgRequirement, PLAY_BUNDLE_ARTIFACT_MAJOR, PREPARED_PLAY_BUNDLE_IDENTITY,
+    ContentRelationshipKind, ContentRelationshipProvenance, ContentSourceLocation,
+    ContentValueRequirement, GridPosition, MaterializedContentDefinition,
+    MaterializedContentDefinitionKind, MaterializedContentVisibility, PlayBundleArtifactSchema,
+    PreparedPlayBundle, ResolvedContentPack, RpgActionProposal, RpgAuthoritySession, RpgBoardSetup,
+    RpgCommandOutcome, RpgInitialCapability, RpgParticipantSetup, RpgRandomSourceBinding,
+    RpgRollTapeSource, RpgScenario, RpgTeamId, RpgTurnControl, RpgTurnControlProposal,
+    RpgTurnInitialization, RpgVersionedIdentity, Ruleset, RulesetModels, RulesetProvisions,
+    RulesetSchema, RulesetValueKind, VersionedRpgRequirement, PLAY_BUNDLE_ARTIFACT_MAJOR,
+    PREPARED_PLAY_BUNDLE_IDENTITY,
 };
 use serde_json::json;
 
@@ -86,6 +87,55 @@ fn public_facade_builds_an_artifact_bound_setup_and_executes_a_turn() {
     assert_eq!(session.encounter_view().log.len(), 2);
 }
 
+#[test]
+fn public_facade_rejects_noncanonical_value_and_numeric_domain_requirements() {
+    let mut duplicated = healing_prepared();
+    duplicated.content_requirements.values = vec![
+        ContentValueRequirement {
+            kind: RulesetValueKind::Stat,
+            id: "power".to_owned(),
+        },
+        ContentValueRequirement {
+            kind: RulesetValueKind::Stat,
+            id: "power".to_owned(),
+        },
+    ];
+    duplicated.content_requirements.numeric_domains =
+        vec!["attribute".to_owned(), "attribute".to_owned()];
+    let duplicate_failure = compile_prepared_play_bundle(duplicated).unwrap_err();
+    assert!(duplicate_failure.diagnostics.iter().any(|diagnostic| {
+        diagnostic.code == "PLAY_BUNDLE_REQUIREMENTS_NOT_CANONICAL"
+            && diagnostic.path == "$.contentRequirements.values[1]"
+    }));
+    assert!(duplicate_failure.diagnostics.iter().any(|diagnostic| {
+        diagnostic.code == "PLAY_BUNDLE_REQUIREMENTS_NOT_CANONICAL"
+            && diagnostic.path == "$.contentRequirements.numericDomains[1]"
+    }));
+
+    let mut reordered = healing_prepared();
+    reordered.content_requirements.values = vec![
+        ContentValueRequirement {
+            kind: RulesetValueKind::Stat,
+            id: "wisdom".to_owned(),
+        },
+        ContentValueRequirement {
+            kind: RulesetValueKind::Stat,
+            id: "power".to_owned(),
+        },
+    ];
+    reordered.content_requirements.numeric_domains =
+        vec!["bonus".to_owned(), "attribute".to_owned()];
+    let reordered_failure = compile_prepared_play_bundle(reordered).unwrap_err();
+    assert!(reordered_failure.diagnostics.iter().any(|diagnostic| {
+        diagnostic.code == "PLAY_BUNDLE_REQUIREMENTS_NOT_CANONICAL"
+            && diagnostic.path == "$.contentRequirements.values[1]"
+    }));
+    assert!(reordered_failure.diagnostics.iter().any(|diagnostic| {
+        diagnostic.code == "PLAY_BUNDLE_REQUIREMENTS_NOT_CANONICAL"
+            && diagnostic.path == "$.contentRequirements.numericDomains[1]"
+    }));
+}
+
 fn participant(
     id: &str,
     label: &str,
@@ -109,6 +159,10 @@ fn participant(
 }
 
 fn healing_bundle() -> asha_rpg::CompiledPlayBundle {
+    compile_prepared_play_bundle(healing_prepared()).unwrap()
+}
+
+fn healing_prepared() -> PreparedPlayBundle {
     let provenance = ContentDefinitionProvenance {
         definition_id: "action.heal".to_owned(),
         package_id: "consumer.package".to_owned(),
@@ -143,7 +197,7 @@ fn healing_bundle() -> asha_rpg::CompiledPlayBundle {
     };
     action.fingerprint = materialized_definition_fingerprint(&action).unwrap();
     let package = "consumer.package@1.0.0".to_owned();
-    compile_prepared_play_bundle(PreparedPlayBundle {
+    PreparedPlayBundle {
         schema: PlayBundleArtifactSchema {
             identity: PREPARED_PLAY_BUNDLE_IDENTITY.to_owned(),
             major: PLAY_BUNDLE_ARTIFACT_MAJOR,
@@ -231,6 +285,5 @@ fn healing_bundle() -> asha_rpg::CompiledPlayBundle {
         }],
         derivation_provenance: Vec::new(),
         overlay_provenance: Vec::new(),
-    })
-    .unwrap()
+    }
 }

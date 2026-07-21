@@ -310,6 +310,36 @@ fn validate_requirements(prepared: &PreparedPlayBundle, diagnostics: &mut Vec<Rp
         "$.contentRequirements.capabilities",
         diagnostics,
     );
+    let mut previous_value = None::<(RulesetValueKind, &str)>;
+    for (index, requirement) in prepared.content_requirements.values.iter().enumerate() {
+        let identity = (requirement.kind, requirement.id.as_str());
+        if previous_value.is_some_and(|previous| previous >= identity) {
+            diagnostics.push(RpgDiagnostic::error(
+                RpgDiagnosticStage::Artifact,
+                "PLAY_BUNDLE_REQUIREMENTS_NOT_CANONICAL",
+                format!("$.contentRequirements.values[{index}]"),
+                "value requirements must be strictly identity-sorted",
+            ));
+        }
+        previous_value = Some(identity);
+    }
+    let mut previous_domain = None::<&str>;
+    for (index, requirement) in prepared
+        .content_requirements
+        .numeric_domains
+        .iter()
+        .enumerate()
+    {
+        if previous_domain.is_some_and(|previous| previous >= requirement.as_str()) {
+            diagnostics.push(RpgDiagnostic::error(
+                RpgDiagnosticStage::Artifact,
+                "PLAY_BUNDLE_REQUIREMENTS_NOT_CANONICAL",
+                format!("$.contentRequirements.numericDomains[{index}]"),
+                "numeric domain requirements must be strictly identity-sorted",
+            ));
+        }
+        previous_domain = Some(requirement.as_str());
+    }
 
     for (index, requirement) in prepared.content_requirements.operations.iter().enumerate() {
         let provided = prepared
