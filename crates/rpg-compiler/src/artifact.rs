@@ -1037,11 +1037,56 @@ struct DerivedCatalogs {
     modifiers: BTreeSet<String>,
 }
 
+#[derive(Default)]
+struct RulesetCatalogs {
+    stats: BTreeSet<String>,
+    defenses: BTreeSet<String>,
+}
+
+impl RulesetCatalogs {
+    fn contains(&self, catalog: &str, value: &str) -> bool {
+        match catalog {
+            "stat" => self.stats.contains(value),
+            "defense" => self.defenses.contains(value),
+            _ => false,
+        }
+    }
+}
+
 #[derive(Deserialize)]
 #[serde(rename_all = "camelCase", deny_unknown_fields)]
 struct CatalogDefinitionSemantic {
     catalog: String,
     id: String,
+}
+
+#[derive(Clone, Copy)]
+struct CatalogReferenceKind {
+    catalog: &'static str,
+    diagnostic: &'static str,
+}
+
+impl CatalogReferenceKind {
+    const DAMAGE_TYPE: Self = Self {
+        catalog: "damageType",
+        diagnostic: "DAMAGE_TYPE",
+    };
+    const DEFENSE: Self = Self {
+        catalog: "defense",
+        diagnostic: "DEFENSE",
+    };
+    const MODIFIER: Self = Self {
+        catalog: "modifier",
+        diagnostic: "MODIFIER",
+    };
+    const RESOURCE: Self = Self {
+        catalog: "resource",
+        diagnostic: "RESOURCE",
+    };
+    const STAT: Self = Self {
+        catalog: "stat",
+        diagnostic: "STAT",
+    };
 }
 
 fn normalized_ir_from_materialized(
@@ -1054,6 +1099,24 @@ fn normalized_ir_from_materialized(
         .collect::<BTreeMap<_, _>>();
     let mut diagnostics = Vec::new();
     let mut catalogs = DerivedCatalogs::default();
+    let ruleset_catalogs = RulesetCatalogs {
+        stats: prepared
+            .ruleset
+            .provides
+            .values
+            .iter()
+            .filter(|value| value.kind == RulesetValueKind::Stat)
+            .map(|value| value.id.clone())
+            .collect(),
+        defenses: prepared
+            .ruleset
+            .provides
+            .values
+            .iter()
+            .filter(|value| value.kind == RulesetValueKind::Defense)
+            .map(|value| value.id.clone())
+            .collect(),
+    };
     let mut actions = Vec::new();
 
     for (index, definition) in prepared.materialized_definitions.iter().enumerate() {
@@ -1088,6 +1151,7 @@ fn normalized_ir_from_materialized(
             &mut action,
             definition,
             &definitions,
+            &ruleset_catalogs,
             &path,
             &mut diagnostics,
         );
@@ -1150,16 +1214,17 @@ fn resolve_action_catalogs(
     action: &mut RpgIrAction,
     action_definition: &MaterializedContentDefinition,
     definitions: &BTreeMap<&str, &MaterializedContentDefinition>,
+    ruleset_catalogs: &RulesetCatalogs,
     path: &str,
     diagnostics: &mut Vec<RpgDiagnostic>,
 ) {
     for (index, cost) in action.costs.iter_mut().enumerate() {
         resolve_catalog_reference(
             &mut cost.resource_id,
-            "resource",
-            "RESOURCE",
+            CatalogReferenceKind::RESOURCE,
             action_definition,
             definitions,
+            ruleset_catalogs,
             &format!("{path}.costs[{index}].resourceId"),
             diagnostics,
         );
@@ -1172,10 +1237,10 @@ fn resolve_action_catalogs(
         } => {
             resolve_catalog_reference(
                 defense_id,
-                "defense",
-                "DEFENSE",
+                CatalogReferenceKind::DEFENSE,
                 action_definition,
                 definitions,
+                ruleset_catalogs,
                 &format!("{path}.check.defenseId"),
                 diagnostics,
             );
@@ -1183,6 +1248,7 @@ fn resolve_action_catalogs(
                 modifier,
                 action_definition,
                 definitions,
+                ruleset_catalogs,
                 &format!("{path}.check.modifier"),
                 diagnostics,
             );
@@ -1193,10 +1259,10 @@ fn resolve_action_catalogs(
         } => {
             resolve_catalog_reference(
                 defense_id,
-                "defense",
-                "DEFENSE",
+                CatalogReferenceKind::DEFENSE,
                 action_definition,
                 definitions,
+                ruleset_catalogs,
                 &format!("{path}.check.defenseId"),
                 diagnostics,
             );
@@ -1204,6 +1270,7 @@ fn resolve_action_catalogs(
                 difficulty,
                 action_definition,
                 definitions,
+                ruleset_catalogs,
                 &format!("{path}.check.difficulty"),
                 diagnostics,
             );
@@ -1213,6 +1280,7 @@ fn resolve_action_catalogs(
         &mut action.program,
         action_definition,
         definitions,
+        ruleset_catalogs,
         &format!("{path}.program"),
         diagnostics,
     );
@@ -1222,6 +1290,7 @@ fn resolve_program_catalogs(
     program: &mut RpgIrProgram,
     action_definition: &MaterializedContentDefinition,
     definitions: &BTreeMap<&str, &MaterializedContentDefinition>,
+    ruleset_catalogs: &RulesetCatalogs,
     path: &str,
     diagnostics: &mut Vec<RpgDiagnostic>,
 ) {
@@ -1231,6 +1300,7 @@ fn resolve_program_catalogs(
                 operation,
                 action_definition,
                 definitions,
+                ruleset_catalogs,
                 &format!("{path}.operation"),
                 diagnostics,
             );
@@ -1241,6 +1311,7 @@ fn resolve_program_catalogs(
                     step,
                     action_definition,
                     definitions,
+                    ruleset_catalogs,
                     &format!("{path}.steps[{index}]"),
                     diagnostics,
                 );
@@ -1255,6 +1326,7 @@ fn resolve_program_catalogs(
                 predicate,
                 action_definition,
                 definitions,
+                ruleset_catalogs,
                 &format!("{path}.predicate"),
                 diagnostics,
             );
@@ -1262,6 +1334,7 @@ fn resolve_program_catalogs(
                 then,
                 action_definition,
                 definitions,
+                ruleset_catalogs,
                 &format!("{path}.then"),
                 diagnostics,
             );
@@ -1270,6 +1343,7 @@ fn resolve_program_catalogs(
                     otherwise,
                     action_definition,
                     definitions,
+                    ruleset_catalogs,
                     &format!("{path}.otherwise"),
                     diagnostics,
                 );
@@ -1281,6 +1355,7 @@ fn resolve_program_catalogs(
             body,
             action_definition,
             definitions,
+            ruleset_catalogs,
             &format!("{path}.body"),
             diagnostics,
         ),
@@ -1303,6 +1378,7 @@ fn resolve_program_catalogs(
                         branch,
                         action_definition,
                         definitions,
+                        ruleset_catalogs,
                         &format!("{path}.{branch_name}"),
                         diagnostics,
                     );
@@ -1316,6 +1392,7 @@ fn resolve_operation_catalogs(
     operation: &mut RpgIrOperation,
     action_definition: &MaterializedContentDefinition,
     definitions: &BTreeMap<&str, &MaterializedContentDefinition>,
+    ruleset_catalogs: &RulesetCatalogs,
     path: &str,
     diagnostics: &mut Vec<RpgDiagnostic>,
 ) {
@@ -1326,10 +1403,10 @@ fn resolve_operation_catalogs(
         } => {
             resolve_catalog_reference(
                 damage_type,
-                "damageType",
-                "DAMAGE_TYPE",
+                CatalogReferenceKind::DAMAGE_TYPE,
                 action_definition,
                 definitions,
+                ruleset_catalogs,
                 &format!("{path}.damageType"),
                 diagnostics,
             );
@@ -1337,6 +1414,7 @@ fn resolve_operation_catalogs(
                 amount,
                 action_definition,
                 definitions,
+                ruleset_catalogs,
                 &format!("{path}.amount"),
                 diagnostics,
             );
@@ -1345,6 +1423,7 @@ fn resolve_operation_catalogs(
             amount,
             action_definition,
             definitions,
+            ruleset_catalogs,
             &format!("{path}.amount"),
             diagnostics,
         ),
@@ -1353,10 +1432,10 @@ fn resolve_operation_catalogs(
         } => {
             resolve_catalog_reference(
                 resource_id,
-                "resource",
-                "RESOURCE",
+                CatalogReferenceKind::RESOURCE,
                 action_definition,
                 definitions,
+                ruleset_catalogs,
                 &format!("{path}.resourceId"),
                 diagnostics,
             );
@@ -1364,6 +1443,7 @@ fn resolve_operation_catalogs(
                 delta,
                 action_definition,
                 definitions,
+                ruleset_catalogs,
                 &format!("{path}.delta"),
                 diagnostics,
             );
@@ -1373,10 +1453,10 @@ fn resolve_operation_catalogs(
         } => {
             resolve_catalog_reference(
                 modifier_id,
-                "modifier",
-                "MODIFIER",
+                CatalogReferenceKind::MODIFIER,
                 action_definition,
                 definitions,
+                ruleset_catalogs,
                 &format!("{path}.modifierId"),
                 diagnostics,
             );
@@ -1384,6 +1464,7 @@ fn resolve_operation_catalogs(
                 value,
                 action_definition,
                 definitions,
+                ruleset_catalogs,
                 &format!("{path}.value"),
                 diagnostics,
             );
@@ -1395,6 +1476,7 @@ fn resolve_operation_catalogs(
                 delta_x,
                 action_definition,
                 definitions,
+                ruleset_catalogs,
                 &format!("{path}.deltaX"),
                 diagnostics,
             );
@@ -1402,6 +1484,7 @@ fn resolve_operation_catalogs(
                 delta_y,
                 action_definition,
                 definitions,
+                ruleset_catalogs,
                 &format!("{path}.deltaY"),
                 diagnostics,
             );
@@ -1414,16 +1497,17 @@ fn resolve_formula_catalogs(
     formula: &mut RpgIrFormula,
     action_definition: &MaterializedContentDefinition,
     definitions: &BTreeMap<&str, &MaterializedContentDefinition>,
+    ruleset_catalogs: &RulesetCatalogs,
     path: &str,
     diagnostics: &mut Vec<RpgDiagnostic>,
 ) {
     match formula {
         RpgIrFormula::ReadStat { stat_id, .. } => resolve_catalog_reference(
             stat_id,
-            "stat",
-            "STAT",
+            CatalogReferenceKind::STAT,
             action_definition,
             definitions,
+            ruleset_catalogs,
             &format!("{path}.statId"),
             diagnostics,
         ),
@@ -1433,6 +1517,7 @@ fn resolve_formula_catalogs(
                     term,
                     action_definition,
                     definitions,
+                    ruleset_catalogs,
                     &format!("{path}.terms[{index}]"),
                     diagnostics,
                 );
@@ -1442,6 +1527,7 @@ fn resolve_formula_catalogs(
             value,
             action_definition,
             definitions,
+            ruleset_catalogs,
             &format!("{path}.value"),
             diagnostics,
         ),
@@ -1453,6 +1539,7 @@ fn resolve_predicate_catalogs(
     predicate: &mut RpgIrPredicate,
     action_definition: &MaterializedContentDefinition,
     definitions: &BTreeMap<&str, &MaterializedContentDefinition>,
+    ruleset_catalogs: &RulesetCatalogs,
     path: &str,
     diagnostics: &mut Vec<RpgDiagnostic>,
 ) {
@@ -1463,6 +1550,7 @@ fn resolve_predicate_catalogs(
                 left,
                 action_definition,
                 definitions,
+                ruleset_catalogs,
                 &format!("{path}.left"),
                 diagnostics,
             );
@@ -1470,6 +1558,7 @@ fn resolve_predicate_catalogs(
                 right,
                 action_definition,
                 definitions,
+                ruleset_catalogs,
                 &format!("{path}.right"),
                 diagnostics,
             );
@@ -1478,6 +1567,7 @@ fn resolve_predicate_catalogs(
             predicate,
             action_definition,
             definitions,
+            ruleset_catalogs,
             &format!("{path}.predicate"),
             diagnostics,
         ),
@@ -1487,6 +1577,7 @@ fn resolve_predicate_catalogs(
                     predicate,
                     action_definition,
                     definitions,
+                    ruleset_catalogs,
                     &format!("{path}.predicates[{index}]"),
                     diagnostics,
                 );
@@ -1497,25 +1588,28 @@ fn resolve_predicate_catalogs(
 
 fn resolve_catalog_reference(
     value: &mut String,
-    expected_catalog: &str,
-    diagnostic_kind: &str,
+    kind: CatalogReferenceKind,
     action_definition: &MaterializedContentDefinition,
     definitions: &BTreeMap<&str, &MaterializedContentDefinition>,
+    ruleset_catalogs: &RulesetCatalogs,
     path: &str,
     diagnostics: &mut Vec<RpgDiagnostic>,
 ) {
-    if !action_definition
+    let references_content_definition = action_definition
         .references
         .iter()
-        .any(|reference| reference == value)
-    {
+        .any(|reference| reference == value);
+    if !references_content_definition && ruleset_catalogs.contains(kind.catalog, value) {
+        return;
+    }
+    if !references_content_definition {
         diagnostics.push(RpgDiagnostic::error(
             RpgDiagnosticStage::References,
-            catalog_diagnostic_code(diagnostic_kind, CatalogDiagnostic::ReferenceUndeclared),
+            catalog_diagnostic_code(kind.diagnostic, CatalogDiagnostic::ReferenceUndeclared),
             path,
             format!(
-                "{expected_catalog} {value} must be a direct definition reference from {}",
-                action_definition.id
+                "{} {value} must be a direct definition reference from {}",
+                kind.catalog, action_definition.id
             ),
         ));
         return;
@@ -1523,18 +1617,18 @@ fn resolve_catalog_reference(
     let Some(definition) = definitions.get(value.as_str()) else {
         diagnostics.push(RpgDiagnostic::error(
             RpgDiagnosticStage::References,
-            catalog_diagnostic_code(diagnostic_kind, CatalogDiagnostic::DefinitionMissing),
+            catalog_diagnostic_code(kind.diagnostic, CatalogDiagnostic::DefinitionMissing),
             path,
-            format!("{expected_catalog} definition {value} is absent"),
+            format!("{} definition {value} is absent", kind.catalog),
         ));
         return;
     };
     if definition.kind != MaterializedContentDefinitionKind::Support {
         diagnostics.push(RpgDiagnostic::error(
             RpgDiagnosticStage::References,
-            catalog_diagnostic_code(diagnostic_kind, CatalogDiagnostic::DefinitionKindInvalid),
+            catalog_diagnostic_code(kind.diagnostic, CatalogDiagnostic::DefinitionKindInvalid),
             path,
-            format!("{expected_catalog} definition {value} must be support data"),
+            format!("{} definition {value} must be support data", kind.catalog),
         ));
         return;
     }
@@ -1544,21 +1638,21 @@ fn resolve_catalog_reference(
             Err(error) => {
                 diagnostics.push(RpgDiagnostic::error(
                     RpgDiagnosticStage::Semantics,
-                    catalog_diagnostic_code(diagnostic_kind, CatalogDiagnostic::SemanticInvalid),
+                    catalog_diagnostic_code(kind.diagnostic, CatalogDiagnostic::SemanticInvalid),
                     path,
                     error.to_string(),
                 ));
                 return;
             }
         };
-    if semantic.catalog != expected_catalog {
+    if semantic.catalog != kind.catalog {
         diagnostics.push(RpgDiagnostic::error(
             RpgDiagnosticStage::References,
-            catalog_diagnostic_code(diagnostic_kind, CatalogDiagnostic::CatalogMismatch),
+            catalog_diagnostic_code(kind.diagnostic, CatalogDiagnostic::CatalogMismatch),
             path,
             format!(
-                "definition {} belongs to catalog {}, not {expected_catalog}",
-                definition.id, semantic.catalog,
+                "definition {} belongs to catalog {}, not {}",
+                definition.id, semantic.catalog, kind.catalog,
             ),
         ));
         return;
