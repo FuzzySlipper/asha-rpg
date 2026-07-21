@@ -1,9 +1,9 @@
 use std::io::{self, Read};
 
 use asha_rpg::{
-    compile_prepared_ruleset_json, decode_replay_entries, encode_replay_entries, BoundedValue,
+    compile_prepared_play_bundle_json, decode_replay_entries, encode_replay_entries, BoundedValue,
     GridPosition, RpgActionProposal, RpgAuthoritySession, RpgBoardSetup, RpgCommandOutcome,
-    RpgDomainEvent, RpgEncounterSetup, RpgInitialCapability, RpgParticipantSetup,
+    RpgDomainEvent, RpgScenario, RpgInitialCapability, RpgParticipantSetup,
     RpgRandomRequest, RpgRandomSource, RpgRandomSourceBinding, RpgRandomSourceFailure,
     RpgReactionProposal, RpgTeamId, RpgTurnInitialization,
 };
@@ -12,12 +12,12 @@ fn main() {
     let mut prepared_source = Vec::new();
     io::stdin()
         .read_to_end(&mut prepared_source)
-        .expect("read prepared ruleset from stdin");
+        .expect("read prepared PlayBundle from stdin");
     let bundle =
-        compile_prepared_ruleset_json(&prepared_source).expect("compile exact prepared artifact");
-    let setup = RpgEncounterSetup {
-        schema: RpgEncounterSetup::schema(),
-        artifact_id: bundle.artifact().artifact_id.clone(),
+        compile_prepared_play_bundle_json(&prepared_source).expect("compile exact prepared artifact");
+    let scenario = RpgScenario {
+        schema: RpgScenario::schema(),
+        play_bundle_id: bundle.artifact().artifact_id.clone(),
         board: RpgBoardSetup {
             width: 4,
             height: 4,
@@ -40,13 +40,13 @@ fn main() {
             source_version: 1,
         },
     };
-    let session = RpgAuthoritySession::from_setup(bundle, setup).expect("validate encounter setup");
+    let session = RpgAuthoritySession::from_scenario(bundle, scenario).expect("validate scenario");
     let initial_checkpoint = session.checkpoint().expect("create checkpoint");
     let initial_json = session.checkpoint_json().expect("serialize checkpoint");
     let mut recording =
         RpgAuthoritySession::restore_checkpoint_json(&initial_json).expect("clean restore");
     let mut source = ConstantTwoSource {
-        binding: recording.setup().random_source.clone(),
+        binding: recording.scenario().random_source.clone(),
     };
 
     let (pending_outcome, submit_entry) = recording
@@ -78,7 +78,7 @@ fn main() {
         .react_with_random_source_recorded(reaction.clone(), &mut source)
         .expect("record resumed reaction");
     let mut restored_source = ConstantTwoSource {
-        binding: pending_restore.setup().random_source.clone(),
+        binding: pending_restore.scenario().random_source.clone(),
     };
     let (restored_accepted, _) = pending_restore
         .react_with_random_source_recorded(reaction, &mut restored_source)

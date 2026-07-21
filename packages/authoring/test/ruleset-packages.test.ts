@@ -8,42 +8,43 @@ import {
   action,
   actionId,
   canonicalJson,
-  composeRuleset,
+  composePlayBundle,
   constant,
   damage,
   defineActionDefinition,
-  defineRulesetCatalog,
-  defineRulesetPackage,
+  defineContentCatalog,
+  defineContentPack,
   defineSupportDefinition,
   defineTemplateDefinition,
   definitionReference,
   hostile,
   noRoll,
   onCheck,
-  prepareRulesetCompilation,
-  rulesetDependency,
-  rulesetPackageRequest,
-  rulesetPackageSource,
+  preparePlayBundle,
+  contentPackDependency,
+  contentPackRequest,
+  contentPackSource,
   withLowLevelDefinitionReferences,
 } from '@asha-rpg/authoring';
 import { lowLevelCatalogReference } from '@asha-rpg/authoring/low-level';
 import type {
-  PreparedRulesetCompilation,
-  RulesetPackageManifest,
-  RulesetPackageSource,
+  PreparedPlayBundle,
+  ContentPackManifest,
+  ContentPackSource,
 } from '@asha-rpg/authoring';
+import { contractTestRuleset } from './test-ruleset.ts';
 
 const root = fileURLToPath(new URL('../../../', import.meta.url));
 
-test('explicit package composition is immutable, closed, and load-order independent', () => {
+test('explicit package bundle is immutable, closed, and load-order independent', () => {
   const fixture = packageFixture();
-  const first = prepareRulesetCompilation({
-    composition: fixture.composition,
-    packages: fixture.packages,
+  const first = preparePlayBundle({
+    bundle: fixture.bundle,
+    contentPacks: fixture.contentPacks,
   });
-  const second = prepareRulesetCompilation({
-    composition: fixture.composition,
-    packages: [...fixture.packages].reverse(),
+  const second = preparePlayBundle({
+    bundle: fixture.bundle,
+    contentPacks: [...fixture.contentPacks].reverse(),
   });
 
   assert.equal(first.ok, true);
@@ -53,7 +54,7 @@ test('explicit package composition is immutable, closed, and load-order independ
   assert.equal(Object.isFrozen(first.prepared), true);
   assert.equal(Object.isFrozen(first.prepared.materializedDefinitions), true);
   assert.deepEqual(
-    first.prepared.sourcePackages.map((entry) => `${entry.id}@${entry.version}`),
+    first.prepared.contentPacks.map((entry) => `${entry.id}@${entry.version}`),
     ['sample.core@1.0.0', 'sample.foundation@1.1.0'],
   );
   assert.deepEqual(first.prepared.exportedRoots, [
@@ -85,7 +86,7 @@ test('typed source diagnostics fail before materialization and retain full graph
   assert.ok(
     missing.diagnostics.some(
       (entry) =>
-        entry.code === 'RULESET_DEFINITION_REFERENCE_MISSING' &&
+        entry.code === 'CONTENT_PACK_DEFINITION_REFERENCE_MISSING' &&
         entry.packageId === 'sample.core' &&
         entry.definitionId === 'sample.spark' &&
         entry.source?.module === 'core/actions/spark.ts',
@@ -97,7 +98,7 @@ test('typed source diagnostics fail before materialization and retain full graph
   if (unreachable.ok) return;
   assert.ok(
     unreachable.diagnostics.some(
-      (entry) => entry.code === 'RULESET_PUBLIC_DEFINITION_UNREACHABLE',
+      (entry) => entry.code === 'CONTENT_PACK_PUBLIC_DEFINITION_UNREACHABLE',
     ),
   );
 
@@ -106,7 +107,7 @@ test('typed source diagnostics fail before materialization and retain full graph
   if (incompatible.ok) return;
   assert.ok(
     incompatible.diagnostics.some(
-      (entry) => entry.code === 'RULESET_LANGUAGE_INCOMPATIBLE',
+      (entry) => entry.code === 'CONTENT_PACK_LANGUAGE_INCOMPATIBLE',
     ),
   );
 
@@ -114,7 +115,7 @@ test('typed source diagnostics fail before materialization and retain full graph
   assert.equal(cycle.ok, false);
   if (cycle.ok) return;
   const cycleDiagnostic = cycle.diagnostics.find(
-    (entry) => entry.code === 'RULESET_DEPENDENCY_CYCLE',
+    (entry) => entry.code === 'CONTENT_PACK_DEPENDENCY_CYCLE',
   );
   assert.deepEqual(cycleDiagnostic?.graphPath, [
     'sample.core@1.0.0',
@@ -127,22 +128,22 @@ test('typed source diagnostics fail before materialization and retain full graph
   if (privateReference.ok) return;
   assert.ok(
     privateReference.diagnostics.some(
-      (entry) => entry.code === 'RULESET_PRIVATE_CROSS_PACKAGE_REFERENCE',
+      (entry) => entry.code === 'CONTENT_PACK_PRIVATE_CROSS_PACKAGE_REFERENCE',
     ),
   );
 });
 
 test('duplicate identities and incompatible relational declarations fail closed', () => {
   const fixture = packageFixture();
-  const duplicate = prepareRulesetCompilation({
-    composition: fixture.composition,
-    packages: [fixture.packages[0]!, fixture.packages[0]!, fixture.packages[1]!],
+  const duplicate = preparePlayBundle({
+    bundle: fixture.bundle,
+    contentPacks: [fixture.contentPacks[0]!, fixture.contentPacks[0]!, fixture.contentPacks[1]!],
   });
   assert.equal(duplicate.ok, false, JSON.stringify(duplicate));
   if (duplicate.ok) return;
   assert.ok(
     duplicate.diagnostics.some(
-      (entry) => entry.code === 'RULESET_DUPLICATE_PACKAGE_IDENTITY',
+      (entry) => entry.code === 'CONTENT_PACK_DUPLICATE_PACKAGE_IDENTITY',
     ),
   );
 
@@ -151,7 +152,7 @@ test('duplicate identities and incompatible relational declarations fail closed'
   if (relationship.ok) return;
   assert.ok(
     relationship.diagnostics.some(
-      (entry) => entry.code === 'RULESET_DERIVATION_DECLARATION_INCOMPATIBLE',
+      (entry) => entry.code === 'CONTENT_PACK_DERIVATION_DECLARATION_INCOMPATIBLE',
     ),
   );
 
@@ -160,7 +161,7 @@ test('duplicate identities and incompatible relational declarations fail closed'
   if (duplicateAlias.ok) return;
   assert.ok(
     duplicateAlias.diagnostics.some(
-      (entry) => entry.code === 'RULESET_DUPLICATE_IMPORT_ALIAS',
+      (entry) => entry.code === 'CONTENT_PACK_DUPLICATE_IMPORT_ALIAS',
     ),
   );
 
@@ -169,7 +170,7 @@ test('duplicate identities and incompatible relational declarations fail closed'
   if (duplicateLocal.ok) return;
   assert.ok(
     duplicateLocal.diagnostics.some(
-      (entry) => entry.code === 'RULESET_DUPLICATE_LOCAL_DEFINITION',
+      (entry) => entry.code === 'CONTENT_PACK_DUPLICATE_LOCAL_DEFINITION',
     ),
   );
 
@@ -178,40 +179,40 @@ test('duplicate identities and incompatible relational declarations fail closed'
   if (duplicateGlobal.ok) return;
   assert.ok(
     duplicateGlobal.diagnostics.some(
-      (entry) => entry.code === 'RULESET_DUPLICATE_DEFINITION_ID',
+      (entry) => entry.code === 'CONTENT_PACK_DUPLICATE_DEFINITION_ID',
     ),
   );
 });
 
-test('composition extensions require explicit materialization records', () => {
+test('bundle extensions require explicit materialization records', () => {
   const fixture = packageFixture();
-  const overlay = prepareRulesetCompilation({
-    composition: composeRuleset({
-      ...fixture.composition,
-      overlays: [rulesetPackageRequest({ id: 'sample.foundation', version: '1.1.0' })],
+  const overlay = preparePlayBundle({
+    bundle: composePlayBundle({
+      ...fixture.bundle,
+      overlays: [contentPackRequest({ id: 'sample.foundation', version: '1.1.0' })],
     }),
-    packages: fixture.packages,
+    contentPacks: fixture.contentPacks,
   });
   assert.equal(overlay.ok, false);
   if (overlay.ok) return;
   assert.ok(
     overlay.diagnostics.some(
-      (entry) => entry.code === 'RULESET_OVERLAY_EMPTY',
+      (entry) => entry.code === 'CONTENT_PACK_OVERLAY_EMPTY',
     ),
   );
 
-  const configure = prepareRulesetCompilation({
-    composition: composeRuleset({
-      ...fixture.composition,
+  const configure = preparePlayBundle({
+    bundle: composePlayBundle({
+      ...fixture.bundle,
       configure: { 'sample.spark.damage': 7 },
     }),
-    packages: fixture.packages,
+    contentPacks: fixture.contentPacks,
   });
   assert.equal(configure.ok, false);
   if (configure.ok) return;
   assert.ok(
     configure.diagnostics.some(
-      (entry) => entry.code === 'RULESET_CONFIGURATION_OPTION_UNAVAILABLE',
+      (entry) => entry.code === 'CONTENT_PACK_CONFIGURATION_OPTION_UNAVAILABLE',
     ),
   );
 });
@@ -225,22 +226,22 @@ test('package resolution selects one version satisfying the complete constraint 
     emptyPackageSource('sample.shared', '1.1.0'),
     emptyPackageSource('sample.shared', '1.2.0'),
   ];
-  const composition = composeRuleset({
+  const playBundle = composePlayBundle({
     identity: { id: 'sample.intersection', version: '1.0.0' },
-    language: { id: 'asha-rpg', version: '^1.0.0' },
-    base: rulesetPackageRequest({ id: 'sample.consumer-a', version: '1.0.0' }),
-    add: [rulesetPackageRequest({ id: 'sample.consumer-b', version: '1.0.0' })],
+    ruleset: contractTestRuleset,
+    base: contentPackRequest({ id: 'sample.consumer-a', version: '1.0.0' }),
+    add: [contentPackRequest({ id: 'sample.consumer-b', version: '1.0.0' })],
     overlays: [],
     configure: {},
   });
 
-  const first = prepareRulesetCompilation({
-    composition,
-    packages: [...consumers, ...available],
+  const first = preparePlayBundle({
+    bundle: playBundle,
+    contentPacks: [...consumers, ...available],
   });
-  const reordered = prepareRulesetCompilation({
-    composition,
-    packages: [...available].reverse().concat([...consumers].reverse()),
+  const reordered = preparePlayBundle({
+    bundle: playBundle,
+    contentPacks: [...available].reverse().concat([...consumers].reverse()),
   });
 
   assert.equal(first.ok, true, JSON.stringify(first));
@@ -272,7 +273,7 @@ test('Rust emits byte-stable closed artifacts and separates fingerprint planes',
   const semantic = compilePrepared(
     acceptedPrepared(packageFixture({ damageAmount: 7 })),
   );
-  const semanticVariantPrepared: PreparedRulesetCompilation = {
+  const semanticVariantPrepared: PreparedPlayBundle = {
     ...baseline,
     materializedDefinitions: baseline.materializedDefinitions.map((definition) =>
       definition.id === 'catalog.damage.arcane'
@@ -301,7 +302,7 @@ test('Rust emits byte-stable closed artifacts and separates fingerprint planes',
 
   assert.match(
     catalogSemanticDiagnostics,
-    /RULESET_DEFINITION_FINGERPRINT_MISMATCH/,
+    /CONTENT_PACK_DEFINITION_FINGERPRINT_MISMATCH/,
   );
 
   const encoded = JSON.stringify(repeated);
@@ -318,12 +319,12 @@ test('Rust emits byte-stable closed artifacts and separates fingerprint planes',
       '-p',
       'rpg-compiler',
       '--bin',
-      'validate_ruleset_artifact',
+      'validate_play_bundle',
     ],
     { cwd: root, encoding: 'utf8', input: encoded },
   );
   assert.equal(validation.status, 0, validation.stderr);
-  assert.match(validation.stdout, /^accepted sample\.composition@1\.0\.0:/);
+  assert.match(validation.stdout, /^accepted sample\.bundle@1\.0\.0:/);
 
   const tamperedValidation = spawnSync(
     'cargo',
@@ -335,7 +336,7 @@ test('Rust emits byte-stable closed artifacts and separates fingerprint planes',
       '-p',
       'rpg-compiler',
       '--bin',
-      'validate_ruleset_artifact',
+      'validate_play_bundle',
     ],
     {
       cwd: root,
@@ -347,7 +348,7 @@ test('Rust emits byte-stable closed artifacts and separates fingerprint planes',
     },
   );
   assert.notEqual(tamperedValidation.status, 0);
-  assert.match(tamperedValidation.stderr, /RULESET_ARTIFACT_FINGERPRINT_MISMATCH/);
+  assert.match(tamperedValidation.stderr, /PLAY_BUNDLE_ARTIFACT_FINGERPRINT_MISMATCH/);
 
   const unknownFieldValidation = spawnSync(
     'cargo',
@@ -359,7 +360,7 @@ test('Rust emits byte-stable closed artifacts and separates fingerprint planes',
       '-p',
       'rpg-compiler',
       '--bin',
-      'validate_ruleset_artifact',
+      'validate_play_bundle',
     ],
     {
       cwd: root,
@@ -368,7 +369,7 @@ test('Rust emits byte-stable closed artifacts and separates fingerprint planes',
     },
   );
   assert.notEqual(unknownFieldValidation.status, 0);
-  assert.match(unknownFieldValidation.stderr, /RULESET_ARTIFACT_DECODE_FAILED/);
+  assert.match(unknownFieldValidation.stderr, /PLAY_BUNDLE_ARTIFACT_DECODE_FAILED/);
 
   const semanticTamper = structuredClone(repeated);
   const supportDefinition = semanticTamper.materializedDefinitions.find(
@@ -380,7 +381,7 @@ test('Rust emits byte-stable closed artifacts and separates fingerprint planes',
   assert.notEqual(semanticTamperValidation.status, 0);
   assert.match(
     semanticTamperValidation.stderr,
-    /RULESET_DEFINITION_FINGERPRINT_MISMATCH/,
+    /CONTENT_PACK_DEFINITION_FINGERPRINT_MISMATCH/,
   );
 });
 
@@ -404,22 +405,22 @@ test('the closed definition graph is derived from runtime semantics only', () =>
   );
   assert.match(
     missingSupportDiagnostics,
-    /RULESET_ARTIFACT_REFERENCE_MISSING|RULESET_DAMAGE_TYPE_DEFINITION_MISSING/,
+    /CONTENT_PACK_ARTIFACT_REFERENCE_MISSING|CONTENT_PACK_DAMAGE_TYPE_DEFINITION_MISSING/,
   );
 
   const undeclaredFixture = packageFixture({
     runtimeDamageDefinitionId: 'catalog.damage.shadow',
   });
-  const undeclaredRuntimeType = prepareRulesetCompilation({
-    composition: undeclaredFixture.composition,
-    packages: undeclaredFixture.packages,
+  const undeclaredRuntimeType = preparePlayBundle({
+    bundle: undeclaredFixture.bundle,
+    contentPacks: undeclaredFixture.contentPacks,
   });
   assert.equal(undeclaredRuntimeType.ok, false);
   if (!undeclaredRuntimeType.ok) {
     assert.ok(
       undeclaredRuntimeType.diagnostics.some(
         (diagnostic) =>
-          diagnostic.code === 'RULESET_DEFINITION_REFERENCE_MISSING',
+          diagnostic.code === 'CONTENT_PACK_DEFINITION_REFERENCE_MISSING',
       ),
     );
   }
@@ -434,7 +435,7 @@ test('the closed definition graph is derived from runtime semantics only', () =>
   );
   assert.match(
     parallelStructureDiagnostics,
-    /RULESET_PREPARED_DECODE_FAILED/,
+    /PLAY_BUNDLE_PREPARED_DECODE_FAILED/,
   );
 });
 
@@ -442,29 +443,56 @@ test('Rust authority rejects unsupported requirements during compile and artifac
   const baseline = acceptedPrepared(packageFixture());
   const unsupportedPrepared = {
     ...baseline,
-    requiredOperations: [{ id: 'operation.not-supported', version: 99 }],
+    contentRequirements: {
+      ...baseline.contentRequirements,
+      operations: [{ id: 'operation.not-supported', version: 99 }],
+    },
   };
   const compilation = runCompilation(unsupportedPrepared);
   assert.match(
     failedCompilationDiagnostics(compilation),
-    /RULESET_OPERATION_REQUIREMENT_UNSUPPORTED/,
+    /PLAY_BUNDLE_OPERATION_REQUIREMENT_MISSING/,
   );
 
   const artifact = structuredClone(compilePrepared(baseline));
-  artifact.requiredOperations = [
+  artifact.contentRequirements.operations = [
     { id: 'operation.not-supported', version: 99 },
   ];
   const validation = validateArtifact(artifact);
   assert.notEqual(validation.status, 0);
-  assert.match(validation.stderr, /RULESET_OPERATION_REQUIREMENT_UNSUPPORTED/);
+  assert.match(validation.stderr, /PLAY_BUNDLE_OPERATION_REQUIREMENT_MISSING/);
+
+  const unsupportedModel = {
+    ...baseline,
+    ruleset: {
+      ...baseline.ruleset,
+      models: {
+        ...baseline.ruleset.models,
+        checks: { id: 'check.not-supported', version: 99 },
+      },
+    },
+  };
+  assert.match(
+    failedCompilationDiagnostics(runCompilation(unsupportedModel)),
+    /RULESET_MODEL_UNSUPPORTED/,
+  );
+
+  const modelArtifact = structuredClone(compilePrepared(baseline));
+  modelArtifact.ruleset.models.checks = {
+    id: 'check.not-supported',
+    version: 99,
+  };
+  const modelValidation = validateArtifact(modelArtifact);
+  assert.notEqual(modelValidation.status, 0);
+  assert.match(modelValidation.stderr, /RULESET_MODEL_UNSUPPORTED/);
 });
 
 function acceptedPrepared(
   fixture: ReturnType<typeof packageFixture>,
-): PreparedRulesetCompilation {
-  const result = prepareRulesetCompilation({
-    composition: fixture.composition,
-    packages: fixture.packages,
+): PreparedPlayBundle {
+  const result = preparePlayBundle({
+    bundle: fixture.bundle,
+    contentPacks: fixture.contentPacks,
   });
   if (!result.ok) assert.fail(JSON.stringify(result.diagnostics));
   return result.prepared;
@@ -472,13 +500,13 @@ function acceptedPrepared(
 
 function prepareFixture(options: FixtureOptions) {
   const fixture = packageFixture(options);
-  return prepareRulesetCompilation({
-    composition: fixture.composition,
-    packages: fixture.packages,
+  return preparePlayBundle({
+    bundle: fixture.bundle,
+    contentPacks: fixture.contentPacks,
   });
 }
 
-function compilePrepared(prepared: PreparedRulesetCompilation): CompiledArtifact {
+function compilePrepared(prepared: PreparedPlayBundle): CompiledArtifact {
   const compilation = runCompilation(prepared);
   assert.equal(compilation.status, 0, compilation.stderr);
   const result = JSON.parse(compilation.stdout) as CompilationEnvelope;
@@ -497,7 +525,7 @@ function runCompilation(prepared: unknown) {
       '-p',
       'rpg-compiler',
       '--bin',
-      'compile_ruleset',
+      'compile_play_bundle',
     ],
     { cwd: root, encoding: 'utf8', input: canonicalJson(prepared) },
   );
@@ -523,7 +551,7 @@ function validateArtifact(artifact: unknown) {
       '-p',
       'rpg-compiler',
       '--bin',
-      'validate_ruleset_artifact',
+      'validate_play_bundle',
     ],
     { cwd: root, encoding: 'utf8', input: canonicalJson(artifact) },
   );
@@ -547,8 +575,8 @@ interface FixtureOptions {
 }
 
 function packageFixture(options: FixtureOptions = {}): {
-  readonly composition: ReturnType<typeof composeRuleset>;
-  readonly packages: readonly RulesetPackageSource[];
+  readonly bundle: ReturnType<typeof composePlayBundle>;
+  readonly contentPacks: readonly ContentPackSource[];
 } {
   const privateTemplate = defineTemplateDefinition({
     kind: 'template',
@@ -557,7 +585,7 @@ function packageFixture(options: FixtureOptions = {}): {
     extensionPolicy: 'derivable',
     source: { module: 'foundation/templates.ts', declaration: 'privateTemplate' },
   });
-  const catalogs = defineRulesetCatalog({
+  const catalogs = defineContentCatalog({
     packageId: 'sample.foundation',
     sourceModule: 'foundation/damage-types.ts',
     entries: {
@@ -569,12 +597,12 @@ function packageFixture(options: FixtureOptions = {}): {
       },
     },
   });
-  const foundationManifest: RulesetPackageManifest = defineRulesetPackage({
+  const foundationManifest: ContentPackManifest = defineContentPack({
     identity: { id: 'sample.foundation', version: '1.1.0' },
     entry: { module: 'foundation/ruleset.ts', declaration: 'default' },
     language: { id: 'asha-rpg', version: '^1.0.0' },
     dependencies: options.dependencyCycle
-      ? [rulesetDependency({ id: 'sample.core', version: '^1.0.0', importAs: 'core' })]
+      ? [contentPackDependency({ id: 'sample.core', version: '^1.0.0', importAs: 'core' })]
       : [],
     requirements: { operations: [], capabilities: [] },
     definitions: [
@@ -646,19 +674,19 @@ function packageFixture(options: FixtureOptions = {}): {
             definitionId: explicitReferenceId,
           }),
         ]);
-  const coreManifest = defineRulesetPackage({
+  const coreManifest = defineContentPack({
     identity: { id: 'sample.core', version: '1.0.0' },
     entry: { module: 'core/ruleset.ts', declaration: 'default' },
     language: { id: 'asha-rpg', version: options.languageVersion ?? '^1.0.0' },
     dependencies: [
-      rulesetDependency({
+      contentPackDependency({
         id: 'sample.foundation',
         version: '^1.0.0',
         importAs: 'foundation',
       }),
       ...(options.duplicateDependencyAlias
         ? [
-            rulesetDependency({
+            contentPackDependency({
               id: 'sample.foundation',
               version: '1.1.0',
               importAs: 'foundation',
@@ -690,21 +718,21 @@ function packageFixture(options: FixtureOptions = {}): {
       : [],
   });
   return {
-    composition: composeRuleset({
-      identity: { id: 'sample.composition', version: '1.0.0' },
-      language: { id: 'asha-rpg', version: '^1.0.0' },
-      base: rulesetPackageRequest({ id: 'sample.core', version: '1.0.0' }),
-      add: [rulesetPackageRequest({ id: 'sample.foundation', version: '^1.0.0' })],
+    bundle: composePlayBundle({
+      identity: { id: 'sample.bundle', version: '1.0.0' },
+      ruleset: contractTestRuleset,
+      base: contentPackRequest({ id: 'sample.core', version: '1.0.0' }),
+      add: [contentPackRequest({ id: 'sample.foundation', version: '^1.0.0' })],
       overlays: [],
       configure: {},
     }),
-    packages: [rulesetPackageSource(coreManifest), rulesetPackageSource(foundationManifest)],
+    contentPacks: [contentPackSource(coreManifest), contentPackSource(foundationManifest)],
   };
 }
 
-function emptyPackageSource(id: string, version: string): RulesetPackageSource {
-  return rulesetPackageSource(
-    defineRulesetPackage({
+function emptyPackageSource(id: string, version: string): ContentPackSource {
+  return contentPackSource(
+    defineContentPack({
       identity: { id, version },
       entry: { module: `${id}.ts`, declaration: 'default' },
       language: { id: 'asha-rpg', version: '^1.0.0' },
@@ -721,14 +749,14 @@ function emptyPackageSource(id: string, version: string): RulesetPackageSource {
 function packageSourceWithDependency(
   id: string,
   sharedVersion: string,
-): RulesetPackageSource {
-  return rulesetPackageSource(
-    defineRulesetPackage({
+): ContentPackSource {
+  return contentPackSource(
+    defineContentPack({
       identity: { id, version: '1.0.0' },
       entry: { module: `${id}.ts`, declaration: 'default' },
       language: { id: 'asha-rpg', version: '^1.0.0' },
       dependencies: [
-        rulesetDependency({
+        contentPackDependency({
           id: 'sample.shared',
           version: sharedVersion,
           importAs: 'shared',
@@ -745,7 +773,14 @@ function packageSourceWithDependency(
 
 interface CompiledArtifact {
   readonly artifactId: string;
-  requiredOperations: { id: string; version: number }[];
+  ruleset: {
+    models: {
+      checks: { id: string; version: number };
+    };
+  };
+  contentRequirements: {
+    operations: { id: string; version: number }[];
+  };
   readonly materializedDefinitions: {
     readonly id: string;
     semantic: unknown;

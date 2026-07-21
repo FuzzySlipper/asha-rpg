@@ -10,8 +10,7 @@ import {
   defineArchetype,
   defineItem,
   definePackage,
-  defineRulesetCatalog,
-  defineScenario,
+  defineContentCatalog,
   dice,
   forEachTarget,
   half,
@@ -31,10 +30,10 @@ import {
 import type {
   AuthoredAction,
   RpgActionId,
-  RulesetCatalogReference,
+  ContentCatalogReference,
 } from '@asha-rpg/authoring';
 
-const catalogs = defineRulesetCatalog({
+const catalogs = defineContentCatalog({
   packageId: 'example.rules',
   sourceModule: 'examples/catalogs.ts',
   entries: {
@@ -121,8 +120,8 @@ export const tacticalShift = action({
 /** A consumer-owned helper. Its identity disappears during normalization. */
 export function typedStrike(
   id: RpgActionId,
-  type: RulesetCatalogReference<'damageType', 'example.rules'>,
-  modifier: RulesetCatalogReference<'modifier', 'example.rules'>,
+  type: ContentCatalogReference<'damageType', 'example.rules'>,
+  modifier: ContentCatalogReference<'modifier', 'example.rules'>,
 ): AuthoredAction {
   return action({
     id,
@@ -162,7 +161,7 @@ export const representativePackage = definePackage({
   sources: [
     defineArchetype('example.vanguard', [bindingStrike, frostJab, emberJab]),
     defineItem('example.storm-focus', [stormBurst]),
-    defineScenario('example.bridge-crossing', [tacticalShift]),
+    defineArchetype('example.mobility', [tacticalShift]),
   ],
 });
 

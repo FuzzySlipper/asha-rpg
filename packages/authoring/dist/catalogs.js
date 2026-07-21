@@ -1,7 +1,7 @@
 import { immutable } from './canonical.js';
 const catalogReferenceBrand = Symbol('asha-rpg.catalog-reference');
 const authoredCatalogOwnership = Symbol('asha-rpg.authored-catalog-ownership');
-export function defineRulesetCatalog(input) {
+export function defineContentCatalog(input) {
     assertIdentifier(input.packageId, 'catalog package id');
     if (input.sourceModule.length === 0) {
         throw new Error('catalog source module must not be empty');

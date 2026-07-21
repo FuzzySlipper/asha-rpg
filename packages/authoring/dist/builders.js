@@ -1,4 +1,5 @@
 import { catalogDefinitionId, retainCatalogOwnership, } from './catalogs.js';
+import { rulesetValueId } from './ruleset-builders.js';
 export function actionId(value) {
     return checkedIdentifier(value, 'action id');
 }
@@ -40,7 +41,7 @@ export function constant(value) {
     return frozen({ kind: 'constant', value });
 }
 export function readStat(subject, id) {
-    return frozenWithCatalogOwnership({ kind: 'readStat', subject, statId: catalogDefinitionId(id) }, 'statId', id);
+    return frozenWithCatalogOwnership({ kind: 'readStat', subject, statId: authoredValueId(id) }, 'statId', id);
 }
 export function add(...terms) {
     return frozen({ kind: 'add', terms: frozenList(terms) });
@@ -78,14 +79,14 @@ export function attack(options) {
     return frozenWithCatalogOwnership({
         kind: 'attack',
         modifier: options.modifier,
-        defenseId: catalogDefinitionId(options.defense),
+        defenseId: authoredValueId(options.defense),
     }, 'defenseId', options.defense);
 }
 export function savingThrow(options) {
     return frozenWithCatalogOwnership({
         kind: 'savingThrow',
         difficulty: options.difficulty,
-        defenseId: catalogDefinitionId(options.defense),
+        defenseId: authoredValueId(options.defense),
     }, 'defenseId', options.defense);
 }
 export function spend(resource, amount) {
@@ -187,9 +188,6 @@ export function defineArchetype(id, actions) {
 export function defineItem(id, actions) {
     return source('item', id, actions);
 }
-export function defineScenario(id, actions) {
-    return source('scenario', id, actions);
-}
 export function definePackage(options) {
     return frozen({
         id: options.id,
@@ -209,6 +207,11 @@ function frozen(value) {
 function frozenWithCatalogOwnership(value, field, reference) {
     retainCatalogOwnership(value, [{ field, reference }]);
     return frozen(value);
+}
+function authoredValueId(reference) {
+    return 'definitionId' in reference
+        ? catalogDefinitionId(reference)
+        : rulesetValueId(reference);
 }
 function frozenList(values) {
     return Object.freeze([...values]);

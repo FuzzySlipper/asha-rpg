@@ -19,7 +19,7 @@ closed. Portable checkpoint and replay are part of the existing authority
 session; a separate replay engine, event-applier, or state path is not an
 implementation claim.
 
-Encounter setup is not a scenario script, gameplay runner, campaign save, AI
+Scenario is setup-only data, not a gameplay runner, campaign save, AI
 plan, or product protocol. Cell and area option slots are typed extension
 points; version 1 claims entity target candidates, board bounds, unique
 occupancy, and impassable destination enforcement, not general cell/area

@@ -4,47 +4,54 @@ import { defineActions, definePackage } from './builders.js';
 import { catalogOwnershipOf } from './catalogs.js';
 import { normalizeAction, normalizePackage } from './normalize.js';
 const NO_DIAGNOSTICS = Object.freeze([]);
-export const ASHA_RPG_COMPILER_TARGET = immutable({
+export const ASHA_RPG_PLAY_BUNDLE_TARGET = immutable({
     language: { id: 'asha-rpg', version: '1.0.0' },
     operations: { ...RPG_OPERATION_VERSIONS },
     capabilities: { ...RPG_CAPABILITY_VERSIONS },
+    models: {
+        checks: { 'check.d20-roll-over': 1 },
+        turns: { 'turn.ordered-one-action': 1 },
+        reactions: { 'reaction.before-damage-choice': 1 },
+        actionEconomy: { 'action-economy.one-action-plus-reaction': 1 },
+    },
 });
-export function prepareRulesetCompilation(options) {
-    const target = options.target ?? ASHA_RPG_COMPILER_TARGET;
+export function preparePlayBundle(options) {
+    const target = options.target ?? ASHA_RPG_PLAY_BUNDLE_TARGET;
     const diagnostics = [];
     rejectExecutableValues(options, '$', diagnostics, new WeakSet());
-    validateComposition(options.composition, target, diagnostics);
-    validateUniquePackageSources(options.packages, diagnostics);
+    validatePlayBundle(options.bundle, target, diagnostics);
+    validateUniquePackageSources(options.contentPacks, diagnostics);
     const context = {
         diagnostics,
-        availableById: indexAvailablePackages(options.packages, diagnostics),
+        availableById: indexAvailablePackages(options.contentPacks, diagnostics),
         selected: new Map(),
         lock: [],
         relationships: [],
     };
-    const compositionKey = identityKey(options.composition.identity.id, options.composition.identity.version);
-    const resolved = resolvePackageGraph(context, options.composition, compositionKey);
+    const bundleKey = identityKey(options.bundle.identity.id, options.bundle.identity.version);
+    const resolved = resolvePackageGraph(context, options.bundle, bundleKey);
     if (resolved === undefined)
         return failed(diagnostics);
     const { base, additions } = resolved;
-    validateSelectedPackages(context, target);
+    validateSelectedPackages(context, options.bundle.ruleset);
     const rootKeys = new Set([base, ...additions]
         .filter((entry) => entry !== undefined)
         .map((entry) => entry.key));
-    const materialization = materializeSelectedDefinitions(context, options.composition, resolved.overlays);
+    const materialization = materializeSelectedDefinitions(context, options.bundle, resolved.overlays);
     if (materialization === undefined)
         return failed(diagnostics);
     const graph = closeDefinitionGraph(context, rootKeys, materialization.records);
     if (diagnostics.length > 0 || graph === undefined)
         return failed(diagnostics);
-    const normalized = normalizeMaterializedActions(options.composition, graph, diagnostics);
+    const normalized = normalizeMaterializedActions(options.bundle, graph, diagnostics);
     if (normalized === undefined)
         return failed(diagnostics);
-    const requirements = collectRequirements(context, normalized.requirements, target);
+    const requirements = collectRequirements(context, normalized);
+    validateCollectedRequirements(requirements, options.bundle.ruleset, diagnostics);
     const policyBindings = [...context.selected.values()]
         .flatMap((entry) => entry.source.manifest.policyBindings)
         .sort((left, right) => left.id.localeCompare(right.id));
-    rejectDuplicateValues(policyBindings.map((binding) => binding.id), 'RULESET_DUPLICATE_POLICY_BINDING', '$.compiledPolicyBindings', 'policy binding', diagnostics);
+    rejectDuplicateValues(policyBindings.map((binding) => binding.id), 'CONTENT_PACK_DUPLICATE_POLICY_BINDING', '$.compiledPolicyBindings', 'policy binding', diagnostics);
     if (diagnostics.length > 0 || requirements === undefined)
         return failed(diagnostics);
     const definitionProvenance = graph.materialized
@@ -57,24 +64,24 @@ export function prepareRulesetCompilation(options) {
         ...materialization.relationships,
         ...graph.exportedRoots.map((definitionId, order) => ({
             kind: 'exports',
-            source: graph.byGlobalId.get(definitionId)?.package.key ?? compositionKey,
+            source: graph.byGlobalId.get(definitionId)?.package.key ?? bundleKey,
             target: definitionId,
             order,
         })),
-        ...Object.entries(options.composition.configure)
+        ...Object.entries(options.bundle.configure)
             .sort(([left], [right]) => left.localeCompare(right))
             .map(([optionId, value], order) => ({
             kind: 'configures',
-            source: compositionKey,
+            source: bundleKey,
             target: `${optionId}=${String(value)}`,
             order,
         })),
     ].sort(compareRelationship);
     const prepared = immutable({
-        schema: { identity: 'asha.rpg.ruleset.prepared', major: 1 },
-        compositionIdentity: options.composition.identity,
-        languageIdentity: target.language,
-        sourcePackages: [...context.selected.values()]
+        schema: { identity: 'asha.rpg.play-bundle.prepared', major: 1 },
+        playBundleIdentity: options.bundle.identity,
+        ruleset: options.bundle.ruleset,
+        contentPacks: [...context.selected.values()]
             .map((entry) => ({
             id: entry.source.manifest.identity.id,
             version: entry.source.manifest.identity.version,
@@ -82,8 +89,7 @@ export function prepareRulesetCompilation(options) {
         }))
             .sort(compareIdentity),
         dependencyLock: [...context.lock].sort(compareLock),
-        requiredOperations: requirements.operations,
-        requiredCapabilities: requirements.capabilities,
+        contentRequirements: requirements,
         exportedRoots: graph.exportedRoots,
         materializedDefinitions,
         compiledPolicyBindings: policyBindings,
@@ -95,21 +101,64 @@ export function prepareRulesetCompilation(options) {
     });
     return immutable({ ok: true, prepared, diagnostics: NO_DIAGNOSTICS });
 }
-function validateComposition(composition, target, diagnostics) {
-    requireIdentifier(composition.identity.id, '$.composition.identity.id', diagnostics);
-    requireExactVersion(composition.identity.version, '$.composition.identity.version', diagnostics);
-    if (composition.language.id !== 'asha-rpg') {
-        diagnostics.push(diagnostic('compatibility', 'RULESET_LANGUAGE_ID_UNSUPPORTED', '$.composition.language.id', 'the composition language must be asha-rpg', { expected: 'asha-rpg', actual: composition.language.id }));
+function validatePlayBundle(bundle, target, diagnostics) {
+    requireIdentifier(bundle.identity.id, '$.bundle.identity.id', diagnostics);
+    requireExactVersion(bundle.identity.version, '$.bundle.identity.version', diagnostics);
+    validateRuleset(bundle.ruleset, target, diagnostics);
+    for (const optionId of Object.keys(bundle.configure).sort()) {
+        requireIdentifier(optionId, `$.bundle.configure.${optionId}`, diagnostics);
     }
-    if (composition.language.id !== target.language.id ||
-        !satisfiesVersion(target.language.version, composition.language.version)) {
-        diagnostics.push(diagnostic('compatibility', 'RULESET_COMPOSITION_LANGUAGE_INCOMPATIBLE', '$.composition.language', `the composition requires ${composition.language.id}@${composition.language.version}`, {
+}
+function validateRuleset(ruleset, target, diagnostics) {
+    if (ruleset.schema.identity !== 'asha.rpg.ruleset' ||
+        ruleset.schema.major !== 1) {
+        diagnostics.push(diagnostic('compatibility', 'RULESET_SCHEMA_UNSUPPORTED', '$.bundle.ruleset.schema', 'the ruleset schema must be asha.rpg.ruleset@1'));
+    }
+    for (const model of ['checks', 'turns', 'reactions', 'actionEconomy']) {
+        const binding = ruleset.models[model];
+        if (target.models[model][binding.id] === binding.version)
+            continue;
+        diagnostics.push(diagnostic('compatibility', 'RULESET_MODEL_UNSUPPORTED', `$.bundle.ruleset.models.${model}`, `ruleset model ${binding.id}@${binding.version} is not bound by Rust authority`));
+    }
+    requireIdentifier(ruleset.identity.id, '$.bundle.ruleset.identity.id', diagnostics);
+    requireExactVersion(ruleset.identity.version, '$.bundle.ruleset.identity.version', diagnostics);
+    if (ruleset.language.id !== target.language.id ||
+        !satisfiesVersion(target.language.version, ruleset.language.version)) {
+        diagnostics.push(diagnostic('compatibility', 'RULESET_LANGUAGE_INCOMPATIBLE', '$.bundle.ruleset.language', `the ruleset requires ${ruleset.language.id}@${ruleset.language.version}`, {
             expected: `${target.language.id}@${target.language.version}`,
-            actual: `${composition.language.id}@${composition.language.version}`,
+            actual: `${ruleset.language.id}@${ruleset.language.version}`,
         }));
     }
-    for (const optionId of Object.keys(composition.configure).sort()) {
-        requireIdentifier(optionId, `$.composition.configure.${optionId}`, diagnostics);
+    const operationIds = new Set();
+    for (const [index, provision] of ruleset.provides.operations.entries()) {
+        if (target.operations[provision.id] !== provision.version ||
+            !operationIds.add(provision.id)) {
+            diagnostics.push(diagnostic('compatibility', 'RULESET_OPERATION_PROVISION_INVALID', `$.bundle.ruleset.provides.operations[${index}]`, `ruleset operation provision ${provision.id}@${provision.version} is unsupported or duplicated`));
+        }
+    }
+    const capabilityIds = new Set();
+    for (const [index, provision] of ruleset.provides.capabilities.entries()) {
+        if (target.capabilities[provision.id] !== provision.version ||
+            !capabilityIds.add(provision.id)) {
+            diagnostics.push(diagnostic('compatibility', 'RULESET_CAPABILITY_PROVISION_INVALID', `$.bundle.ruleset.provides.capabilities[${index}]`, `ruleset capability provision ${provision.id}@${provision.version} is unsupported or duplicated`));
+        }
+    }
+    const valueIds = new Set();
+    const declaredDomains = new Set(ruleset.provides.numericDomains.map((domain) => domain.id));
+    for (const [index, provision] of ruleset.provides.values.entries()) {
+        const key = `${provision.kind}:${provision.id}`;
+        if (!valueIds.add(key) ||
+            provision.label.trim().length === 0 ||
+            !declaredDomains.has(provision.numericDomainId)) {
+            diagnostics.push(diagnostic('source', 'RULESET_VALUE_PROVISION_INVALID', `$.bundle.ruleset.provides.values[${index}]`, `ruleset value provision ${key} must be unique, labelled, and use a declared numeric domain`));
+        }
+    }
+    const domainIds = new Set();
+    for (const [index, provision] of ruleset.provides.numericDomains.entries()) {
+        if (!domainIds.add(provision.id) ||
+            provision.minimum > provision.maximum) {
+            diagnostics.push(diagnostic('source', 'RULESET_NUMERIC_DOMAIN_INVALID', `$.bundle.ruleset.provides.numericDomains[${index}]`, `ruleset numeric domain ${provision.id} must be unique and ordered`));
+        }
     }
 }
 function indexAvailablePackages(sources, diagnostics) {
@@ -138,31 +187,31 @@ function validateUniquePackageSources(sources, diagnostics) {
             identities.add(key);
             continue;
         }
-        diagnostics.push(diagnostic('source', 'RULESET_DUPLICATE_PACKAGE_IDENTITY', `$.packages[${index}]`, `duplicate package source ${key}`, { packageId: identity.id }));
+        diagnostics.push(diagnostic('source', 'CONTENT_PACK_DUPLICATE_PACKAGE_IDENTITY', `$.packages[${index}]`, `duplicate package source ${key}`, { packageId: identity.id }));
     }
 }
-function resolvePackageGraph(context, composition, compositionKey) {
+function resolvePackageGraph(context, bundle, bundleKey) {
     const rootConstraints = [
         {
-            request: composition.base,
-            requester: compositionKey,
+            request: bundle.base,
+            requester: bundleKey,
             importAs: 'base',
             relationship: 'contributes',
-            path: '$.composition.base',
+            path: '$.bundle.base',
         },
-        ...composition.add.map((request, index) => ({
+        ...bundle.add.map((request, index) => ({
             request,
-            requester: compositionKey,
+            requester: bundleKey,
             importAs: `add:${request.id}`,
             relationship: 'contributes',
-            path: `$.composition.add[${index}]`,
+            path: `$.bundle.add[${index}]`,
         })),
-        ...composition.overlays.map((request, index) => ({
+        ...bundle.overlays.map((request, index) => ({
             request,
-            requester: compositionKey,
+            requester: bundleKey,
             importAs: `overlay:${request.id}`,
             relationship: 'patches',
-            path: `$.composition.overlays[${index}]`,
+            path: `$.bundle.overlays[${index}]`,
         })),
     ];
     for (const constraint of rootConstraints) {
@@ -215,7 +264,7 @@ function resolvePackageGraph(context, composition, compositionKey) {
                 .map((constraint) => constraint.request.version)
                 .sort(compareText)
                 .join(' & ');
-            context.diagnostics.push(diagnostic('resolution', 'RULESET_PACKAGE_UNRESOLVED', first.path, `no package ${first.request.id} satisfies all constraints: ${expected}`, { packageId: first.request.id, expected }));
+            context.diagnostics.push(diagnostic('resolution', 'CONTENT_PACK_PACKAGE_UNRESOLVED', first.path, `no package ${first.request.id} satisfies all constraints: ${expected}`, { packageId: first.request.id, expected }));
         }
         return undefined;
     }
@@ -257,9 +306,9 @@ function resolvePackageGraph(context, composition, compositionKey) {
             throw new Error(`resolved package ${key} is absent`);
         return selected;
     };
-    const base = selectedForRequest(composition.base);
-    const additions = composition.add.map(selectedForRequest);
-    const overlays = composition.overlays.map(selectedForRequest);
+    const base = selectedForRequest(bundle.base);
+    const additions = bundle.add.map(selectedForRequest);
+    const overlays = bundle.overlays.map(selectedForRequest);
     resolveDependencies(context, [base, ...additions, ...overlays], selectedById);
     return { base, additions, overlays };
 }
@@ -291,7 +340,7 @@ function groupConstraints(constraints) {
 function validateSupportedRange(constraint, diagnostics) {
     if (supportedRange(constraint.request.version))
         return;
-    diagnostics.push(diagnostic('resolution', 'RULESET_VERSION_RANGE_UNSUPPORTED', `${constraint.path}.version`, `unsupported version range ${constraint.request.version}`, { packageId: constraint.request.id }));
+    diagnostics.push(diagnostic('resolution', 'CONTENT_PACK_VERSION_RANGE_UNSUPPORTED', `${constraint.path}.version`, `unsupported version range ${constraint.request.version}`, { packageId: constraint.request.id }));
 }
 function resolveDependencies(context, roots, selectedById) {
     const visiting = [];
@@ -300,7 +349,7 @@ function resolveDependencies(context, roots, selectedById) {
         const cycleStart = visiting.indexOf(entry.key);
         if (cycleStart >= 0) {
             const graphPath = [...visiting.slice(cycleStart), entry.key];
-            context.diagnostics.push(diagnostic('resolution', 'RULESET_DEPENDENCY_CYCLE', '$.dependencyGraph', `dependency cycle: ${graphPath.join(' -> ')}`, { graphPath }));
+            context.diagnostics.push(diagnostic('resolution', 'CONTENT_PACK_DEPENDENCY_CYCLE', '$.dependencyGraph', `dependency cycle: ${graphPath.join(' -> ')}`, { graphPath }));
             return;
         }
         if (visited.has(entry.key))
@@ -311,7 +360,7 @@ function resolveDependencies(context, roots, selectedById) {
         for (const [index, dependency] of dependencies.entries()) {
             const path = `$.packages[${entry.key}].dependencies[${index}]`;
             if (aliases.has(dependency.importAs)) {
-                context.diagnostics.push(diagnostic('source', 'RULESET_DUPLICATE_IMPORT_ALIAS', `${path}.importAs`, `duplicate import alias ${dependency.importAs}`, { packageId: entry.source.manifest.identity.id, source: entry.source.manifest.entry }));
+                context.diagnostics.push(diagnostic('source', 'CONTENT_PACK_DUPLICATE_IMPORT_ALIAS', `${path}.importAs`, `duplicate import alias ${dependency.importAs}`, { packageId: entry.source.manifest.identity.id, source: entry.source.manifest.entry }));
                 continue;
             }
             aliases.add(dependency.importAs);
@@ -331,26 +380,26 @@ function resolveDependencies(context, roots, selectedById) {
     for (const root of roots)
         visit(root);
 }
-function validateSelectedPackages(context, target) {
+function validateSelectedPackages(context, ruleset) {
     for (const entry of context.selected.values()) {
         const manifest = entry.source.manifest;
-        if (manifest.language.id !== target.language.id ||
-            !satisfiesVersion(target.language.version, manifest.language.version)) {
-            context.diagnostics.push(diagnostic('compatibility', 'RULESET_LANGUAGE_INCOMPATIBLE', `$.packages[${entry.key}].language`, `${entry.key} requires ${manifest.language.id}@${manifest.language.version}`, {
+        if (manifest.language.id !== ruleset.language.id ||
+            !satisfiesVersion(ruleset.language.version, manifest.language.version)) {
+            context.diagnostics.push(diagnostic('compatibility', 'CONTENT_PACK_LANGUAGE_INCOMPATIBLE', `$.packages[${entry.key}].language`, `${entry.key} requires ${manifest.language.id}@${manifest.language.version}`, {
                 packageId: manifest.identity.id,
-                expected: `${target.language.id}@${target.language.version}`,
+                expected: `${ruleset.language.id}@${ruleset.language.version}`,
                 actual: `${manifest.language.id}@${manifest.language.version}`,
                 source: manifest.entry,
             }));
         }
-        validateRequirements(entry, target, context.diagnostics);
+        validateRequirements(entry, ruleset, context.diagnostics);
     }
 }
-function validateRequirements(entry, target, diagnostics) {
+function validateRequirements(entry, ruleset, diagnostics) {
     for (const [index, requirement] of entry.source.manifest.requirements.operations.entries()) {
-        const supported = target.operations[requirement.id];
+        const supported = ruleset.provides.operations.find((candidate) => candidate.id === requirement.id)?.version;
         if (supported !== requirement.version) {
-            diagnostics.push(diagnostic('compatibility', 'RULESET_OPERATION_INCOMPATIBLE', `$.packages[${entry.key}].requirements.operations[${index}]`, `operation ${requirement.id}@${requirement.version} is unsupported`, {
+            diagnostics.push(diagnostic('compatibility', 'CONTENT_PACK_OPERATION_REQUIREMENT_MISSING', `$.packages[${entry.key}].requirements.operations[${index}]`, `content pack requires operation ${requirement.id}@${requirement.version}, which the ruleset does not provide`, {
                 packageId: entry.source.manifest.identity.id,
                 expected: supported === undefined ? 'unavailable' : String(supported),
                 actual: String(requirement.version),
@@ -359,9 +408,9 @@ function validateRequirements(entry, target, diagnostics) {
         }
     }
     for (const [index, requirement] of entry.source.manifest.requirements.capabilities.entries()) {
-        const supported = target.capabilities[requirement.id];
+        const supported = ruleset.provides.capabilities.find((candidate) => candidate.id === requirement.id)?.version;
         if (supported !== requirement.version) {
-            diagnostics.push(diagnostic('compatibility', 'RULESET_CAPABILITY_INCOMPATIBLE', `$.packages[${entry.key}].requirements.capabilities[${index}]`, `capability ${requirement.id}@${requirement.version} is unsupported`, {
+            diagnostics.push(diagnostic('compatibility', 'CONTENT_PACK_CAPABILITY_REQUIREMENT_MISSING', `$.packages[${entry.key}].requirements.capabilities[${index}]`, `content pack requires capability ${requirement.id}@${requirement.version}, which the ruleset does not provide`, {
                 packageId: entry.source.manifest.identity.id,
                 expected: supported === undefined ? 'unavailable' : String(supported),
                 actual: String(requirement.version),
@@ -369,11 +418,24 @@ function validateRequirements(entry, target, diagnostics) {
             }));
         }
     }
+    const values = new Set(ruleset.provides.values.map((value) => `${value.kind}:${value.id}`));
+    for (const [index, requirement] of entry.source.manifest.requirements.values.entries()) {
+        const key = `${requirement.kind}:${requirement.id}`;
+        if (!values.has(key)) {
+            diagnostics.push(diagnostic('compatibility', 'CONTENT_PACK_VALUE_REQUIREMENT_MISSING', `$.packages[${entry.key}].requirements.values[${index}]`, `content pack requires ${key}, which the ruleset does not provide`, { packageId: entry.source.manifest.identity.id, expected: key, actual: 'unavailable' }));
+        }
+    }
+    const domains = new Set(ruleset.provides.numericDomains.map((domain) => domain.id));
+    for (const [index, requirement] of entry.source.manifest.requirements.numericDomains.entries()) {
+        if (!domains.has(requirement)) {
+            diagnostics.push(diagnostic('compatibility', 'CONTENT_PACK_NUMERIC_DOMAIN_REQUIREMENT_MISSING', `$.packages[${entry.key}].requirements.numericDomains[${index}]`, `content pack requires numeric domain ${requirement}, which the ruleset does not provide`, { packageId: entry.source.manifest.identity.id, expected: requirement, actual: 'unavailable' }));
+        }
+    }
 }
-function materializeSelectedDefinitions(context, composition, overlayPackages) {
+function materializeSelectedDefinitions(context, bundle, overlayPackages) {
     const definitionsByPackage = new Map();
     for (const entry of context.selected.values()) {
-        rejectDuplicateValues(entry.source.manifest.definitions.map((definition) => definition.id), 'RULESET_DUPLICATE_LOCAL_DEFINITION', `$.packages[${entry.key}].definitions`, 'definition', context.diagnostics);
+        rejectDuplicateValues(entry.source.manifest.definitions.map((definition) => definition.id), 'CONTENT_PACK_DUPLICATE_LOCAL_DEFINITION', `$.packages[${entry.key}].definitions`, 'definition', context.diagnostics);
         const exports = new Set(entry.source.manifest.exports);
         const definitions = new Map();
         for (const definition of entry.source.manifest.definitions) {
@@ -386,7 +448,7 @@ function materializeSelectedDefinitions(context, composition, overlayPackages) {
         for (const [index, definitionId] of entry.source.manifest.exports.entries()) {
             if (definitions.has(definitionId))
                 continue;
-            context.diagnostics.push(diagnostic('graph', 'RULESET_EXPORT_MISSING', `$.packages[${entry.key}].exports[${index}]`, `export ${definitionId} has no declaration`, { packageId: entry.source.manifest.identity.id, definitionId, source: entry.source.manifest.entry }));
+            context.diagnostics.push(diagnostic('graph', 'CONTENT_PACK_EXPORT_MISSING', `$.packages[${entry.key}].exports[${index}]`, `export ${definitionId} has no declaration`, { packageId: entry.source.manifest.identity.id, definitionId, source: entry.source.manifest.entry }));
         }
         definitionsByPackage.set(entry.key, definitions);
     }
@@ -394,7 +456,7 @@ function materializeSelectedDefinitions(context, composition, overlayPackages) {
     for (const entry of context.selected.values()) {
         for (const [index, relationship] of entry.source.manifest.relationships.entries()) {
             if (relationship.version !== 1) {
-                context.diagnostics.push(diagnostic('compatibility', 'RULESET_RELATIONSHIP_VERSION_UNSUPPORTED', `$.packages[${entry.key}].relationships[${index}].version`, `${relationship.kind} relationship version ${String(relationship.version)} is unsupported`, { packageId: entry.source.manifest.identity.id }));
+                context.diagnostics.push(diagnostic('compatibility', 'CONTENT_PACK_RELATIONSHIP_VERSION_UNSUPPORTED', `$.packages[${entry.key}].relationships[${index}].version`, `${relationship.kind} relationship version ${String(relationship.version)} is unsupported`, { packageId: entry.source.manifest.identity.id }));
             }
             if (relationship.kind !== 'derivesFrom')
                 continue;
@@ -417,16 +479,16 @@ function materializeSelectedDefinitions(context, composition, overlayPackages) {
         const cycleStart = visiting.indexOf(key);
         if (cycleStart >= 0) {
             const graphPath = [...visiting.slice(cycleStart), key];
-            context.diagnostics.push(diagnostic('materialization', 'RULESET_DERIVATION_CYCLE', '$.derivationGraph', `derivation cycle: ${graphPath.join(' -> ')}`, { definitionId: record.definition.id, source: record.definition.source, graphPath }));
+            context.diagnostics.push(diagnostic('materialization', 'CONTENT_PACK_DERIVATION_CYCLE', '$.derivationGraph', `derivation cycle: ${graphPath.join(' -> ')}`, { definitionId: record.definition.id, source: record.definition.source, graphPath }));
             return undefined;
         }
         if (visiting.length >= 32) {
-            context.diagnostics.push(diagnostic('materialization', 'RULESET_DERIVATION_DEPTH_EXCEEDED', '$.derivationGraph', `derivation depth exceeds the supported limit of 32 at ${key}`, { definitionId: record.definition.id, source: record.definition.source, graphPath: [...visiting, key] }));
+            context.diagnostics.push(diagnostic('materialization', 'CONTENT_PACK_DERIVATION_DEPTH_EXCEEDED', '$.derivationGraph', `derivation depth exceeds the supported limit of 32 at ${key}`, { definitionId: record.definition.id, source: record.definition.source, graphPath: [...visiting, key] }));
             return undefined;
         }
         if (record.definition.kind === 'action' || record.definition.kind === 'support') {
             if ((derivationsByDefinition.get(key)?.length ?? 0) > 0) {
-                context.diagnostics.push(diagnostic('materialization', 'RULESET_DERIVATION_DECLARATION_INCOMPATIBLE', `$.packages[${record.package.key}].definitions.${record.definition.id}`, 'a derivesFrom relationship must name a derived definition declaration', { definitionId: record.definition.id, source: record.definition.source }));
+                context.diagnostics.push(diagnostic('materialization', 'CONTENT_PACK_DERIVATION_DECLARATION_INCOMPATIBLE', `$.packages[${record.package.key}].definitions.${record.definition.id}`, 'a derivesFrom relationship must name a derived definition declaration', { definitionId: record.definition.id, source: record.definition.source }));
                 return undefined;
             }
             records.set(key, record);
@@ -439,8 +501,8 @@ function materializeSelectedDefinitions(context, composition, overlayPackages) {
         const derivations = derivationsByDefinition.get(key) ?? [];
         if (derivations.length !== 1) {
             context.diagnostics.push(diagnostic('materialization', derivations.length === 0
-                ? 'RULESET_DERIVATION_BASE_MISSING'
-                : 'RULESET_DERIVATION_BASE_AMBIGUOUS', `$.packages[${record.package.key}].definitions.${record.definition.id}`, derivations.length === 0
+                ? 'CONTENT_PACK_DERIVATION_BASE_MISSING'
+                : 'CONTENT_PACK_DERIVATION_BASE_AMBIGUOUS', `$.packages[${record.package.key}].definitions.${record.definition.id}`, derivations.length === 0
                 ? `derived definition ${record.definition.id} has no primary base`
                 : `derived definition ${record.definition.id} has more than one primary base`, { definitionId: record.definition.id, source: record.definition.source }));
             return undefined;
@@ -452,7 +514,7 @@ function materializeSelectedDefinitions(context, composition, overlayPackages) {
         const baseSource = resolveRelationshipReference(record.package, derivation.target, `$.packages[${record.package.key}].relationships.${record.definition.id}.target`, definitionsByPackage, context.diagnostics);
         if (baseSource !== undefined &&
             (baseSource.definition.kind === 'mixin' || baseSource.definition.kind === 'template')) {
-            context.diagnostics.push(diagnostic('materialization', 'RULESET_DERIVATION_KIND_INCOMPATIBLE', `$.packages[${record.package.key}].relationships.${record.definition.id}.target`, `derived ${record.definition.materializesAs} cannot use ${baseSource.definition.kind} base ${baseSource.definition.id}`, {
+            context.diagnostics.push(diagnostic('materialization', 'CONTENT_PACK_DERIVATION_KIND_INCOMPATIBLE', `$.packages[${record.package.key}].relationships.${record.definition.id}.target`, `derived ${record.definition.materializesAs} cannot use ${baseSource.definition.kind} base ${baseSource.definition.id}`, {
                 definitionId: record.definition.id,
                 source: record.definition.source,
                 expected: record.definition.materializesAs,
@@ -472,12 +534,12 @@ function materializeSelectedDefinitions(context, composition, overlayPackages) {
             return undefined;
         }
         if (base.definition.extensionPolicy !== 'derivable') {
-            context.diagnostics.push(diagnostic('materialization', 'RULESET_DERIVATION_BASE_FORBIDDEN', `$.packages[${record.package.key}].relationships.${record.definition.id}.target`, `definition ${base.definition.id} is ${base.definition.extensionPolicy}, not derivable`, { definitionId: base.definition.id, source: record.definition.source }));
+            context.diagnostics.push(diagnostic('materialization', 'CONTENT_PACK_DERIVATION_BASE_FORBIDDEN', `$.packages[${record.package.key}].relationships.${record.definition.id}.target`, `definition ${base.definition.id} is ${base.definition.extensionPolicy}, not derivable`, { definitionId: base.definition.id, source: record.definition.source }));
             visiting.pop();
             return undefined;
         }
         if (record.definition.materializesAs !== base.definition.kind) {
-            context.diagnostics.push(diagnostic('materialization', 'RULESET_DERIVATION_KIND_INCOMPATIBLE', `$.packages[${record.package.key}].definitions.${record.definition.id}.materializesAs`, `derived ${record.definition.materializesAs} cannot use ${base.definition.kind} base ${base.definition.id}`, { definitionId: record.definition.id, source: record.definition.source }));
+            context.diagnostics.push(diagnostic('materialization', 'CONTENT_PACK_DERIVATION_KIND_INCOMPATIBLE', `$.packages[${record.package.key}].definitions.${record.definition.id}.materializesAs`, `derived ${record.definition.materializesAs} cannot use ${base.definition.kind} base ${base.definition.id}`, { definitionId: record.definition.id, source: record.definition.source }));
             visiting.pop();
             return undefined;
         }
@@ -489,7 +551,7 @@ function materializeSelectedDefinitions(context, composition, overlayPackages) {
             const mixinRecord = resolveRelationshipReference(record.package, application.target, `$.packages[${record.package.key}].relationships.${record.definition.id}.mixins[${order}]`, definitionsByPackage, context.diagnostics);
             if (mixinRecord === undefined || mixinRecord.definition.kind !== 'mixin') {
                 if (mixinRecord !== undefined) {
-                    context.diagnostics.push(diagnostic('materialization', 'RULESET_MIXIN_KIND_INCOMPATIBLE', `$.packages[${record.package.key}].relationships.${record.definition.id}.mixins[${order}]`, `definition ${mixinRecord.definition.id} is not a mixin`, { definitionId: mixinRecord.definition.id, source: record.definition.source }));
+                    context.diagnostics.push(diagnostic('materialization', 'CONTENT_PACK_MIXIN_KIND_INCOMPATIBLE', `$.packages[${record.package.key}].relationships.${record.definition.id}.mixins[${order}]`, `definition ${mixinRecord.definition.id} is not a mixin`, { definitionId: mixinRecord.definition.id, source: record.definition.source }));
                 }
                 continue;
             }
@@ -500,7 +562,7 @@ function materializeSelectedDefinitions(context, composition, overlayPackages) {
             for (const referenceId of resolveMaterializationReferenceIds(mixinRecord, definitionsByPackage, context.diagnostics)) {
                 inheritedReferenceIds.add(referenceId);
             }
-            const applied = applyRulesetPatch(current, mixinRecord.definition.patch, parameters, `$.packages[${record.package.key}].relationships.${record.definition.id}.mixins[${order}].patch`, context.diagnostics);
+            const applied = applyContentPatch(current, mixinRecord.definition.patch, parameters, `$.packages[${record.package.key}].relationships.${record.definition.id}.mixins[${order}].patch`, context.diagnostics);
             if (applied === undefined)
                 continue;
             current = applied;
@@ -521,7 +583,7 @@ function materializeSelectedDefinitions(context, composition, overlayPackages) {
                 order,
             });
         }
-        const local = applyRulesetPatch(current, derivation.localPatch, {}, `$.packages[${record.package.key}].relationships.${record.definition.id}.localPatch`, context.diagnostics);
+        const local = applyContentPatch(current, derivation.localPatch, {}, `$.packages[${record.package.key}].relationships.${record.definition.id}.localPatch`, context.diagnostics);
         if (local !== undefined) {
             current = local;
             changes.push(...local.changes);
@@ -567,7 +629,7 @@ function materializeSelectedDefinitions(context, composition, overlayPackages) {
             }
             if (record.definition.kind === 'template' &&
                 record.definition.visibility === 'public') {
-                context.diagnostics.push(diagnostic('graph', 'RULESET_PUBLIC_DEFINITION_UNREACHABLE', `$.packages[${record.package.key}].definitions.${record.definition.id}`, `public template ${record.definition.id} has no materialized definition`, {
+                context.diagnostics.push(diagnostic('graph', 'CONTENT_PACK_PUBLIC_DEFINITION_UNREACHABLE', `$.packages[${record.package.key}].definitions.${record.definition.id}`, `public template ${record.definition.id} has no materialized definition`, {
                     packageId: record.package.source.manifest.identity.id,
                     definitionId: record.definition.id,
                     source: record.definition.source,
@@ -581,13 +643,13 @@ function materializeSelectedDefinitions(context, composition, overlayPackages) {
     for (const entry of context.selected.values()) {
         const patchRelationships = entry.source.manifest.relationships.filter((relationship) => relationship.kind === 'patches');
         if (patchRelationships.length > 0 && !overlayKeys.has(entry.key)) {
-            context.diagnostics.push(diagnostic('materialization', 'RULESET_OVERLAY_PACKAGE_NOT_SELECTED', `$.packages[${entry.key}].relationships`, `package ${entry.key} declares patches but is not selected in composition overlay order`, { packageId: entry.source.manifest.identity.id, source: entry.source.manifest.entry }));
+            context.diagnostics.push(diagnostic('materialization', 'CONTENT_PACK_OVERLAY_PACKAGE_NOT_SELECTED', `$.packages[${entry.key}].relationships`, `package ${entry.key} declares patches but is not selected in bundle overlay order`, { packageId: entry.source.manifest.identity.id, source: entry.source.manifest.entry }));
         }
     }
     for (const [overlayOrder, entry] of overlayPackages.entries()) {
         const relationships = entry.source.manifest.relationships.filter((relationship) => relationship.kind === 'patches');
         if (relationships.length === 0) {
-            context.diagnostics.push(diagnostic('materialization', 'RULESET_OVERLAY_EMPTY', `$.composition.overlays[${overlayOrder}]`, `selected overlay ${entry.key} declares no patch relationships`, { packageId: entry.source.manifest.identity.id, source: entry.source.manifest.entry }));
+            context.diagnostics.push(diagnostic('materialization', 'CONTENT_PACK_OVERLAY_EMPTY', `$.bundle.overlays[${overlayOrder}]`, `selected overlay ${entry.key} declares no patch relationships`, { packageId: entry.source.manifest.identity.id, source: entry.source.manifest.entry }));
         }
         for (const [relationshipOrder, relationship] of relationships.entries()) {
             if (relationship.kind !== 'patches')
@@ -599,21 +661,21 @@ function materializeSelectedDefinitions(context, composition, overlayPackages) {
             const targetIdentity = target.package.source.manifest.identity;
             if (relationship.targetPackage.id !== targetIdentity.id ||
                 relationship.targetPackage.version !== targetIdentity.version) {
-                context.diagnostics.push(diagnostic('materialization', 'RULESET_OVERLAY_TARGET_PACKAGE_MISMATCH', `$.packages[${entry.key}].relationships[${relationshipOrder}].targetPackage`, `overlay pins ${relationship.targetPackage.id}@${relationship.targetPackage.version}, resolved ${targetIdentity.id}@${targetIdentity.version}`, { definitionId: target.definition.id, expected: `${relationship.targetPackage.id}@${relationship.targetPackage.version}`, actual: `${targetIdentity.id}@${targetIdentity.version}` }));
+                context.diagnostics.push(diagnostic('materialization', 'CONTENT_PACK_OVERLAY_TARGET_PACKAGE_MISMATCH', `$.packages[${entry.key}].relationships[${relationshipOrder}].targetPackage`, `overlay pins ${relationship.targetPackage.id}@${relationship.targetPackage.version}, resolved ${targetIdentity.id}@${targetIdentity.version}`, { definitionId: target.definition.id, expected: `${relationship.targetPackage.id}@${relationship.targetPackage.version}`, actual: `${targetIdentity.id}@${targetIdentity.version}` }));
                 continue;
             }
             if (target.definition.extensionPolicy !== 'patchable') {
-                context.diagnostics.push(diagnostic('materialization', 'RULESET_OVERLAY_TARGET_FORBIDDEN', `$.packages[${entry.key}].relationships[${relationshipOrder}].target`, `definition ${target.definition.id} is ${target.definition.extensionPolicy}, not patchable`, { definitionId: target.definition.id, source: entry.source.manifest.entry }));
+                context.diagnostics.push(diagnostic('materialization', 'CONTENT_PACK_OVERLAY_TARGET_FORBIDDEN', `$.packages[${entry.key}].relationships[${relationshipOrder}].target`, `definition ${target.definition.id} is ${target.definition.extensionPolicy}, not patchable`, { definitionId: target.definition.id, source: entry.source.manifest.entry }));
                 continue;
             }
             const before = definitionMaterializationStage(target);
             const beforeFingerprint = stableFingerprint(before);
             if (beforeFingerprint !== relationship.expectedFingerprint) {
-                context.diagnostics.push(diagnostic('materialization', 'RULESET_OVERLAY_EXPECTED_FINGERPRINT_MISMATCH', `$.packages[${entry.key}].relationships[${relationshipOrder}].expectedFingerprint`, `overlay expected ${relationship.expectedFingerprint}, materialized target is ${beforeFingerprint}`, { definitionId: target.definition.id, expected: relationship.expectedFingerprint, actual: beforeFingerprint }));
+                context.diagnostics.push(diagnostic('materialization', 'CONTENT_PACK_OVERLAY_EXPECTED_FINGERPRINT_MISMATCH', `$.packages[${entry.key}].relationships[${relationshipOrder}].expectedFingerprint`, `overlay expected ${relationship.expectedFingerprint}, materialized target is ${beforeFingerprint}`, { definitionId: target.definition.id, expected: relationship.expectedFingerprint, actual: beforeFingerprint }));
                 continue;
             }
             if (!patchMatchesPlane(relationship.patch, relationship.plane)) {
-                context.diagnostics.push(diagnostic('materialization', 'RULESET_OVERLAY_IMPACT_PLANE_MISMATCH', `$.packages[${entry.key}].relationships[${relationshipOrder}].patch`, `overlay patch operations exceed declared ${relationship.plane} impact plane`, { definitionId: target.definition.id }));
+                context.diagnostics.push(diagnostic('materialization', 'CONTENT_PACK_OVERLAY_IMPACT_PLANE_MISMATCH', `$.packages[${entry.key}].relationships[${relationshipOrder}].patch`, `overlay patch operations exceed declared ${relationship.plane} impact plane`, { definitionId: target.definition.id }));
                 continue;
             }
             let conflicted = false;
@@ -621,13 +683,13 @@ function materializeSelectedDefinitions(context, composition, overlayPackages) {
                 const write = `${target.definition.id}:${operation.plane}:${patchPath(operation.path)}`;
                 if (writes.has(write) && relationship.conflictPolicy === 'reject') {
                     conflicted = true;
-                    context.diagnostics.push(diagnostic('materialization', 'RULESET_OVERLAY_WRITE_CONFLICT', `$.packages[${entry.key}].relationships[${relationshipOrder}].patch`, `overlay write conflicts at ${write}`, { definitionId: target.definition.id }));
+                    context.diagnostics.push(diagnostic('materialization', 'CONTENT_PACK_OVERLAY_WRITE_CONFLICT', `$.packages[${entry.key}].relationships[${relationshipOrder}].patch`, `overlay write conflicts at ${write}`, { definitionId: target.definition.id }));
                 }
                 writes.add(write);
             }
             if (conflicted)
                 continue;
-            const applied = applyRulesetPatch(definitionValue(target), relationship.patch, {}, `$.packages[${entry.key}].relationships[${relationshipOrder}].patch`, context.diagnostics);
+            const applied = applyContentPatch(definitionValue(target), relationship.patch, {}, `$.packages[${entry.key}].relationships[${relationshipOrder}].patch`, context.diagnostics);
             if (applied === undefined)
                 continue;
             const patched = replaceConcreteRecordValue(target, applied, context.diagnostics);
@@ -660,7 +722,7 @@ function materializeSelectedDefinitions(context, composition, overlayPackages) {
             });
         }
     }
-    for (const [optionOrder, [optionId, selectedValue]] of Object.entries(composition.configure)
+    for (const [optionOrder, [optionId, selectedValue]] of Object.entries(bundle.configure)
         .sort(([left], [right]) => left.localeCompare(right))
         .entries()) {
         const matches = [...context.selected.values()].flatMap((entry) => entry.source.manifest.relationships
@@ -670,8 +732,8 @@ function materializeSelectedDefinitions(context, composition, overlayPackages) {
             .map((relationship) => ({ entry, relationship })));
         if (matches.length !== 1) {
             context.diagnostics.push(diagnostic('materialization', matches.length === 0
-                ? 'RULESET_CONFIGURATION_OPTION_UNAVAILABLE'
-                : 'RULESET_CONFIGURATION_OPTION_AMBIGUOUS', `$.composition.configure.${optionId}`, matches.length === 0
+                ? 'CONTENT_PACK_CONFIGURATION_OPTION_UNAVAILABLE'
+                : 'CONTENT_PACK_CONFIGURATION_OPTION_AMBIGUOUS', `$.bundle.configure.${optionId}`, matches.length === 0
                 ? `no selected package exposes ${optionId}=${String(selectedValue)}`
                 : `more than one selected package exposes ${optionId}=${String(selectedValue)}`));
             continue;
@@ -684,10 +746,10 @@ function materializeSelectedDefinitions(context, composition, overlayPackages) {
         if (target === undefined)
             continue;
         if (target.definition.extensionPolicy !== 'configurable') {
-            context.diagnostics.push(diagnostic('materialization', 'RULESET_CONFIGURATION_TARGET_FORBIDDEN', `$.packages[${match.entry.key}].relationships.${optionId}.target`, `definition ${target.definition.id} is ${target.definition.extensionPolicy}, not configurable`, { definitionId: target.definition.id }));
+            context.diagnostics.push(diagnostic('materialization', 'CONTENT_PACK_CONFIGURATION_TARGET_FORBIDDEN', `$.packages[${match.entry.key}].relationships.${optionId}.target`, `definition ${target.definition.id} is ${target.definition.extensionPolicy}, not configurable`, { definitionId: target.definition.id }));
             continue;
         }
-        const applied = applyRulesetPatch(definitionValue(target), match.relationship.patch, {}, `$.packages[${match.entry.key}].relationships.${optionId}.patch`, context.diagnostics);
+        const applied = applyContentPatch(definitionValue(target), match.relationship.patch, {}, `$.packages[${match.entry.key}].relationships.${optionId}.patch`, context.diagnostics);
         if (applied === undefined)
             continue;
         const configured = replaceConcreteRecordValue(target, applied, context.diagnostics);
@@ -716,17 +778,17 @@ function resolveRelationshipReference(sourcePackage, reference, path, definition
         ? sourcePackage.key
         : sourcePackage.aliases.get(reference.importAs);
     if (targetPackageKey === undefined) {
-        diagnostics.push(diagnostic('materialization', 'RULESET_IMPORT_ALIAS_UNRESOLVED', path, `import alias ${reference.importAs ?? ''} is not declared`, { packageId: sourcePackage.source.manifest.identity.id, source: sourcePackage.source.manifest.entry }));
+        diagnostics.push(diagnostic('materialization', 'CONTENT_PACK_IMPORT_ALIAS_UNRESOLVED', path, `import alias ${reference.importAs ?? ''} is not declared`, { packageId: sourcePackage.source.manifest.identity.id, source: sourcePackage.source.manifest.entry }));
         return undefined;
     }
     const target = definitionsByPackage.get(targetPackageKey)?.get(reference.definitionId);
     if (target === undefined) {
-        diagnostics.push(diagnostic('materialization', 'RULESET_DEFINITION_REFERENCE_MISSING', path, `definition ${reference.definitionId} was not found in ${targetPackageKey}`, { packageId: sourcePackage.source.manifest.identity.id, definitionId: reference.definitionId, source: sourcePackage.source.manifest.entry }));
+        diagnostics.push(diagnostic('materialization', 'CONTENT_PACK_DEFINITION_REFERENCE_MISSING', path, `definition ${reference.definitionId} was not found in ${targetPackageKey}`, { packageId: sourcePackage.source.manifest.identity.id, definitionId: reference.definitionId, source: sourcePackage.source.manifest.entry }));
         return undefined;
     }
     if (targetPackageKey !== sourcePackage.key &&
         (!target.exported || target.definition.visibility === 'private')) {
-        diagnostics.push(diagnostic('materialization', 'RULESET_PRIVATE_CROSS_PACKAGE_REFERENCE', path, `definition ${target.definition.id} is not exported for cross-package use`, { packageId: target.package.source.manifest.identity.id, definitionId: target.definition.id, source: sourcePackage.source.manifest.entry }));
+        diagnostics.push(diagnostic('materialization', 'CONTENT_PACK_PRIVATE_CROSS_PACKAGE_REFERENCE', path, `definition ${target.definition.id} is not exported for cross-package use`, { packageId: target.package.source.manifest.identity.id, definitionId: target.definition.id, source: sourcePackage.source.manifest.entry }));
         return undefined;
     }
     return target;
@@ -746,7 +808,7 @@ function concreteDerivedRecord(derived, base, value, inheritedReferenceIds, diag
     const references = uniqueReferences(derived.definition.lowLevelReferences ?? []);
     if (derived.definition.materializesAs === 'action') {
         if (!isRecord(value.semantic)) {
-            diagnostics.push(diagnostic('materialization', 'RULESET_DERIVED_ACTION_INVALID', '$.semantic', 'derived action semantic value must be an object', { definitionId: derived.definition.id }));
+            diagnostics.push(diagnostic('materialization', 'CONTENT_PACK_DERIVED_ACTION_INVALID', '$.semantic', 'derived action semantic value must be an object', { definitionId: derived.definition.id }));
             return undefined;
         }
         const action = immutable({
@@ -771,7 +833,7 @@ function concreteDerivedRecord(derived, base, value, inheritedReferenceIds, diag
         };
     }
     if (!isRecord(value.semantic)) {
-        diagnostics.push(diagnostic('materialization', 'RULESET_DERIVED_SUPPORT_INVALID', '$.semantic', 'derived support semantic value must be an object', { definitionId: derived.definition.id }));
+        diagnostics.push(diagnostic('materialization', 'CONTENT_PACK_DERIVED_SUPPORT_INVALID', '$.semantic', 'derived support semantic value must be an object', { definitionId: derived.definition.id }));
         return undefined;
     }
     return {
@@ -815,7 +877,7 @@ function replaceConcreteRecordValue(record, value, diagnostics) {
             }),
         };
     }
-    diagnostics.push(diagnostic('materialization', 'RULESET_PATCH_TARGET_INCOMPATIBLE', '$.patch', `definition ${record.definition.id} is not patchable materialized content`, { definitionId: record.definition.id }));
+    diagnostics.push(diagnostic('materialization', 'CONTENT_PACK_PATCH_TARGET_INCOMPATIBLE', '$.patch', `definition ${record.definition.id} is not patchable materialized content`, { definitionId: record.definition.id }));
     return undefined;
 }
 function uniqueReferences(references) {
@@ -831,25 +893,25 @@ function resolveMixinParameters(mixin, supplied, path, diagnostics) {
     for (const parameterId of Object.keys(supplied)) {
         if (definitions.has(parameterId))
             continue;
-        diagnostics.push(diagnostic('materialization', 'RULESET_MIXIN_PARAMETER_UNKNOWN', `${path}.${parameterId}`, `mixin ${mixin.id} does not declare parameter ${parameterId}`, { definitionId: mixin.id }));
+        diagnostics.push(diagnostic('materialization', 'CONTENT_PACK_MIXIN_PARAMETER_UNKNOWN', `${path}.${parameterId}`, `mixin ${mixin.id} does not declare parameter ${parameterId}`, { definitionId: mixin.id }));
     }
     for (const parameter of mixin.parameters) {
         const value = supplied[parameter.id] ?? parameter.default;
         if (value === undefined) {
-            diagnostics.push(diagnostic('materialization', 'RULESET_MIXIN_PARAMETER_MISSING', `${path}.${parameter.id}`, `mixin parameter ${parameter.id} is required`, { definitionId: mixin.id }));
+            diagnostics.push(diagnostic('materialization', 'CONTENT_PACK_MIXIN_PARAMETER_MISSING', `${path}.${parameter.id}`, `mixin parameter ${parameter.id} is required`, { definitionId: mixin.id }));
             continue;
         }
         if (typeof value !== parameter.type) {
-            diagnostics.push(diagnostic('materialization', 'RULESET_MIXIN_PARAMETER_TYPE_MISMATCH', `${path}.${parameter.id}`, `mixin parameter ${parameter.id} must be ${parameter.type}`, { definitionId: mixin.id, expected: parameter.type, actual: typeof value }));
+            diagnostics.push(diagnostic('materialization', 'CONTENT_PACK_MIXIN_PARAMETER_TYPE_MISMATCH', `${path}.${parameter.id}`, `mixin parameter ${parameter.id} must be ${parameter.type}`, { definitionId: mixin.id, expected: parameter.type, actual: typeof value }));
             continue;
         }
         resolved[parameter.id] = value;
     }
     return diagnostics.length > 0 ? undefined : immutable(resolved);
 }
-function applyRulesetPatch(value, patch, parameters, path, diagnostics) {
+function applyContentPatch(value, patch, parameters, path, diagnostics) {
     if (patch.version !== 1) {
-        diagnostics.push(diagnostic('compatibility', 'RULESET_PATCH_VERSION_UNSUPPORTED', `${path}.version`, `patch version ${String(patch.version)} is unsupported`));
+        diagnostics.push(diagnostic('compatibility', 'CONTENT_PACK_PATCH_VERSION_UNSUPPORTED', `${path}.version`, `patch version ${String(patch.version)} is unsupported`));
         return undefined;
     }
     let semantic = cloneJsonValue(value.semantic);
@@ -860,7 +922,7 @@ function applyRulesetPatch(value, patch, parameters, path, diagnostics) {
         const root = operation.plane === 'semantic' ? semantic : presentation;
         if (operation.kind === 'upsertScalar' &&
             !isSupportedPatchUpsert(operation.plane, operation.path)) {
-            diagnostics.push(diagnostic('materialization', 'RULESET_PATCH_UPSERT_UNSUPPORTED', operationPath, `upsertScalar is not supported at ${operation.plane}.${patchPath(operation.path)}`));
+            diagnostics.push(diagnostic('materialization', 'CONTENT_PACK_PATCH_UPSERT_UNSUPPORTED', operationPath, `upsertScalar is not supported at ${operation.plane}.${patchPath(operation.path)}`));
             continue;
         }
         const before = cloneJsonValue(operation.kind === 'upsertScalar'
@@ -881,7 +943,7 @@ function applyRulesetPatch(value, patch, parameters, path, diagnostics) {
             const multiply = resolvePatchNumber(operation.multiply, parameters, operationPath, diagnostics);
             const add = resolvePatchNumber(operation.add, parameters, operationPath, diagnostics);
             if (typeof current !== 'number' || multiply === undefined || add === undefined) {
-                diagnostics.push(diagnostic('materialization', 'RULESET_PATCH_NUMBER_REQUIRED', operationPath, `adjustNumber requires a numeric target at ${patchPath(operation.path)}`));
+                diagnostics.push(diagnostic('materialization', 'CONTENT_PACK_PATCH_NUMBER_REQUIRED', operationPath, `adjustNumber requires a numeric target at ${patchPath(operation.path)}`));
                 continue;
             }
             if (!writePatchPath(root, operation.path, current * multiply + add, operationPath, diagnostics))
@@ -890,11 +952,11 @@ function applyRulesetPatch(value, patch, parameters, path, diagnostics) {
         else if (operation.kind === 'appendMember') {
             const target = readPatchPath(root, operation.path, operationPath, diagnostics);
             if (!Array.isArray(target)) {
-                diagnostics.push(diagnostic('materialization', 'RULESET_PATCH_LIST_REQUIRED', operationPath, `appendMember requires a list at ${patchPath(operation.path)}`));
+                diagnostics.push(diagnostic('materialization', 'CONTENT_PACK_PATCH_LIST_REQUIRED', operationPath, `appendMember requires a list at ${patchPath(operation.path)}`));
                 continue;
             }
             if (target.some((entry) => isRecord(entry) && entry[operation.identity.key] === operation.identity.value)) {
-                diagnostics.push(diagnostic('materialization', 'RULESET_PATCH_MEMBER_DUPLICATE', operationPath, `member ${operation.identity.key}=${operation.identity.value} already exists`));
+                diagnostics.push(diagnostic('materialization', 'CONTENT_PACK_PATCH_MEMBER_DUPLICATE', operationPath, `member ${operation.identity.key}=${operation.identity.value} already exists`));
                 continue;
             }
             const member = { ...operation.value, [operation.identity.key]: operation.identity.value };
@@ -906,7 +968,7 @@ function applyRulesetPatch(value, patch, parameters, path, diagnostics) {
             else {
                 const anchorIndex = target.findIndex((entry) => memberMatches(entry, position.anchor));
                 if (anchorIndex < 0) {
-                    diagnostics.push(diagnostic('materialization', 'RULESET_PATCH_ANCHOR_MISSING', operationPath, `anchor ${patchSegment(position.anchor)} is missing`));
+                    diagnostics.push(diagnostic('materialization', 'CONTENT_PACK_PATCH_ANCHOR_MISSING', operationPath, `anchor ${patchSegment(position.anchor)} is missing`));
                     continue;
                 }
                 target.splice(position.kind === 'before' ? anchorIndex : anchorIndex + 1, 0, member);
@@ -915,14 +977,14 @@ function applyRulesetPatch(value, patch, parameters, path, diagnostics) {
         else {
             const target = readPatchPath(root, operation.path, operationPath, diagnostics);
             if (!Array.isArray(target)) {
-                diagnostics.push(diagnostic('materialization', 'RULESET_PATCH_LIST_REQUIRED', operationPath, `removeMember requires a list at ${patchPath(operation.path)}`));
+                diagnostics.push(diagnostic('materialization', 'CONTENT_PACK_PATCH_LIST_REQUIRED', operationPath, `removeMember requires a list at ${patchPath(operation.path)}`));
                 continue;
             }
             const indexes = target
                 .map((entry, memberIndex) => memberMatches(entry, operation.identity) ? memberIndex : -1)
                 .filter((memberIndex) => memberIndex >= 0);
             if (indexes.length !== 1) {
-                diagnostics.push(diagnostic('materialization', indexes.length === 0 ? 'RULESET_PATCH_MEMBER_MISSING' : 'RULESET_PATCH_MEMBER_AMBIGUOUS', operationPath, `member ${patchSegment(operation.identity)} must resolve exactly once`));
+                diagnostics.push(diagnostic('materialization', indexes.length === 0 ? 'CONTENT_PACK_PATCH_MEMBER_MISSING' : 'CONTENT_PACK_PATCH_MEMBER_AMBIGUOUS', operationPath, `member ${patchSegment(operation.identity)} must resolve exactly once`));
                 continue;
             }
             target.splice(indexes[0] ?? 0, 1);
@@ -953,13 +1015,13 @@ function applyRulesetPatch(value, patch, parameters, path, diagnostics) {
 }
 function readUpsertPatchPath(root, path, diagnosticPath, diagnostics) {
     if (path.length === 0) {
-        diagnostics.push(diagnostic('materialization', 'RULESET_PATCH_ROOT_WRITE_FORBIDDEN', diagnosticPath, 'patch operations must name a field or stable member'));
+        diagnostics.push(diagnostic('materialization', 'CONTENT_PACK_PATCH_ROOT_WRITE_FORBIDDEN', diagnosticPath, 'patch operations must name a field or stable member'));
         return undefined;
     }
     const parent = readPatchPath(root, path.slice(0, -1), diagnosticPath, diagnostics);
     const leaf = path[path.length - 1];
     if (leaf?.kind !== 'field' || !isRecord(parent)) {
-        diagnostics.push(diagnostic('materialization', 'RULESET_PATCH_PATH_MISSING', diagnosticPath, `upsert field is invalid at ${patchPath(path)}`));
+        diagnostics.push(diagnostic('materialization', 'CONTENT_PACK_PATCH_PATH_MISSING', diagnosticPath, `upsert field is invalid at ${patchPath(path)}`));
         return undefined;
     }
     return leaf.name in parent ? parent[leaf.name] : null;
@@ -969,19 +1031,19 @@ function readPatchPath(root, path, diagnosticPath, diagnostics) {
     for (const segment of path) {
         if (segment.kind === 'field') {
             if (!isRecord(current) || !(segment.name in current)) {
-                diagnostics.push(diagnostic('materialization', 'RULESET_PATCH_PATH_MISSING', diagnosticPath, `field ${segment.name} is missing at ${patchPath(path)}`));
+                diagnostics.push(diagnostic('materialization', 'CONTENT_PACK_PATCH_PATH_MISSING', diagnosticPath, `field ${segment.name} is missing at ${patchPath(path)}`));
                 return undefined;
             }
             current = current[segment.name];
         }
         else {
             if (!Array.isArray(current)) {
-                diagnostics.push(diagnostic('materialization', 'RULESET_PATCH_LIST_REQUIRED', diagnosticPath, `member selector ${patchSegment(segment)} requires a list`));
+                diagnostics.push(diagnostic('materialization', 'CONTENT_PACK_PATCH_LIST_REQUIRED', diagnosticPath, `member selector ${patchSegment(segment)} requires a list`));
                 return undefined;
             }
             const matches = current.filter((entry) => memberMatches(entry, segment));
             if (matches.length !== 1) {
-                diagnostics.push(diagnostic('materialization', matches.length === 0 ? 'RULESET_PATCH_MEMBER_MISSING' : 'RULESET_PATCH_MEMBER_AMBIGUOUS', diagnosticPath, `member ${patchSegment(segment)} must resolve exactly once`));
+                diagnostics.push(diagnostic('materialization', matches.length === 0 ? 'CONTENT_PACK_PATCH_MEMBER_MISSING' : 'CONTENT_PACK_PATCH_MEMBER_AMBIGUOUS', diagnosticPath, `member ${patchSegment(segment)} must resolve exactly once`));
                 return undefined;
             }
             current = matches[0];
@@ -991,14 +1053,14 @@ function readPatchPath(root, path, diagnosticPath, diagnostics) {
 }
 function writePatchPath(root, path, value, diagnosticPath, diagnostics) {
     if (path.length === 0) {
-        diagnostics.push(diagnostic('materialization', 'RULESET_PATCH_ROOT_WRITE_FORBIDDEN', diagnosticPath, 'patch operations must name a field or stable member'));
+        diagnostics.push(diagnostic('materialization', 'CONTENT_PACK_PATCH_ROOT_WRITE_FORBIDDEN', diagnosticPath, 'patch operations must name a field or stable member'));
         return false;
     }
     const parentPath = path.slice(0, -1);
     const parent = readPatchPath(root, parentPath, diagnosticPath, diagnostics);
     const leaf = path[path.length - 1];
     if (leaf?.kind !== 'field' || !isRecord(parent) || !(leaf.name in parent)) {
-        diagnostics.push(diagnostic('materialization', 'RULESET_PATCH_PATH_MISSING', diagnosticPath, `writable field is missing at ${patchPath(path)}`));
+        diagnostics.push(diagnostic('materialization', 'CONTENT_PACK_PATCH_PATH_MISSING', diagnosticPath, `writable field is missing at ${patchPath(path)}`));
         return false;
     }
     parent[leaf.name] = value;
@@ -1006,13 +1068,13 @@ function writePatchPath(root, path, value, diagnosticPath, diagnostics) {
 }
 function writeUpsertPatchPath(root, path, value, diagnosticPath, diagnostics) {
     if (path.length === 0) {
-        diagnostics.push(diagnostic('materialization', 'RULESET_PATCH_ROOT_WRITE_FORBIDDEN', diagnosticPath, 'patch operations must name a field or stable member'));
+        diagnostics.push(diagnostic('materialization', 'CONTENT_PACK_PATCH_ROOT_WRITE_FORBIDDEN', diagnosticPath, 'patch operations must name a field or stable member'));
         return false;
     }
     const parent = readPatchPath(root, path.slice(0, -1), diagnosticPath, diagnostics);
     const leaf = path[path.length - 1];
     if (leaf?.kind !== 'field' || !isRecord(parent)) {
-        diagnostics.push(diagnostic('materialization', 'RULESET_PATCH_PATH_MISSING', diagnosticPath, `upsert field is invalid at ${patchPath(path)}`));
+        diagnostics.push(diagnostic('materialization', 'CONTENT_PACK_PATCH_PATH_MISSING', diagnosticPath, `upsert field is invalid at ${patchPath(path)}`));
         return false;
     }
     parent[leaf.name] = value;
@@ -1024,7 +1086,7 @@ function resolvePatchScalar(value, parameters, path, diagnostics) {
     const resolved = parameters[value.parameter];
     if (resolved !== undefined)
         return resolved;
-    diagnostics.push(diagnostic('materialization', 'RULESET_PATCH_PARAMETER_UNRESOLVED', path, `parameter ${value.parameter} is not supplied`));
+    diagnostics.push(diagnostic('materialization', 'CONTENT_PACK_PATCH_PARAMETER_UNRESOLVED', path, `parameter ${value.parameter} is not supplied`));
     return undefined;
 }
 function resolvePatchNumber(value, parameters, path, diagnostics) {
@@ -1033,7 +1095,7 @@ function resolvePatchNumber(value, parameters, path, diagnostics) {
     const resolved = parameters[value.parameter];
     if (typeof resolved === 'number')
         return resolved;
-    diagnostics.push(diagnostic('materialization', 'RULESET_PATCH_NUMBER_PARAMETER_UNRESOLVED', path, `numeric parameter ${value.parameter} is not supplied`));
+    diagnostics.push(diagnostic('materialization', 'CONTENT_PACK_PATCH_NUMBER_PARAMETER_UNRESOLVED', path, `numeric parameter ${value.parameter} is not supplied`));
     return undefined;
 }
 function isParameterReference(value) {
@@ -1128,7 +1190,7 @@ function compareDefinitionCommitment(left, right) {
 function definitionCommitmentIdentity(packageId, packageVersion, definitionId) {
     return `${packageId}@${packageVersion}#${definitionId}`;
 }
-export function rulesetDefinitionMaterializationFingerprint(definition) {
+export function contentDefinitionMaterializationFingerprint(definition) {
     return stableFingerprint({
         id: definition.id,
         kind: definition.kind,
@@ -1245,7 +1307,7 @@ function definitionReferences(record, diagnostics) {
                 references.push({ importAs, definitionId });
                 continue;
             }
-            diagnostics.push(diagnostic('graph', 'RULESET_CATALOG_REFERENCE_OWNER_UNAVAILABLE', catalogReference.path, `catalog owner ${ownerPackageId} is not a direct package dependency`, {
+            diagnostics.push(diagnostic('graph', 'CONTENT_PACK_CATALOG_REFERENCE_OWNER_UNAVAILABLE', catalogReference.path, `catalog owner ${ownerPackageId} is not a direct package dependency`, {
                 packageId: record.package.source.manifest.identity.id,
                 definitionId: record.definition.id,
                 source: record.definition.source,
@@ -1258,14 +1320,14 @@ function definitionReferences(record, diagnostics) {
             continue;
         }
         if (explicitMatches.length > 1) {
-            diagnostics.push(diagnostic('graph', 'RULESET_CATALOG_REFERENCE_AMBIGUOUS', catalogReference.path, `bare catalog definition ${definitionId} has more than one explicit low-level owner`, {
+            diagnostics.push(diagnostic('graph', 'CONTENT_PACK_CATALOG_REFERENCE_AMBIGUOUS', catalogReference.path, `bare catalog definition ${definitionId} has more than one explicit low-level owner`, {
                 packageId: record.package.source.manifest.identity.id,
                 definitionId: record.definition.id,
                 source: record.definition.source,
             }));
             continue;
         }
-        diagnostics.push(diagnostic('graph', 'RULESET_CATALOG_REFERENCE_OWNER_REQUIRED', catalogReference.path, `bare catalog definition ${definitionId} has no owner; use defineRulesetCatalog or an explicit low-level definition reference`, {
+        diagnostics.push(diagnostic('graph', 'CONTENT_PACK_CATALOG_REFERENCE_OWNER_REQUIRED', catalogReference.path, `bare catalog definition ${definitionId} has no owner; use defineContentCatalog or an explicit low-level definition reference`, {
             packageId: record.package.source.manifest.identity.id,
             definitionId: record.definition.id,
             source: record.definition.source,
@@ -1301,7 +1363,7 @@ function closeDefinitionGraph(context, rootKeys, sourceRecords) {
         }
         for (const [index, definitionId] of entry.source.manifest.exports.entries()) {
             if (!entry.source.manifest.definitions.some((definition) => definition.id === definitionId)) {
-                context.diagnostics.push(diagnostic('graph', 'RULESET_EXPORT_MISSING', `$.packages[${entry.key}].exports[${index}]`, `export ${definitionId} has no declaration`, { packageId: entry.source.manifest.identity.id, definitionId, source: entry.source.manifest.entry }));
+                context.diagnostics.push(diagnostic('graph', 'CONTENT_PACK_EXPORT_MISSING', `$.packages[${entry.key}].exports[${index}]`, `export ${definitionId} has no declaration`, { packageId: entry.source.manifest.identity.id, definitionId, source: entry.source.manifest.entry }));
             }
         }
         definitionsByPackage.set(entry.key, definitions);
@@ -1325,7 +1387,7 @@ function closeDefinitionGraph(context, rootKeys, sourceRecords) {
         const cycleStart = visiting.indexOf(globalId);
         if (cycleStart >= 0) {
             const graphPath = [...visiting.slice(cycleStart), globalId];
-            context.diagnostics.push(diagnostic('graph', 'RULESET_DEFINITION_CYCLE', '$.definitionGraph', `definition cycle: ${graphPath.join(' -> ')}`, { definitionId: record.definition.id, source: record.definition.source, graphPath }));
+            context.diagnostics.push(diagnostic('graph', 'CONTENT_PACK_DEFINITION_CYCLE', '$.definitionGraph', `definition cycle: ${graphPath.join(' -> ')}`, { definitionId: record.definition.id, source: record.definition.source, graphPath }));
             return;
         }
         if (reachable.has(globalId))
@@ -1342,7 +1404,7 @@ function closeDefinitionGraph(context, rootKeys, sourceRecords) {
         for (const inheritedReferenceId of record.inheritedReferenceIds ?? []) {
             const target = byGlobalId.get(inheritedReferenceId);
             if (target === undefined) {
-                context.diagnostics.push(diagnostic('graph', 'RULESET_INHERITED_REFERENCE_MISSING', `$.packages[${record.package.key}].definitions.${record.definition.id}.references`, `inherited definition reference ${inheritedReferenceId} is missing`, {
+                context.diagnostics.push(diagnostic('graph', 'CONTENT_PACK_INHERITED_REFERENCE_MISSING', `$.packages[${record.package.key}].definitions.${record.definition.id}.references`, `inherited definition reference ${inheritedReferenceId} is missing`, {
                     packageId: record.package.source.manifest.identity.id,
                     definitionId: record.definition.id,
                     source: record.definition.source,
@@ -1366,7 +1428,7 @@ function closeDefinitionGraph(context, rootKeys, sourceRecords) {
         if (rootKeys.has(record.package.key) &&
             !reachable.has(globalId) &&
             record.definition.visibility === 'public') {
-            context.diagnostics.push(diagnostic('graph', 'RULESET_PUBLIC_DEFINITION_UNREACHABLE', `$.packages[${record.package.key}].definitions.${record.definition.id}`, `public definition ${record.definition.id} is unreachable from an exported root`, {
+            context.diagnostics.push(diagnostic('graph', 'CONTENT_PACK_PUBLIC_DEFINITION_UNREACHABLE', `$.packages[${record.package.key}].definitions.${record.definition.id}`, `public definition ${record.definition.id} is unreachable from an exported root`, {
                 packageId: record.package.source.manifest.identity.id,
                 definitionId: record.definition.id,
                 source: record.definition.source,
@@ -1380,14 +1442,14 @@ function closeDefinitionGraph(context, rootKeys, sourceRecords) {
     const materializedIds = new Set();
     for (const record of materialized) {
         if (record.definition.kind === 'template') {
-            context.diagnostics.push(diagnostic('materialization', 'RULESET_TEMPLATE_MATERIALIZATION_DEFERRED', `$.packages[${record.package.key}].definitions.${record.definition.id}`, `template ${record.definition.id} requires #5957 derivation materialization`, {
+            context.diagnostics.push(diagnostic('materialization', 'CONTENT_PACK_TEMPLATE_MATERIALIZATION_DEFERRED', `$.packages[${record.package.key}].definitions.${record.definition.id}`, `template ${record.definition.id} requires #5957 derivation materialization`, {
                 packageId: record.package.source.manifest.identity.id,
                 definitionId: record.definition.id,
                 source: record.definition.source,
             }));
         }
         if (materializedIds.has(record.definition.id)) {
-            context.diagnostics.push(diagnostic('graph', 'RULESET_DUPLICATE_DEFINITION_ID', '$.materializedDefinitions', `definition identity ${record.definition.id} is contributed by more than one package`, { definitionId: record.definition.id, source: record.definition.source }));
+            context.diagnostics.push(diagnostic('graph', 'CONTENT_PACK_DUPLICATE_DEFINITION_ID', '$.materializedDefinitions', `definition identity ${record.definition.id} is contributed by more than one package`, { definitionId: record.definition.id, source: record.definition.source }));
         }
         else {
             materializedIds.add(record.definition.id);
@@ -1417,7 +1479,7 @@ function resolveDefinitionReference(source, reference, index, definitionsByPacka
         : source.package.aliases.get(reference.importAs);
     const path = `$.packages[${source.package.key}].definitions.${source.definition.id}.references[${index}]`;
     if (targetPackageKey === undefined) {
-        diagnostics.push(diagnostic('graph', 'RULESET_IMPORT_ALIAS_UNRESOLVED', path, `import alias ${reference.importAs ?? ''} is not declared`, {
+        diagnostics.push(diagnostic('graph', 'CONTENT_PACK_IMPORT_ALIAS_UNRESOLVED', path, `import alias ${reference.importAs ?? ''} is not declared`, {
             packageId: source.package.source.manifest.identity.id,
             definitionId: source.definition.id,
             source: source.definition.source,
@@ -1426,7 +1488,7 @@ function resolveDefinitionReference(source, reference, index, definitionsByPacka
     }
     const target = definitionsByPackage.get(targetPackageKey)?.get(reference.definitionId);
     if (target === undefined) {
-        diagnostics.push(diagnostic('graph', 'RULESET_DEFINITION_REFERENCE_MISSING', path, `definition ${reference.definitionId} was not found in ${targetPackageKey}`, {
+        diagnostics.push(diagnostic('graph', 'CONTENT_PACK_DEFINITION_REFERENCE_MISSING', path, `definition ${reference.definitionId} was not found in ${targetPackageKey}`, {
             packageId: source.package.source.manifest.identity.id,
             definitionId: source.definition.id,
             source: source.definition.source,
@@ -1436,7 +1498,7 @@ function resolveDefinitionReference(source, reference, index, definitionsByPacka
     if (targetPackageKey !== source.package.key &&
         (!target.exported || target.definition.visibility === 'private') &&
         !source.inheritedReferenceIds?.includes(globalDefinitionId(target))) {
-        diagnostics.push(diagnostic('graph', 'RULESET_PRIVATE_CROSS_PACKAGE_REFERENCE', path, `definition ${target.definition.id} is not exported for cross-package use`, {
+        diagnostics.push(diagnostic('graph', 'CONTENT_PACK_PRIVATE_CROSS_PACKAGE_REFERENCE', path, `definition ${target.definition.id} is not exported for cross-package use`, {
             packageId: target.package.source.manifest.identity.id,
             definitionId: target.definition.id,
             source: source.definition.source,
@@ -1449,7 +1511,7 @@ function resolveDefinitionReference(source, reference, index, definitionsByPacka
     if (catalogReference !== undefined &&
         (target.definition.kind !== 'support' ||
             target.definition.semantic.catalog !== catalogReference.category)) {
-        diagnostics.push(diagnostic('graph', 'RULESET_CATALOG_REFERENCE_KIND_MISMATCH', catalogReference.path, `catalog reference ${reference.definitionId} requires ${catalogReference.category} support`, {
+        diagnostics.push(diagnostic('graph', 'CONTENT_PACK_CATALOG_REFERENCE_KIND_MISMATCH', catalogReference.path, `catalog reference ${reference.definitionId} requires ${catalogReference.category} support`, {
             packageId: source.package.source.manifest.identity.id,
             definitionId: source.definition.id,
             source: source.definition.source,
@@ -1462,23 +1524,23 @@ function resolveDefinitionReference(source, reference, index, definitionsByPacka
     }
     return target;
 }
-function normalizeMaterializedActions(composition, graph, diagnostics) {
+function normalizeMaterializedActions(bundle, graph, diagnostics) {
     const actions = graph.materialized
         .filter((record) => record.definition.kind === 'action')
         .map((record) => {
         if (record.definition.kind !== 'action')
             throw new Error('unreachable narrowing failure');
         if (record.definition.action.id !== record.definition.id) {
-            diagnostics.push(diagnostic('materialization', 'RULESET_ACTION_ID_MISMATCH', `$.definitions.${record.definition.id}.action.id`, 'definition identity must match the normalized action identity', { definitionId: record.definition.id, source: record.definition.source }));
+            diagnostics.push(diagnostic('materialization', 'CONTENT_PACK_ACTION_ID_MISMATCH', `$.definitions.${record.definition.id}.action.id`, 'definition identity must match the normalized action identity', { definitionId: record.definition.id, source: record.definition.source }));
         }
         return record.definition.action;
     });
     if (diagnostics.length > 0)
         return undefined;
     const result = normalizePackage(definePackage({
-        id: composition.identity.id,
-        version: composition.identity.version,
-        sources: [defineActions('compiled-ruleset-actions', actions)],
+        id: bundle.identity.id,
+        version: bundle.identity.version,
+        sources: [defineActions('play-bundle-actions', actions)],
     }));
     if (!result.ok) {
         diagnostics.push(...result.diagnostics.map((entry) => diagnostic('normalization', entry.code, entry.path, entry.message, entry.sourcePath === undefined
@@ -1488,10 +1550,12 @@ function normalizeMaterializedActions(composition, graph, diagnostics) {
     }
     return result.artifact;
 }
-function collectRequirements(context, normalizedRequirements, target) {
+function collectRequirements(context, normalized) {
     const operations = new Map();
     const capabilities = new Map();
-    for (const requirement of normalizedRequirements) {
+    const values = new Set();
+    const numericDomains = new Set();
+    for (const requirement of normalized.requirements) {
         if (requirement.kind === 'operation') {
             operations.set(requirement.id, requirement.version);
         }
@@ -1506,7 +1570,17 @@ function collectRequirements(context, normalizedRequirements, target) {
         for (const requirement of entry.source.manifest.requirements.capabilities) {
             capabilities.set(requirement.id, requirement.version);
         }
+        for (const requirement of entry.source.manifest.requirements.values) {
+            values.add(`${requirement.kind}:${requirement.id}`);
+        }
+        for (const requirement of entry.source.manifest.requirements.numericDomains) {
+            numericDomains.add(requirement);
+        }
     }
+    for (const statId of normalized.catalogs.stats)
+        values.add(`stat:${statId}`);
+    for (const defenseId of normalized.catalogs.defenses)
+        values.add(`defense:${defenseId}`);
     if (context.diagnostics.length > 0)
         return undefined;
     return {
@@ -1516,7 +1590,44 @@ function collectRequirements(context, normalizedRequirements, target) {
         capabilities: [...capabilities]
             .map(([id, version]) => ({ id, version }))
             .sort(compareRequirement),
+        values: [...values]
+            .map((value) => {
+            const separator = value.indexOf(':');
+            const kind = value.slice(0, separator) === 'stat' ? 'stat' : 'defense';
+            return { kind, id: value.slice(separator + 1) };
+        })
+            .sort((left, right) => left.kind.localeCompare(right.kind) || left.id.localeCompare(right.id)),
+        numericDomains: [...numericDomains].sort(),
     };
+}
+function validateCollectedRequirements(requirements, ruleset, diagnostics) {
+    if (requirements === undefined)
+        return;
+    const operations = new Map(ruleset.provides.operations.map((provision) => [provision.id, provision.version]));
+    const capabilities = new Map(ruleset.provides.capabilities.map((provision) => [provision.id, provision.version]));
+    const values = new Set(ruleset.provides.values.map((provision) => `${provision.kind}:${provision.id}`));
+    const numericDomains = new Set(ruleset.provides.numericDomains.map((provision) => provision.id));
+    for (const [index, requirement] of requirements.operations.entries()) {
+        if (operations.get(requirement.id) === requirement.version)
+            continue;
+        diagnostics.push(diagnostic('compatibility', 'PLAY_BUNDLE_OPERATION_REQUIREMENT_MISSING', `$.contentRequirements.operations[${index}]`, `materialized content requires operation ${requirement.id}@${requirement.version}, which the ruleset does not provide`));
+    }
+    for (const [index, requirement] of requirements.capabilities.entries()) {
+        if (capabilities.get(requirement.id) === requirement.version)
+            continue;
+        diagnostics.push(diagnostic('compatibility', 'PLAY_BUNDLE_CAPABILITY_REQUIREMENT_MISSING', `$.contentRequirements.capabilities[${index}]`, `materialized content requires capability ${requirement.id}@${requirement.version}, which the ruleset does not provide`));
+    }
+    for (const [index, requirement] of requirements.values.entries()) {
+        const key = `${requirement.kind}:${requirement.id}`;
+        if (values.has(key))
+            continue;
+        diagnostics.push(diagnostic('compatibility', 'PLAY_BUNDLE_VALUE_REQUIREMENT_MISSING', `$.contentRequirements.values[${index}]`, `materialized content requires ${key}, which the ruleset does not provide`));
+    }
+    for (const [index, requirement] of requirements.numericDomains.entries()) {
+        if (numericDomains.has(requirement))
+            continue;
+        diagnostics.push(diagnostic('compatibility', 'PLAY_BUNDLE_NUMERIC_DOMAIN_REQUIREMENT_MISSING', `$.contentRequirements.numericDomains[${index}]`, `materialized content requires numeric domain ${requirement}, which the ruleset does not provide`));
+    }
 }
 function materializeDefinitions(records, references, exportedRoots, actions) {
     const normalizedActions = new Map(actions.map((action) => [action.id, action]));
@@ -1564,22 +1675,22 @@ function localDefinitionId(globalId) {
 }
 function requireIdentifier(value, path, diagnostics) {
     if (!/^[a-z][a-z0-9]*(?:[._-][a-z0-9]+)*$/.test(value)) {
-        diagnostics.push(diagnostic('source', 'RULESET_IDENTIFIER_INVALID', path, `invalid identifier ${value}`));
+        diagnostics.push(diagnostic('source', 'CONTENT_PACK_IDENTIFIER_INVALID', path, `invalid identifier ${value}`));
     }
 }
 function requireExactVersion(value, path, diagnostics) {
     if (parseVersion(value) === undefined) {
-        diagnostics.push(diagnostic('source', 'RULESET_VERSION_INVALID', path, `version ${value} is not exact semver`));
+        diagnostics.push(diagnostic('source', 'CONTENT_PACK_VERSION_INVALID', path, `version ${value} is not exact semver`));
     }
 }
 function requireText(value, path, label, diagnostics) {
     if (value.trim().length === 0) {
-        diagnostics.push(diagnostic('source', 'RULESET_TEXT_REQUIRED', path, `${label} is required`));
+        diagnostics.push(diagnostic('source', 'CONTENT_PACK_TEXT_REQUIRED', path, `${label} is required`));
     }
 }
 function rejectExecutableValues(value, path, diagnostics, seen) {
     if (typeof value === 'function') {
-        diagnostics.push(diagnostic('source', 'RULESET_EXECUTABLE_VALUE_FORBIDDEN', path, 'ruleset manifests may contain immutable declarations only'));
+        diagnostics.push(diagnostic('source', 'CONTENT_PACK_EXECUTABLE_VALUE_FORBIDDEN', path, 'ruleset manifests may contain immutable declarations only'));
         return;
     }
     if (value === null || typeof value !== 'object' || seen.has(value))
@@ -1687,4 +1798,4 @@ function compareRelationship(left, right) {
 function compareDiagnostic(left, right) {
     return left.path.localeCompare(right.path) || left.code.localeCompare(right.code);
 }
-//# sourceMappingURL=ruleset-compiler.js.map
+//# sourceMappingURL=play-bundle-compiler.js.map

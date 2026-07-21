@@ -1,241 +1,103 @@
-import { immutable, stableFingerprint } from './canonical.js';
+import type { RpgDefenseId, RpgStatId } from '@asha-rpg/ir';
+
+import { immutable } from './canonical.js';
 import type {
-  RulesetActionDefinition,
-  RulesetCompositionManifest,
-  RulesetDefinition,
-  RulesetDefinitionReference,
-  RulesetDerivedDefinition,
-  RulesetDependency,
+  Ruleset,
   RulesetIdentity,
-  RulesetMixinApplication,
-  RulesetMixinDefinition,
-  RulesetPackageManifest,
-  RulesetPatch,
-  RulesetPackageRequest,
-  RulesetPackageSource,
-  RulesetPolicyBinding,
-  RulesetReservedRelationship,
-  RulesetSupportDefinition,
-  RulesetTemplateDefinition,
-} from './ruleset-types.js';
+  RulesetValueKind,
+} from './play-bundle-types.js';
 
-type OrdinaryDefinitionInput<Definition extends RulesetDefinition> = Omit<
-  Definition,
-  'kind' | 'lowLevelReferences'
-> & {
-  readonly kind?: Definition['kind'];
-};
+const rulesetValueReferenceBrand: unique symbol = Symbol(
+  'asha-rpg.ruleset-value-reference',
+);
 
-type RulesetPackageInput = Omit<
-  RulesetPackageManifest,
-  | 'language'
-  | 'dependencies'
-  | 'requirements'
-  | 'exports'
-  | 'policyBindings'
-  | 'relationships'
-> & {
-  readonly language?: RulesetPackageManifest['language'];
-  readonly dependencies?: RulesetPackageManifest['dependencies'];
-  readonly requirements?: RulesetPackageManifest['requirements'];
-  readonly exports?: RulesetPackageManifest['exports'];
-  readonly policyBindings?: RulesetPackageManifest['policyBindings'];
-  readonly relationships?: RulesetPackageManifest['relationships'];
-};
+type RulesetValueId<Kind extends RulesetValueKind> = Kind extends 'stat'
+  ? RpgStatId
+  : RpgDefenseId;
 
-export interface RulesetDerivationDeclaration {
-  readonly definition: RulesetDerivedDefinition;
-  readonly relationship: Extract<
-    RulesetReservedRelationship,
-    { readonly kind: 'derivesFrom' }
-  >;
-}
+export type RulesetValueReference<
+  Kind extends RulesetValueKind,
+  RulesetId extends string,
+  ValueId extends string,
+> = Readonly<{
+  readonly kind: Kind;
+  readonly id: RulesetValueId<Kind> & ValueId;
+  readonly rulesetId: RulesetId;
+  readonly [rulesetValueReferenceBrand]: true;
+}>;
 
-export function rulesetDependency(
-  input: Omit<RulesetDependency, 'relationship'>,
-): RulesetDependency {
-  return immutable({ ...input, relationship: 'dependsOn' as const });
-}
-
-export function rulesetPackageRequest(
-  input: RulesetPackageRequest,
-): RulesetPackageRequest {
-  return immutable({ ...input });
-}
-
-export function definitionReference(
-  input: RulesetDefinitionReference,
-): RulesetDefinitionReference {
-  return immutable({ ...input });
-}
-
-export function defineActionDefinition(
-  input: OrdinaryDefinitionInput<RulesetActionDefinition>,
-): RulesetActionDefinition {
-  return immutable({ ...input, kind: 'action' as const });
-}
-
-export function defineSupportDefinition(
-  input: OrdinaryDefinitionInput<RulesetSupportDefinition>,
-): RulesetSupportDefinition {
-  return immutable({ ...input, kind: 'support' as const });
-}
-
-export function defineTemplateDefinition(
-  input: OrdinaryDefinitionInput<RulesetTemplateDefinition>,
-): RulesetTemplateDefinition {
-  return immutable({ ...input, kind: 'template' as const });
-}
-
-export function defineDerivedDefinition(
-  input: OrdinaryDefinitionInput<RulesetDerivedDefinition>,
-): RulesetDerivedDefinition {
-  return immutable({ ...input, kind: 'derived' as const });
-}
-
-export function defineMixinDefinition(
-  input: OrdinaryDefinitionInput<RulesetMixinDefinition>,
-): RulesetMixinDefinition {
-  return immutable({ ...input, kind: 'mixin' as const });
-}
-
-/** Explicit escape hatch for compiler fixtures that cannot express an AST edge. */
-export function withLowLevelDefinitionReferences<Definition extends RulesetDefinition>(
-  definition: Definition,
-  references: readonly RulesetDefinitionReference[],
-): Definition {
-  return immutable({
-    ...definition,
-    lowLevelReferences: [...references],
-  });
-}
-
-/** Low-level patch AST entrypoint. Prefer actionPatch schema builders. */
-export function defineLowLevelRulesetPatch(input: RulesetPatch): RulesetPatch {
-  return immutable({ ...input });
-}
-
-export function definePolicyBinding(
-  input: RulesetPolicyBinding,
-): RulesetPolicyBinding {
-  return immutable({ ...input });
-}
-
-/** Low-level relationship entrypoint used when no schema builder exists. */
-export function defineRulesetRelationship(
-  input: RulesetReservedRelationship,
-): RulesetReservedRelationship {
-  return immutable({ ...input });
-}
-
-export function deriveAction(input: {
-  readonly id: string;
-  readonly visibility: RulesetDerivedDefinition['visibility'];
-  readonly extensionPolicy: RulesetDerivedDefinition['extensionPolicy'];
-  readonly source: RulesetDerivedDefinition['source'];
-  readonly presentation?: RulesetDerivedDefinition['presentation'];
-  readonly base: RulesetDefinitionReference;
-  readonly mixins?: readonly RulesetMixinApplication[];
-  readonly patch?: RulesetPatch;
-}): RulesetDerivationDeclaration {
-  const definition = defineDerivedDefinition({
-    id: input.id,
-    materializesAs: 'action',
-    visibility: input.visibility,
-    extensionPolicy: input.extensionPolicy,
-    source: input.source,
-    ...(input.presentation === undefined
-      ? {}
-      : { presentation: input.presentation }),
-  });
-  return immutable({
-    definition,
-    relationship: immutable({
-      kind: 'derivesFrom' as const,
-      definitionId: definition.id,
-      target: input.base,
-      mixins: [...(input.mixins ?? [])],
-      localPatch: input.patch ?? emptyPatch(),
-      version: 1 as const,
-    }),
-  });
-}
-
-export function defineRulesetOverlay(input: {
-  readonly definitionId: string;
-  readonly target: RulesetDefinitionReference;
-  readonly targetPackage: RulesetIdentity;
-  readonly expectedFingerprint: string;
-  readonly patch: RulesetPatch;
-  readonly conflictPolicy?: 'reject' | 'replace';
-}): Extract<RulesetReservedRelationship, { readonly kind: 'patches' }> {
-  return immutable({
-    kind: 'patches' as const,
-    definitionId: input.definitionId,
-    target: input.target,
-    targetPackage: input.targetPackage,
-    expectedFingerprint: input.expectedFingerprint,
-    patch: input.patch,
-    plane: patchPlane(input.patch),
-    conflictPolicy: input.conflictPolicy ?? 'reject',
-    version: 1 as const,
-  });
-}
-
-export function defineRulesetConfiguration(input: {
-  readonly optionId: string;
-  readonly target: RulesetDefinitionReference;
-  readonly value: string | number | boolean;
-  readonly patch: RulesetPatch;
-}): Extract<RulesetReservedRelationship, { readonly kind: 'configures' }> {
-  return immutable({
-    kind: 'configures' as const,
-    ...input,
-    version: 1 as const,
-  });
-}
-
-export function defineRulesetPackage(
-  input: RulesetPackageInput,
-): RulesetPackageManifest {
+export function defineRuleset(input: Ruleset): Ruleset {
   return immutable({
     ...input,
-    language: input.language ?? { id: 'asha-rpg', version: '^1.0.0' },
-    dependencies: [...(input.dependencies ?? [])],
-    requirements: input.requirements ?? { operations: [], capabilities: [] },
-    exports:
-      input.exports ??
-      input.definitions
-        .filter((definition) => definition.visibility === 'public')
-        .map((definition) => definition.id),
-    policyBindings: [...(input.policyBindings ?? [])],
-    relationships: [...(input.relationships ?? [])],
+    schema: { identity: 'asha.rpg.ruleset', major: 1 },
+    provides: {
+      operations: [...input.provides.operations].sort(compareVersionedProvision),
+      capabilities: [...input.provides.capabilities].sort(compareVersionedProvision),
+      values: [...input.provides.values].sort(
+        (left, right) =>
+          left.kind.localeCompare(right.kind) || left.id.localeCompare(right.id),
+      ),
+      numericDomains: [...input.provides.numericDomains].sort((left, right) =>
+        left.id.localeCompare(right.id),
+      ),
+    },
   });
 }
 
-export function rulesetPackageSource(
-  manifest: RulesetPackageManifest,
-): RulesetPackageSource {
+function compareVersionedProvision(
+  left: { readonly id: string; readonly version: number },
+  right: { readonly id: string; readonly version: number },
+): number {
+  return left.id.localeCompare(right.id) || left.version - right.version;
+}
+
+export function rulesetStat<
+  const RulesetId extends string,
+  const StatId extends string,
+>(
+  ruleset: Ruleset & { readonly identity: RulesetIdentity & { readonly id: RulesetId } },
+  id: StatId,
+): RulesetValueReference<'stat', RulesetId, StatId> {
+  return rulesetValueReference(ruleset, 'stat', id);
+}
+
+export function rulesetDefense<
+  const RulesetId extends string,
+  const DefenseId extends string,
+>(
+  ruleset: Ruleset & { readonly identity: RulesetIdentity & { readonly id: RulesetId } },
+  id: DefenseId,
+): RulesetValueReference<'defense', RulesetId, DefenseId> {
+  return rulesetValueReference(ruleset, 'defense', id);
+}
+
+export function rulesetValueId<Kind extends RulesetValueKind>(
+  reference: RulesetValueReference<Kind, string, string>,
+): RulesetValueId<Kind> {
+  return reference.id;
+}
+
+function rulesetValueReference<
+  const Kind extends RulesetValueKind,
+  const RulesetId extends string,
+  const ValueId extends string,
+>(
+  ruleset: Ruleset & { readonly identity: RulesetIdentity & { readonly id: RulesetId } },
+  kind: Kind,
+  id: ValueId,
+): RulesetValueReference<Kind, RulesetId, ValueId> {
+  const contract = ruleset.provides.values.find(
+    (candidate) => candidate.kind === kind && candidate.id === id,
+  );
+  if (contract === undefined) {
+    throw new Error(
+      `ruleset ${ruleset.identity.id}@${ruleset.identity.version} does not provide ${kind} ${id}`,
+    );
+  }
   return immutable({
-    manifest,
-    sourceFingerprint: stableFingerprint(manifest),
+    kind,
+    id: id as RulesetValueId<Kind> & ValueId,
+    rulesetId: ruleset.identity.id,
+    [rulesetValueReferenceBrand]: true as const,
   });
-}
-
-export function composeRuleset(
-  input: RulesetCompositionManifest,
-): RulesetCompositionManifest {
-  return immutable({ ...input });
-}
-
-function emptyPatch(): RulesetPatch {
-  return immutable({ version: 1, operations: [] });
-}
-
-function patchPlane(
-  patch: RulesetPatch,
-): 'semantic' | 'presentation' | 'both' {
-  const planes = new Set(patch.operations.map((operation) => operation.plane));
-  if (planes.size !== 1) return 'both';
-  return planes.has('semantic') ? 'semantic' : 'presentation';
 }

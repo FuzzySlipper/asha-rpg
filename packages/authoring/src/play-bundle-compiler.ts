@@ -9,70 +9,72 @@ import { defineActions, definePackage } from './builders.js';
 import { catalogOwnershipOf } from './catalogs.js';
 import { normalizeAction, normalizePackage } from './normalize.js';
 import type {
-  MaterializedRulesetDefinition,
-  PrepareRulesetResult,
-  PreparedRulesetCompilation,
-  RulesetCompilerDiagnostic,
-  RulesetCompilerTarget,
-  RulesetDefinition,
-  RulesetDerivationProvenance,
-  RulesetDefinitionCommitment,
-  RulesetDefinitionProvenance,
-  RulesetDefinitionReference,
-  RulesetDependencyLockEntry,
-  RulesetMixinDefinition,
-  RulesetMaterializationStage,
-  RulesetOverlayProvenance,
-  RulesetPatch,
-  RulesetPatchChangeProvenance,
-  RulesetPatchOperation,
-  RulesetPatchPathSegment,
-  RulesetPatchScalar,
-  RulesetPackageRequest,
-  RulesetPackageSource,
-  RulesetRelationshipProvenance,
-} from './ruleset-types.js';
+  MaterializedContentDefinition,
+  PreparePlayBundleResult,
+  PreparedPlayBundle,
+  PlayBundleCompilerDiagnostic,
+  PlayBundleCompilerTarget,
+  ContentDefinition,
+  ContentDerivationProvenance,
+  ContentDefinitionCommitment,
+  ContentDefinitionProvenance,
+  ContentDefinitionReference,
+  ContentPackDependencyLockEntry,
+  ContentMixinDefinition,
+  ContentMaterializationStage,
+  ContentOverlayProvenance,
+  ContentPatch,
+  ContentPatchChangeProvenance,
+  ContentPatchOperation,
+  ContentPatchPathSegment,
+  ContentPatchScalar,
+  ContentPackRequest,
+  ContentPackSource,
+  ContentRelationshipProvenance,
+  ContentPackRequirements,
+  Ruleset,
+} from './play-bundle-types.js';
 
 interface SelectedPackage {
   readonly key: string;
-  readonly source: RulesetPackageSource;
+  readonly source: ContentPackSource;
   readonly aliases: Map<string, string>;
 }
 
 interface DefinitionRecord {
   readonly package: SelectedPackage;
-  readonly definition: RulesetDefinition;
+  readonly definition: ContentDefinition;
   readonly exported: boolean;
   readonly inheritedReferenceIds?: readonly string[];
 }
 
 interface MaterializationResult {
   readonly records: readonly DefinitionRecord[];
-  readonly definitionCommitments: readonly RulesetDefinitionCommitment[];
-  readonly derivationProvenance: readonly RulesetDerivationProvenance[];
-  readonly overlayProvenance: readonly RulesetOverlayProvenance[];
-  readonly relationships: readonly RulesetRelationshipProvenance[];
+  readonly definitionCommitments: readonly ContentDefinitionCommitment[];
+  readonly derivationProvenance: readonly ContentDerivationProvenance[];
+  readonly overlayProvenance: readonly ContentOverlayProvenance[];
+  readonly relationships: readonly ContentRelationshipProvenance[];
 }
 
 interface PatchedValue {
   readonly semantic: unknown;
-  readonly presentation: import('./ruleset-types.js').RulesetPresentation | null;
+  readonly presentation: import('./play-bundle-types.js').ContentPresentation | null;
 }
 
 interface PatchResult extends PatchedValue {
-  readonly changes: readonly RulesetPatchChangeProvenance[];
+  readonly changes: readonly ContentPatchChangeProvenance[];
 }
 
 interface ResolutionContext {
-  readonly diagnostics: RulesetCompilerDiagnostic[];
-  readonly availableById: Map<string, RulesetPackageSource[]>;
+  readonly diagnostics: PlayBundleCompilerDiagnostic[];
+  readonly availableById: Map<string, ContentPackSource[]>;
   readonly selected: Map<string, SelectedPackage>;
-  readonly lock: RulesetDependencyLockEntry[];
-  readonly relationships: RulesetRelationshipProvenance[];
+  readonly lock: ContentPackDependencyLockEntry[];
+  readonly relationships: ContentRelationshipProvenance[];
 }
 
 interface PackageConstraint {
-  readonly request: RulesetPackageRequest;
+  readonly request: ContentPackRequest;
   readonly requester: string;
   readonly importAs: string;
   readonly relationship: 'dependsOn' | 'contributes' | 'patches';
@@ -81,40 +83,46 @@ interface PackageConstraint {
 
 const NO_DIAGNOSTICS: readonly [] = Object.freeze([]);
 
-export const ASHA_RPG_COMPILER_TARGET: RulesetCompilerTarget = immutable({
+export const ASHA_RPG_PLAY_BUNDLE_TARGET: PlayBundleCompilerTarget = immutable({
   language: { id: 'asha-rpg', version: '1.0.0' },
   operations: { ...RPG_OPERATION_VERSIONS },
   capabilities: { ...RPG_CAPABILITY_VERSIONS },
+  models: {
+    checks: { 'check.d20-roll-over': 1 },
+    turns: { 'turn.ordered-one-action': 1 },
+    reactions: { 'reaction.before-damage-choice': 1 },
+    actionEconomy: { 'action-economy.one-action-plus-reaction': 1 },
+  },
 });
 
-export function prepareRulesetCompilation(options: {
-  readonly composition: import('./ruleset-types.js').RulesetCompositionManifest;
-  readonly packages: readonly RulesetPackageSource[];
-  readonly target?: RulesetCompilerTarget;
-}): PrepareRulesetResult {
-  const target = options.target ?? ASHA_RPG_COMPILER_TARGET;
-  const diagnostics: RulesetCompilerDiagnostic[] = [];
+export function preparePlayBundle(options: {
+  readonly bundle: import('./play-bundle-types.js').PlayBundleManifest;
+  readonly contentPacks: readonly ContentPackSource[];
+  readonly target?: PlayBundleCompilerTarget;
+}): PreparePlayBundleResult {
+  const target = options.target ?? ASHA_RPG_PLAY_BUNDLE_TARGET;
+  const diagnostics: PlayBundleCompilerDiagnostic[] = [];
   rejectExecutableValues(options, '$', diagnostics, new WeakSet<object>());
-  validateComposition(options.composition, target, diagnostics);
-  validateUniquePackageSources(options.packages, diagnostics);
+  validatePlayBundle(options.bundle, target, diagnostics);
+  validateUniquePackageSources(options.contentPacks, diagnostics);
 
   const context: ResolutionContext = {
     diagnostics,
-    availableById: indexAvailablePackages(options.packages, diagnostics),
+    availableById: indexAvailablePackages(options.contentPacks, diagnostics),
     selected: new Map(),
     lock: [],
     relationships: [],
   };
 
-  const compositionKey = identityKey(
-    options.composition.identity.id,
-    options.composition.identity.version,
+  const bundleKey = identityKey(
+    options.bundle.identity.id,
+    options.bundle.identity.version,
   );
-  const resolved = resolvePackageGraph(context, options.composition, compositionKey);
+  const resolved = resolvePackageGraph(context, options.bundle, bundleKey);
   if (resolved === undefined) return failed(diagnostics);
   const { base, additions } = resolved;
 
-  validateSelectedPackages(context, target);
+  validateSelectedPackages(context, options.bundle.ruleset);
   const rootKeys = new Set(
     [base, ...additions]
       .filter((entry): entry is SelectedPackage => entry !== undefined)
@@ -122,23 +130,28 @@ export function prepareRulesetCompilation(options: {
   );
   const materialization = materializeSelectedDefinitions(
     context,
-    options.composition,
+    options.bundle,
     resolved.overlays,
   );
   if (materialization === undefined) return failed(diagnostics);
   const graph = closeDefinitionGraph(context, rootKeys, materialization.records);
   if (diagnostics.length > 0 || graph === undefined) return failed(diagnostics);
 
-  const normalized = normalizeMaterializedActions(options.composition, graph, diagnostics);
+  const normalized = normalizeMaterializedActions(options.bundle, graph, diagnostics);
   if (normalized === undefined) return failed(diagnostics);
 
-  const requirements = collectRequirements(context, normalized.requirements, target);
+  const requirements = collectRequirements(context, normalized);
+  validateCollectedRequirements(
+    requirements,
+    options.bundle.ruleset,
+    diagnostics,
+  );
   const policyBindings = [...context.selected.values()]
     .flatMap((entry) => entry.source.manifest.policyBindings)
     .sort((left, right) => left.id.localeCompare(right.id));
   rejectDuplicateValues(
     policyBindings.map((binding) => binding.id),
-    'RULESET_DUPLICATE_POLICY_BINDING',
+    'CONTENT_PACK_DUPLICATE_POLICY_BINDING',
     '$.compiledPolicyBindings',
     'policy binding',
     diagnostics,
@@ -164,25 +177,25 @@ export function prepareRulesetCompilation(options: {
     ...materialization.relationships,
     ...graph.exportedRoots.map((definitionId, order) => ({
       kind: 'exports' as const,
-      source: graph.byGlobalId.get(definitionId)?.package.key ?? compositionKey,
+      source: graph.byGlobalId.get(definitionId)?.package.key ?? bundleKey,
       target: definitionId,
       order,
     })),
-    ...Object.entries(options.composition.configure)
+    ...Object.entries(options.bundle.configure)
       .sort(([left], [right]) => left.localeCompare(right))
       .map(([optionId, value], order) => ({
         kind: 'configures' as const,
-        source: compositionKey,
+        source: bundleKey,
         target: `${optionId}=${String(value)}`,
         order,
       })),
   ].sort(compareRelationship);
 
-  const prepared: PreparedRulesetCompilation = immutable({
-    schema: { identity: 'asha.rpg.ruleset.prepared', major: 1 },
-    compositionIdentity: options.composition.identity,
-    languageIdentity: target.language,
-    sourcePackages: [...context.selected.values()]
+  const prepared: PreparedPlayBundle = immutable({
+    schema: { identity: 'asha.rpg.play-bundle.prepared', major: 1 },
+    playBundleIdentity: options.bundle.identity,
+    ruleset: options.bundle.ruleset,
+    contentPacks: [...context.selected.values()]
       .map((entry) => ({
         id: entry.source.manifest.identity.id,
         version: entry.source.manifest.identity.version,
@@ -190,8 +203,7 @@ export function prepareRulesetCompilation(options: {
       }))
       .sort(compareIdentity),
     dependencyLock: [...context.lock].sort(compareLock),
-    requiredOperations: requirements.operations,
-    requiredCapabilities: requirements.capabilities,
+    contentRequirements: requirements,
     exportedRoots: graph.exportedRoots,
     materializedDefinitions,
     compiledPolicyBindings: policyBindings,
@@ -204,51 +216,148 @@ export function prepareRulesetCompilation(options: {
   return immutable({ ok: true, prepared, diagnostics: NO_DIAGNOSTICS });
 }
 
-function validateComposition(
-  composition: import('./ruleset-types.js').RulesetCompositionManifest,
-  target: RulesetCompilerTarget,
-  diagnostics: RulesetCompilerDiagnostic[],
+function validatePlayBundle(
+  bundle: import('./play-bundle-types.js').PlayBundleManifest,
+  target: PlayBundleCompilerTarget,
+  diagnostics: PlayBundleCompilerDiagnostic[],
 ): void {
-  requireIdentifier(composition.identity.id, '$.composition.identity.id', diagnostics);
-  requireExactVersion(composition.identity.version, '$.composition.identity.version', diagnostics);
-  if (composition.language.id !== 'asha-rpg') {
-    diagnostics.push(
-      diagnostic(
-        'compatibility',
-        'RULESET_LANGUAGE_ID_UNSUPPORTED',
-        '$.composition.language.id',
-        'the composition language must be asha-rpg',
-        { expected: 'asha-rpg', actual: composition.language.id },
-      ),
-    );
+  requireIdentifier(bundle.identity.id, '$.bundle.identity.id', diagnostics);
+  requireExactVersion(bundle.identity.version, '$.bundle.identity.version', diagnostics);
+  validateRuleset(bundle.ruleset, target, diagnostics);
+  for (const optionId of Object.keys(bundle.configure).sort()) {
+    requireIdentifier(optionId, `$.bundle.configure.${optionId}`, diagnostics);
   }
+}
+
+function validateRuleset(
+  ruleset: Ruleset,
+  target: PlayBundleCompilerTarget,
+  diagnostics: PlayBundleCompilerDiagnostic[],
+): void {
   if (
-    composition.language.id !== target.language.id ||
-    !satisfiesVersion(target.language.version, composition.language.version)
+    ruleset.schema.identity !== 'asha.rpg.ruleset' ||
+    ruleset.schema.major !== 1
   ) {
     diagnostics.push(
       diagnostic(
         'compatibility',
-        'RULESET_COMPOSITION_LANGUAGE_INCOMPATIBLE',
-        '$.composition.language',
-        `the composition requires ${composition.language.id}@${composition.language.version}`,
+        'RULESET_SCHEMA_UNSUPPORTED',
+        '$.bundle.ruleset.schema',
+        'the ruleset schema must be asha.rpg.ruleset@1',
+      ),
+    );
+  }
+  for (const model of ['checks', 'turns', 'reactions', 'actionEconomy'] as const) {
+    const binding = ruleset.models[model];
+    if (target.models[model][binding.id] === binding.version) continue;
+    diagnostics.push(
+      diagnostic(
+        'compatibility',
+        'RULESET_MODEL_UNSUPPORTED',
+        `$.bundle.ruleset.models.${model}`,
+        `ruleset model ${binding.id}@${binding.version} is not bound by Rust authority`,
+      ),
+    );
+  }
+  requireIdentifier(ruleset.identity.id, '$.bundle.ruleset.identity.id', diagnostics);
+  requireExactVersion(
+    ruleset.identity.version,
+    '$.bundle.ruleset.identity.version',
+    diagnostics,
+  );
+  if (
+    ruleset.language.id !== target.language.id ||
+    !satisfiesVersion(target.language.version, ruleset.language.version)
+  ) {
+    diagnostics.push(
+      diagnostic(
+        'compatibility',
+        'RULESET_LANGUAGE_INCOMPATIBLE',
+        '$.bundle.ruleset.language',
+        `the ruleset requires ${ruleset.language.id}@${ruleset.language.version}`,
         {
           expected: `${target.language.id}@${target.language.version}`,
-          actual: `${composition.language.id}@${composition.language.version}`,
+          actual: `${ruleset.language.id}@${ruleset.language.version}`,
         },
       ),
     );
   }
-  for (const optionId of Object.keys(composition.configure).sort()) {
-    requireIdentifier(optionId, `$.composition.configure.${optionId}`, diagnostics);
+  const operationIds = new Set<string>();
+  for (const [index, provision] of ruleset.provides.operations.entries()) {
+    if (
+      target.operations[provision.id as RpgOperationId] !== provision.version ||
+      !operationIds.add(provision.id)
+    ) {
+      diagnostics.push(
+        diagnostic(
+          'compatibility',
+          'RULESET_OPERATION_PROVISION_INVALID',
+          `$.bundle.ruleset.provides.operations[${index}]`,
+          `ruleset operation provision ${provision.id}@${provision.version} is unsupported or duplicated`,
+        ),
+      );
+    }
+  }
+  const capabilityIds = new Set<string>();
+  for (const [index, provision] of ruleset.provides.capabilities.entries()) {
+    if (
+      target.capabilities[provision.id as RpgCapabilityId] !== provision.version ||
+      !capabilityIds.add(provision.id)
+    ) {
+      diagnostics.push(
+        diagnostic(
+          'compatibility',
+          'RULESET_CAPABILITY_PROVISION_INVALID',
+          `$.bundle.ruleset.provides.capabilities[${index}]`,
+          `ruleset capability provision ${provision.id}@${provision.version} is unsupported or duplicated`,
+        ),
+      );
+    }
+  }
+  const valueIds = new Set<string>();
+  const declaredDomains = new Set(
+    ruleset.provides.numericDomains.map((domain) => domain.id),
+  );
+  for (const [index, provision] of ruleset.provides.values.entries()) {
+    const key = `${provision.kind}:${provision.id}`;
+    if (
+      !valueIds.add(key) ||
+      provision.label.trim().length === 0 ||
+      !declaredDomains.has(provision.numericDomainId)
+    ) {
+      diagnostics.push(
+        diagnostic(
+          'source',
+          'RULESET_VALUE_PROVISION_INVALID',
+          `$.bundle.ruleset.provides.values[${index}]`,
+          `ruleset value provision ${key} must be unique, labelled, and use a declared numeric domain`,
+        ),
+      );
+    }
+  }
+  const domainIds = new Set<string>();
+  for (const [index, provision] of ruleset.provides.numericDomains.entries()) {
+    if (
+      !domainIds.add(provision.id) ||
+      provision.minimum > provision.maximum
+    ) {
+      diagnostics.push(
+        diagnostic(
+          'source',
+          'RULESET_NUMERIC_DOMAIN_INVALID',
+          `$.bundle.ruleset.provides.numericDomains[${index}]`,
+          `ruleset numeric domain ${provision.id} must be unique and ordered`,
+        ),
+      );
+    }
   }
 }
 
 function indexAvailablePackages(
-  sources: readonly RulesetPackageSource[],
-  diagnostics: RulesetCompilerDiagnostic[],
-): Map<string, RulesetPackageSource[]> {
-  const byId = new Map<string, RulesetPackageSource[]>();
+  sources: readonly ContentPackSource[],
+  diagnostics: PlayBundleCompilerDiagnostic[],
+): Map<string, ContentPackSource[]> {
+  const byId = new Map<string, ContentPackSource[]>();
   for (const [index, source] of sources.entries()) {
     const path = `$.packages[${index}]`;
     const manifest = source.manifest;
@@ -266,8 +375,8 @@ function indexAvailablePackages(
 }
 
 function validateUniquePackageSources(
-  sources: readonly RulesetPackageSource[],
-  diagnostics: RulesetCompilerDiagnostic[],
+  sources: readonly ContentPackSource[],
+  diagnostics: PlayBundleCompilerDiagnostic[],
 ): void {
   const identities = new Set<string>();
   for (const [index, source] of sources.entries()) {
@@ -280,7 +389,7 @@ function validateUniquePackageSources(
     diagnostics.push(
       diagnostic(
         'source',
-        'RULESET_DUPLICATE_PACKAGE_IDENTITY',
+        'CONTENT_PACK_DUPLICATE_PACKAGE_IDENTITY',
         `$.packages[${index}]`,
         `duplicate package source ${key}`,
         { packageId: identity.id },
@@ -291,8 +400,8 @@ function validateUniquePackageSources(
 
 function resolvePackageGraph(
   context: ResolutionContext,
-  composition: import('./ruleset-types.js').RulesetCompositionManifest,
-  compositionKey: string,
+  bundle: import('./play-bundle-types.js').PlayBundleManifest,
+  bundleKey: string,
 ): {
   readonly base: SelectedPackage;
   readonly additions: readonly SelectedPackage[];
@@ -300,25 +409,25 @@ function resolvePackageGraph(
 } | undefined {
   const rootConstraints: PackageConstraint[] = [
     {
-      request: composition.base,
-      requester: compositionKey,
+      request: bundle.base,
+      requester: bundleKey,
       importAs: 'base',
       relationship: 'contributes',
-      path: '$.composition.base',
+      path: '$.bundle.base',
     },
-    ...composition.add.map((request, index) => ({
+    ...bundle.add.map((request, index) => ({
       request,
-      requester: compositionKey,
+      requester: bundleKey,
       importAs: `add:${request.id}`,
       relationship: 'contributes' as const,
-      path: `$.composition.add[${index}]`,
+      path: `$.bundle.add[${index}]`,
     })),
-    ...composition.overlays.map((request, index) => ({
+    ...bundle.overlays.map((request, index) => ({
       request,
-      requester: compositionKey,
+      requester: bundleKey,
       importAs: `overlay:${request.id}`,
       relationship: 'patches' as const,
-      path: `$.composition.overlays[${index}]`,
+      path: `$.bundle.overlays[${index}]`,
     })),
   ];
   for (const constraint of rootConstraints) {
@@ -328,8 +437,8 @@ function resolvePackageGraph(
 
   let failedConstraints: readonly PackageConstraint[] = rootConstraints;
   const search = (
-    selectedById: ReadonlyMap<string, RulesetPackageSource>,
-  ): ReadonlyMap<string, RulesetPackageSource> | undefined => {
+    selectedById: ReadonlyMap<string, ContentPackSource>,
+  ): ReadonlyMap<string, ContentPackSource> | undefined => {
     const constraints = collectPackageConstraints(rootConstraints, selectedById);
     for (const constraint of constraints) {
       if (!supportedRange(constraint.request.version)) {
@@ -383,7 +492,7 @@ function resolvePackageGraph(
       context.diagnostics.push(
         diagnostic(
           'resolution',
-          'RULESET_PACKAGE_UNRESOLVED',
+          'CONTENT_PACK_PACKAGE_UNRESOLVED',
           first.path,
           `no package ${first.request.id} satisfies all constraints: ${expected}`,
           { packageId: first.request.id, expected },
@@ -423,7 +532,7 @@ function resolvePackageGraph(
     });
   }
 
-  const selectedForRequest = (request: RulesetPackageRequest): SelectedPackage => {
+  const selectedForRequest = (request: ContentPackRequest): SelectedPackage => {
     const source = selectedById.get(request.id);
     if (source === undefined) throw new Error(`resolved package ${request.id} is absent`);
     const key = identityKey(request.id, source.manifest.identity.version);
@@ -431,16 +540,16 @@ function resolvePackageGraph(
     if (selected === undefined) throw new Error(`resolved package ${key} is absent`);
     return selected;
   };
-  const base = selectedForRequest(composition.base);
-  const additions = composition.add.map(selectedForRequest);
-  const overlays = composition.overlays.map(selectedForRequest);
+  const base = selectedForRequest(bundle.base);
+  const additions = bundle.add.map(selectedForRequest);
+  const overlays = bundle.overlays.map(selectedForRequest);
   resolveDependencies(context, [base, ...additions, ...overlays], selectedById);
   return { base, additions, overlays };
 }
 
 function collectPackageConstraints(
   roots: readonly PackageConstraint[],
-  selectedById: ReadonlyMap<string, RulesetPackageSource>,
+  selectedById: ReadonlyMap<string, ContentPackSource>,
 ): PackageConstraint[] {
   const constraints = [...roots];
   for (const source of [...selectedById.values()].sort((left, right) =>
@@ -474,13 +583,13 @@ function groupConstraints(
 
 function validateSupportedRange(
   constraint: PackageConstraint,
-  diagnostics: RulesetCompilerDiagnostic[],
+  diagnostics: PlayBundleCompilerDiagnostic[],
 ): void {
   if (supportedRange(constraint.request.version)) return;
   diagnostics.push(
     diagnostic(
       'resolution',
-      'RULESET_VERSION_RANGE_UNSUPPORTED',
+      'CONTENT_PACK_VERSION_RANGE_UNSUPPORTED',
       `${constraint.path}.version`,
       `unsupported version range ${constraint.request.version}`,
       { packageId: constraint.request.id },
@@ -491,7 +600,7 @@ function validateSupportedRange(
 function resolveDependencies(
   context: ResolutionContext,
   roots: readonly SelectedPackage[],
-  selectedById: ReadonlyMap<string, RulesetPackageSource>,
+  selectedById: ReadonlyMap<string, ContentPackSource>,
 ): void {
   const visiting: string[] = [];
   const visited = new Set<string>();
@@ -503,7 +612,7 @@ function resolveDependencies(
       context.diagnostics.push(
         diagnostic(
           'resolution',
-          'RULESET_DEPENDENCY_CYCLE',
+          'CONTENT_PACK_DEPENDENCY_CYCLE',
           '$.dependencyGraph',
           `dependency cycle: ${graphPath.join(' -> ')}`,
           { graphPath },
@@ -524,7 +633,7 @@ function resolveDependencies(
         context.diagnostics.push(
           diagnostic(
             'source',
-            'RULESET_DUPLICATE_IMPORT_ALIAS',
+            'CONTENT_PACK_DUPLICATE_IMPORT_ALIAS',
             `${path}.importAs`,
             `duplicate import alias ${dependency.importAs}`,
             { packageId: entry.source.manifest.identity.id, source: entry.source.manifest.entry },
@@ -548,46 +657,48 @@ function resolveDependencies(
   for (const root of roots) visit(root);
 }
 
-function validateSelectedPackages(context: ResolutionContext, target: RulesetCompilerTarget): void {
+function validateSelectedPackages(context: ResolutionContext, ruleset: Ruleset): void {
   for (const entry of context.selected.values()) {
     const manifest = entry.source.manifest;
     if (
-      manifest.language.id !== target.language.id ||
-      !satisfiesVersion(target.language.version, manifest.language.version)
+      manifest.language.id !== ruleset.language.id ||
+      !satisfiesVersion(ruleset.language.version, manifest.language.version)
     ) {
       context.diagnostics.push(
         diagnostic(
           'compatibility',
-          'RULESET_LANGUAGE_INCOMPATIBLE',
+          'CONTENT_PACK_LANGUAGE_INCOMPATIBLE',
           `$.packages[${entry.key}].language`,
           `${entry.key} requires ${manifest.language.id}@${manifest.language.version}`,
           {
             packageId: manifest.identity.id,
-            expected: `${target.language.id}@${target.language.version}`,
+            expected: `${ruleset.language.id}@${ruleset.language.version}`,
             actual: `${manifest.language.id}@${manifest.language.version}`,
             source: manifest.entry,
           },
         ),
       );
     }
-    validateRequirements(entry, target, context.diagnostics);
+    validateRequirements(entry, ruleset, context.diagnostics);
   }
 }
 
 function validateRequirements(
   entry: SelectedPackage,
-  target: RulesetCompilerTarget,
-  diagnostics: RulesetCompilerDiagnostic[],
+  ruleset: Ruleset,
+  diagnostics: PlayBundleCompilerDiagnostic[],
 ): void {
   for (const [index, requirement] of entry.source.manifest.requirements.operations.entries()) {
-    const supported = target.operations[requirement.id];
+    const supported = ruleset.provides.operations.find(
+      (candidate) => candidate.id === requirement.id,
+    )?.version;
     if (supported !== requirement.version) {
       diagnostics.push(
         diagnostic(
           'compatibility',
-          'RULESET_OPERATION_INCOMPATIBLE',
+          'CONTENT_PACK_OPERATION_REQUIREMENT_MISSING',
           `$.packages[${entry.key}].requirements.operations[${index}]`,
-          `operation ${requirement.id}@${requirement.version} is unsupported`,
+          `content pack requires operation ${requirement.id}@${requirement.version}, which the ruleset does not provide`,
           {
             packageId: entry.source.manifest.identity.id,
             expected: supported === undefined ? 'unavailable' : String(supported),
@@ -599,14 +710,16 @@ function validateRequirements(
     }
   }
   for (const [index, requirement] of entry.source.manifest.requirements.capabilities.entries()) {
-    const supported = target.capabilities[requirement.id];
+    const supported = ruleset.provides.capabilities.find(
+      (candidate) => candidate.id === requirement.id,
+    )?.version;
     if (supported !== requirement.version) {
       diagnostics.push(
         diagnostic(
           'compatibility',
-          'RULESET_CAPABILITY_INCOMPATIBLE',
+          'CONTENT_PACK_CAPABILITY_REQUIREMENT_MISSING',
           `$.packages[${entry.key}].requirements.capabilities[${index}]`,
-          `capability ${requirement.id}@${requirement.version} is unsupported`,
+          `content pack requires capability ${requirement.id}@${requirement.version}, which the ruleset does not provide`,
           {
             packageId: entry.source.manifest.identity.id,
             expected: supported === undefined ? 'unavailable' : String(supported),
@@ -617,18 +730,51 @@ function validateRequirements(
       );
     }
   }
+  const values = new Set(
+    ruleset.provides.values.map((value) => `${value.kind}:${value.id}`),
+  );
+  for (const [index, requirement] of entry.source.manifest.requirements.values.entries()) {
+    const key = `${requirement.kind}:${requirement.id}`;
+    if (!values.has(key)) {
+      diagnostics.push(
+        diagnostic(
+          'compatibility',
+          'CONTENT_PACK_VALUE_REQUIREMENT_MISSING',
+          `$.packages[${entry.key}].requirements.values[${index}]`,
+          `content pack requires ${key}, which the ruleset does not provide`,
+          { packageId: entry.source.manifest.identity.id, expected: key, actual: 'unavailable' },
+        ),
+      );
+    }
+  }
+  const domains = new Set(
+    ruleset.provides.numericDomains.map((domain) => domain.id),
+  );
+  for (const [index, requirement] of entry.source.manifest.requirements.numericDomains.entries()) {
+    if (!domains.has(requirement)) {
+      diagnostics.push(
+        diagnostic(
+          'compatibility',
+          'CONTENT_PACK_NUMERIC_DOMAIN_REQUIREMENT_MISSING',
+          `$.packages[${entry.key}].requirements.numericDomains[${index}]`,
+          `content pack requires numeric domain ${requirement}, which the ruleset does not provide`,
+          { packageId: entry.source.manifest.identity.id, expected: requirement, actual: 'unavailable' },
+        ),
+      );
+    }
+  }
 }
 
 function materializeSelectedDefinitions(
   context: ResolutionContext,
-  composition: import('./ruleset-types.js').RulesetCompositionManifest,
+  bundle: import('./play-bundle-types.js').PlayBundleManifest,
   overlayPackages: readonly SelectedPackage[],
 ): MaterializationResult | undefined {
   const definitionsByPackage = new Map<string, Map<string, DefinitionRecord>>();
   for (const entry of context.selected.values()) {
     rejectDuplicateValues(
       entry.source.manifest.definitions.map((definition) => definition.id),
-      'RULESET_DUPLICATE_LOCAL_DEFINITION',
+      'CONTENT_PACK_DUPLICATE_LOCAL_DEFINITION',
       `$.packages[${entry.key}].definitions`,
       'definition',
       context.diagnostics,
@@ -647,7 +793,7 @@ function materializeSelectedDefinitions(
       context.diagnostics.push(
         diagnostic(
           'graph',
-          'RULESET_EXPORT_MISSING',
+          'CONTENT_PACK_EXPORT_MISSING',
           `$.packages[${entry.key}].exports[${index}]`,
           `export ${definitionId} has no declaration`,
           { packageId: entry.source.manifest.identity.id, definitionId, source: entry.source.manifest.entry },
@@ -657,14 +803,14 @@ function materializeSelectedDefinitions(
     definitionsByPackage.set(entry.key, definitions);
   }
 
-  const derivationsByDefinition = new Map<string, import('./ruleset-types.js').RulesetReservedRelationship[]>();
+  const derivationsByDefinition = new Map<string, import('./play-bundle-types.js').ContentReservedRelationship[]>();
   for (const entry of context.selected.values()) {
     for (const [index, relationship] of entry.source.manifest.relationships.entries()) {
       if (relationship.version !== 1) {
         context.diagnostics.push(
           diagnostic(
             'compatibility',
-            'RULESET_RELATIONSHIP_VERSION_UNSUPPORTED',
+            'CONTENT_PACK_RELATIONSHIP_VERSION_UNSUPPORTED',
             `$.packages[${entry.key}].relationships[${index}].version`,
             `${relationship.kind} relationship version ${String(relationship.version)} is unsupported`,
             { packageId: entry.source.manifest.identity.id },
@@ -680,9 +826,9 @@ function materializeSelectedDefinitions(
   }
 
   const records = new Map<string, DefinitionRecord>();
-  const definitionCommitments = new Map<string, RulesetDefinitionCommitment>();
-  const derivationProvenance: RulesetDerivationProvenance[] = [];
-  const relationshipProvenance: RulesetRelationshipProvenance[] = [];
+  const definitionCommitments = new Map<string, ContentDefinitionCommitment>();
+  const derivationProvenance: ContentDerivationProvenance[] = [];
+  const relationshipProvenance: ContentRelationshipProvenance[] = [];
   const visiting: string[] = [];
 
   const resolveConcrete = (record: DefinitionRecord): DefinitionRecord | undefined => {
@@ -695,7 +841,7 @@ function materializeSelectedDefinitions(
       context.diagnostics.push(
         diagnostic(
           'materialization',
-          'RULESET_DERIVATION_CYCLE',
+          'CONTENT_PACK_DERIVATION_CYCLE',
           '$.derivationGraph',
           `derivation cycle: ${graphPath.join(' -> ')}`,
           { definitionId: record.definition.id, source: record.definition.source, graphPath },
@@ -707,7 +853,7 @@ function materializeSelectedDefinitions(
       context.diagnostics.push(
         diagnostic(
           'materialization',
-          'RULESET_DERIVATION_DEPTH_EXCEEDED',
+          'CONTENT_PACK_DERIVATION_DEPTH_EXCEEDED',
           '$.derivationGraph',
           `derivation depth exceeds the supported limit of 32 at ${key}`,
           { definitionId: record.definition.id, source: record.definition.source, graphPath: [...visiting, key] },
@@ -721,7 +867,7 @@ function materializeSelectedDefinitions(
         context.diagnostics.push(
           diagnostic(
             'materialization',
-            'RULESET_DERIVATION_DECLARATION_INCOMPATIBLE',
+            'CONTENT_PACK_DERIVATION_DECLARATION_INCOMPATIBLE',
             `$.packages[${record.package.key}].definitions.${record.definition.id}`,
             'a derivesFrom relationship must name a derived definition declaration',
             { definitionId: record.definition.id, source: record.definition.source },
@@ -743,8 +889,8 @@ function materializeSelectedDefinitions(
         diagnostic(
           'materialization',
           derivations.length === 0
-            ? 'RULESET_DERIVATION_BASE_MISSING'
-            : 'RULESET_DERIVATION_BASE_AMBIGUOUS',
+            ? 'CONTENT_PACK_DERIVATION_BASE_MISSING'
+            : 'CONTENT_PACK_DERIVATION_BASE_AMBIGUOUS',
           `$.packages[${record.package.key}].definitions.${record.definition.id}`,
           derivations.length === 0
             ? `derived definition ${record.definition.id} has no primary base`
@@ -771,7 +917,7 @@ function materializeSelectedDefinitions(
       context.diagnostics.push(
         diagnostic(
           'materialization',
-          'RULESET_DERIVATION_KIND_INCOMPATIBLE',
+          'CONTENT_PACK_DERIVATION_KIND_INCOMPATIBLE',
           `$.packages[${record.package.key}].relationships.${record.definition.id}.target`,
           `derived ${record.definition.materializesAs} cannot use ${baseSource.definition.kind} base ${baseSource.definition.id}`,
           {
@@ -801,7 +947,7 @@ function materializeSelectedDefinitions(
       context.diagnostics.push(
         diagnostic(
           'materialization',
-          'RULESET_DERIVATION_BASE_FORBIDDEN',
+          'CONTENT_PACK_DERIVATION_BASE_FORBIDDEN',
           `$.packages[${record.package.key}].relationships.${record.definition.id}.target`,
           `definition ${base.definition.id} is ${base.definition.extensionPolicy}, not derivable`,
           { definitionId: base.definition.id, source: record.definition.source },
@@ -814,7 +960,7 @@ function materializeSelectedDefinitions(
       context.diagnostics.push(
         diagnostic(
           'materialization',
-          'RULESET_DERIVATION_KIND_INCOMPATIBLE',
+          'CONTENT_PACK_DERIVATION_KIND_INCOMPATIBLE',
           `$.packages[${record.package.key}].definitions.${record.definition.id}.materializesAs`,
           `derived ${record.definition.materializesAs} cannot use ${base.definition.kind} base ${base.definition.id}`,
           { definitionId: record.definition.id, source: record.definition.source },
@@ -825,8 +971,8 @@ function materializeSelectedDefinitions(
     }
 
     let current = definitionValue(base);
-    const changes: RulesetPatchChangeProvenance[] = [];
-    const mixinProvenance: import('./ruleset-types.js').RulesetDerivationMixinProvenance[] = [];
+    const changes: ContentPatchChangeProvenance[] = [];
+    const mixinProvenance: import('./play-bundle-types.js').ContentDerivationMixinProvenance[] = [];
     const inheritedReferenceIds = new Set(
       resolveMaterializationReferenceIds(base, definitionsByPackage, context.diagnostics),
     );
@@ -843,7 +989,7 @@ function materializeSelectedDefinitions(
           context.diagnostics.push(
             diagnostic(
               'materialization',
-              'RULESET_MIXIN_KIND_INCOMPATIBLE',
+              'CONTENT_PACK_MIXIN_KIND_INCOMPATIBLE',
               `$.packages[${record.package.key}].relationships.${record.definition.id}.mixins[${order}]`,
               `definition ${mixinRecord.definition.id} is not a mixin`,
               { definitionId: mixinRecord.definition.id, source: record.definition.source },
@@ -870,7 +1016,7 @@ function materializeSelectedDefinitions(
       )) {
         inheritedReferenceIds.add(referenceId);
       }
-      const applied = applyRulesetPatch(
+      const applied = applyContentPatch(
         current,
         mixinRecord.definition.patch,
         parameters,
@@ -896,7 +1042,7 @@ function materializeSelectedDefinitions(
         order,
       });
     }
-    const local = applyRulesetPatch(
+    const local = applyContentPatch(
       current,
       derivation.localPatch,
       {},
@@ -961,7 +1107,7 @@ function materializeSelectedDefinitions(
         context.diagnostics.push(
           diagnostic(
             'graph',
-            'RULESET_PUBLIC_DEFINITION_UNREACHABLE',
+            'CONTENT_PACK_PUBLIC_DEFINITION_UNREACHABLE',
             `$.packages[${record.package.key}].definitions.${record.definition.id}`,
             `public template ${record.definition.id} has no materialized definition`,
             {
@@ -975,7 +1121,7 @@ function materializeSelectedDefinitions(
     }
   }
 
-  const overlayProvenance: RulesetOverlayProvenance[] = [];
+  const overlayProvenance: ContentOverlayProvenance[] = [];
   const overlayKeys = new Set(overlayPackages.map((entry) => entry.key));
   const writes = new Set<string>();
   for (const entry of context.selected.values()) {
@@ -986,9 +1132,9 @@ function materializeSelectedDefinitions(
       context.diagnostics.push(
         diagnostic(
           'materialization',
-          'RULESET_OVERLAY_PACKAGE_NOT_SELECTED',
+          'CONTENT_PACK_OVERLAY_PACKAGE_NOT_SELECTED',
           `$.packages[${entry.key}].relationships`,
-          `package ${entry.key} declares patches but is not selected in composition overlay order`,
+          `package ${entry.key} declares patches but is not selected in bundle overlay order`,
           { packageId: entry.source.manifest.identity.id, source: entry.source.manifest.entry },
         ),
       );
@@ -1002,8 +1148,8 @@ function materializeSelectedDefinitions(
       context.diagnostics.push(
         diagnostic(
           'materialization',
-          'RULESET_OVERLAY_EMPTY',
-          `$.composition.overlays[${overlayOrder}]`,
+          'CONTENT_PACK_OVERLAY_EMPTY',
+          `$.bundle.overlays[${overlayOrder}]`,
           `selected overlay ${entry.key} declares no patch relationships`,
           { packageId: entry.source.manifest.identity.id, source: entry.source.manifest.entry },
         ),
@@ -1028,7 +1174,7 @@ function materializeSelectedDefinitions(
         context.diagnostics.push(
           diagnostic(
             'materialization',
-            'RULESET_OVERLAY_TARGET_PACKAGE_MISMATCH',
+            'CONTENT_PACK_OVERLAY_TARGET_PACKAGE_MISMATCH',
             `$.packages[${entry.key}].relationships[${relationshipOrder}].targetPackage`,
             `overlay pins ${relationship.targetPackage.id}@${relationship.targetPackage.version}, resolved ${targetIdentity.id}@${targetIdentity.version}`,
             { definitionId: target.definition.id, expected: `${relationship.targetPackage.id}@${relationship.targetPackage.version}`, actual: `${targetIdentity.id}@${targetIdentity.version}` },
@@ -1040,7 +1186,7 @@ function materializeSelectedDefinitions(
         context.diagnostics.push(
           diagnostic(
             'materialization',
-            'RULESET_OVERLAY_TARGET_FORBIDDEN',
+            'CONTENT_PACK_OVERLAY_TARGET_FORBIDDEN',
             `$.packages[${entry.key}].relationships[${relationshipOrder}].target`,
             `definition ${target.definition.id} is ${target.definition.extensionPolicy}, not patchable`,
             { definitionId: target.definition.id, source: entry.source.manifest.entry },
@@ -1054,7 +1200,7 @@ function materializeSelectedDefinitions(
         context.diagnostics.push(
           diagnostic(
             'materialization',
-            'RULESET_OVERLAY_EXPECTED_FINGERPRINT_MISMATCH',
+            'CONTENT_PACK_OVERLAY_EXPECTED_FINGERPRINT_MISMATCH',
             `$.packages[${entry.key}].relationships[${relationshipOrder}].expectedFingerprint`,
             `overlay expected ${relationship.expectedFingerprint}, materialized target is ${beforeFingerprint}`,
             { definitionId: target.definition.id, expected: relationship.expectedFingerprint, actual: beforeFingerprint },
@@ -1066,7 +1212,7 @@ function materializeSelectedDefinitions(
         context.diagnostics.push(
           diagnostic(
             'materialization',
-            'RULESET_OVERLAY_IMPACT_PLANE_MISMATCH',
+            'CONTENT_PACK_OVERLAY_IMPACT_PLANE_MISMATCH',
             `$.packages[${entry.key}].relationships[${relationshipOrder}].patch`,
             `overlay patch operations exceed declared ${relationship.plane} impact plane`,
             { definitionId: target.definition.id },
@@ -1082,7 +1228,7 @@ function materializeSelectedDefinitions(
           context.diagnostics.push(
             diagnostic(
               'materialization',
-              'RULESET_OVERLAY_WRITE_CONFLICT',
+              'CONTENT_PACK_OVERLAY_WRITE_CONFLICT',
               `$.packages[${entry.key}].relationships[${relationshipOrder}].patch`,
               `overlay write conflicts at ${write}`,
               { definitionId: target.definition.id },
@@ -1092,7 +1238,7 @@ function materializeSelectedDefinitions(
         writes.add(write);
       }
       if (conflicted) continue;
-      const applied = applyRulesetPatch(
+      const applied = applyContentPatch(
         definitionValue(target),
         relationship.patch,
         {},
@@ -1130,7 +1276,7 @@ function materializeSelectedDefinitions(
     }
   }
 
-  for (const [optionOrder, [optionId, selectedValue]] of Object.entries(composition.configure)
+  for (const [optionOrder, [optionId, selectedValue]] of Object.entries(bundle.configure)
     .sort(([left], [right]) => left.localeCompare(right))
     .entries()) {
     const matches = [...context.selected.values()].flatMap((entry) =>
@@ -1148,9 +1294,9 @@ function materializeSelectedDefinitions(
         diagnostic(
           'materialization',
           matches.length === 0
-            ? 'RULESET_CONFIGURATION_OPTION_UNAVAILABLE'
-            : 'RULESET_CONFIGURATION_OPTION_AMBIGUOUS',
-          `$.composition.configure.${optionId}`,
+            ? 'CONTENT_PACK_CONFIGURATION_OPTION_UNAVAILABLE'
+            : 'CONTENT_PACK_CONFIGURATION_OPTION_AMBIGUOUS',
+          `$.bundle.configure.${optionId}`,
           matches.length === 0
             ? `no selected package exposes ${optionId}=${String(selectedValue)}`
             : `more than one selected package exposes ${optionId}=${String(selectedValue)}`,
@@ -1173,7 +1319,7 @@ function materializeSelectedDefinitions(
       context.diagnostics.push(
         diagnostic(
           'materialization',
-          'RULESET_CONFIGURATION_TARGET_FORBIDDEN',
+          'CONTENT_PACK_CONFIGURATION_TARGET_FORBIDDEN',
           `$.packages[${match.entry.key}].relationships.${optionId}.target`,
           `definition ${target.definition.id} is ${target.definition.extensionPolicy}, not configurable`,
           { definitionId: target.definition.id },
@@ -1181,7 +1327,7 @@ function materializeSelectedDefinitions(
       );
       continue;
     }
-    const applied = applyRulesetPatch(
+    const applied = applyContentPatch(
       definitionValue(target),
       match.relationship.patch,
       {},
@@ -1218,10 +1364,10 @@ function materializeSelectedDefinitions(
 
 function resolveRelationshipReference(
   sourcePackage: SelectedPackage,
-  reference: RulesetDefinitionReference,
+  reference: ContentDefinitionReference,
   path: string,
   definitionsByPackage: ReadonlyMap<string, ReadonlyMap<string, DefinitionRecord>>,
-  diagnostics: RulesetCompilerDiagnostic[],
+  diagnostics: PlayBundleCompilerDiagnostic[],
 ): DefinitionRecord | undefined {
   const targetPackageKey =
     reference.importAs === undefined
@@ -1231,7 +1377,7 @@ function resolveRelationshipReference(
     diagnostics.push(
       diagnostic(
         'materialization',
-        'RULESET_IMPORT_ALIAS_UNRESOLVED',
+        'CONTENT_PACK_IMPORT_ALIAS_UNRESOLVED',
         path,
         `import alias ${reference.importAs ?? ''} is not declared`,
         { packageId: sourcePackage.source.manifest.identity.id, source: sourcePackage.source.manifest.entry },
@@ -1244,7 +1390,7 @@ function resolveRelationshipReference(
     diagnostics.push(
       diagnostic(
         'materialization',
-        'RULESET_DEFINITION_REFERENCE_MISSING',
+        'CONTENT_PACK_DEFINITION_REFERENCE_MISSING',
         path,
         `definition ${reference.definitionId} was not found in ${targetPackageKey}`,
         { packageId: sourcePackage.source.manifest.identity.id, definitionId: reference.definitionId, source: sourcePackage.source.manifest.entry },
@@ -1259,7 +1405,7 @@ function resolveRelationshipReference(
     diagnostics.push(
       diagnostic(
         'materialization',
-        'RULESET_PRIVATE_CROSS_PACKAGE_REFERENCE',
+        'CONTENT_PACK_PRIVATE_CROSS_PACKAGE_REFERENCE',
         path,
         `definition ${target.definition.id} is not exported for cross-package use`,
         { packageId: target.package.source.manifest.identity.id, definitionId: target.definition.id, source: sourcePackage.source.manifest.entry },
@@ -1285,7 +1431,7 @@ function concreteDerivedRecord(
   base: DefinitionRecord,
   value: PatchedValue,
   inheritedReferenceIds: readonly string[],
-  diagnostics: RulesetCompilerDiagnostic[],
+  diagnostics: PlayBundleCompilerDiagnostic[],
 ): DefinitionRecord | undefined {
   if (derived.definition.kind !== 'derived') return undefined;
   const references = uniqueReferences(
@@ -1293,7 +1439,7 @@ function concreteDerivedRecord(
   );
   if (derived.definition.materializesAs === 'action') {
     if (!isRecord(value.semantic)) {
-      diagnostics.push(diagnostic('materialization', 'RULESET_DERIVED_ACTION_INVALID', '$.semantic', 'derived action semantic value must be an object', { definitionId: derived.definition.id }));
+      diagnostics.push(diagnostic('materialization', 'CONTENT_PACK_DERIVED_ACTION_INVALID', '$.semantic', 'derived action semantic value must be an object', { definitionId: derived.definition.id }));
       return undefined;
     }
     const action = immutable({
@@ -1318,7 +1464,7 @@ function concreteDerivedRecord(
     };
   }
   if (!isRecord(value.semantic)) {
-    diagnostics.push(diagnostic('materialization', 'RULESET_DERIVED_SUPPORT_INVALID', '$.semantic', 'derived support semantic value must be an object', { definitionId: derived.definition.id }));
+    diagnostics.push(diagnostic('materialization', 'CONTENT_PACK_DERIVED_SUPPORT_INVALID', '$.semantic', 'derived support semantic value must be an object', { definitionId: derived.definition.id }));
     return undefined;
   }
   return {
@@ -1333,7 +1479,7 @@ function concreteDerivedRecord(
       source: derived.definition.source,
       references,
       ...(value.presentation === null ? {} : { presentation: value.presentation }),
-      semantic: value.semantic as unknown as import('./ruleset-types.js').RulesetSupportDefinition['semantic'],
+      semantic: value.semantic as unknown as import('./play-bundle-types.js').ContentSupportDefinition['semantic'],
     }),
   };
 }
@@ -1341,7 +1487,7 @@ function concreteDerivedRecord(
 function replaceConcreteRecordValue(
   record: DefinitionRecord,
   value: PatchedValue,
-  diagnostics: RulesetCompilerDiagnostic[],
+  diagnostics: PlayBundleCompilerDiagnostic[],
 ): DefinitionRecord | undefined {
   if (record.definition.kind === 'action') {
     if (!isRecord(value.semantic)) return undefined;
@@ -1360,19 +1506,19 @@ function replaceConcreteRecordValue(
       ...record,
       definition: immutable({
         ...record.definition,
-        semantic: value.semantic as unknown as import('./ruleset-types.js').RulesetSupportDefinition['semantic'],
+        semantic: value.semantic as unknown as import('./play-bundle-types.js').ContentSupportDefinition['semantic'],
         ...(value.presentation === null ? {} : { presentation: value.presentation }),
       }),
     };
   }
-  diagnostics.push(diagnostic('materialization', 'RULESET_PATCH_TARGET_INCOMPATIBLE', '$.patch', `definition ${record.definition.id} is not patchable materialized content`, { definitionId: record.definition.id }));
+  diagnostics.push(diagnostic('materialization', 'CONTENT_PACK_PATCH_TARGET_INCOMPATIBLE', '$.patch', `definition ${record.definition.id} is not patchable materialized content`, { definitionId: record.definition.id }));
   return undefined;
 }
 
 function uniqueReferences(
-  references: readonly RulesetDefinitionReference[],
-): readonly RulesetDefinitionReference[] {
-  const byIdentity = new Map<string, RulesetDefinitionReference>();
+  references: readonly ContentDefinitionReference[],
+): readonly ContentDefinitionReference[] {
+  const byIdentity = new Map<string, ContentDefinitionReference>();
   for (const reference of references) {
     byIdentity.set(`${reference.importAs ?? ''}#${reference.definitionId}`, reference);
   }
@@ -1384,25 +1530,25 @@ function uniqueReferences(
 }
 
 function resolveMixinParameters(
-  mixin: RulesetMixinDefinition,
+  mixin: ContentMixinDefinition,
   supplied: Readonly<Record<string, string | number | boolean>>,
   path: string,
-  diagnostics: RulesetCompilerDiagnostic[],
+  diagnostics: PlayBundleCompilerDiagnostic[],
 ): Readonly<Record<string, string | number | boolean>> | undefined {
   const definitions = new Map(mixin.parameters.map((parameter) => [parameter.id, parameter]));
   const resolved: Record<string, string | number | boolean> = {};
   for (const parameterId of Object.keys(supplied)) {
     if (definitions.has(parameterId)) continue;
-    diagnostics.push(diagnostic('materialization', 'RULESET_MIXIN_PARAMETER_UNKNOWN', `${path}.${parameterId}`, `mixin ${mixin.id} does not declare parameter ${parameterId}`, { definitionId: mixin.id }));
+    diagnostics.push(diagnostic('materialization', 'CONTENT_PACK_MIXIN_PARAMETER_UNKNOWN', `${path}.${parameterId}`, `mixin ${mixin.id} does not declare parameter ${parameterId}`, { definitionId: mixin.id }));
   }
   for (const parameter of mixin.parameters) {
     const value = supplied[parameter.id] ?? parameter.default;
     if (value === undefined) {
-      diagnostics.push(diagnostic('materialization', 'RULESET_MIXIN_PARAMETER_MISSING', `${path}.${parameter.id}`, `mixin parameter ${parameter.id} is required`, { definitionId: mixin.id }));
+      diagnostics.push(diagnostic('materialization', 'CONTENT_PACK_MIXIN_PARAMETER_MISSING', `${path}.${parameter.id}`, `mixin parameter ${parameter.id} is required`, { definitionId: mixin.id }));
       continue;
     }
     if (typeof value !== parameter.type) {
-      diagnostics.push(diagnostic('materialization', 'RULESET_MIXIN_PARAMETER_TYPE_MISMATCH', `${path}.${parameter.id}`, `mixin parameter ${parameter.id} must be ${parameter.type}`, { definitionId: mixin.id, expected: parameter.type, actual: typeof value }));
+      diagnostics.push(diagnostic('materialization', 'CONTENT_PACK_MIXIN_PARAMETER_TYPE_MISMATCH', `${path}.${parameter.id}`, `mixin parameter ${parameter.id} must be ${parameter.type}`, { definitionId: mixin.id, expected: parameter.type, actual: typeof value }));
       continue;
     }
     resolved[parameter.id] = value;
@@ -1410,20 +1556,20 @@ function resolveMixinParameters(
   return diagnostics.length > 0 ? undefined : immutable(resolved);
 }
 
-function applyRulesetPatch(
+function applyContentPatch(
   value: PatchedValue,
-  patch: RulesetPatch,
+  patch: ContentPatch,
   parameters: Readonly<Record<string, string | number | boolean>>,
   path: string,
-  diagnostics: RulesetCompilerDiagnostic[],
+  diagnostics: PlayBundleCompilerDiagnostic[],
 ): PatchResult | undefined {
   if (patch.version !== 1) {
-    diagnostics.push(diagnostic('compatibility', 'RULESET_PATCH_VERSION_UNSUPPORTED', `${path}.version`, `patch version ${String(patch.version)} is unsupported`));
+    diagnostics.push(diagnostic('compatibility', 'CONTENT_PACK_PATCH_VERSION_UNSUPPORTED', `${path}.version`, `patch version ${String(patch.version)} is unsupported`));
     return undefined;
   }
   let semantic = cloneJsonValue(value.semantic);
   let presentation: unknown = cloneJsonValue(value.presentation ?? {});
-  const changes: RulesetPatchChangeProvenance[] = [];
+  const changes: ContentPatchChangeProvenance[] = [];
   for (const [index, operation] of patch.operations.entries()) {
     const operationPath = `${path}.operations[${index}]`;
     const root = operation.plane === 'semantic' ? semantic : presentation;
@@ -1434,7 +1580,7 @@ function applyRulesetPatch(
       diagnostics.push(
         diagnostic(
           'materialization',
-          'RULESET_PATCH_UPSERT_UNSUPPORTED',
+          'CONTENT_PACK_PATCH_UPSERT_UNSUPPORTED',
           operationPath,
           `upsertScalar is not supported at ${operation.plane}.${patchPath(operation.path)}`,
         ),
@@ -1470,18 +1616,18 @@ function applyRulesetPatch(
       const multiply = resolvePatchNumber(operation.multiply, parameters, operationPath, diagnostics);
       const add = resolvePatchNumber(operation.add, parameters, operationPath, diagnostics);
       if (typeof current !== 'number' || multiply === undefined || add === undefined) {
-        diagnostics.push(diagnostic('materialization', 'RULESET_PATCH_NUMBER_REQUIRED', operationPath, `adjustNumber requires a numeric target at ${patchPath(operation.path)}`));
+        diagnostics.push(diagnostic('materialization', 'CONTENT_PACK_PATCH_NUMBER_REQUIRED', operationPath, `adjustNumber requires a numeric target at ${patchPath(operation.path)}`));
         continue;
       }
       if (!writePatchPath(root, operation.path, current * multiply + add, operationPath, diagnostics)) continue;
     } else if (operation.kind === 'appendMember') {
       const target = readPatchPath(root, operation.path, operationPath, diagnostics);
       if (!Array.isArray(target)) {
-        diagnostics.push(diagnostic('materialization', 'RULESET_PATCH_LIST_REQUIRED', operationPath, `appendMember requires a list at ${patchPath(operation.path)}`));
+        diagnostics.push(diagnostic('materialization', 'CONTENT_PACK_PATCH_LIST_REQUIRED', operationPath, `appendMember requires a list at ${patchPath(operation.path)}`));
         continue;
       }
       if (target.some((entry) => isRecord(entry) && entry[operation.identity.key] === operation.identity.value)) {
-        diagnostics.push(diagnostic('materialization', 'RULESET_PATCH_MEMBER_DUPLICATE', operationPath, `member ${operation.identity.key}=${operation.identity.value} already exists`));
+        diagnostics.push(diagnostic('materialization', 'CONTENT_PACK_PATCH_MEMBER_DUPLICATE', operationPath, `member ${operation.identity.key}=${operation.identity.value} already exists`));
         continue;
       }
       const member = { ...operation.value, [operation.identity.key]: operation.identity.value };
@@ -1491,7 +1637,7 @@ function applyRulesetPatch(
       else {
         const anchorIndex = target.findIndex((entry) => memberMatches(entry, position.anchor));
         if (anchorIndex < 0) {
-          diagnostics.push(diagnostic('materialization', 'RULESET_PATCH_ANCHOR_MISSING', operationPath, `anchor ${patchSegment(position.anchor)} is missing`));
+          diagnostics.push(diagnostic('materialization', 'CONTENT_PACK_PATCH_ANCHOR_MISSING', operationPath, `anchor ${patchSegment(position.anchor)} is missing`));
           continue;
         }
         target.splice(position.kind === 'before' ? anchorIndex : anchorIndex + 1, 0, member);
@@ -1499,14 +1645,14 @@ function applyRulesetPatch(
     } else {
       const target = readPatchPath(root, operation.path, operationPath, diagnostics);
       if (!Array.isArray(target)) {
-        diagnostics.push(diagnostic('materialization', 'RULESET_PATCH_LIST_REQUIRED', operationPath, `removeMember requires a list at ${patchPath(operation.path)}`));
+        diagnostics.push(diagnostic('materialization', 'CONTENT_PACK_PATCH_LIST_REQUIRED', operationPath, `removeMember requires a list at ${patchPath(operation.path)}`));
         continue;
       }
       const indexes = target
         .map((entry, memberIndex) => memberMatches(entry, operation.identity) ? memberIndex : -1)
         .filter((memberIndex) => memberIndex >= 0);
       if (indexes.length !== 1) {
-        diagnostics.push(diagnostic('materialization', indexes.length === 0 ? 'RULESET_PATCH_MEMBER_MISSING' : 'RULESET_PATCH_MEMBER_AMBIGUOUS', operationPath, `member ${patchSegment(operation.identity)} must resolve exactly once`));
+        diagnostics.push(diagnostic('materialization', indexes.length === 0 ? 'CONTENT_PACK_PATCH_MEMBER_MISSING' : 'CONTENT_PACK_PATCH_MEMBER_AMBIGUOUS', operationPath, `member ${patchSegment(operation.identity)} must resolve exactly once`));
         continue;
       }
       target.splice(indexes[0] ?? 0, 1);
@@ -1528,19 +1674,19 @@ function applyRulesetPatch(
     semantic: immutable(semantic),
     presentation: Object.keys(isRecord(presentation) ? presentation : {}).length === 0
       ? null
-      : immutable(presentation as unknown as import('./ruleset-types.js').RulesetPresentation),
+      : immutable(presentation as unknown as import('./play-bundle-types.js').ContentPresentation),
     changes: immutable(changes),
   };
 }
 
 function readUpsertPatchPath(
   root: unknown,
-  path: readonly RulesetPatchPathSegment[],
+  path: readonly ContentPatchPathSegment[],
   diagnosticPath: string,
-  diagnostics: RulesetCompilerDiagnostic[],
+  diagnostics: PlayBundleCompilerDiagnostic[],
 ): unknown {
   if (path.length === 0) {
-    diagnostics.push(diagnostic('materialization', 'RULESET_PATCH_ROOT_WRITE_FORBIDDEN', diagnosticPath, 'patch operations must name a field or stable member'));
+    diagnostics.push(diagnostic('materialization', 'CONTENT_PACK_PATCH_ROOT_WRITE_FORBIDDEN', diagnosticPath, 'patch operations must name a field or stable member'));
     return undefined;
   }
   const parent = readPatchPath(
@@ -1551,7 +1697,7 @@ function readUpsertPatchPath(
   );
   const leaf = path[path.length - 1];
   if (leaf?.kind !== 'field' || !isRecord(parent)) {
-    diagnostics.push(diagnostic('materialization', 'RULESET_PATCH_PATH_MISSING', diagnosticPath, `upsert field is invalid at ${patchPath(path)}`));
+    diagnostics.push(diagnostic('materialization', 'CONTENT_PACK_PATCH_PATH_MISSING', diagnosticPath, `upsert field is invalid at ${patchPath(path)}`));
     return undefined;
   }
   return leaf.name in parent ? parent[leaf.name] : null;
@@ -1559,26 +1705,26 @@ function readUpsertPatchPath(
 
 function readPatchPath(
   root: unknown,
-  path: readonly RulesetPatchPathSegment[],
+  path: readonly ContentPatchPathSegment[],
   diagnosticPath: string,
-  diagnostics: RulesetCompilerDiagnostic[],
+  diagnostics: PlayBundleCompilerDiagnostic[],
 ): unknown {
   let current = root;
   for (const segment of path) {
     if (segment.kind === 'field') {
       if (!isRecord(current) || !(segment.name in current)) {
-        diagnostics.push(diagnostic('materialization', 'RULESET_PATCH_PATH_MISSING', diagnosticPath, `field ${segment.name} is missing at ${patchPath(path)}`));
+        diagnostics.push(diagnostic('materialization', 'CONTENT_PACK_PATCH_PATH_MISSING', diagnosticPath, `field ${segment.name} is missing at ${patchPath(path)}`));
         return undefined;
       }
       current = current[segment.name];
     } else {
       if (!Array.isArray(current)) {
-        diagnostics.push(diagnostic('materialization', 'RULESET_PATCH_LIST_REQUIRED', diagnosticPath, `member selector ${patchSegment(segment)} requires a list`));
+        diagnostics.push(diagnostic('materialization', 'CONTENT_PACK_PATCH_LIST_REQUIRED', diagnosticPath, `member selector ${patchSegment(segment)} requires a list`));
         return undefined;
       }
       const matches = current.filter((entry) => memberMatches(entry, segment));
       if (matches.length !== 1) {
-        diagnostics.push(diagnostic('materialization', matches.length === 0 ? 'RULESET_PATCH_MEMBER_MISSING' : 'RULESET_PATCH_MEMBER_AMBIGUOUS', diagnosticPath, `member ${patchSegment(segment)} must resolve exactly once`));
+        diagnostics.push(diagnostic('materialization', matches.length === 0 ? 'CONTENT_PACK_PATCH_MEMBER_MISSING' : 'CONTENT_PACK_PATCH_MEMBER_AMBIGUOUS', diagnosticPath, `member ${patchSegment(segment)} must resolve exactly once`));
         return undefined;
       }
       current = matches[0];
@@ -1589,20 +1735,20 @@ function readPatchPath(
 
 function writePatchPath(
   root: unknown,
-  path: readonly RulesetPatchPathSegment[],
+  path: readonly ContentPatchPathSegment[],
   value: unknown,
   diagnosticPath: string,
-  diagnostics: RulesetCompilerDiagnostic[],
+  diagnostics: PlayBundleCompilerDiagnostic[],
 ): boolean {
   if (path.length === 0) {
-    diagnostics.push(diagnostic('materialization', 'RULESET_PATCH_ROOT_WRITE_FORBIDDEN', diagnosticPath, 'patch operations must name a field or stable member'));
+    diagnostics.push(diagnostic('materialization', 'CONTENT_PACK_PATCH_ROOT_WRITE_FORBIDDEN', diagnosticPath, 'patch operations must name a field or stable member'));
     return false;
   }
   const parentPath = path.slice(0, -1);
   const parent = readPatchPath(root, parentPath, diagnosticPath, diagnostics);
   const leaf = path[path.length - 1];
   if (leaf?.kind !== 'field' || !isRecord(parent) || !(leaf.name in parent)) {
-    diagnostics.push(diagnostic('materialization', 'RULESET_PATCH_PATH_MISSING', diagnosticPath, `writable field is missing at ${patchPath(path)}`));
+    diagnostics.push(diagnostic('materialization', 'CONTENT_PACK_PATCH_PATH_MISSING', diagnosticPath, `writable field is missing at ${patchPath(path)}`));
     return false;
   }
   parent[leaf.name] = value;
@@ -1611,13 +1757,13 @@ function writePatchPath(
 
 function writeUpsertPatchPath(
   root: unknown,
-  path: readonly RulesetPatchPathSegment[],
+  path: readonly ContentPatchPathSegment[],
   value: unknown,
   diagnosticPath: string,
-  diagnostics: RulesetCompilerDiagnostic[],
+  diagnostics: PlayBundleCompilerDiagnostic[],
 ): boolean {
   if (path.length === 0) {
-    diagnostics.push(diagnostic('materialization', 'RULESET_PATCH_ROOT_WRITE_FORBIDDEN', diagnosticPath, 'patch operations must name a field or stable member'));
+    diagnostics.push(diagnostic('materialization', 'CONTENT_PACK_PATCH_ROOT_WRITE_FORBIDDEN', diagnosticPath, 'patch operations must name a field or stable member'));
     return false;
   }
   const parent = readPatchPath(
@@ -1628,7 +1774,7 @@ function writeUpsertPatchPath(
   );
   const leaf = path[path.length - 1];
   if (leaf?.kind !== 'field' || !isRecord(parent)) {
-    diagnostics.push(diagnostic('materialization', 'RULESET_PATCH_PATH_MISSING', diagnosticPath, `upsert field is invalid at ${patchPath(path)}`));
+    diagnostics.push(diagnostic('materialization', 'CONTENT_PACK_PATCH_PATH_MISSING', diagnosticPath, `upsert field is invalid at ${patchPath(path)}`));
     return false;
   }
   parent[leaf.name] = value;
@@ -1636,28 +1782,28 @@ function writeUpsertPatchPath(
 }
 
 function resolvePatchScalar(
-  value: RulesetPatchOperation extends infer _Unused ? RulesetPatchScalar | { readonly parameter: string } : never,
+  value: ContentPatchOperation extends infer _Unused ? ContentPatchScalar | { readonly parameter: string } : never,
   parameters: Readonly<Record<string, string | number | boolean>>,
   path: string,
-  diagnostics: RulesetCompilerDiagnostic[],
-): RulesetPatchScalar | undefined {
+  diagnostics: PlayBundleCompilerDiagnostic[],
+): ContentPatchScalar | undefined {
   if (!isParameterReference(value)) return value;
   const resolved = parameters[value.parameter];
   if (resolved !== undefined) return resolved;
-  diagnostics.push(diagnostic('materialization', 'RULESET_PATCH_PARAMETER_UNRESOLVED', path, `parameter ${value.parameter} is not supplied`));
+  diagnostics.push(diagnostic('materialization', 'CONTENT_PACK_PATCH_PARAMETER_UNRESOLVED', path, `parameter ${value.parameter} is not supplied`));
   return undefined;
 }
 
 function resolvePatchNumber(
-  value: import('./ruleset-types.js').RulesetPatchNumber,
+  value: import('./play-bundle-types.js').ContentPatchNumber,
   parameters: Readonly<Record<string, string | number | boolean>>,
   path: string,
-  diagnostics: RulesetCompilerDiagnostic[],
+  diagnostics: PlayBundleCompilerDiagnostic[],
 ): number | undefined {
   if (typeof value === 'number') return value;
   const resolved = parameters[value.parameter];
   if (typeof resolved === 'number') return resolved;
-  diagnostics.push(diagnostic('materialization', 'RULESET_PATCH_NUMBER_PARAMETER_UNRESOLVED', path, `numeric parameter ${value.parameter} is not supplied`));
+  diagnostics.push(diagnostic('materialization', 'CONTENT_PACK_PATCH_NUMBER_PARAMETER_UNRESOLVED', path, `numeric parameter ${value.parameter} is not supplied`));
   return undefined;
 }
 
@@ -1665,13 +1811,13 @@ function isParameterReference(value: unknown): value is { readonly parameter: st
   return isRecord(value) && typeof value['parameter'] === 'string';
 }
 
-function patchMatchesPlane(patch: RulesetPatch, plane: 'semantic' | 'presentation' | 'both'): boolean {
+function patchMatchesPlane(patch: ContentPatch, plane: 'semantic' | 'presentation' | 'both'): boolean {
   return patch.operations.every((operation) => plane === 'both' || operation.plane === plane);
 }
 
 function isSupportedPatchUpsert(
   plane: 'semantic' | 'presentation',
-  path: readonly RulesetPatchPathSegment[],
+  path: readonly ContentPatchPathSegment[],
 ): boolean {
   return (
     plane === 'presentation' &&
@@ -1681,17 +1827,17 @@ function isSupportedPatchUpsert(
   );
 }
 
-function patchPath(path: readonly RulesetPatchPathSegment[]): string {
+function patchPath(path: readonly ContentPatchPathSegment[]): string {
   return path.map(patchSegment).join('.');
 }
 
-function patchSegment(segment: RulesetPatchPathSegment): string {
+function patchSegment(segment: ContentPatchPathSegment): string {
   return segment.kind === 'field'
     ? segment.name
     : `[${segment.key}=${segment.value}]`;
 }
 
-function memberMatches(value: unknown, selector: Extract<RulesetPatchPathSegment, { readonly kind: 'member' }>): boolean {
+function memberMatches(value: unknown, selector: Extract<ContentPatchPathSegment, { readonly kind: 'member' }>): boolean {
   return isRecord(value) && value[selector.key] === selector.value;
 }
 
@@ -1699,7 +1845,7 @@ function definitionMaterializationFingerprint(record: DefinitionRecord): string 
   return stableFingerprint(definitionMaterializationStage(record));
 }
 
-function definitionMaterializationStage(record: DefinitionRecord): RulesetMaterializationStage {
+function definitionMaterializationStage(record: DefinitionRecord): ContentMaterializationStage {
   if (record.definition.kind !== 'action' && record.definition.kind !== 'support') {
     throw new Error(`definition ${record.definition.id} is not concrete`);
   }
@@ -1714,7 +1860,7 @@ function definitionMaterializationStage(record: DefinitionRecord): RulesetMateri
 
 function concreteDefinitionCommitment(
   record: DefinitionRecord,
-): RulesetDefinitionCommitment {
+): ContentDefinitionCommitment {
   const stage = definitionMaterializationStage(record);
   const identity = record.package.source.manifest.identity;
   return immutable({
@@ -1730,7 +1876,7 @@ function concreteDefinitionCommitment(
 
 function mixinDefinitionCommitment(
   record: DefinitionRecord,
-): RulesetDefinitionCommitment {
+): ContentDefinitionCommitment {
   if (record.definition.kind !== 'mixin') {
     throw new Error(`definition ${record.definition.id} is not a mixin`);
   }
@@ -1753,10 +1899,10 @@ function mixinDefinitionCommitment(
 }
 
 function selectedDefinitionCommitments(
-  commitments: readonly RulesetDefinitionCommitment[],
-  derivations: readonly RulesetDerivationProvenance[],
-  overlays: readonly import('./ruleset-types.js').RulesetOverlayProvenance[],
-): readonly RulesetDefinitionCommitment[] {
+  commitments: readonly ContentDefinitionCommitment[],
+  derivations: readonly ContentDerivationProvenance[],
+  overlays: readonly import('./play-bundle-types.js').ContentOverlayProvenance[],
+): readonly ContentDefinitionCommitment[] {
   const selected = new Set<string>();
   for (const provenance of derivations) {
     selected.add(
@@ -1808,8 +1954,8 @@ function selectedDefinitionCommitments(
 }
 
 function compareDefinitionCommitment(
-  left: RulesetDefinitionCommitment,
-  right: RulesetDefinitionCommitment,
+  left: ContentDefinitionCommitment,
+  right: ContentDefinitionCommitment,
 ): number {
   return definitionCommitmentIdentity(
     left.packageId,
@@ -1832,8 +1978,8 @@ function definitionCommitmentIdentity(
   return `${packageId}@${packageVersion}#${definitionId}`;
 }
 
-export function rulesetDefinitionMaterializationFingerprint(
-  definition: Extract<RulesetDefinition, { readonly kind: 'action' | 'support' }>,
+export function contentDefinitionMaterializationFingerprint(
+  definition: Extract<ContentDefinition, { readonly kind: 'action' | 'support' }>,
 ): string {
   return stableFingerprint({
     id: definition.id,
@@ -1873,13 +2019,13 @@ function materializationReferenceIds(record: DefinitionRecord): readonly string[
 
 interface AuthoredCatalogReference {
   readonly definitionId: string;
-  readonly category: import('./catalogs.js').RulesetCatalogCategory;
+  readonly category: import('./catalogs.js').ContentCatalogCategory;
   readonly packageId?: string;
   readonly path: string;
 }
 
 const CATALOG_REFERENCE_FIELDS: Readonly<
-  Record<string, import('./catalogs.js').RulesetCatalogCategory>
+  Record<string, import('./catalogs.js').ContentCatalogCategory>
 > = {
   statId: 'stat',
   defenseId: 'defense',
@@ -1889,7 +2035,7 @@ const CATALOG_REFERENCE_FIELDS: Readonly<
 };
 
 function authoredDefinitionReferenceIds(
-  definition: RulesetDefinition,
+  definition: ContentDefinition,
 ): readonly string[] {
   return [
     ...new Set([
@@ -1904,7 +2050,7 @@ function authoredDefinitionReferenceIds(
 }
 
 function authoredCatalogReferences(
-  definition: RulesetDefinition,
+  definition: ContentDefinition,
 ): readonly AuthoredCatalogReference[] {
   const byIdentity = new Map<string, AuthoredCatalogReference>();
   if (definition.kind === 'action') {
@@ -1967,8 +2113,8 @@ function collectCatalogReferences(
 
 function definitionReferences(
   record: DefinitionRecord,
-  diagnostics: RulesetCompilerDiagnostic[],
-): readonly RulesetDefinitionReference[] {
+  diagnostics: PlayBundleCompilerDiagnostic[],
+): readonly ContentDefinitionReference[] {
   const references = [...(record.definition.lowLevelReferences ?? [])];
   const inheritedLocalIds = new Set(
     (record.inheritedReferenceIds ?? []).map(localDefinitionId),
@@ -1994,7 +2140,7 @@ function definitionReferences(
       diagnostics.push(
         diagnostic(
           'graph',
-          'RULESET_CATALOG_REFERENCE_OWNER_UNAVAILABLE',
+          'CONTENT_PACK_CATALOG_REFERENCE_OWNER_UNAVAILABLE',
           catalogReference.path,
           `catalog owner ${ownerPackageId} is not a direct package dependency`,
           {
@@ -2017,7 +2163,7 @@ function definitionReferences(
       diagnostics.push(
         diagnostic(
           'graph',
-          'RULESET_CATALOG_REFERENCE_AMBIGUOUS',
+          'CONTENT_PACK_CATALOG_REFERENCE_AMBIGUOUS',
           catalogReference.path,
           `bare catalog definition ${definitionId} has more than one explicit low-level owner`,
           {
@@ -2032,9 +2178,9 @@ function definitionReferences(
     diagnostics.push(
       diagnostic(
         'graph',
-        'RULESET_CATALOG_REFERENCE_OWNER_REQUIRED',
+        'CONTENT_PACK_CATALOG_REFERENCE_OWNER_REQUIRED',
         catalogReference.path,
-        `bare catalog definition ${definitionId} has no owner; use defineRulesetCatalog or an explicit low-level definition reference`,
+        `bare catalog definition ${definitionId} has no owner; use defineContentCatalog or an explicit low-level definition reference`,
         {
           packageId: record.package.source.manifest.identity.id,
           definitionId: record.definition.id,
@@ -2089,7 +2235,7 @@ function closeDefinitionGraph(
         context.diagnostics.push(
           diagnostic(
             'graph',
-            'RULESET_EXPORT_MISSING',
+            'CONTENT_PACK_EXPORT_MISSING',
             `$.packages[${entry.key}].exports[${index}]`,
             `export ${definitionId} has no declaration`,
             { packageId: entry.source.manifest.identity.id, definitionId, source: entry.source.manifest.entry },
@@ -2127,7 +2273,7 @@ function closeDefinitionGraph(
       context.diagnostics.push(
         diagnostic(
           'graph',
-          'RULESET_DEFINITION_CYCLE',
+          'CONTENT_PACK_DEFINITION_CYCLE',
           '$.definitionGraph',
           `definition cycle: ${graphPath.join(' -> ')}`,
           { definitionId: record.definition.id, source: record.definition.source, graphPath },
@@ -2160,7 +2306,7 @@ function closeDefinitionGraph(
         context.diagnostics.push(
           diagnostic(
             'graph',
-            'RULESET_INHERITED_REFERENCE_MISSING',
+            'CONTENT_PACK_INHERITED_REFERENCE_MISSING',
             `$.packages[${record.package.key}].definitions.${record.definition.id}.references`,
             `inherited definition reference ${inheritedReferenceId} is missing`,
             {
@@ -2195,7 +2341,7 @@ function closeDefinitionGraph(
       context.diagnostics.push(
         diagnostic(
           'graph',
-          'RULESET_PUBLIC_DEFINITION_UNREACHABLE',
+          'CONTENT_PACK_PUBLIC_DEFINITION_UNREACHABLE',
           `$.packages[${record.package.key}].definitions.${record.definition.id}`,
           `public definition ${record.definition.id} is unreachable from an exported root`,
           {
@@ -2218,7 +2364,7 @@ function closeDefinitionGraph(
       context.diagnostics.push(
         diagnostic(
           'materialization',
-          'RULESET_TEMPLATE_MATERIALIZATION_DEFERRED',
+          'CONTENT_PACK_TEMPLATE_MATERIALIZATION_DEFERRED',
           `$.packages[${record.package.key}].definitions.${record.definition.id}`,
           `template ${record.definition.id} requires #5957 derivation materialization`,
           {
@@ -2233,7 +2379,7 @@ function closeDefinitionGraph(
       context.diagnostics.push(
         diagnostic(
           'graph',
-          'RULESET_DUPLICATE_DEFINITION_ID',
+          'CONTENT_PACK_DUPLICATE_DEFINITION_ID',
           '$.materializedDefinitions',
           `definition identity ${record.definition.id} is contributed by more than one package`,
           { definitionId: record.definition.id, source: record.definition.source },
@@ -2256,7 +2402,7 @@ function closeDefinitionGraph(
 function resolveMaterializationReferenceIds(
   record: DefinitionRecord,
   definitionsByPackage: ReadonlyMap<string, ReadonlyMap<string, DefinitionRecord>>,
-  diagnostics: RulesetCompilerDiagnostic[],
+  diagnostics: PlayBundleCompilerDiagnostic[],
 ): readonly string[] {
   const resolved = new Set(record.inheritedReferenceIds ?? []);
   for (const [index, reference] of definitionReferences(
@@ -2277,10 +2423,10 @@ function resolveMaterializationReferenceIds(
 
 function resolveDefinitionReference(
   source: DefinitionRecord,
-  reference: RulesetDefinitionReference,
+  reference: ContentDefinitionReference,
   index: number,
   definitionsByPackage: ReadonlyMap<string, ReadonlyMap<string, DefinitionRecord>>,
-  diagnostics: RulesetCompilerDiagnostic[],
+  diagnostics: PlayBundleCompilerDiagnostic[],
 ): DefinitionRecord | undefined {
   const targetPackageKey =
     reference.importAs === undefined
@@ -2291,7 +2437,7 @@ function resolveDefinitionReference(
     diagnostics.push(
       diagnostic(
         'graph',
-        'RULESET_IMPORT_ALIAS_UNRESOLVED',
+        'CONTENT_PACK_IMPORT_ALIAS_UNRESOLVED',
         path,
         `import alias ${reference.importAs ?? ''} is not declared`,
         {
@@ -2308,7 +2454,7 @@ function resolveDefinitionReference(
     diagnostics.push(
       diagnostic(
         'graph',
-        'RULESET_DEFINITION_REFERENCE_MISSING',
+        'CONTENT_PACK_DEFINITION_REFERENCE_MISSING',
         path,
         `definition ${reference.definitionId} was not found in ${targetPackageKey}`,
         {
@@ -2328,7 +2474,7 @@ function resolveDefinitionReference(
     diagnostics.push(
       diagnostic(
         'graph',
-        'RULESET_PRIVATE_CROSS_PACKAGE_REFERENCE',
+        'CONTENT_PACK_PRIVATE_CROSS_PACKAGE_REFERENCE',
         path,
         `definition ${target.definition.id} is not exported for cross-package use`,
         {
@@ -2354,7 +2500,7 @@ function resolveDefinitionReference(
     diagnostics.push(
       diagnostic(
         'graph',
-        'RULESET_CATALOG_REFERENCE_KIND_MISMATCH',
+        'CONTENT_PACK_CATALOG_REFERENCE_KIND_MISMATCH',
         catalogReference.path,
         `catalog reference ${reference.definitionId} requires ${catalogReference.category} support`,
         {
@@ -2375,9 +2521,9 @@ function resolveDefinitionReference(
 }
 
 function normalizeMaterializedActions(
-  composition: import('./ruleset-types.js').RulesetCompositionManifest,
+  bundle: import('./play-bundle-types.js').PlayBundleManifest,
   graph: { readonly materialized: readonly DefinitionRecord[] },
-  diagnostics: RulesetCompilerDiagnostic[],
+  diagnostics: PlayBundleCompilerDiagnostic[],
 ): import('@asha-rpg/ir').NormalizedRpgIr | undefined {
   const actions = graph.materialized
     .filter((record) => record.definition.kind === 'action')
@@ -2387,7 +2533,7 @@ function normalizeMaterializedActions(
         diagnostics.push(
           diagnostic(
             'materialization',
-            'RULESET_ACTION_ID_MISMATCH',
+            'CONTENT_PACK_ACTION_ID_MISMATCH',
             `$.definitions.${record.definition.id}.action.id`,
             'definition identity must match the normalized action identity',
             { definitionId: record.definition.id, source: record.definition.source },
@@ -2399,9 +2545,9 @@ function normalizeMaterializedActions(
   if (diagnostics.length > 0) return undefined;
   const result = normalizePackage(
     definePackage({
-      id: composition.identity.id,
-      version: composition.identity.version,
-      sources: [defineActions('compiled-ruleset-actions', actions)],
+      id: bundle.identity.id,
+      version: bundle.identity.version,
+      sources: [defineActions('play-bundle-actions', actions)],
     }),
   );
   if (!result.ok) {
@@ -2425,15 +2571,13 @@ function normalizeMaterializedActions(
 
 function collectRequirements(
   context: ResolutionContext,
-  normalizedRequirements: readonly import('@asha-rpg/ir').RpgIrRequirement[],
-  target: RulesetCompilerTarget,
-): {
-  readonly operations: readonly { readonly id: RpgOperationId; readonly version: number }[];
-  readonly capabilities: readonly { readonly id: RpgCapabilityId; readonly version: number }[];
-} | undefined {
+  normalized: import('@asha-rpg/ir').NormalizedRpgIr,
+): ContentPackRequirements | undefined {
   const operations = new Map<RpgOperationId, number>();
   const capabilities = new Map<RpgCapabilityId, number>();
-  for (const requirement of normalizedRequirements) {
+  const values = new Set<string>();
+  const numericDomains = new Set<string>();
+  for (const requirement of normalized.requirements) {
     if (requirement.kind === 'operation') {
       operations.set(requirement.id, requirement.version);
     } else {
@@ -2447,7 +2591,15 @@ function collectRequirements(
     for (const requirement of entry.source.manifest.requirements.capabilities) {
       capabilities.set(requirement.id, requirement.version);
     }
+    for (const requirement of entry.source.manifest.requirements.values) {
+      values.add(`${requirement.kind}:${requirement.id}`);
+    }
+    for (const requirement of entry.source.manifest.requirements.numericDomains) {
+      numericDomains.add(requirement);
+    }
   }
+  for (const statId of normalized.catalogs.stats) values.add(`stat:${statId}`);
+  for (const defenseId of normalized.catalogs.defenses) values.add(`defense:${defenseId}`);
   if (context.diagnostics.length > 0) return undefined;
   return {
     operations: [...operations]
@@ -2456,7 +2608,74 @@ function collectRequirements(
     capabilities: [...capabilities]
       .map(([id, version]) => ({ id, version }))
       .sort(compareRequirement),
+    values: [...values]
+      .map((value) => {
+        const separator = value.indexOf(':');
+        const kind = value.slice(0, separator) === 'stat' ? 'stat' as const : 'defense' as const;
+        return { kind, id: value.slice(separator + 1) };
+      })
+      .sort((left, right) =>
+        left.kind.localeCompare(right.kind) || left.id.localeCompare(right.id),
+      ),
+    numericDomains: [...numericDomains].sort(),
   };
+}
+
+function validateCollectedRequirements(
+  requirements: ContentPackRequirements | undefined,
+  ruleset: Ruleset,
+  diagnostics: PlayBundleCompilerDiagnostic[],
+): void {
+  if (requirements === undefined) return;
+  const operations = new Map(
+    ruleset.provides.operations.map((provision) => [provision.id, provision.version]),
+  );
+  const capabilities = new Map(
+    ruleset.provides.capabilities.map((provision) => [provision.id, provision.version]),
+  );
+  const values = new Set(
+    ruleset.provides.values.map((provision) => `${provision.kind}:${provision.id}`),
+  );
+  const numericDomains = new Set(
+    ruleset.provides.numericDomains.map((provision) => provision.id),
+  );
+  for (const [index, requirement] of requirements.operations.entries()) {
+    if (operations.get(requirement.id) === requirement.version) continue;
+    diagnostics.push(diagnostic(
+      'compatibility',
+      'PLAY_BUNDLE_OPERATION_REQUIREMENT_MISSING',
+      `$.contentRequirements.operations[${index}]`,
+      `materialized content requires operation ${requirement.id}@${requirement.version}, which the ruleset does not provide`,
+    ));
+  }
+  for (const [index, requirement] of requirements.capabilities.entries()) {
+    if (capabilities.get(requirement.id) === requirement.version) continue;
+    diagnostics.push(diagnostic(
+      'compatibility',
+      'PLAY_BUNDLE_CAPABILITY_REQUIREMENT_MISSING',
+      `$.contentRequirements.capabilities[${index}]`,
+      `materialized content requires capability ${requirement.id}@${requirement.version}, which the ruleset does not provide`,
+    ));
+  }
+  for (const [index, requirement] of requirements.values.entries()) {
+    const key = `${requirement.kind}:${requirement.id}`;
+    if (values.has(key)) continue;
+    diagnostics.push(diagnostic(
+      'compatibility',
+      'PLAY_BUNDLE_VALUE_REQUIREMENT_MISSING',
+      `$.contentRequirements.values[${index}]`,
+      `materialized content requires ${key}, which the ruleset does not provide`,
+    ));
+  }
+  for (const [index, requirement] of requirements.numericDomains.entries()) {
+    if (numericDomains.has(requirement)) continue;
+    diagnostics.push(diagnostic(
+      'compatibility',
+      'PLAY_BUNDLE_NUMERIC_DOMAIN_REQUIREMENT_MISSING',
+      `$.contentRequirements.numericDomains[${index}]`,
+      `materialized content requires numeric domain ${requirement}, which the ruleset does not provide`,
+    ));
+  }
 }
 
 function materializeDefinitions(
@@ -2464,7 +2683,7 @@ function materializeDefinitions(
   references: ReadonlyMap<string, readonly string[]>,
   exportedRoots: readonly string[],
   actions: readonly import('@asha-rpg/ir').RpgIrAction[],
-): readonly MaterializedRulesetDefinition[] {
+): readonly MaterializedContentDefinition[] {
   const normalizedActions = new Map<string, import('@asha-rpg/ir').RpgIrAction>(
     actions.map((action) => [action.id, action]),
   );
@@ -2472,7 +2691,7 @@ function materializeDefinitions(
   return records
     .filter(
       (record): record is DefinitionRecord & {
-        readonly definition: Extract<RulesetDefinition, { readonly kind: 'action' | 'support' }>;
+        readonly definition: Extract<ContentDefinition, { readonly kind: 'action' | 'support' }>;
       } => record.definition.kind === 'action' || record.definition.kind === 'support',
     )
     .map((record) => {
@@ -2500,7 +2719,7 @@ function materializeDefinitions(
     .sort((left, right) => left.id.localeCompare(right.id));
 }
 
-function provenance(record: DefinitionRecord): RulesetDefinitionProvenance {
+function provenance(record: DefinitionRecord): ContentDefinitionProvenance {
   return {
     definitionId: record.definition.id,
     packageId: record.package.source.manifest.identity.id,
@@ -2521,11 +2740,11 @@ function localDefinitionId(globalId: string): string {
 function requireIdentifier(
   value: string,
   path: string,
-  diagnostics: RulesetCompilerDiagnostic[],
+  diagnostics: PlayBundleCompilerDiagnostic[],
 ): void {
   if (!/^[a-z][a-z0-9]*(?:[._-][a-z0-9]+)*$/.test(value)) {
     diagnostics.push(
-      diagnostic('source', 'RULESET_IDENTIFIER_INVALID', path, `invalid identifier ${value}`),
+      diagnostic('source', 'CONTENT_PACK_IDENTIFIER_INVALID', path, `invalid identifier ${value}`),
     );
   }
 }
@@ -2533,11 +2752,11 @@ function requireIdentifier(
 function requireExactVersion(
   value: string,
   path: string,
-  diagnostics: RulesetCompilerDiagnostic[],
+  diagnostics: PlayBundleCompilerDiagnostic[],
 ): void {
   if (parseVersion(value) === undefined) {
     diagnostics.push(
-      diagnostic('source', 'RULESET_VERSION_INVALID', path, `version ${value} is not exact semver`),
+      diagnostic('source', 'CONTENT_PACK_VERSION_INVALID', path, `version ${value} is not exact semver`),
     );
   }
 }
@@ -2546,24 +2765,24 @@ function requireText(
   value: string,
   path: string,
   label: string,
-  diagnostics: RulesetCompilerDiagnostic[],
+  diagnostics: PlayBundleCompilerDiagnostic[],
 ): void {
   if (value.trim().length === 0) {
-    diagnostics.push(diagnostic('source', 'RULESET_TEXT_REQUIRED', path, `${label} is required`));
+    diagnostics.push(diagnostic('source', 'CONTENT_PACK_TEXT_REQUIRED', path, `${label} is required`));
   }
 }
 
 function rejectExecutableValues(
   value: unknown,
   path: string,
-  diagnostics: RulesetCompilerDiagnostic[],
+  diagnostics: PlayBundleCompilerDiagnostic[],
   seen: WeakSet<object>,
 ): void {
   if (typeof value === 'function') {
     diagnostics.push(
       diagnostic(
         'source',
-        'RULESET_EXECUTABLE_VALUE_FORBIDDEN',
+        'CONTENT_PACK_EXECUTABLE_VALUE_FORBIDDEN',
         path,
         'ruleset manifests may contain immutable declarations only',
       ),
@@ -2588,7 +2807,7 @@ function rejectDuplicateValues(
   code: string,
   path: string,
   label: string,
-  diagnostics: RulesetCompilerDiagnostic[],
+  diagnostics: PlayBundleCompilerDiagnostic[],
 ): void {
   const seen = new Set<string>();
   for (const [index, value] of values.entries()) {
@@ -2602,17 +2821,17 @@ function rejectDuplicateValues(
   }
 }
 
-function failed(diagnostics: RulesetCompilerDiagnostic[]): PrepareRulesetResult {
+function failed(diagnostics: PlayBundleCompilerDiagnostic[]): PreparePlayBundleResult {
   return immutable({ ok: false, diagnostics: [...diagnostics].sort(compareDiagnostic) });
 }
 
 function diagnostic(
-  stage: RulesetCompilerDiagnostic['stage'],
+  stage: PlayBundleCompilerDiagnostic['stage'],
   code: string,
   path: string,
   message: string,
-  context: Partial<Omit<RulesetCompilerDiagnostic, 'stage' | 'severity' | 'code' | 'path' | 'message'>> = {},
-): RulesetCompilerDiagnostic {
+  context: Partial<Omit<PlayBundleCompilerDiagnostic, 'stage' | 'severity' | 'code' | 'path' | 'message'>> = {},
+): PlayBundleCompilerDiagnostic {
   const compactContext = Object.fromEntries(
     Object.entries(context).filter(([, value]) => value !== undefined),
   );
@@ -2686,7 +2905,7 @@ function compareIdentity(
   return left.id.localeCompare(right.id) || compareVersion(left.version, right.version);
 }
 
-function compareLock(left: RulesetDependencyLockEntry, right: RulesetDependencyLockEntry): number {
+function compareLock(left: ContentPackDependencyLockEntry, right: ContentPackDependencyLockEntry): number {
   return (
     left.requester.localeCompare(right.requester) ||
     left.packageId.localeCompare(right.packageId) ||
@@ -2702,8 +2921,8 @@ function compareRequirement(
 }
 
 function compareRelationship(
-  left: RulesetRelationshipProvenance,
-  right: RulesetRelationshipProvenance,
+  left: ContentRelationshipProvenance,
+  right: ContentRelationshipProvenance,
 ): number {
   return (
     left.kind.localeCompare(right.kind) ||
@@ -2714,8 +2933,8 @@ function compareRelationship(
 }
 
 function compareDiagnostic(
-  left: RulesetCompilerDiagnostic,
-  right: RulesetCompilerDiagnostic,
+  left: PlayBundleCompilerDiagnostic,
+  right: PlayBundleCompilerDiagnostic,
 ): number {
   return left.path.localeCompare(right.path) || left.code.localeCompare(right.code);
 }

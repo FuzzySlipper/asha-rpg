@@ -23,15 +23,15 @@ downstream games   asha-rulebench
 ```
 
 `asha-rpg` never depends on Rulebench or its testing repository. Consumer
-content such as named actions, classes, items, conditions, encounters, and
-rulesets remains in the owning game or workbench.
+Rulesets and Content Packs remain in an owning game/content repository rather
+than this engine repository. Rulebench consumes them through public APIs.
 
 ## Current implementation
 
 The Rust semantic path is active. `rpg-ir` strictly decodes `asha.rpg.ir@1`,
 `rpg-compiler` resolves exact requirements and references into an opaque
 compiled program with closed operation bindings, and `rpg-runtime` owns a
-versioned, artifact-bound encounter setup and authority session that stages
+versioned, PlayBundle-bound Scenario and authority session that stages
 state, explicit random evidence, typed reaction decisions, and turn
 progression together. Structured readbacks expose the board, participants,
 current actor, legal actions/targets, explicit end-turn control, reaction, log,
@@ -39,8 +39,8 @@ and outcome without moving rule interpretation into a host. The `asha-rpg`
 crate is the supported consumer facade. There is no parallel gameplay fabric
 or disposable preview session.
 There is also no predecessor provider/module/action-definition compatibility
-surface: normalized RPG IR, the compiled artifact, and the artifact-bound
-authority session are the single supported Rust ruleset path.
+surface: a Ruleset, selected Content Packs, the compiled PlayBundle, and its
+Scenario-bound authority session are the single supported path.
 
 The initial operation set is deliberately closed: damage, healing, resource
 change, bounded grid movement, turn-bounded modifier application with explicit
@@ -55,14 +55,16 @@ they are never delegated to consumer callbacks.
 vocabulary generated from the Rust registry. `@asha-rpg/authoring` publishes
 immutable catalog-bound ids, selectors, checks, formulas, predicates, costs,
 duration/stacking/timing data, operations, bounded composition, consumer source
-composition, explicit versioned ruleset package manifests, exact dependency
+composition, explicit versioned Content Pack manifests, exact dependency
 resolution, exported-root closure, diagnostics, and canonical normalization.
 Action AST traversal derives package closure and semantic requirements without
 consumer-maintained reference ledgers, while schema-aware patch builders own
 valid paths, operations, stable member selectors, and impact planes.
-It does not evaluate any gameplay semantics or discover packages from global
+It exports distinct `Ruleset`, `ContentPack`, `PlayBundle`, and `Scenario`
+contracts. A Ruleset has no authored gameplay definitions; a Scenario has no
+definitions or gameplay script. It does not evaluate gameplay semantics or discover packages from global
 registries or the filesystem. Rust validates the prepared graph, creates the
-private executable plan, and emits the closed `asha.rpg.ruleset.compiled@1`
+private executable plan, and emits the closed `asha.rpg.play-bundle.compiled@1`
 artifact with independent source, semantic, and presentation fingerprints.
 Representative consumer code lives in
 `examples/representative-actions.ts`; its normalized artifact is sent through
@@ -78,7 +80,7 @@ Runtime activation remains a downstream host responsibility.
 
 The same artifact-bound authority session now owns the supported portable
 checkpoint and replay contract. A checkpoint embeds the exact validated
-compiled artifact, encounter setup and setup fingerprint, a stable
+compiled PlayBundle, Scenario and Scenario fingerprint, a stable
 capability-state projection, current turn and accepted-event log, the accepted
 random position and source binding, the full ready or awaiting-reaction phase,
 operation/capability/event schema versions, and a canonical session-state hash. Replay restores the
@@ -106,7 +108,7 @@ node examples/generate-portable-replay-source.ts | \
 ```
 
 The canonical architecture is [docs/design.md](docs/design.md), and the public
-setup/random/turn compatibility surface is documented in
+Scenario/random/turn compatibility surface is documented in
 [docs/encounter-session-contract.md](docs/encounter-session-contract.md). The language
 contract is currently maintained in Den document
 `asha-rulebench/rpg-rules-language` while the #5934 extraction series runs.

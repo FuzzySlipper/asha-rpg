@@ -3,7 +3,7 @@ import { catalogDefinitionId, retainCatalogOwnership, } from './catalogs.js';
 export function patchParameter(id) {
     return immutable({ parameter: id });
 }
-export function combineRulesetPatches(...patches) {
+export function combineContentPatches(...patches) {
     return patch(patches.flatMap((entry) => entry.operations));
 }
 export const actionPatch = immutable({
@@ -83,4 +83,4 @@ function segments(values) {
 function field(name) {
     return { kind: 'field', name };
 }
-//# sourceMappingURL=ruleset-patch-builders.js.map
+//# sourceMappingURL=content-patch-builders.js.map

@@ -1,0 +1,1 @@
+{"version":3,"file":"scenario-builders.js","sourceRoot":"","sources":["../src/scenario-builders.ts"],"names":[],"mappings":"AAAA,OAAO,EAAE,SAAS,EAAE,MAAM,gBAAgB,CAAC;AAG3C,MAAM,UAAU,cAAc,CAC5B,KAA+B;IAE/B,OAAO,SAAS,CAAC;QACf,GAAG,KAAK;QACR,MAAM,EAAE,EAAE,EAAE,EAAE,mBAA4B,EAAE,OAAO,EAAE,CAAU,EAAE;KAClE,CAAC,CAAC;AACL,CAAC"}

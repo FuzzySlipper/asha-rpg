@@ -18,7 +18,7 @@ import {
   tacticalShift,
 } from '../../../examples/representative-actions.ts';
 
-test('normalization is canonical across consumer composition order', () => {
+test('normalization is canonical across consumer bundle order', () => {
   const first = normalizePackage(representativePackage);
   assert.equal(first.ok, true);
   if (!first.ok) return;

@@ -6,10 +6,10 @@ import { inspectAuthoringBoundary } from './check-authoring-boundary.mjs';
 test('accepts a pure authoring-time combinator over published operations', () => {
   const source = `
     import { damage, sequence } from '@asha-rpg/authoring';
-    import type { RpgIrFormula, RulesetCatalogReference } from '@asha-rpg/authoring';
+    import type { RpgIrFormula, ContentCatalogReference } from '@asha-rpg/authoring';
     export const doubledDamage = (
       amount: RpgIrFormula,
-      force: RulesetCatalogReference<'damageType', 'sample.primitives'>,
+      force: ContentCatalogReference<'damageType', 'sample.primitives'>,
     ) => sequence(damage({ amount, type: force }), damage({ amount, type: force }));
   `;
 
@@ -34,8 +34,8 @@ test('rejects legacy bare catalog constructors', () => {
 
 test('rejects restoration of the union high-level catalog input', () => {
   const source = `
-    export type RulesetCatalogInput<Category> =
-      RulesetCatalogValue<Category> | RulesetCatalogReference<Category, string>;
+    export type ContentCatalogInput<Category> =
+      ContentCatalogValue<Category> | ContentCatalogReference<Category, string>;
   `;
 
   const diagnostics = inspectAuthoringBoundary(source);

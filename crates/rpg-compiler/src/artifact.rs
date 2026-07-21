@@ -1,86 +1,84 @@
 use std::collections::{BTreeMap, BTreeSet};
 
 use rpg_ir::{
-    CompiledRulesetArtifact, MaterializedRulesetDefinition, MaterializedRulesetDefinitionKind,
-    MaterializedRulesetVisibility, NormalizedRpgIr, PreparedRulesetCompilation, RpgIrAction,
+    CompiledPlayBundleArtifact, ContentDefinitionCommitment, ContentImpactPlane,
+    ContentMaterializationStage, ContentMaterializationValue, ContentMixinParameterCommitment,
+    ContentMixinParameterType, ContentPatch, ContentPatchChangeProvenance, ContentPatchMemberKey,
+    ContentPatchMemberSelector, ContentPatchOperation, ContentPatchPathSegment,
+    ContentPatchPosition, ContentRelationshipKind, MaterializedContentDefinition,
+    MaterializedContentDefinitionKind, MaterializedContentVisibility, NormalizedRpgIr,
+    PlayBundleArtifactSchema, PlayBundleFingerprints, PreparedPlayBundle, RpgIrAction,
     RpgIrCatalogs, RpgIrCheck, RpgIrFormula, RpgIrOperation, RpgIrPackage, RpgIrPredicate,
-    RpgIrProgram, RpgIrRequirement, RpgIrRequirementKind, RpgIrSchema, RulesetArtifactFingerprints,
-    RulesetArtifactSchema, RulesetDefinitionCommitment, RulesetImpactPlane,
-    RulesetMaterializationStage, RulesetMaterializationValue, RulesetMixinParameterCommitment,
-    RulesetMixinParameterType, RulesetPatch, RulesetPatchChangeProvenance, RulesetPatchMemberKey,
-    RulesetPatchMemberSelector, RulesetPatchOperation, RulesetPatchPathSegment,
-    RulesetPatchPosition, RulesetRelationshipKind, VersionedRulesetRequirement,
-    COMPILED_RULESET_IDENTITY, PREPARED_RULESET_IDENTITY, RPG_IR_IDENTITY, RPG_IR_MAJOR,
-    RULESET_ARTIFACT_MAJOR,
+    RpgIrProgram, RpgIrRequirement, RpgIrRequirementKind, RpgIrSchema, RulesetValueKind,
+    VersionedRpgRequirement, COMPILED_PLAY_BUNDLE_IDENTITY, PLAY_BUNDLE_ARTIFACT_MAJOR,
+    PREPARED_PLAY_BUNDLE_IDENTITY, RPG_IR_IDENTITY, RPG_IR_MAJOR,
 };
 use serde::{Deserialize, Serialize};
 use serde_json::{json, Value};
 
 use crate::{
-    capability_registrations, compile_normalized_rpg_ir, operation_registrations,
-    CompiledRpgRuleset, RpgCompileFailure, RpgDiagnostic, RpgDiagnosticStage,
+    capability_registrations, compile_normalized_rpg_ir, operation_registrations, CompiledRpgRules,
+    RpgCompileFailure, RpgDiagnostic, RpgDiagnosticStage,
 };
 
 #[derive(Debug, Clone)]
-pub struct CompiledRulesetBundle {
-    artifact: CompiledRulesetArtifact,
-    ruleset: CompiledRpgRuleset,
+pub struct CompiledPlayBundle {
+    artifact: CompiledPlayBundleArtifact,
+    rules: CompiledRpgRules,
 }
 
-impl CompiledRulesetBundle {
-    pub fn artifact(&self) -> &CompiledRulesetArtifact {
+impl CompiledPlayBundle {
+    pub fn artifact(&self) -> &CompiledPlayBundleArtifact {
         &self.artifact
     }
 
-    pub fn ruleset(&self) -> &CompiledRpgRuleset {
-        &self.ruleset
+    pub fn rules(&self) -> &CompiledRpgRules {
+        &self.rules
     }
 
-    pub fn into_artifact(self) -> CompiledRulesetArtifact {
+    pub fn into_artifact(self) -> CompiledPlayBundleArtifact {
         self.artifact
     }
 }
 
-pub fn compile_prepared_ruleset_json(
+pub fn compile_prepared_play_bundle_json(
     source: &[u8],
-) -> Result<CompiledRulesetBundle, RpgCompileFailure> {
-    let prepared =
-        serde_json::from_slice::<PreparedRulesetCompilation>(source).map_err(|error| {
-            RpgCompileFailure {
-                diagnostics: vec![RpgDiagnostic::error(
-                    RpgDiagnosticStage::Decode,
-                    "RULESET_PREPARED_DECODE_FAILED",
-                    "$",
-                    error.to_string(),
-                )],
-            }
-        })?;
-    compile_prepared_ruleset(prepared)
+) -> Result<CompiledPlayBundle, RpgCompileFailure> {
+    let prepared = serde_json::from_slice::<PreparedPlayBundle>(source).map_err(|error| {
+        RpgCompileFailure {
+            diagnostics: vec![RpgDiagnostic::error(
+                RpgDiagnosticStage::Decode,
+                "PLAY_BUNDLE_PREPARED_DECODE_FAILED",
+                "$",
+                error.to_string(),
+            )],
+        }
+    })?;
+    compile_prepared_play_bundle(prepared)
 }
 
-pub fn compile_prepared_ruleset(
-    prepared: PreparedRulesetCompilation,
-) -> Result<CompiledRulesetBundle, RpgCompileFailure> {
+pub fn compile_prepared_play_bundle(
+    prepared: PreparedPlayBundle,
+) -> Result<CompiledPlayBundle, RpgCompileFailure> {
     let diagnostics = validate_prepared(&prepared);
     if !diagnostics.is_empty() {
         return Err(RpgCompileFailure { diagnostics });
     }
 
     let normalized_ir = normalized_ir_from_materialized(&prepared)?;
-    let ruleset = compile_normalized_rpg_ir(normalized_ir)?;
+    let rules = compile_normalized_rpg_ir(normalized_ir)?;
     let fingerprints = fingerprints(&prepared)?;
-    let artifact_schema = RulesetArtifactSchema {
-        identity: COMPILED_RULESET_IDENTITY.to_owned(),
-        major: RULESET_ARTIFACT_MAJOR,
+    let artifact_schema = PlayBundleArtifactSchema {
+        identity: COMPILED_PLAY_BUNDLE_IDENTITY.to_owned(),
+        major: PLAY_BUNDLE_ARTIFACT_MAJOR,
     };
     let artifact_id = fingerprint(&json!({
         "artifactSchema": &artifact_schema,
-        "compositionIdentity": &prepared.composition_identity,
-        "languageIdentity": &prepared.language_identity,
-        "sourcePackages": &prepared.source_packages,
+        "playBundleIdentity": &prepared.play_bundle_identity,
+        "ruleset": &prepared.ruleset,
+        "contentPacks": &prepared.content_packs,
         "dependencyLock": &prepared.dependency_lock,
-        "requiredOperations": &prepared.required_operations,
-        "requiredCapabilities": &prepared.required_capabilities,
+        "contentRequirements": &prepared.content_requirements,
         "exportedRoots": &prepared.exported_roots,
         "materializedDefinitions": &prepared.materialized_definitions,
         "compiledPolicyBindings": &prepared.compiled_policy_bindings,
@@ -91,18 +89,17 @@ pub fn compile_prepared_ruleset(
         "overlayProvenance": &prepared.overlay_provenance,
         "fingerprints": &fingerprints,
     }))?;
-    let artifact = CompiledRulesetArtifact {
+    let artifact = CompiledPlayBundleArtifact {
         artifact_schema,
         artifact_id: format!(
             "{}@{}:{artifact_id}",
-            prepared.composition_identity.id, prepared.composition_identity.version
+            prepared.play_bundle_identity.id, prepared.play_bundle_identity.version
         ),
-        composition_identity: prepared.composition_identity,
-        language_identity: prepared.language_identity,
-        source_packages: prepared.source_packages,
+        play_bundle_identity: prepared.play_bundle_identity,
+        ruleset: prepared.ruleset,
+        content_packs: prepared.content_packs,
         dependency_lock: prepared.dependency_lock,
-        required_operations: prepared.required_operations,
-        required_capabilities: prepared.required_capabilities,
+        content_requirements: prepared.content_requirements,
         exported_roots: prepared.exported_roots,
         materialized_definitions: prepared.materialized_definitions,
         compiled_policy_bindings: prepared.compiled_policy_bindings,
@@ -113,48 +110,49 @@ pub fn compile_prepared_ruleset(
         overlay_provenance: prepared.overlay_provenance,
         fingerprints,
     };
-    Ok(CompiledRulesetBundle { artifact, ruleset })
+    Ok(CompiledPlayBundle { artifact, rules })
 }
 
-pub fn load_compiled_ruleset_artifact_json(
+pub fn load_compiled_play_bundle_json(
     source: &[u8],
-) -> Result<CompiledRulesetBundle, RpgCompileFailure> {
-    let artifact = serde_json::from_slice::<CompiledRulesetArtifact>(source).map_err(|error| {
-        RpgCompileFailure {
-            diagnostics: vec![RpgDiagnostic::error(
-                RpgDiagnosticStage::Decode,
-                "RULESET_ARTIFACT_DECODE_FAILED",
-                "$",
-                error.to_string(),
-            )],
-        }
-    })?;
-    load_compiled_ruleset_artifact(artifact)
+) -> Result<CompiledPlayBundle, RpgCompileFailure> {
+    let artifact =
+        serde_json::from_slice::<CompiledPlayBundleArtifact>(source).map_err(|error| {
+            RpgCompileFailure {
+                diagnostics: vec![RpgDiagnostic::error(
+                    RpgDiagnosticStage::Decode,
+                    "PLAY_BUNDLE_ARTIFACT_DECODE_FAILED",
+                    "$",
+                    error.to_string(),
+                )],
+            }
+        })?;
+    load_compiled_play_bundle(artifact)
 }
 
-pub fn load_compiled_ruleset_artifact(
-    artifact: CompiledRulesetArtifact,
-) -> Result<CompiledRulesetBundle, RpgCompileFailure> {
-    if artifact.artifact_schema.identity != COMPILED_RULESET_IDENTITY
-        || artifact.artifact_schema.major != RULESET_ARTIFACT_MAJOR
+pub fn load_compiled_play_bundle(
+    artifact: CompiledPlayBundleArtifact,
+) -> Result<CompiledPlayBundle, RpgCompileFailure> {
+    if artifact.artifact_schema.identity != COMPILED_PLAY_BUNDLE_IDENTITY
+        || artifact.artifact_schema.major != PLAY_BUNDLE_ARTIFACT_MAJOR
     {
         return Err(RpgCompileFailure {
             diagnostics: vec![RpgDiagnostic::error(
                 RpgDiagnosticStage::Compatibility,
-                "RULESET_ARTIFACT_SCHEMA_UNSUPPORTED",
+                "PLAY_BUNDLE_ARTIFACT_SCHEMA_UNSUPPORTED",
                 "$.artifactSchema",
-                format!("expected {COMPILED_RULESET_IDENTITY}@{RULESET_ARTIFACT_MAJOR}"),
+                format!("expected {COMPILED_PLAY_BUNDLE_IDENTITY}@{PLAY_BUNDLE_ARTIFACT_MAJOR}"),
             )],
         });
     }
 
     let prepared = prepared_from_artifact(&artifact);
-    let recompiled = compile_prepared_ruleset(prepared)?;
+    let recompiled = compile_prepared_play_bundle(prepared)?;
     if recompiled.artifact != artifact {
         return Err(RpgCompileFailure {
             diagnostics: vec![RpgDiagnostic::error(
                 RpgDiagnosticStage::Artifact,
-                "RULESET_ARTIFACT_FINGERPRINT_MISMATCH",
+                "PLAY_BUNDLE_ARTIFACT_FINGERPRINT_MISMATCH",
                 "$.fingerprints",
                 "artifact identity or fingerprint planes do not match its closed contents",
             )],
@@ -163,18 +161,17 @@ pub fn load_compiled_ruleset_artifact(
     Ok(recompiled)
 }
 
-fn prepared_from_artifact(artifact: &CompiledRulesetArtifact) -> PreparedRulesetCompilation {
-    PreparedRulesetCompilation {
-        schema: RulesetArtifactSchema {
-            identity: PREPARED_RULESET_IDENTITY.to_owned(),
-            major: RULESET_ARTIFACT_MAJOR,
+fn prepared_from_artifact(artifact: &CompiledPlayBundleArtifact) -> PreparedPlayBundle {
+    PreparedPlayBundle {
+        schema: PlayBundleArtifactSchema {
+            identity: PREPARED_PLAY_BUNDLE_IDENTITY.to_owned(),
+            major: PLAY_BUNDLE_ARTIFACT_MAJOR,
         },
-        composition_identity: artifact.composition_identity.clone(),
-        language_identity: artifact.language_identity.clone(),
-        source_packages: artifact.source_packages.clone(),
+        play_bundle_identity: artifact.play_bundle_identity.clone(),
+        ruleset: artifact.ruleset.clone(),
+        content_packs: artifact.content_packs.clone(),
         dependency_lock: artifact.dependency_lock.clone(),
-        required_operations: artifact.required_operations.clone(),
-        required_capabilities: artifact.required_capabilities.clone(),
+        content_requirements: artifact.content_requirements.clone(),
         exported_roots: artifact.exported_roots.clone(),
         materialized_definitions: artifact.materialized_definitions.clone(),
         compiled_policy_bindings: artifact.compiled_policy_bindings.clone(),
@@ -186,33 +183,25 @@ fn prepared_from_artifact(artifact: &CompiledRulesetArtifact) -> PreparedRuleset
     }
 }
 
-fn validate_prepared(prepared: &PreparedRulesetCompilation) -> Vec<RpgDiagnostic> {
+fn validate_prepared(prepared: &PreparedPlayBundle) -> Vec<RpgDiagnostic> {
     let mut diagnostics = Vec::new();
-    if prepared.schema.identity != PREPARED_RULESET_IDENTITY
-        || prepared.schema.major != RULESET_ARTIFACT_MAJOR
+    if prepared.schema.identity != PREPARED_PLAY_BUNDLE_IDENTITY
+        || prepared.schema.major != PLAY_BUNDLE_ARTIFACT_MAJOR
     {
         diagnostics.push(RpgDiagnostic::error(
             RpgDiagnosticStage::Compatibility,
-            "RULESET_PREPARED_SCHEMA_UNSUPPORTED",
+            "PLAY_BUNDLE_PREPARED_SCHEMA_UNSUPPORTED",
             "$.schema",
-            format!("expected {PREPARED_RULESET_IDENTITY}@{RULESET_ARTIFACT_MAJOR}"),
+            format!("expected {PREPARED_PLAY_BUNDLE_IDENTITY}@{PLAY_BUNDLE_ARTIFACT_MAJOR}"),
         ));
     }
     validate_identity(
-        &prepared.composition_identity.id,
-        &prepared.composition_identity.version,
-        "$.compositionIdentity",
+        &prepared.play_bundle_identity.id,
+        &prepared.play_bundle_identity.version,
+        "$.playBundleIdentity",
         &mut diagnostics,
     );
-    if prepared.language_identity.id != "asha-rpg" || prepared.language_identity.version != "1.0.0"
-    {
-        diagnostics.push(RpgDiagnostic::error(
-            RpgDiagnosticStage::Compatibility,
-            "RULESET_LANGUAGE_UNSUPPORTED",
-            "$.languageIdentity",
-            "supported language is asha-rpg@1.0.0",
-        ));
-    }
+    validate_ruleset(prepared, &mut diagnostics);
     validate_sources_and_lock(prepared, &mut diagnostics);
     validate_requirements(prepared, &mut diagnostics);
     validate_definitions(prepared, &mut diagnostics);
@@ -221,24 +210,21 @@ fn validate_prepared(prepared: &PreparedRulesetCompilation) -> Vec<RpgDiagnostic
     diagnostics
 }
 
-fn validate_sources_and_lock(
-    prepared: &PreparedRulesetCompilation,
-    diagnostics: &mut Vec<RpgDiagnostic>,
-) {
+fn validate_sources_and_lock(prepared: &PreparedPlayBundle, diagnostics: &mut Vec<RpgDiagnostic>) {
     let mut sources = BTreeMap::new();
     let mut previous = None::<(&str, &str)>;
-    for (index, source) in prepared.source_packages.iter().enumerate() {
+    for (index, source) in prepared.content_packs.iter().enumerate() {
         validate_identity(
             &source.id,
             &source.version,
-            &format!("$.sourcePackages[{index}]"),
+            &format!("$.contentPacks[{index}]"),
             diagnostics,
         );
         if !valid_fingerprint(&source.source_fingerprint) {
             diagnostics.push(RpgDiagnostic::error(
                 RpgDiagnosticStage::Artifact,
-                "RULESET_SOURCE_FINGERPRINT_INVALID",
-                format!("$.sourcePackages[{index}].sourceFingerprint"),
+                "CONTENT_PACK_SOURCE_FINGERPRINT_INVALID",
+                format!("$.contentPacks[{index}].sourceFingerprint"),
                 "source fingerprint must be fnv1a64 with sixteen lowercase hex digits",
             ));
         }
@@ -246,8 +232,8 @@ fn validate_sources_and_lock(
             if previous_identity >= (source.id.as_str(), source.version.as_str()) {
                 diagnostics.push(RpgDiagnostic::error(
                     RpgDiagnosticStage::Artifact,
-                    "RULESET_SOURCE_PACKAGES_NOT_CANONICAL",
-                    format!("$.sourcePackages[{index}]"),
+                    "CONTENT_PACK_SOURCE_PACKAGES_NOT_CANONICAL",
+                    format!("$.contentPacks[{index}]"),
                     "source packages must be strictly identity-sorted",
                 ));
             }
@@ -260,8 +246,8 @@ fn validate_sources_and_lock(
         {
             diagnostics.push(RpgDiagnostic::error(
                 RpgDiagnosticStage::References,
-                "RULESET_DUPLICATE_SOURCE_PACKAGE",
-                format!("$.sourcePackages[{index}]"),
+                "CONTENT_PACK_DUPLICATE_SOURCE_PACKAGE",
+                format!("$.contentPacks[{index}]"),
                 format!("duplicate source package {identity}"),
             ));
         }
@@ -273,7 +259,7 @@ fn validate_sources_and_lock(
         if !exact_version(&entry.resolved_version) {
             diagnostics.push(RpgDiagnostic::error(
                 RpgDiagnosticStage::Artifact,
-                "RULESET_LOCK_VERSION_NOT_EXACT",
+                "CONTENT_PACK_LOCK_VERSION_NOT_EXACT",
                 format!("$.dependencyLock[{index}].resolvedVersion"),
                 "resolved dependency versions must be exact semver",
             ));
@@ -282,7 +268,7 @@ fn validate_sources_and_lock(
         if sources.get(&source_identity).copied() != Some(&entry.source_fingerprint) {
             diagnostics.push(RpgDiagnostic::error(
                 RpgDiagnosticStage::References,
-                "RULESET_LOCK_SOURCE_MISMATCH",
+                "CONTENT_PACK_LOCK_SOURCE_MISMATCH",
                 format!("$.dependencyLock[{index}]"),
                 format!("lock entry does not match source package {source_identity}"),
             ));
@@ -295,7 +281,7 @@ fn validate_sources_and_lock(
             if previous_identity >= &identity {
                 diagnostics.push(RpgDiagnostic::error(
                     RpgDiagnosticStage::Artifact,
-                    "RULESET_LOCK_NOT_CANONICAL",
+                    "CONTENT_PACK_LOCK_NOT_CANONICAL",
                     format!("$.dependencyLock[{index}]"),
                     "dependency lock entries must be strictly sorted",
                 ));
@@ -305,7 +291,7 @@ fn validate_sources_and_lock(
         if !lock_identities.insert(identity) {
             diagnostics.push(RpgDiagnostic::error(
                 RpgDiagnosticStage::References,
-                "RULESET_DUPLICATE_LOCK_ENTRY",
+                "CONTENT_PACK_DUPLICATE_LOCK_ENTRY",
                 format!("$.dependencyLock[{index}]"),
                 "duplicate dependency lock entry",
             ));
@@ -313,68 +299,269 @@ fn validate_sources_and_lock(
     }
 }
 
-fn validate_requirements(
-    prepared: &PreparedRulesetCompilation,
-    diagnostics: &mut Vec<RpgDiagnostic>,
-) {
+fn validate_requirements(prepared: &PreparedPlayBundle, diagnostics: &mut Vec<RpgDiagnostic>) {
     validate_sorted_requirements(
-        &prepared.required_operations,
-        "$.requiredOperations",
+        &prepared.content_requirements.operations,
+        "$.contentRequirements.operations",
         diagnostics,
     );
     validate_sorted_requirements(
-        &prepared.required_capabilities,
-        "$.requiredCapabilities",
+        &prepared.content_requirements.capabilities,
+        "$.contentRequirements.capabilities",
         diagnostics,
     );
 
-    for (index, requirement) in prepared.required_operations.iter().enumerate() {
-        let supported = operation_registrations().iter().any(|registration| {
-            registration.id == requirement.id && registration.version == requirement.version
-        });
-        if !supported {
+    for (index, requirement) in prepared.content_requirements.operations.iter().enumerate() {
+        let provided = prepared
+            .ruleset
+            .provides
+            .operations
+            .iter()
+            .any(|provision| {
+                provision.id == requirement.id && provision.version == requirement.version
+            });
+        if !provided {
             diagnostics.push(RpgDiagnostic::error(
                 RpgDiagnosticStage::Compatibility,
-                "RULESET_OPERATION_REQUIREMENT_UNSUPPORTED",
-                format!("$.requiredOperations[{index}]"),
+                "PLAY_BUNDLE_OPERATION_REQUIREMENT_MISSING",
+                format!("$.contentRequirements.operations[{index}]"),
                 format!(
-                    "operation {}@{} is not registered by Rust authority",
+                    "content requires operation {}@{}, which the ruleset does not provide",
                     requirement.id, requirement.version
                 ),
             ));
         }
     }
-    for (index, requirement) in prepared.required_capabilities.iter().enumerate() {
-        let supported = capability_registrations().iter().any(|registration| {
-            registration.id.as_str() == requirement.id
-                && registration.version == requirement.version
-        });
-        if !supported {
+    for (index, requirement) in prepared
+        .content_requirements
+        .capabilities
+        .iter()
+        .enumerate()
+    {
+        let provided = prepared
+            .ruleset
+            .provides
+            .capabilities
+            .iter()
+            .any(|provision| {
+                provision.id == requirement.id && provision.version == requirement.version
+            });
+        if !provided {
             diagnostics.push(RpgDiagnostic::error(
                 RpgDiagnosticStage::Compatibility,
-                "RULESET_CAPABILITY_REQUIREMENT_UNSUPPORTED",
-                format!("$.requiredCapabilities[{index}]"),
+                "PLAY_BUNDLE_CAPABILITY_REQUIREMENT_MISSING",
+                format!("$.contentRequirements.capabilities[{index}]"),
                 format!(
-                    "capability {}@{} is not registered by Rust authority",
+                    "content requires capability {}@{}, which the ruleset does not provide",
                     requirement.id, requirement.version
                 ),
             ));
         }
+    }
+    let provided_values = prepared
+        .ruleset
+        .provides
+        .values
+        .iter()
+        .map(|value| (value.kind, value.id.as_str()))
+        .collect::<BTreeSet<_>>();
+    for (index, requirement) in prepared.content_requirements.values.iter().enumerate() {
+        if provided_values.contains(&(requirement.kind, requirement.id.as_str())) {
+            continue;
+        }
+        diagnostics.push(RpgDiagnostic::error(
+            RpgDiagnosticStage::Compatibility,
+            "PLAY_BUNDLE_VALUE_REQUIREMENT_MISSING",
+            format!("$.contentRequirements.values[{index}]"),
+            format!(
+                "content requires {:?} {}, which the ruleset does not provide",
+                requirement.kind, requirement.id
+            ),
+        ));
+    }
+    let provided_domains = prepared
+        .ruleset
+        .provides
+        .numeric_domains
+        .iter()
+        .map(|domain| domain.id.as_str())
+        .collect::<BTreeSet<_>>();
+    for (index, requirement) in prepared
+        .content_requirements
+        .numeric_domains
+        .iter()
+        .enumerate()
+    {
+        if provided_domains.contains(requirement.as_str()) {
+            continue;
+        }
+        diagnostics.push(RpgDiagnostic::error(
+            RpgDiagnosticStage::Compatibility,
+            "PLAY_BUNDLE_NUMERIC_DOMAIN_REQUIREMENT_MISSING",
+            format!("$.contentRequirements.numericDomains[{index}]"),
+            format!(
+                "content requires numeric domain {requirement}, which the ruleset does not provide"
+            ),
+        ));
+    }
+}
+
+fn validate_ruleset(prepared: &PreparedPlayBundle, diagnostics: &mut Vec<RpgDiagnostic>) {
+    let ruleset = &prepared.ruleset;
+    if ruleset.schema.identity != "asha.rpg.ruleset" || ruleset.schema.major != 1 {
+        diagnostics.push(RpgDiagnostic::error(
+            RpgDiagnosticStage::Compatibility,
+            "RULESET_SCHEMA_UNSUPPORTED",
+            "$.ruleset.schema",
+            "expected asha.rpg.ruleset@1",
+        ));
+    }
+    validate_identity(
+        &ruleset.identity.id,
+        &ruleset.identity.version,
+        "$.ruleset.identity",
+        diagnostics,
+    );
+    if ruleset.language.id != "asha-rpg" || ruleset.language.version != "1.0.0" {
+        diagnostics.push(RpgDiagnostic::error(
+            RpgDiagnosticStage::Compatibility,
+            "RULESET_LANGUAGE_UNSUPPORTED",
+            "$.ruleset.language",
+            "supported language is asha-rpg@1.0.0",
+        ));
+    }
+    for (path, binding, expected_id) in [
+        (
+            "$.ruleset.models.checks",
+            &ruleset.models.checks,
+            "check.d20-roll-over",
+        ),
+        (
+            "$.ruleset.models.turns",
+            &ruleset.models.turns,
+            "turn.ordered-one-action",
+        ),
+        (
+            "$.ruleset.models.reactions",
+            &ruleset.models.reactions,
+            "reaction.before-damage-choice",
+        ),
+        (
+            "$.ruleset.models.actionEconomy",
+            &ruleset.models.action_economy,
+            "action-economy.one-action-plus-reaction",
+        ),
+    ] {
+        if binding.id == expected_id && binding.version == 1 {
+            continue;
+        }
+        diagnostics.push(RpgDiagnostic::error(
+            RpgDiagnosticStage::Compatibility,
+            "RULESET_MODEL_UNSUPPORTED",
+            path,
+            format!(
+                "ruleset model {}@{} is not bound by Rust authority",
+                binding.id, binding.version
+            ),
+        ));
+    }
+    validate_sorted_requirements(
+        &ruleset.provides.operations,
+        "$.ruleset.provides.operations",
+        diagnostics,
+    );
+    validate_sorted_requirements(
+        &ruleset.provides.capabilities,
+        "$.ruleset.provides.capabilities",
+        diagnostics,
+    );
+    for (index, provision) in ruleset.provides.operations.iter().enumerate() {
+        let registered = operation_registrations().iter().any(|registration| {
+            registration.id == provision.id && registration.version == provision.version
+        });
+        if !registered {
+            diagnostics.push(RpgDiagnostic::error(
+                RpgDiagnosticStage::Compatibility,
+                "RULESET_OPERATION_PROVISION_UNSUPPORTED",
+                format!("$.ruleset.provides.operations[{index}]"),
+                format!(
+                    "ruleset provides operation {}@{}, which Rust authority does not bind",
+                    provision.id, provision.version
+                ),
+            ));
+        }
+    }
+    for (index, provision) in ruleset.provides.capabilities.iter().enumerate() {
+        let registered = capability_registrations().iter().any(|registration| {
+            registration.id.as_str() == provision.id && registration.version == provision.version
+        });
+        if !registered {
+            diagnostics.push(RpgDiagnostic::error(
+                RpgDiagnosticStage::Compatibility,
+                "RULESET_CAPABILITY_PROVISION_UNSUPPORTED",
+                format!("$.ruleset.provides.capabilities[{index}]"),
+                format!(
+                    "ruleset provides capability {}@{}, which Rust authority does not bind",
+                    provision.id, provision.version
+                ),
+            ));
+        }
+    }
+    let mut previous_value = None::<(RulesetValueKind, &str)>;
+    let declared_domains = ruleset
+        .provides
+        .numeric_domains
+        .iter()
+        .map(|domain| domain.id.as_str())
+        .collect::<BTreeSet<_>>();
+    for (index, value) in ruleset.provides.values.iter().enumerate() {
+        let identity = (value.kind, value.id.as_str());
+        if previous_value.is_some_and(|previous| previous >= identity)
+            || value.label.trim().is_empty()
+            || !declared_domains.contains(value.numeric_domain_id.as_str())
+        {
+            diagnostics.push(RpgDiagnostic::error(
+                RpgDiagnosticStage::Artifact,
+                "RULESET_VALUE_PROVISIONS_NOT_CANONICAL",
+                format!("$.ruleset.provides.values[{index}]"),
+                "ruleset value provisions must be unique, sorted, labelled, and use a declared numeric domain",
+            ));
+        }
+        previous_value = Some(identity);
+    }
+    let mut previous_domain = None::<&str>;
+    for (index, domain) in ruleset.provides.numeric_domains.iter().enumerate() {
+        if previous_domain.is_some_and(|previous| previous >= domain.id.as_str())
+            || domain.minimum > domain.maximum
+        {
+            diagnostics.push(RpgDiagnostic::error(
+                RpgDiagnosticStage::Artifact,
+                "RULESET_NUMERIC_DOMAINS_NOT_CANONICAL",
+                format!("$.ruleset.provides.numericDomains[{index}]"),
+                "ruleset numeric domains must be unique, sorted, and ordered",
+            ));
+        }
+        previous_domain = Some(domain.id.as_str());
     }
 }
 
 fn validate_sorted_requirements(
-    requirements: &[VersionedRulesetRequirement],
+    requirements: &[VersionedRpgRequirement],
     path: &str,
     diagnostics: &mut Vec<RpgDiagnostic>,
 ) {
+    let diagnostic_code = if path.starts_with("$.ruleset") {
+        "RULESET_PROVISIONS_NOT_CANONICAL"
+    } else {
+        "PLAY_BUNDLE_REQUIREMENTS_NOT_CANONICAL"
+    };
     let mut previous = None::<(&str, u32)>;
     for (index, requirement) in requirements.iter().enumerate() {
         let identity = (requirement.id.as_str(), requirement.version);
         if previous.is_some_and(|value| value >= identity) {
             diagnostics.push(RpgDiagnostic::error(
                 RpgDiagnosticStage::Artifact,
-                "RULESET_REQUIREMENTS_NOT_CANONICAL",
+                diagnostic_code,
                 format!("{path}[{index}]"),
                 "requirements must be strictly identity-sorted",
             ));
@@ -384,11 +571,11 @@ fn validate_sorted_requirements(
 }
 
 fn validate_definition_commitments<'a>(
-    prepared: &'a PreparedRulesetCompilation,
+    prepared: &'a PreparedPlayBundle,
     diagnostics: &mut Vec<RpgDiagnostic>,
-) -> BTreeMap<String, &'a RulesetDefinitionCommitment> {
+) -> BTreeMap<String, &'a ContentDefinitionCommitment> {
     let source_fingerprints = prepared
-        .source_packages
+        .content_packs
         .iter()
         .map(|source| {
             (
@@ -407,7 +594,7 @@ fn validate_definition_commitments<'a>(
         if !valid_identifier(definition_id) {
             diagnostics.push(RpgDiagnostic::error(
                 RpgDiagnosticStage::Artifact,
-                "RULESET_DEFINITION_COMMITMENT_ID_INVALID",
+                "CONTENT_PACK_DEFINITION_COMMITMENT_ID_INVALID",
                 format!("{path}.definitionId"),
                 format!("invalid committed definition identity {definition_id}"),
             ));
@@ -415,7 +602,7 @@ fn validate_definition_commitments<'a>(
         if !valid_fingerprint(fingerprint) {
             diagnostics.push(RpgDiagnostic::error(
                 RpgDiagnosticStage::Artifact,
-                "RULESET_DEFINITION_COMMITMENT_FINGERPRINT_INVALID",
+                "CONTENT_PACK_DEFINITION_COMMITMENT_FINGERPRINT_INVALID",
                 format!("{path}.fingerprint"),
                 "definition commitment fingerprints must be fnv1a64 with sixteen lowercase hex digits",
             ));
@@ -424,7 +611,7 @@ fn validate_definition_commitments<'a>(
         if source_fingerprints.get(&package_identity).copied() != Some(package_source_fingerprint) {
             diagnostics.push(RpgDiagnostic::error(
                 RpgDiagnosticStage::References,
-                "RULESET_DEFINITION_COMMITMENT_SOURCE_MISMATCH",
+                "CONTENT_PACK_DEFINITION_COMMITMENT_SOURCE_MISMATCH",
                 format!("{path}.packageSourceFingerprint"),
                 format!("definition commitment does not match source package {package_identity}"),
             ));
@@ -436,7 +623,7 @@ fn validate_definition_commitments<'a>(
         {
             diagnostics.push(RpgDiagnostic::error(
                 RpgDiagnosticStage::Artifact,
-                "RULESET_DEFINITION_COMMITMENTS_NOT_CANONICAL",
+                "CONTENT_PACK_DEFINITION_COMMITMENTS_NOT_CANONICAL",
                 path.clone(),
                 "definition commitments must be strictly identity-sorted",
             ));
@@ -445,13 +632,13 @@ fn validate_definition_commitments<'a>(
         if commitments.insert(identity, commitment).is_some() {
             diagnostics.push(RpgDiagnostic::error(
                 RpgDiagnosticStage::References,
-                "RULESET_DUPLICATE_DEFINITION_COMMITMENT",
+                "CONTENT_PACK_DUPLICATE_DEFINITION_COMMITMENT",
                 path.clone(),
                 "definition commitments must have unique package-qualified identities",
             ));
         }
         match commitment {
-            RulesetDefinitionCommitment::Concrete {
+            ContentDefinitionCommitment::Concrete {
                 definition_id,
                 fingerprint,
                 stage,
@@ -460,7 +647,7 @@ fn validate_definition_commitments<'a>(
                 if stage.id != *definition_id {
                     diagnostics.push(RpgDiagnostic::error(
                         RpgDiagnosticStage::Artifact,
-                        "RULESET_CONCRETE_COMMITMENT_STAGE_MISMATCH",
+                        "CONTENT_PACK_CONCRETE_COMMITMENT_STAGE_MISMATCH",
                         format!("{path}.stage.id"),
                         "a concrete commitment stage must retain its named definition identity",
                     ));
@@ -468,7 +655,7 @@ fn validate_definition_commitments<'a>(
                 match canonical_fingerprint(stage) {
                     Ok(actual) if actual != *fingerprint => diagnostics.push(RpgDiagnostic::error(
                         RpgDiagnosticStage::Artifact,
-                        "RULESET_CONCRETE_COMMITMENT_FINGERPRINT_MISMATCH",
+                        "CONTENT_PACK_CONCRETE_COMMITMENT_FINGERPRINT_MISMATCH",
                         format!("{path}.fingerprint"),
                         format!("the committed concrete stage fingerprints as {actual}"),
                     )),
@@ -476,14 +663,14 @@ fn validate_definition_commitments<'a>(
                     _ => {}
                 }
             }
-            RulesetDefinitionCommitment::Mixin {
+            ContentDefinitionCommitment::Mixin {
                 fingerprint, value, ..
             } => {
                 validate_mixin_parameter_commitments(&value.parameters, &path, diagnostics);
                 match canonical_fingerprint(value) {
                     Ok(actual) if actual != *fingerprint => diagnostics.push(RpgDiagnostic::error(
                         RpgDiagnosticStage::Artifact,
-                        "RULESET_MIXIN_COMMITMENT_FINGERPRINT_MISMATCH",
+                        "CONTENT_PACK_MIXIN_COMMITMENT_FINGERPRINT_MISMATCH",
                         format!("{path}.fingerprint"),
                         format!("the committed mixin definition fingerprints as {actual}"),
                     )),
@@ -531,7 +718,7 @@ fn validate_definition_commitments<'a>(
     if actual != expected {
         diagnostics.push(RpgDiagnostic::error(
             RpgDiagnosticStage::References,
-            "RULESET_DEFINITION_COMMITMENT_COVERAGE_MISMATCH",
+            "CONTENT_PACK_DEFINITION_COMMITMENT_COVERAGE_MISMATCH",
             "$.definitionCommitments",
             "derivation targets, bases, named mixins, and overlay targets require exactly one source commitment",
         ));
@@ -540,10 +727,10 @@ fn validate_definition_commitments<'a>(
 }
 
 fn definition_commitment_header(
-    commitment: &RulesetDefinitionCommitment,
+    commitment: &ContentDefinitionCommitment,
 ) -> (&str, &str, &str, &str, &str) {
     match commitment {
-        RulesetDefinitionCommitment::Concrete {
+        ContentDefinitionCommitment::Concrete {
             package_id,
             package_version,
             package_source_fingerprint,
@@ -551,7 +738,7 @@ fn definition_commitment_header(
             fingerprint,
             ..
         }
-        | RulesetDefinitionCommitment::Mixin {
+        | ContentDefinitionCommitment::Mixin {
             package_id,
             package_version,
             package_source_fingerprint,
@@ -569,7 +756,7 @@ fn definition_commitment_header(
 }
 
 fn validate_mixin_parameter_commitments(
-    parameters: &[RulesetMixinParameterCommitment],
+    parameters: &[ContentMixinParameterCommitment],
     path: &str,
     diagnostics: &mut Vec<RpgDiagnostic>,
 ) {
@@ -578,7 +765,7 @@ fn validate_mixin_parameter_commitments(
         if !valid_identifier(&parameter.id) {
             diagnostics.push(RpgDiagnostic::error(
                 RpgDiagnosticStage::Artifact,
-                "RULESET_MIXIN_COMMITMENT_PARAMETER_ID_INVALID",
+                "CONTENT_PACK_MIXIN_COMMITMENT_PARAMETER_ID_INVALID",
                 format!("{path}.value.parameters[{index}].id"),
                 format!("invalid mixin parameter identity {}", parameter.id),
             ));
@@ -586,7 +773,7 @@ fn validate_mixin_parameter_commitments(
         if previous.is_some_and(|value| value >= parameter.id.as_str()) {
             diagnostics.push(RpgDiagnostic::error(
                 RpgDiagnosticStage::Artifact,
-                "RULESET_MIXIN_COMMITMENT_PARAMETERS_NOT_CANONICAL",
+                "CONTENT_PACK_MIXIN_COMMITMENT_PARAMETERS_NOT_CANONICAL",
                 format!("{path}.value.parameters[{index}]"),
                 "committed mixin parameters must be strictly identity-sorted",
             ));
@@ -596,7 +783,7 @@ fn validate_mixin_parameter_commitments(
             if !mixin_parameter_value_matches(default, parameter.value_type) {
                 diagnostics.push(RpgDiagnostic::error(
                     RpgDiagnosticStage::Artifact,
-                    "RULESET_MIXIN_COMMITMENT_PARAMETER_DEFAULT_INVALID",
+                    "CONTENT_PACK_MIXIN_COMMITMENT_PARAMETER_DEFAULT_INVALID",
                     format!("{path}.value.parameters[{index}].default"),
                     "a committed mixin parameter default must match its declared type",
                 ));
@@ -606,7 +793,7 @@ fn validate_mixin_parameter_commitments(
 }
 
 fn validate_applied_mixin_parameters(
-    definitions: &[RulesetMixinParameterCommitment],
+    definitions: &[ContentMixinParameterCommitment],
     supplied: &BTreeMap<String, Value>,
     path: &str,
     diagnostics: &mut Vec<RpgDiagnostic>,
@@ -621,7 +808,7 @@ fn validate_applied_mixin_parameters(
     {
         diagnostics.push(RpgDiagnostic::error(
             RpgDiagnosticStage::Artifact,
-            "RULESET_DERIVATION_MIXIN_PARAMETER_COMMITMENT_MISMATCH",
+            "CONTENT_PACK_DERIVATION_MIXIN_PARAMETER_COMMITMENT_MISMATCH",
             path,
             "applied mixin parameters contain an undeclared parameter",
         ));
@@ -633,7 +820,7 @@ fn validate_applied_mixin_parameters(
         {
             diagnostics.push(RpgDiagnostic::error(
                 RpgDiagnosticStage::Artifact,
-                "RULESET_DERIVATION_MIXIN_PARAMETER_COMMITMENT_MISMATCH",
+                "CONTENT_PACK_DERIVATION_MIXIN_PARAMETER_COMMITMENT_MISMATCH",
                 path,
                 format!(
                     "applied mixin parameter {} is not explicitly resolved or has the wrong committed type",
@@ -644,11 +831,11 @@ fn validate_applied_mixin_parameters(
     }
 }
 
-fn mixin_parameter_value_matches(value: &Value, value_type: RulesetMixinParameterType) -> bool {
+fn mixin_parameter_value_matches(value: &Value, value_type: ContentMixinParameterType) -> bool {
     match value_type {
-        RulesetMixinParameterType::String => value.is_string(),
-        RulesetMixinParameterType::Number => value.is_number(),
-        RulesetMixinParameterType::Boolean => value.is_boolean(),
+        ContentMixinParameterType::String => value.is_string(),
+        ContentMixinParameterType::Number => value.is_number(),
+        ContentMixinParameterType::Boolean => value.is_boolean(),
     }
 }
 
@@ -660,17 +847,14 @@ fn definition_commitment_identity(
     format!("{package_id}@{package_version}#{definition_id}")
 }
 
-fn validate_definitions(
-    prepared: &PreparedRulesetCompilation,
-    diagnostics: &mut Vec<RpgDiagnostic>,
-) {
-    let mut definitions = BTreeMap::<&str, &MaterializedRulesetDefinition>::new();
+fn validate_definitions(prepared: &PreparedPlayBundle, diagnostics: &mut Vec<RpgDiagnostic>) {
+    let mut definitions = BTreeMap::<&str, &MaterializedContentDefinition>::new();
     let mut previous = None::<&str>;
     for (index, definition) in prepared.materialized_definitions.iter().enumerate() {
         if previous.is_some_and(|value| value >= definition.id.as_str()) {
             diagnostics.push(RpgDiagnostic::error(
                 RpgDiagnosticStage::Artifact,
-                "RULESET_DEFINITIONS_NOT_CANONICAL",
+                "CONTENT_PACK_DEFINITIONS_NOT_CANONICAL",
                 format!("$.materializedDefinitions[{index}]"),
                 "materialized definitions must be strictly identity-sorted",
             ));
@@ -682,7 +866,7 @@ fn validate_definitions(
         {
             diagnostics.push(RpgDiagnostic::error(
                 RpgDiagnosticStage::References,
-                "RULESET_DUPLICATE_MATERIALIZED_DEFINITION",
+                "CONTENT_PACK_DUPLICATE_MATERIALIZED_DEFINITION",
                 format!("$.materializedDefinitions[{index}].id"),
                 format!("duplicate definition {}", definition.id),
             ));
@@ -690,7 +874,7 @@ fn validate_definitions(
         if definition.provenance.definition_id != definition.id {
             diagnostics.push(RpgDiagnostic::error(
                 RpgDiagnosticStage::Artifact,
-                "RULESET_DEFINITION_PROVENANCE_MISMATCH",
+                "CONTENT_PACK_DEFINITION_PROVENANCE_MISMATCH",
                 format!("$.materializedDefinitions[{index}].provenance"),
                 "definition provenance must name its materialized definition",
             ));
@@ -699,7 +883,7 @@ fn validate_definitions(
             Ok(expected) if expected != definition.fingerprint => {
                 diagnostics.push(RpgDiagnostic::error(
                     RpgDiagnosticStage::Artifact,
-                    "RULESET_DEFINITION_FINGERPRINT_MISMATCH",
+                    "CONTENT_PACK_DEFINITION_FINGERPRINT_MISMATCH",
                     format!("$.materializedDefinitions[{index}].fingerprint"),
                     format!(
                         "definition {} fingerprint does not match its canonical materialized value",
@@ -716,7 +900,7 @@ fn validate_definitions(
             if !definitions.contains_key(reference.as_str()) {
                 diagnostics.push(RpgDiagnostic::error(
                     RpgDiagnosticStage::References,
-                    "RULESET_ARTIFACT_REFERENCE_MISSING",
+                    "CONTENT_PACK_ARTIFACT_REFERENCE_MISSING",
                     format!("$.materializedDefinitions[{index}].references"),
                     format!("materialized reference {reference} is missing"),
                 ));
@@ -733,7 +917,7 @@ fn validate_definitions(
         if previous_root.is_some_and(|value| value >= root.as_str()) {
             diagnostics.push(RpgDiagnostic::error(
                 RpgDiagnosticStage::Artifact,
-                "RULESET_EXPORTED_ROOTS_NOT_CANONICAL",
+                "CONTENT_PACK_EXPORTED_ROOTS_NOT_CANONICAL",
                 format!("$.exportedRoots[{index}]"),
                 "exported roots must be strictly identity-sorted",
             ));
@@ -742,14 +926,14 @@ fn validate_definitions(
         if !definitions.contains_key(root.as_str()) {
             diagnostics.push(RpgDiagnostic::error(
                 RpgDiagnosticStage::References,
-                "RULESET_EXPORTED_ROOT_MISSING",
+                "CONTENT_PACK_EXPORTED_ROOT_MISSING",
                 format!("$.exportedRoots[{index}]"),
                 format!("exported root {root} is not materialized"),
             ));
-        } else if definitions[root.as_str()].visibility != MaterializedRulesetVisibility::Exported {
+        } else if definitions[root.as_str()].visibility != MaterializedContentVisibility::Exported {
             diagnostics.push(RpgDiagnostic::error(
                 RpgDiagnosticStage::Artifact,
-                "RULESET_EXPORTED_ROOT_VISIBILITY_MISMATCH",
+                "CONTENT_PACK_EXPORTED_ROOT_VISIBILITY_MISMATCH",
                 format!("$.exportedRoots[{index}]"),
                 format!("exported root {root} must have exported visibility"),
             ));
@@ -757,11 +941,11 @@ fn validate_definitions(
     }
     for (index, definition) in prepared.materialized_definitions.iter().enumerate() {
         let is_root = roots.contains(definition.id.as_str());
-        let is_exported = definition.visibility == MaterializedRulesetVisibility::Exported;
+        let is_exported = definition.visibility == MaterializedContentVisibility::Exported;
         if is_root != is_exported {
             diagnostics.push(RpgDiagnostic::error(
                 RpgDiagnosticStage::Artifact,
-                "RULESET_DEFINITION_VISIBILITY_MISMATCH",
+                "CONTENT_PACK_DEFINITION_VISIBILITY_MISMATCH",
                 format!("$.materializedDefinitions[{index}].visibility"),
                 "only exported roots may have exported visibility",
             ));
@@ -776,7 +960,7 @@ fn validate_definitions(
     if prepared.definition_provenance != expected_provenance {
         diagnostics.push(RpgDiagnostic::error(
             RpgDiagnosticStage::Artifact,
-            "RULESET_DEFINITION_PROVENANCE_NOT_CANONICAL",
+            "CONTENT_PACK_DEFINITION_PROVENANCE_NOT_CANONICAL",
             "$.definitionProvenance",
             "definition provenance must exactly match canonical materialized definition provenance",
         ));
@@ -797,7 +981,7 @@ fn validate_definitions(
         if !reachable.contains(definition.id.as_str()) {
             diagnostics.push(RpgDiagnostic::error(
                 RpgDiagnosticStage::References,
-                "RULESET_MATERIALIZED_DEFINITION_UNREACHABLE",
+                "CONTENT_PACK_MATERIALIZED_DEFINITION_UNREACHABLE",
                 format!("$.materializedDefinitions[{index}]"),
                 format!(
                     "materialized definition {} is not reachable from an exported root",
@@ -810,7 +994,7 @@ fn validate_definitions(
 
 fn visit_materialized_definition<'a>(
     definition_id: &str,
-    definitions: &BTreeMap<&'a str, &'a MaterializedRulesetDefinition>,
+    definitions: &BTreeMap<&'a str, &'a MaterializedContentDefinition>,
     visiting: &mut Vec<String>,
     reachable: &mut BTreeSet<String>,
     diagnostics: &mut Vec<RpgDiagnostic>,
@@ -823,7 +1007,7 @@ fn visit_materialized_definition<'a>(
         cycle.push(definition_id.to_owned());
         diagnostics.push(RpgDiagnostic::error(
             RpgDiagnosticStage::References,
-            "RULESET_ARTIFACT_DEFINITION_CYCLE",
+            "CONTENT_PACK_ARTIFACT_DEFINITION_CYCLE",
             "$.materializedDefinitions",
             format!("definition cycle: {}", cycle.join(" -> ")),
         ));
@@ -856,7 +1040,7 @@ struct CatalogDefinitionSemantic {
 }
 
 fn normalized_ir_from_materialized(
-    prepared: &PreparedRulesetCompilation,
+    prepared: &PreparedPlayBundle,
 ) -> Result<NormalizedRpgIr, RpgCompileFailure> {
     let definitions = prepared
         .materialized_definitions
@@ -868,7 +1052,7 @@ fn normalized_ir_from_materialized(
     let mut actions = Vec::new();
 
     for (index, definition) in prepared.materialized_definitions.iter().enumerate() {
-        if definition.kind != MaterializedRulesetDefinitionKind::Action {
+        if definition.kind != MaterializedContentDefinitionKind::Action {
             continue;
         }
         let path = format!("$.materializedDefinitions[{index}].semantic");
@@ -877,7 +1061,7 @@ fn normalized_ir_from_materialized(
             Err(error) => {
                 diagnostics.push(RpgDiagnostic::error(
                     RpgDiagnosticStage::Semantics,
-                    "RULESET_ACTION_SEMANTIC_DECODE_FAILED",
+                    "CONTENT_PACK_ACTION_SEMANTIC_DECODE_FAILED",
                     &path,
                     error.to_string(),
                 ));
@@ -887,7 +1071,7 @@ fn normalized_ir_from_materialized(
         if action.id != definition.id {
             diagnostics.push(RpgDiagnostic::error(
                 RpgDiagnosticStage::References,
-                "RULESET_ACTION_SEMANTIC_ID_MISMATCH",
+                "CONTENT_PACK_ACTION_SEMANTIC_ID_MISMATCH",
                 format!("{path}.id"),
                 format!(
                     "materialized action {} carries semantic identity {}",
@@ -911,7 +1095,8 @@ fn normalized_ir_from_materialized(
     actions.sort_by(|left, right| left.id.cmp(&right.id));
 
     let requirements = prepared
-        .required_operations
+        .content_requirements
+        .operations
         .iter()
         .map(|requirement| RpgIrRequirement {
             kind: RpgIrRequirementKind::Operation,
@@ -920,7 +1105,8 @@ fn normalized_ir_from_materialized(
         })
         .chain(
             prepared
-                .required_capabilities
+                .content_requirements
+                .capabilities
                 .iter()
                 .map(|requirement| RpgIrRequirement {
                     kind: RpgIrRequirementKind::Capability,
@@ -935,8 +1121,8 @@ fn normalized_ir_from_materialized(
             major: RPG_IR_MAJOR,
         },
         package: RpgIrPackage {
-            id: prepared.composition_identity.id.clone(),
-            version: prepared.composition_identity.version.clone(),
+            id: prepared.play_bundle_identity.id.clone(),
+            version: prepared.play_bundle_identity.version.clone(),
         },
         catalogs: RpgIrCatalogs {
             stats: catalogs.stats.into_iter().collect(),
@@ -944,7 +1130,8 @@ fn normalized_ir_from_materialized(
             resources: catalogs.resources.into_iter().collect(),
             modifiers: catalogs.modifiers.into_iter().collect(),
             capabilities: prepared
-                .required_capabilities
+                .content_requirements
+                .capabilities
                 .iter()
                 .map(|requirement| requirement.id.clone())
                 .collect(),
@@ -956,8 +1143,8 @@ fn normalized_ir_from_materialized(
 
 fn resolve_action_catalogs(
     action: &mut RpgIrAction,
-    action_definition: &MaterializedRulesetDefinition,
-    definitions: &BTreeMap<&str, &MaterializedRulesetDefinition>,
+    action_definition: &MaterializedContentDefinition,
+    definitions: &BTreeMap<&str, &MaterializedContentDefinition>,
     path: &str,
     diagnostics: &mut Vec<RpgDiagnostic>,
 ) {
@@ -1028,8 +1215,8 @@ fn resolve_action_catalogs(
 
 fn resolve_program_catalogs(
     program: &mut RpgIrProgram,
-    action_definition: &MaterializedRulesetDefinition,
-    definitions: &BTreeMap<&str, &MaterializedRulesetDefinition>,
+    action_definition: &MaterializedContentDefinition,
+    definitions: &BTreeMap<&str, &MaterializedContentDefinition>,
     path: &str,
     diagnostics: &mut Vec<RpgDiagnostic>,
 ) {
@@ -1122,8 +1309,8 @@ fn resolve_program_catalogs(
 
 fn resolve_operation_catalogs(
     operation: &mut RpgIrOperation,
-    action_definition: &MaterializedRulesetDefinition,
-    definitions: &BTreeMap<&str, &MaterializedRulesetDefinition>,
+    action_definition: &MaterializedContentDefinition,
+    definitions: &BTreeMap<&str, &MaterializedContentDefinition>,
     path: &str,
     diagnostics: &mut Vec<RpgDiagnostic>,
 ) {
@@ -1220,8 +1407,8 @@ fn resolve_operation_catalogs(
 
 fn resolve_formula_catalogs(
     formula: &mut RpgIrFormula,
-    action_definition: &MaterializedRulesetDefinition,
-    definitions: &BTreeMap<&str, &MaterializedRulesetDefinition>,
+    action_definition: &MaterializedContentDefinition,
+    definitions: &BTreeMap<&str, &MaterializedContentDefinition>,
     path: &str,
     diagnostics: &mut Vec<RpgDiagnostic>,
 ) {
@@ -1259,8 +1446,8 @@ fn resolve_formula_catalogs(
 
 fn resolve_predicate_catalogs(
     predicate: &mut RpgIrPredicate,
-    action_definition: &MaterializedRulesetDefinition,
-    definitions: &BTreeMap<&str, &MaterializedRulesetDefinition>,
+    action_definition: &MaterializedContentDefinition,
+    definitions: &BTreeMap<&str, &MaterializedContentDefinition>,
     path: &str,
     diagnostics: &mut Vec<RpgDiagnostic>,
 ) {
@@ -1307,8 +1494,8 @@ fn resolve_catalog_reference(
     value: &mut String,
     expected_catalog: &str,
     diagnostic_kind: &str,
-    action_definition: &MaterializedRulesetDefinition,
-    definitions: &BTreeMap<&str, &MaterializedRulesetDefinition>,
+    action_definition: &MaterializedContentDefinition,
+    definitions: &BTreeMap<&str, &MaterializedContentDefinition>,
     path: &str,
     diagnostics: &mut Vec<RpgDiagnostic>,
 ) {
@@ -1337,7 +1524,7 @@ fn resolve_catalog_reference(
         ));
         return;
     };
-    if definition.kind != MaterializedRulesetDefinitionKind::Support {
+    if definition.kind != MaterializedContentDefinitionKind::Support {
         diagnostics.push(RpgDiagnostic::error(
             RpgDiagnosticStage::References,
             catalog_diagnostic_code(diagnostic_kind, CatalogDiagnostic::DefinitionKindInvalid),
@@ -1386,25 +1573,27 @@ enum CatalogDiagnostic {
 fn catalog_diagnostic_code(kind: &str, diagnostic: CatalogDiagnostic) -> &'static str {
     match (kind, diagnostic) {
         ("DAMAGE_TYPE", CatalogDiagnostic::ReferenceUndeclared) => {
-            "RULESET_DAMAGE_TYPE_REFERENCE_UNDECLARED"
+            "CONTENT_PACK_DAMAGE_TYPE_REFERENCE_UNDECLARED"
         }
         ("DAMAGE_TYPE", CatalogDiagnostic::DefinitionMissing) => {
-            "RULESET_DAMAGE_TYPE_DEFINITION_MISSING"
+            "CONTENT_PACK_DAMAGE_TYPE_DEFINITION_MISSING"
         }
         ("DAMAGE_TYPE", CatalogDiagnostic::DefinitionKindInvalid) => {
-            "RULESET_DAMAGE_TYPE_DEFINITION_KIND_INVALID"
+            "CONTENT_PACK_DAMAGE_TYPE_DEFINITION_KIND_INVALID"
         }
         ("DAMAGE_TYPE", CatalogDiagnostic::SemanticInvalid) => {
-            "RULESET_DAMAGE_TYPE_SEMANTIC_INVALID"
+            "CONTENT_PACK_DAMAGE_TYPE_SEMANTIC_INVALID"
         }
         ("DAMAGE_TYPE", CatalogDiagnostic::CatalogMismatch) => {
-            "RULESET_DAMAGE_TYPE_CATALOG_MISMATCH"
+            "CONTENT_PACK_DAMAGE_TYPE_CATALOG_MISMATCH"
         }
-        (_, CatalogDiagnostic::ReferenceUndeclared) => "RULESET_CATALOG_REFERENCE_UNDECLARED",
-        (_, CatalogDiagnostic::DefinitionMissing) => "RULESET_CATALOG_DEFINITION_MISSING",
-        (_, CatalogDiagnostic::DefinitionKindInvalid) => "RULESET_CATALOG_DEFINITION_KIND_INVALID",
-        (_, CatalogDiagnostic::SemanticInvalid) => "RULESET_CATALOG_SEMANTIC_INVALID",
-        (_, CatalogDiagnostic::CatalogMismatch) => "RULESET_CATALOG_MISMATCH",
+        (_, CatalogDiagnostic::ReferenceUndeclared) => "CONTENT_PACK_CATALOG_REFERENCE_UNDECLARED",
+        (_, CatalogDiagnostic::DefinitionMissing) => "CONTENT_PACK_CATALOG_DEFINITION_MISSING",
+        (_, CatalogDiagnostic::DefinitionKindInvalid) => {
+            "CONTENT_PACK_CATALOG_DEFINITION_KIND_INVALID"
+        }
+        (_, CatalogDiagnostic::SemanticInvalid) => "CONTENT_PACK_CATALOG_SEMANTIC_INVALID",
+        (_, CatalogDiagnostic::CatalogMismatch) => "CONTENT_PACK_CATALOG_MISMATCH",
     }
 }
 
@@ -1527,8 +1716,8 @@ fn collect_predicate_catalogs(predicate: &RpgIrPredicate, catalogs: &mut Derived
 }
 
 fn validate_materialization_provenance(
-    prepared: &PreparedRulesetCompilation,
-    definition_commitments: &BTreeMap<String, &RulesetDefinitionCommitment>,
+    prepared: &PreparedPlayBundle,
+    definition_commitments: &BTreeMap<String, &ContentDefinitionCommitment>,
     diagnostics: &mut Vec<RpgDiagnostic>,
 ) {
     let definitions = prepared
@@ -1543,7 +1732,7 @@ fn validate_materialization_provenance(
         {
             diagnostics.push(RpgDiagnostic::error(
                 RpgDiagnosticStage::Artifact,
-                "RULESET_DERIVATION_PROVENANCE_NOT_CANONICAL",
+                "CONTENT_PACK_DERIVATION_PROVENANCE_NOT_CANONICAL",
                 format!("$.derivationProvenance[{index}]"),
                 "derivation provenance must be strictly definition-sorted",
             ));
@@ -1552,7 +1741,7 @@ fn validate_materialization_provenance(
         if !definitions.contains_key(provenance.definition_id.as_str()) {
             diagnostics.push(RpgDiagnostic::error(
                 RpgDiagnosticStage::References,
-                "RULESET_DERIVATION_TARGET_MISSING",
+                "CONTENT_PACK_DERIVATION_TARGET_MISSING",
                 format!("$.derivationProvenance[{index}].definitionId"),
                 format!(
                     "derived definition {} is not materialized",
@@ -1574,7 +1763,7 @@ fn validate_materialization_provenance(
             if !valid_fingerprint(value) {
                 diagnostics.push(RpgDiagnostic::error(
                     RpgDiagnosticStage::Artifact,
-                    "RULESET_DERIVATION_FINGERPRINT_INVALID",
+                    "CONTENT_PACK_DERIVATION_FINGERPRINT_INVALID",
                     format!("$.derivationProvenance[{index}].{field}"),
                     "derivation fingerprints must be fnv1a64 with sixteen lowercase hex digits",
                 ));
@@ -1584,7 +1773,7 @@ fn validate_materialization_provenance(
             if mixin.order != mixin_index || !valid_fingerprint(&mixin.fingerprint) {
                 diagnostics.push(RpgDiagnostic::error(
                     RpgDiagnosticStage::Artifact,
-                    "RULESET_DERIVATION_MIXIN_NOT_CANONICAL",
+                    "CONTENT_PACK_DERIVATION_MIXIN_NOT_CANONICAL",
                     format!("$.derivationProvenance[{index}].mixins[{mixin_index}]"),
                     "mixin provenance must preserve contiguous order and exact fingerprints",
                 ));
@@ -1596,7 +1785,7 @@ fn validate_materialization_provenance(
             {
                 diagnostics.push(RpgDiagnostic::error(
                     RpgDiagnosticStage::Artifact,
-                    "RULESET_DERIVATION_MIXIN_PARAMETER_INVALID",
+                    "CONTENT_PACK_DERIVATION_MIXIN_PARAMETER_INVALID",
                     format!("$.derivationProvenance[{index}].mixins[{mixin_index}].parameters"),
                     "mixin parameters must be scalar immutable values",
                 ));
@@ -1620,7 +1809,7 @@ fn validate_materialization_provenance(
         if previous_overlay_order.is_some_and(|previous| previous >= provenance.order) {
             diagnostics.push(RpgDiagnostic::error(
                 RpgDiagnosticStage::Artifact,
-                "RULESET_OVERLAY_PROVENANCE_NOT_CANONICAL",
+                "CONTENT_PACK_OVERLAY_PROVENANCE_NOT_CANONICAL",
                 format!("$.overlayProvenance[{index}].order"),
                 "overlay provenance order must be strictly increasing",
             ));
@@ -1633,7 +1822,7 @@ fn validate_materialization_provenance(
         if !definitions.contains_key(provenance.target_definition_id.as_str()) {
             diagnostics.push(RpgDiagnostic::error(
                 RpgDiagnosticStage::References,
-                "RULESET_OVERLAY_TARGET_MISSING",
+                "CONTENT_PACK_OVERLAY_TARGET_MISSING",
                 format!("$.overlayProvenance[{index}].targetDefinitionId"),
                 format!(
                     "overlay target {} is not materialized",
@@ -1653,7 +1842,7 @@ fn validate_materialization_provenance(
             if !valid_fingerprint(value) {
                 diagnostics.push(RpgDiagnostic::error(
                     RpgDiagnosticStage::Artifact,
-                    "RULESET_OVERLAY_FINGERPRINT_INVALID",
+                    "CONTENT_PACK_OVERLAY_FINGERPRINT_INVALID",
                     format!("$.overlayProvenance[{index}].{field}"),
                     "overlay fingerprints must be fnv1a64 with sixteen lowercase hex digits",
                 ));
@@ -1662,7 +1851,7 @@ fn validate_materialization_provenance(
         if provenance.expected_fingerprint != provenance.before_fingerprint {
             diagnostics.push(RpgDiagnostic::error(
                 RpgDiagnosticStage::Artifact,
-                "RULESET_OVERLAY_EXPECTED_FINGERPRINT_MISMATCH",
+                "CONTENT_PACK_OVERLAY_EXPECTED_FINGERPRINT_MISMATCH",
                 format!("$.overlayProvenance[{index}].expectedFingerprint"),
                 "the pinned expected fingerprint must equal the observed pre-overlay fingerprint",
             ));
@@ -1685,14 +1874,14 @@ fn validate_materialization_provenance(
             definition_id,
         );
         let committed_stage = match definition_commitments.get(&commitment_identity) {
-            Some(RulesetDefinitionCommitment::Concrete { stage, .. }) => Some(stage.clone()),
+            Some(ContentDefinitionCommitment::Concrete { stage, .. }) => Some(stage.clone()),
             _ => None,
         };
         if let (Some(replayed), Some(committed)) = (&derivation_stage, &committed_stage) {
             if replayed != committed {
                 diagnostics.push(RpgDiagnostic::error(
                     RpgDiagnosticStage::Artifact,
-                    "RULESET_DERIVATION_COMMITMENT_REPLAY_MISMATCH",
+                    "CONTENT_PACK_DERIVATION_COMMITMENT_REPLAY_MISMATCH",
                     "$.definitionCommitments",
                     format!(
                         "the replayed derivation stage for {definition_id} does not equal its committed pre-overlay stage"
@@ -1708,7 +1897,7 @@ fn validate_materialization_provenance(
                 }
                 None => diagnostics.push(RpgDiagnostic::error(
                     RpgDiagnosticStage::References,
-                    "RULESET_OVERLAY_INITIAL_COMMITMENT_MISSING",
+                    "CONTENT_PACK_OVERLAY_INITIAL_COMMITMENT_MISSING",
                     "$.definitionCommitments",
                     format!(
                         "overlay target {definition_id} requires a committed pre-overlay stage"
@@ -1720,7 +1909,7 @@ fn validate_materialization_provenance(
             if stage != final_stage {
                 diagnostics.push(RpgDiagnostic::error(
                     RpgDiagnosticStage::Artifact,
-                    "RULESET_DERIVATION_MATERIALIZED_STAGE_MISMATCH",
+                    "CONTENT_PACK_DERIVATION_MATERIALIZED_STAGE_MISMATCH",
                     "$.derivationProvenance",
                     format!(
                         "the replayed derivation stage for {definition_id} does not equal the materialized definition"
@@ -1734,7 +1923,7 @@ fn validate_materialization_provenance(
     for relationship in prepared
         .relationships
         .iter()
-        .filter(|relationship| matches!(relationship.kind, RulesetRelationshipKind::DerivesFrom))
+        .filter(|relationship| matches!(relationship.kind, ContentRelationshipKind::DerivesFrom))
     {
         *declared_derivations
             .entry((
@@ -1773,7 +1962,7 @@ fn validate_materialization_provenance(
     if declared_derivations != proven_derivations {
         diagnostics.push(RpgDiagnostic::error(
             RpgDiagnosticStage::Artifact,
-            "RULESET_DERIVATION_PROVENANCE_COVERAGE_MISMATCH",
+            "CONTENT_PACK_DERIVATION_PROVENANCE_COVERAGE_MISMATCH",
             "$.relationships",
             "each derivation base and mixin relationship requires one matching provenance record",
         ));
@@ -1781,7 +1970,7 @@ fn validate_materialization_provenance(
 
     let mut declared_overlays = BTreeMap::new();
     for relationship in prepared.relationships.iter().filter(|relationship| {
-        matches!(relationship.kind, RulesetRelationshipKind::Patches)
+        matches!(relationship.kind, ContentRelationshipKind::Patches)
             && relationship.target.contains('#')
     }) {
         *declared_overlays
@@ -1810,7 +1999,7 @@ fn validate_materialization_provenance(
     if declared_overlays != proven_overlays {
         diagnostics.push(RpgDiagnostic::error(
             RpgDiagnosticStage::Artifact,
-            "RULESET_OVERLAY_PROVENANCE_COVERAGE_MISMATCH",
+            "CONTENT_PACK_OVERLAY_PROVENANCE_COVERAGE_MISMATCH",
             "$.relationships",
             "each overlay relationship requires one matching provenance record",
         ));
@@ -1826,13 +2015,13 @@ fn materialization_relationship_identity(
 }
 
 fn materialization_stage(
-    definition: &MaterializedRulesetDefinition,
-) -> RulesetMaterializationStage {
-    RulesetMaterializationStage {
+    definition: &MaterializedContentDefinition,
+) -> ContentMaterializationStage {
+    ContentMaterializationStage {
         id: definition.id.clone(),
         kind: definition.kind,
         extension_policy: definition.extension_policy,
-        value: RulesetMaterializationValue {
+        value: ContentMaterializationValue {
             semantic: definition.semantic.clone(),
             presentation: definition.presentation.clone(),
         },
@@ -1846,16 +2035,16 @@ fn canonical_fingerprint(value: &impl Serialize) -> Result<String, RpgCompileFai
 }
 
 fn validate_derivation_semantics(
-    provenance: &rpg_ir::RulesetDerivationProvenance,
+    provenance: &rpg_ir::ContentDerivationProvenance,
     provenance_index: usize,
-    definition_commitments: &BTreeMap<String, &RulesetDefinitionCommitment>,
+    definition_commitments: &BTreeMap<String, &ContentDefinitionCommitment>,
     diagnostics: &mut Vec<RpgDiagnostic>,
-) -> Option<RulesetMaterializationStage> {
+) -> Option<ContentMaterializationStage> {
     let path = format!("$.derivationProvenance[{provenance_index}]");
     if provenance.base.id != provenance.base_definition_id {
         diagnostics.push(RpgDiagnostic::error(
             RpgDiagnosticStage::Artifact,
-            "RULESET_DERIVATION_BASE_STAGE_MISMATCH",
+            "CONTENT_PACK_DERIVATION_BASE_STAGE_MISMATCH",
             format!("{path}.base.id"),
             "the base stage identity must match baseDefinitionId",
         ));
@@ -1866,27 +2055,27 @@ fn validate_derivation_semantics(
         &provenance.base_definition_id,
     );
     match definition_commitments.get(&base_commitment_identity) {
-        Some(RulesetDefinitionCommitment::Concrete {
+        Some(ContentDefinitionCommitment::Concrete {
             fingerprint, stage, ..
         }) => {
             if stage != &provenance.base || fingerprint != &provenance.base_fingerprint {
                 diagnostics.push(RpgDiagnostic::error(
                     RpgDiagnosticStage::Artifact,
-                    "RULESET_DERIVATION_BASE_COMMITMENT_MISMATCH",
+                    "CONTENT_PACK_DERIVATION_BASE_COMMITMENT_MISMATCH",
                     format!("{path}.base"),
                     "the replay base must equal the independently committed named definition",
                 ));
             }
         }
-        Some(RulesetDefinitionCommitment::Mixin { .. }) => diagnostics.push(RpgDiagnostic::error(
+        Some(ContentDefinitionCommitment::Mixin { .. }) => diagnostics.push(RpgDiagnostic::error(
             RpgDiagnosticStage::Artifact,
-            "RULESET_DERIVATION_BASE_COMMITMENT_KIND_MISMATCH",
+            "CONTENT_PACK_DERIVATION_BASE_COMMITMENT_KIND_MISMATCH",
             format!("{path}.baseDefinitionId"),
             "a derivation base must resolve to a concrete definition commitment",
         )),
         None => diagnostics.push(RpgDiagnostic::error(
             RpgDiagnosticStage::References,
-            "RULESET_DERIVATION_BASE_COMMITMENT_MISSING",
+            "CONTENT_PACK_DERIVATION_BASE_COMMITMENT_MISSING",
             format!("{path}.baseDefinitionId"),
             format!("missing source commitment {base_commitment_identity}"),
         )),
@@ -1895,7 +2084,7 @@ fn validate_derivation_semantics(
         Ok(actual) if actual != provenance.base_fingerprint => {
             diagnostics.push(RpgDiagnostic::error(
                 RpgDiagnosticStage::Artifact,
-                "RULESET_DERIVATION_BASE_FINGERPRINT_MISMATCH",
+                "CONTENT_PACK_DERIVATION_BASE_FINGERPRINT_MISMATCH",
                 format!("{path}.baseFingerprint"),
                 format!("the base stage fingerprints as {actual}"),
             ))
@@ -1913,11 +2102,11 @@ fn validate_derivation_semantics(
             &mixin.definition_id,
         );
         match definition_commitments.get(&mixin_commitment_identity) {
-            Some(RulesetDefinitionCommitment::Mixin { value, .. }) => {
+            Some(ContentDefinitionCommitment::Mixin { value, .. }) => {
                 if value.patch != mixin.patch {
                     diagnostics.push(RpgDiagnostic::error(
                         RpgDiagnosticStage::Artifact,
-                        "RULESET_DERIVATION_MIXIN_COMMITMENT_MISMATCH",
+                        "CONTENT_PACK_DERIVATION_MIXIN_COMMITMENT_MISMATCH",
                         format!("{path}.mixins[{mixin_index}].patch"),
                         "the replay patch must equal the independently committed named mixin definition",
                     ));
@@ -1929,17 +2118,17 @@ fn validate_derivation_semantics(
                     diagnostics,
                 );
             }
-            Some(RulesetDefinitionCommitment::Concrete { .. }) => {
+            Some(ContentDefinitionCommitment::Concrete { .. }) => {
                 diagnostics.push(RpgDiagnostic::error(
                     RpgDiagnosticStage::Artifact,
-                    "RULESET_DERIVATION_MIXIN_COMMITMENT_KIND_MISMATCH",
+                    "CONTENT_PACK_DERIVATION_MIXIN_COMMITMENT_KIND_MISMATCH",
                     format!("{path}.mixins[{mixin_index}].definitionId"),
                     "a derivation mixin must resolve to a mixin definition commitment",
                 ))
             }
             None => diagnostics.push(RpgDiagnostic::error(
                 RpgDiagnosticStage::References,
-                "RULESET_DERIVATION_MIXIN_COMMITMENT_MISSING",
+                "CONTENT_PACK_DERIVATION_MIXIN_COMMITMENT_MISSING",
                 format!("{path}.mixins[{mixin_index}].definitionId"),
                 format!("missing source commitment {mixin_commitment_identity}"),
             )),
@@ -1947,7 +2136,7 @@ fn validate_derivation_semantics(
         match canonical_fingerprint(&mixin.patch) {
             Ok(actual) if actual != mixin.fingerprint => diagnostics.push(RpgDiagnostic::error(
                 RpgDiagnosticStage::Artifact,
-                "RULESET_DERIVATION_MIXIN_FINGERPRINT_MISMATCH",
+                "CONTENT_PACK_DERIVATION_MIXIN_FINGERPRINT_MISMATCH",
                 format!("{path}.mixins[{mixin_index}].fingerprint"),
                 format!("the mixin patch fingerprints as {actual}"),
             )),
@@ -1962,7 +2151,7 @@ fn validate_derivation_semantics(
             Err(message) => {
                 diagnostics.push(RpgDiagnostic::error(
                     RpgDiagnosticStage::Artifact,
-                    "RULESET_DERIVATION_PATCH_REPLAY_FAILED",
+                    "CONTENT_PACK_DERIVATION_PATCH_REPLAY_FAILED",
                     format!("{path}.mixins[{mixin_index}].patch"),
                     message,
                 ));
@@ -1975,7 +2164,7 @@ fn validate_derivation_semantics(
         Ok(actual) if actual != provenance.local_patch_fingerprint => {
             diagnostics.push(RpgDiagnostic::error(
                 RpgDiagnosticStage::Artifact,
-                "RULESET_DERIVATION_LOCAL_PATCH_FINGERPRINT_MISMATCH",
+                "CONTENT_PACK_DERIVATION_LOCAL_PATCH_FINGERPRINT_MISMATCH",
                 format!("{path}.localPatchFingerprint"),
                 format!("the local patch fingerprints as {actual}"),
             ))
@@ -1991,7 +2180,7 @@ fn validate_derivation_semantics(
         Err(message) => {
             diagnostics.push(RpgDiagnostic::error(
                 RpgDiagnosticStage::Artifact,
-                "RULESET_DERIVATION_PATCH_REPLAY_FAILED",
+                "CONTENT_PACK_DERIVATION_PATCH_REPLAY_FAILED",
                 format!("{path}.localPatch"),
                 message,
             ));
@@ -2003,7 +2192,7 @@ fn validate_derivation_semantics(
     if stage != provenance.materialized {
         diagnostics.push(RpgDiagnostic::error(
             RpgDiagnosticStage::Artifact,
-            "RULESET_DERIVATION_MATERIALIZED_STAGE_MISMATCH",
+            "CONTENT_PACK_DERIVATION_MATERIALIZED_STAGE_MISMATCH",
             format!("{path}.materialized"),
             "replaying the base, mixins, and local patch does not produce the claimed materialized stage",
         ));
@@ -2014,7 +2203,7 @@ fn validate_derivation_semantics(
         &provenance.definition_id,
     );
     match definition_commitments.get(&target_commitment_identity) {
-        Some(RulesetDefinitionCommitment::Concrete {
+        Some(ContentDefinitionCommitment::Concrete {
             fingerprint,
             stage: committed_stage,
             ..
@@ -2024,21 +2213,21 @@ fn validate_derivation_semantics(
             {
                 diagnostics.push(RpgDiagnostic::error(
                     RpgDiagnosticStage::Artifact,
-                    "RULESET_DERIVATION_TARGET_COMMITMENT_MISMATCH",
+                    "CONTENT_PACK_DERIVATION_TARGET_COMMITMENT_MISMATCH",
                     format!("{path}.materialized"),
                     "the derived stage must equal its independent pre-overlay commitment",
                 ));
             }
         }
-        Some(RulesetDefinitionCommitment::Mixin { .. }) => diagnostics.push(RpgDiagnostic::error(
+        Some(ContentDefinitionCommitment::Mixin { .. }) => diagnostics.push(RpgDiagnostic::error(
             RpgDiagnosticStage::Artifact,
-            "RULESET_DERIVATION_TARGET_COMMITMENT_KIND_MISMATCH",
+            "CONTENT_PACK_DERIVATION_TARGET_COMMITMENT_KIND_MISMATCH",
             format!("{path}.definitionId"),
             "a derived target must resolve to a concrete definition commitment",
         )),
         None => diagnostics.push(RpgDiagnostic::error(
             RpgDiagnosticStage::References,
-            "RULESET_DERIVATION_TARGET_COMMITMENT_MISSING",
+            "CONTENT_PACK_DERIVATION_TARGET_COMMITMENT_MISSING",
             format!("{path}.definitionId"),
             format!("missing source commitment {target_commitment_identity}"),
         )),
@@ -2046,7 +2235,7 @@ fn validate_derivation_semantics(
     if computed_changes != provenance.changes {
         diagnostics.push(RpgDiagnostic::error(
             RpgDiagnosticStage::Artifact,
-            "RULESET_DERIVATION_CHANGE_COVERAGE_MISMATCH",
+            "CONTENT_PACK_DERIVATION_CHANGE_COVERAGE_MISMATCH",
             format!("{path}.changes"),
             "the submitted derivation changes do not exactly match authoritative patch replay",
         ));
@@ -2055,7 +2244,7 @@ fn validate_derivation_semantics(
         Ok(actual) if actual != provenance.materialized_fingerprint => {
             diagnostics.push(RpgDiagnostic::error(
                 RpgDiagnosticStage::Artifact,
-                "RULESET_DERIVATION_MATERIALIZED_FINGERPRINT_MISMATCH",
+                "CONTENT_PACK_DERIVATION_MATERIALIZED_FINGERPRINT_MISMATCH",
                 format!("{path}.materializedFingerprint"),
                 format!("the materialized derivation stage fingerprints as {actual}"),
             ))
@@ -2067,14 +2256,14 @@ fn validate_derivation_semantics(
 }
 
 fn materialize_derived_identity(
-    stage: &mut RulesetMaterializationStage,
-    materialized: &RulesetMaterializationStage,
+    stage: &mut ContentMaterializationStage,
+    materialized: &ContentMaterializationStage,
 ) {
     stage.id.clone_from(&materialized.id);
     stage.kind = materialized.kind;
     stage.extension_policy = materialized.extension_policy;
     stage.references.clone_from(&materialized.references);
-    if materialized.kind == MaterializedRulesetDefinitionKind::Action {
+    if materialized.kind == MaterializedContentDefinitionKind::Action {
         let materialized_semantic = materialized.value.semantic.as_object();
         if let (Some(stage_semantic), Some(materialized_semantic)) =
             (stage.value.semantic.as_object_mut(), materialized_semantic)
@@ -2089,9 +2278,9 @@ fn materialize_derived_identity(
 }
 
 fn validate_overlay_fingerprint_chain(
-    final_definition: &MaterializedRulesetDefinition,
-    mut stage: RulesetMaterializationStage,
-    overlays: &[&rpg_ir::RulesetOverlayProvenance],
+    final_definition: &MaterializedContentDefinition,
+    mut stage: ContentMaterializationStage,
+    overlays: &[&rpg_ir::ContentOverlayProvenance],
     diagnostics: &mut Vec<RpgDiagnostic>,
 ) {
     for provenance in overlays {
@@ -2099,7 +2288,7 @@ fn validate_overlay_fingerprint_chain(
         if stage != provenance.before {
             diagnostics.push(RpgDiagnostic::error(
                 RpgDiagnosticStage::Artifact,
-                "RULESET_OVERLAY_BEFORE_STAGE_MISMATCH",
+                "CONTENT_PACK_OVERLAY_BEFORE_STAGE_MISMATCH",
                 format!("{path}.before"),
                 "the submitted pre-overlay stage does not equal the preceding materialization stage",
             ));
@@ -2118,7 +2307,7 @@ fn validate_overlay_fingerprint_chain(
             if expected != &before_fingerprint {
                 diagnostics.push(RpgDiagnostic::error(
                     RpgDiagnosticStage::Artifact,
-                    "RULESET_OVERLAY_BEFORE_FINGERPRINT_MISMATCH",
+                    "CONTENT_PACK_OVERLAY_BEFORE_FINGERPRINT_MISMATCH",
                     format!("{path}.{field}"),
                     format!(
                         "the authoritative pre-overlay stage fingerprints as {before_fingerprint}"
@@ -2130,7 +2319,7 @@ fn validate_overlay_fingerprint_chain(
             Ok(actual) if actual != provenance.patch_fingerprint => {
                 diagnostics.push(RpgDiagnostic::error(
                     RpgDiagnosticStage::Artifact,
-                    "RULESET_OVERLAY_PATCH_FINGERPRINT_MISMATCH",
+                    "CONTENT_PACK_OVERLAY_PATCH_FINGERPRINT_MISMATCH",
                     format!("{path}.patchFingerprint"),
                     format!("the overlay patch fingerprints as {actual}"),
                 ))
@@ -2141,7 +2330,7 @@ fn validate_overlay_fingerprint_chain(
         if !patch_matches_plane(&provenance.patch, provenance.plane) {
             diagnostics.push(RpgDiagnostic::error(
                 RpgDiagnosticStage::Artifact,
-                "RULESET_OVERLAY_IMPACT_PLANE_MISMATCH",
+                "CONTENT_PACK_OVERLAY_IMPACT_PLANE_MISMATCH",
                 format!("{path}.patch"),
                 "overlay patch operations exceed the declared impact plane",
             ));
@@ -2152,7 +2341,7 @@ fn validate_overlay_fingerprint_chain(
                 Err(message) => {
                     diagnostics.push(RpgDiagnostic::error(
                         RpgDiagnosticStage::Artifact,
-                        "RULESET_OVERLAY_PATCH_REPLAY_FAILED",
+                        "CONTENT_PACK_OVERLAY_PATCH_REPLAY_FAILED",
                         format!("{path}.patch"),
                         message,
                     ));
@@ -2162,7 +2351,7 @@ fn validate_overlay_fingerprint_chain(
         if computed_changes != provenance.changes {
             diagnostics.push(RpgDiagnostic::error(
                 RpgDiagnosticStage::Artifact,
-                "RULESET_OVERLAY_CHANGE_COVERAGE_MISMATCH",
+                "CONTENT_PACK_OVERLAY_CHANGE_COVERAGE_MISMATCH",
                 format!("{path}.changes"),
                 "the submitted overlay changes do not exactly match authoritative patch replay",
             ));
@@ -2177,7 +2366,7 @@ fn validate_overlay_fingerprint_chain(
         if after_fingerprint != provenance.after_fingerprint {
             diagnostics.push(RpgDiagnostic::error(
                 RpgDiagnosticStage::Artifact,
-                "RULESET_OVERLAY_AFTER_FINGERPRINT_MISMATCH",
+                "CONTENT_PACK_OVERLAY_AFTER_FINGERPRINT_MISMATCH",
                 format!("{path}.afterFingerprint"),
                 format!("the authoritative post-overlay stage fingerprints as {after_fingerprint}"),
             ));
@@ -2187,7 +2376,7 @@ fn validate_overlay_fingerprint_chain(
     if stage != materialization_stage(final_definition) {
         diagnostics.push(RpgDiagnostic::error(
             RpgDiagnosticStage::Artifact,
-            "RULESET_OVERLAY_FINAL_STAGE_MISMATCH",
+            "CONTENT_PACK_OVERLAY_FINAL_STAGE_MISMATCH",
             "$.overlayProvenance",
             format!(
                 "replaying overlays for {} does not produce the materialized definition",
@@ -2198,13 +2387,13 @@ fn validate_overlay_fingerprint_chain(
 }
 
 fn apply_ruleset_patch(
-    stage: &RulesetMaterializationStage,
-    patch: &RulesetPatch,
+    stage: &ContentMaterializationStage,
+    patch: &ContentPatch,
     parameters: &BTreeMap<String, Value>,
 ) -> Result<
     (
-        RulesetMaterializationStage,
-        Vec<RulesetPatchChangeProvenance>,
+        ContentMaterializationStage,
+        Vec<ContentPatchChangeProvenance>,
     ),
     String,
 > {
@@ -2218,14 +2407,14 @@ fn apply_ruleset_patch(
     let mut changes = Vec::new();
     for operation in &patch.operations {
         let plane = patch_operation_plane(operation);
-        if plane == RulesetImpactPlane::Both {
+        if plane == ContentImpactPlane::Both {
             return Err(
                 "an individual patch operation must name semantic or presentation".to_owned(),
             );
         }
         let root = patch_plane_root_mut(&mut next, plane)?;
         let path = patch_operation_path(operation);
-        if matches!(operation, RulesetPatchOperation::UpsertScalar { .. })
+        if matches!(operation, ContentPatchOperation::UpsertScalar { .. })
             && !supported_patch_upsert(plane, path)
         {
             return Err(format!(
@@ -2235,21 +2424,21 @@ fn apply_ruleset_patch(
             ));
         }
         let before = match operation {
-            RulesetPatchOperation::UpsertScalar { .. } => read_upsert_patch_path(root, path)?
+            ContentPatchOperation::UpsertScalar { .. } => read_upsert_patch_path(root, path)?
                 .cloned()
                 .unwrap_or(Value::Null),
             _ => read_patch_path(root, path)?.clone(),
         };
         match operation {
-            RulesetPatchOperation::SetScalar { value, .. } => {
+            ContentPatchOperation::SetScalar { value, .. } => {
                 let replacement = resolve_patch_scalar(value, parameters)?;
                 write_patch_path(root, path, replacement)?;
             }
-            RulesetPatchOperation::UpsertScalar { value, .. } => {
+            ContentPatchOperation::UpsertScalar { value, .. } => {
                 let replacement = resolve_patch_scalar(value, parameters)?;
                 write_upsert_patch_path(root, path, replacement)?;
             }
-            RulesetPatchOperation::AdjustNumber { multiply, add, .. } => {
+            ContentPatchOperation::AdjustNumber { multiply, add, .. } => {
                 let current = read_patch_path(root, path)?
                     .as_f64()
                     .ok_or_else(|| "adjustNumber requires a numeric target".to_owned())?;
@@ -2257,18 +2446,18 @@ fn apply_ruleset_patch(
                 let addend = resolve_patch_number(add, parameters)?;
                 write_patch_path(root, path, json_number(current * multiplier + addend)?)?;
             }
-            RulesetPatchOperation::AppendMember {
+            ContentPatchOperation::AppendMember {
                 identity,
                 value,
                 position,
                 ..
             } => append_patch_member(root, path, identity, value, position)?,
-            RulesetPatchOperation::RemoveMember { identity, .. } => {
+            ContentPatchOperation::RemoveMember { identity, .. } => {
                 remove_patch_member(root, path, identity)?;
             }
         }
         let after = read_patch_path(root, path)?.clone();
-        changes.push(RulesetPatchChangeProvenance {
+        changes.push(ContentPatchChangeProvenance {
             plane,
             path: patch_change_path(path),
             path_segments: path.to_vec(),
@@ -2288,48 +2477,48 @@ fn apply_ruleset_patch(
     Ok((next, changes))
 }
 
-fn patch_operation_plane(operation: &RulesetPatchOperation) -> RulesetImpactPlane {
+fn patch_operation_plane(operation: &ContentPatchOperation) -> ContentImpactPlane {
     match operation {
-        RulesetPatchOperation::SetScalar { plane, .. }
-        | RulesetPatchOperation::UpsertScalar { plane, .. }
-        | RulesetPatchOperation::AdjustNumber { plane, .. }
-        | RulesetPatchOperation::AppendMember { plane, .. }
-        | RulesetPatchOperation::RemoveMember { plane, .. } => *plane,
+        ContentPatchOperation::SetScalar { plane, .. }
+        | ContentPatchOperation::UpsertScalar { plane, .. }
+        | ContentPatchOperation::AdjustNumber { plane, .. }
+        | ContentPatchOperation::AppendMember { plane, .. }
+        | ContentPatchOperation::RemoveMember { plane, .. } => *plane,
     }
 }
 
-fn patch_operation_path(operation: &RulesetPatchOperation) -> &[RulesetPatchPathSegment] {
+fn patch_operation_path(operation: &ContentPatchOperation) -> &[ContentPatchPathSegment] {
     match operation {
-        RulesetPatchOperation::SetScalar { path, .. }
-        | RulesetPatchOperation::UpsertScalar { path, .. }
-        | RulesetPatchOperation::AdjustNumber { path, .. }
-        | RulesetPatchOperation::AppendMember { path, .. }
-        | RulesetPatchOperation::RemoveMember { path, .. } => path,
+        ContentPatchOperation::SetScalar { path, .. }
+        | ContentPatchOperation::UpsertScalar { path, .. }
+        | ContentPatchOperation::AdjustNumber { path, .. }
+        | ContentPatchOperation::AppendMember { path, .. }
+        | ContentPatchOperation::RemoveMember { path, .. } => path,
     }
 }
 
-fn patch_matches_plane(patch: &RulesetPatch, plane: RulesetImpactPlane) -> bool {
+fn patch_matches_plane(patch: &ContentPatch, plane: ContentImpactPlane) -> bool {
     patch.operations.iter().all(|operation| {
-        plane == RulesetImpactPlane::Both || patch_operation_plane(operation) == plane
+        plane == ContentImpactPlane::Both || patch_operation_plane(operation) == plane
     })
 }
 
-fn supported_patch_upsert(plane: RulesetImpactPlane, path: &[RulesetPatchPathSegment]) -> bool {
-    plane == RulesetImpactPlane::Presentation
+fn supported_patch_upsert(plane: ContentImpactPlane, path: &[ContentPatchPathSegment]) -> bool {
+    plane == ContentImpactPlane::Presentation
         && matches!(
             path,
-            [RulesetPatchPathSegment::Field { name }] if name == "description"
+            [ContentPatchPathSegment::Field { name }] if name == "description"
         )
 }
 
 fn patch_plane_root_mut(
-    stage: &mut RulesetMaterializationStage,
-    plane: RulesetImpactPlane,
+    stage: &mut ContentMaterializationStage,
+    plane: ContentImpactPlane,
 ) -> Result<&mut Value, String> {
     match plane {
-        RulesetImpactPlane::Semantic => Ok(&mut stage.value.semantic),
-        RulesetImpactPlane::Presentation => Ok(&mut stage.value.presentation),
-        RulesetImpactPlane::Both => {
+        ContentImpactPlane::Semantic => Ok(&mut stage.value.semantic),
+        ContentImpactPlane::Presentation => Ok(&mut stage.value.presentation),
+        ContentImpactPlane::Both => {
             Err("an individual patch operation cannot target both planes".to_owned())
         }
     }
@@ -2337,16 +2526,16 @@ fn patch_plane_root_mut(
 
 fn read_patch_path<'a>(
     root: &'a Value,
-    path: &[RulesetPatchPathSegment],
+    path: &[ContentPatchPathSegment],
 ) -> Result<&'a Value, String> {
     let mut current = root;
     for segment in path {
         current = match segment {
-            RulesetPatchPathSegment::Field { name } => current
+            ContentPatchPathSegment::Field { name } => current
                 .as_object()
                 .and_then(|object| object.get(name))
                 .ok_or_else(|| format!("field {name} is missing at {}", patch_change_path(path)))?,
-            RulesetPatchPathSegment::Member { key, value } => {
+            ContentPatchPathSegment::Member { key, value } => {
                 resolve_patch_member(current, *key, value)?
             }
         };
@@ -2356,12 +2545,12 @@ fn read_patch_path<'a>(
 
 fn read_upsert_patch_path<'a>(
     root: &'a Value,
-    path: &[RulesetPatchPathSegment],
+    path: &[ContentPatchPathSegment],
 ) -> Result<Option<&'a Value>, String> {
     let Some((leaf, parent_path)) = path.split_last() else {
         return Err("patch operations must not write the root".to_owned());
     };
-    let RulesetPatchPathSegment::Field { name } = leaf else {
+    let ContentPatchPathSegment::Field { name } = leaf else {
         return Err("patch upserts must end in a writable field".to_owned());
     };
     let parent = read_patch_path(root, parent_path)?;
@@ -2373,16 +2562,16 @@ fn read_upsert_patch_path<'a>(
 
 fn read_patch_path_mut<'a>(
     root: &'a mut Value,
-    path: &[RulesetPatchPathSegment],
+    path: &[ContentPatchPathSegment],
 ) -> Result<&'a mut Value, String> {
     let mut current = root;
     for segment in path {
         current = match segment {
-            RulesetPatchPathSegment::Field { name } => current
+            ContentPatchPathSegment::Field { name } => current
                 .as_object_mut()
                 .and_then(|object| object.get_mut(name))
                 .ok_or_else(|| format!("field {name} is missing at {}", patch_change_path(path)))?,
-            RulesetPatchPathSegment::Member { key, value } => {
+            ContentPatchPathSegment::Member { key, value } => {
                 resolve_patch_member_mut(current, *key, value)?
             }
         };
@@ -2392,13 +2581,13 @@ fn read_patch_path_mut<'a>(
 
 fn write_patch_path(
     root: &mut Value,
-    path: &[RulesetPatchPathSegment],
+    path: &[ContentPatchPathSegment],
     replacement: Value,
 ) -> Result<(), String> {
     let Some((leaf, parent_path)) = path.split_last() else {
         return Err("patch operations must not write the root".to_owned());
     };
-    let RulesetPatchPathSegment::Field { name } = leaf else {
+    let ContentPatchPathSegment::Field { name } = leaf else {
         return Err("patch writes must end in a writable field".to_owned());
     };
     let parent = read_patch_path_mut(root, parent_path)?;
@@ -2412,13 +2601,13 @@ fn write_patch_path(
 
 fn write_upsert_patch_path(
     root: &mut Value,
-    path: &[RulesetPatchPathSegment],
+    path: &[ContentPatchPathSegment],
     replacement: Value,
 ) -> Result<(), String> {
     let Some((leaf, parent_path)) = path.split_last() else {
         return Err("patch operations must not write the root".to_owned());
     };
-    let RulesetPatchPathSegment::Field { name } = leaf else {
+    let ContentPatchPathSegment::Field { name } = leaf else {
         return Err("patch upserts must end in a writable field".to_owned());
     };
     let parent = read_patch_path_mut(root, parent_path)?;
@@ -2431,7 +2620,7 @@ fn write_upsert_patch_path(
 
 fn resolve_patch_member<'a>(
     value: &'a Value,
-    key: RulesetPatchMemberKey,
+    key: ContentPatchMemberKey,
     expected: &str,
 ) -> Result<&'a Value, String> {
     let list = value.as_array().ok_or_else(|| {
@@ -2456,7 +2645,7 @@ fn resolve_patch_member<'a>(
 
 fn resolve_patch_member_mut<'a>(
     value: &'a mut Value,
-    key: RulesetPatchMemberKey,
+    key: ContentPatchMemberKey,
     expected: &str,
 ) -> Result<&'a mut Value, String> {
     let list = value.as_array_mut().ok_or_else(|| {
@@ -2480,7 +2669,7 @@ fn resolve_patch_member_mut<'a>(
     Ok(&mut list[indexes[0]])
 }
 
-fn patch_member_matches(value: &Value, key: RulesetPatchMemberKey, expected: &str) -> bool {
+fn patch_member_matches(value: &Value, key: ContentPatchMemberKey, expected: &str) -> bool {
     value
         .as_object()
         .and_then(|object| object.get(patch_member_key(key)))
@@ -2538,10 +2727,10 @@ fn json_number(value: f64) -> Result<Value, String> {
 
 fn append_patch_member(
     root: &mut Value,
-    path: &[RulesetPatchPathSegment],
-    identity: &RulesetPatchMemberSelector,
+    path: &[ContentPatchPathSegment],
+    identity: &ContentPatchMemberSelector,
     value: &BTreeMap<String, Value>,
-    position: &RulesetPatchPosition,
+    position: &ContentPatchPosition,
 ) -> Result<(), String> {
     let target = read_patch_path_mut(root, path)?;
     let list = target
@@ -2572,9 +2761,9 @@ fn append_patch_member(
     );
     let member = Value::Object(member);
     let index = match position {
-        RulesetPatchPosition::Start => 0,
-        RulesetPatchPosition::End => list.len(),
-        RulesetPatchPosition::Before { anchor } | RulesetPatchPosition::After { anchor } => {
+        ContentPatchPosition::Start => 0,
+        ContentPatchPosition::End => list.len(),
+        ContentPatchPosition::Before { anchor } | ContentPatchPosition::After { anchor } => {
             let matches = list
                 .iter()
                 .enumerate()
@@ -2590,7 +2779,7 @@ fn append_patch_member(
                     matches.len()
                 ));
             }
-            matches[0] + usize::from(matches!(position, RulesetPatchPosition::After { .. }))
+            matches[0] + usize::from(matches!(position, ContentPatchPosition::After { .. }))
         }
     };
     list.insert(index, member);
@@ -2599,8 +2788,8 @@ fn append_patch_member(
 
 fn remove_patch_member(
     root: &mut Value,
-    path: &[RulesetPatchPathSegment],
-    identity: &RulesetPatchMemberSelector,
+    path: &[ContentPatchPathSegment],
+    identity: &ContentPatchMemberSelector,
 ) -> Result<(), String> {
     let target = read_patch_path_mut(root, path)?;
     let list = target
@@ -2625,23 +2814,23 @@ fn remove_patch_member(
     Ok(())
 }
 
-fn patch_member_key(key: RulesetPatchMemberKey) -> &'static str {
+fn patch_member_key(key: ContentPatchMemberKey) -> &'static str {
     match key {
-        RulesetPatchMemberKey::Id => "id",
-        RulesetPatchMemberKey::ResourceId => "resourceId",
-        RulesetPatchMemberKey::StatId => "statId",
-        RulesetPatchMemberKey::DefenseId => "defenseId",
-        RulesetPatchMemberKey::ModifierId => "modifierId",
-        RulesetPatchMemberKey::DamageType => "damageType",
-        RulesetPatchMemberKey::Kind => "kind",
+        ContentPatchMemberKey::Id => "id",
+        ContentPatchMemberKey::ResourceId => "resourceId",
+        ContentPatchMemberKey::StatId => "statId",
+        ContentPatchMemberKey::DefenseId => "defenseId",
+        ContentPatchMemberKey::ModifierId => "modifierId",
+        ContentPatchMemberKey::DamageType => "damageType",
+        ContentPatchMemberKey::Kind => "kind",
     }
 }
 
-fn patch_change_path(path: &[RulesetPatchPathSegment]) -> String {
+fn patch_change_path(path: &[ContentPatchPathSegment]) -> String {
     path.iter()
         .map(|segment| match segment {
-            RulesetPatchPathSegment::Field { name } => name.clone(),
-            RulesetPatchPathSegment::Member { key, value } => {
+            ContentPatchPathSegment::Field { name } => name.clone(),
+            ContentPatchPathSegment::Member { key, value } => {
                 format!("[{}={value}]", patch_member_key(*key))
             }
         })
@@ -2650,7 +2839,7 @@ fn patch_change_path(path: &[RulesetPatchPathSegment]) -> String {
 }
 
 fn validate_patch_changes(
-    changes: &[rpg_ir::RulesetPatchChangeProvenance],
+    changes: &[rpg_ir::ContentPatchChangeProvenance],
     path: &str,
     diagnostics: &mut Vec<RpgDiagnostic>,
 ) {
@@ -2658,7 +2847,7 @@ fn validate_patch_changes(
         if change.path_segments.is_empty() {
             diagnostics.push(RpgDiagnostic::error(
                 RpgDiagnosticStage::Artifact,
-                "RULESET_PATCH_CHANGE_PATH_SEGMENTS_MISSING",
+                "CONTENT_PACK_PATCH_CHANGE_PATH_SEGMENTS_MISSING",
                 format!("{path}[{index}].pathSegments"),
                 "patch changes must carry a typed path for authoritative reconstruction",
             ));
@@ -2667,15 +2856,15 @@ fn validate_patch_changes(
         if rendered_path != change.path {
             diagnostics.push(RpgDiagnostic::error(
                 RpgDiagnosticStage::Artifact,
-                "RULESET_PATCH_CHANGE_PATH_MISMATCH",
+                "CONTENT_PACK_PATCH_CHANGE_PATH_MISMATCH",
                 format!("{path}[{index}].path"),
                 "the display path must match the canonical typed path",
             ));
         }
-        if change.plane == RulesetImpactPlane::Both {
+        if change.plane == ContentImpactPlane::Both {
             diagnostics.push(RpgDiagnostic::error(
                 RpgDiagnosticStage::Artifact,
-                "RULESET_PATCH_CHANGE_PLANE_INVALID",
+                "CONTENT_PACK_PATCH_CHANGE_PLANE_INVALID",
                 format!("{path}[{index}].plane"),
                 "an individual patch change must name semantic or presentation",
             ));
@@ -2684,7 +2873,7 @@ fn validate_patch_changes(
         if effective != change.effective {
             diagnostics.push(RpgDiagnostic::error(
                 RpgDiagnosticStage::Artifact,
-                "RULESET_PATCH_CHANGE_EFFECT_MISMATCH",
+                "CONTENT_PACK_PATCH_CHANGE_EFFECT_MISMATCH",
                 format!("{path}[{index}].effective"),
                 "patch change effectiveness must match canonical before/after values",
             ));
@@ -2693,7 +2882,7 @@ fn validate_patch_changes(
 }
 
 pub fn materialized_definition_fingerprint(
-    definition: &MaterializedRulesetDefinition,
+    definition: &MaterializedContentDefinition,
 ) -> Result<String, RpgCompileFailure> {
     fingerprint(&json!({
         "id": definition.id,
@@ -2708,11 +2897,12 @@ pub fn materialized_definition_fingerprint(
 }
 
 fn fingerprints(
-    prepared: &PreparedRulesetCompilation,
-) -> Result<RulesetArtifactFingerprints, RpgCompileFailure> {
+    prepared: &PreparedPlayBundle,
+) -> Result<PlayBundleFingerprints, RpgCompileFailure> {
     let source = fingerprint(&(
-        &prepared.composition_identity,
-        &prepared.source_packages,
+        &prepared.play_bundle_identity,
+        &prepared.ruleset.identity,
+        &prepared.content_packs,
         &prepared.dependency_lock,
         &prepared.definition_provenance,
         &prepared.definition_commitments,
@@ -2736,7 +2926,7 @@ fn fingerprints(
     ))?;
 
     let semantic = fingerprint(&json!({
-        "languageIdentity": prepared.language_identity,
+        "ruleset": prepared.ruleset,
         "definitions": prepared.materialized_definitions.iter().map(|definition| json!({
             "id": definition.id,
             "kind": definition.kind,
@@ -2745,8 +2935,7 @@ fn fingerprints(
             "semantic": semantic_definition_value(definition),
             "references": definition.references,
         })).collect::<Vec<_>>(),
-        "requiredOperations": prepared.required_operations,
-        "requiredCapabilities": prepared.required_capabilities,
+        "contentRequirements": prepared.content_requirements,
         "policyBindings": prepared.compiled_policy_bindings.iter().map(|binding| json!({
             "id": binding.id,
             "policyId": binding.policy_id,
@@ -2768,16 +2957,16 @@ fn fingerprints(
             "label": binding.label,
         })).collect::<Vec<_>>(),
     }))?;
-    Ok(RulesetArtifactFingerprints {
+    Ok(PlayBundleFingerprints {
         source,
         semantic,
         presentation,
     })
 }
 
-fn semantic_definition_value(definition: &MaterializedRulesetDefinition) -> Value {
+fn semantic_definition_value(definition: &MaterializedContentDefinition) -> Value {
     let mut semantic = definition.semantic.clone();
-    if definition.kind == MaterializedRulesetDefinitionKind::Action {
+    if definition.kind == MaterializedContentDefinitionKind::Action {
         if let Some(object) = semantic.as_object_mut() {
             object.remove("name");
             object.remove("sourcePath");
@@ -2786,8 +2975,8 @@ fn semantic_definition_value(definition: &MaterializedRulesetDefinition) -> Valu
     semantic
 }
 
-fn action_semantic_field(definition: &MaterializedRulesetDefinition, field: &str) -> Value {
-    if definition.kind != MaterializedRulesetDefinitionKind::Action {
+fn action_semantic_field(definition: &MaterializedContentDefinition, field: &str) -> Value {
+    if definition.kind != MaterializedContentDefinitionKind::Action {
         return Value::Null;
     }
     definition
@@ -2811,7 +3000,7 @@ fn fingerprint_error(error: serde_json::Error) -> RpgCompileFailure {
     RpgCompileFailure {
         diagnostics: vec![RpgDiagnostic::error(
             RpgDiagnosticStage::Artifact,
-            "RULESET_FINGERPRINT_ENCODING_FAILED",
+            "CONTENT_PACK_FINGERPRINT_ENCODING_FAILED",
             "$",
             error.to_string(),
         )],
@@ -2822,7 +3011,7 @@ fn validate_identity(id: &str, version: &str, path: &str, diagnostics: &mut Vec<
     if !valid_identifier(id) {
         diagnostics.push(RpgDiagnostic::error(
             RpgDiagnosticStage::Artifact,
-            "RULESET_IDENTITY_INVALID",
+            "CONTENT_PACK_IDENTITY_INVALID",
             format!("{path}.id"),
             format!("invalid ruleset identity {id}"),
         ));
@@ -2830,7 +3019,7 @@ fn validate_identity(id: &str, version: &str, path: &str, diagnostics: &mut Vec<
     if !exact_version(version) {
         diagnostics.push(RpgDiagnostic::error(
             RpgDiagnosticStage::Artifact,
-            "RULESET_VERSION_INVALID",
+            "CONTENT_PACK_VERSION_INVALID",
             format!("{path}.version"),
             format!("version {version} is not exact semver"),
         ));

@@ -1,14 +1,13 @@
 use std::fmt;
 
-use rpg_compiler::load_compiled_ruleset_artifact;
+use rpg_compiler::load_compiled_play_bundle;
 use rpg_core::{
     ActiveRpgModifier, BoundedValue, GridPosition, RpgCapabilityState, RpgEntityState,
     RpgResolutionReceipt, StateFingerprint, Team,
 };
 use rpg_ir::{
-    CompiledRulesetArtifact, CompiledRulesetIdentity, ResolvedRulesetSourcePackage,
-    RulesetArtifactFingerprints, RulesetArtifactSchema, RulesetDependencyLockEntry,
-    VersionedRulesetRequirement,
+    CompiledPlayBundleArtifact, ContentPackDependencyLockEntry, PlayBundleArtifactSchema,
+    PlayBundleFingerprints, ResolvedContentPack, RpgVersionedIdentity, VersionedRpgRequirement,
 };
 use serde::{Deserialize, Serialize};
 
@@ -17,14 +16,14 @@ use crate::semantic_session::{
     RpgPendingReaction, RpgReactionCommand, RpgTurnControlCommand,
 };
 use crate::{
-    encounter::validate_restored_encounter, RpgEncounterLogEntry, RpgEncounterSetup,
-    RpgRandomSourceBinding, RpgTurnState,
+    encounter::validate_restored_encounter, RpgEncounterLogEntry, RpgRandomSourceBinding,
+    RpgScenario, RpgTurnState,
 };
 
 pub const RPG_CHECKPOINT_SCHEMA_ID: &str = "asha.rpg.session.checkpoint";
 pub const RPG_REPLAY_ENTRY_SCHEMA_ID: &str = "asha.rpg.session.replay-entry";
-pub const RPG_CHECKPOINT_SCHEMA_VERSION: u32 = 2;
-pub const RPG_REPLAY_ENTRY_SCHEMA_VERSION: u32 = 3;
+pub const RPG_CHECKPOINT_SCHEMA_VERSION: u32 = 3;
+pub const RPG_REPLAY_ENTRY_SCHEMA_VERSION: u32 = 4;
 pub const RPG_EVENT_SCHEMA_VERSION: u32 = 2;
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
@@ -40,8 +39,8 @@ pub struct RpgReplaySchemaVersions {
     pub checkpoint: u32,
     pub replay_entry: u32,
     pub event: u32,
-    pub operations: Vec<VersionedRulesetRequirement>,
-    pub capabilities: Vec<VersionedRulesetRequirement>,
+    pub operations: Vec<VersionedRpgRequirement>,
+    pub capabilities: Vec<VersionedRpgRequirement>,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
@@ -54,13 +53,13 @@ pub struct RpgDefinitionFingerprintBinding {
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase", deny_unknown_fields)]
 pub struct RpgReplayArtifactBinding {
-    pub artifact_schema: RulesetArtifactSchema,
+    pub artifact_schema: PlayBundleArtifactSchema,
     pub artifact_id: String,
-    pub composition: CompiledRulesetIdentity,
-    pub language: CompiledRulesetIdentity,
-    pub source_packages: Vec<ResolvedRulesetSourcePackage>,
-    pub dependency_lock: Vec<RulesetDependencyLockEntry>,
-    pub fingerprints: RulesetArtifactFingerprints,
+    pub play_bundle: RpgVersionedIdentity,
+    pub ruleset: RpgVersionedIdentity,
+    pub content_packs: Vec<ResolvedContentPack>,
+    pub dependency_lock: Vec<ContentPackDependencyLockEntry>,
+    pub fingerprints: PlayBundleFingerprints,
     pub definitions: Vec<RpgDefinitionFingerprintBinding>,
 }
 
@@ -130,9 +129,9 @@ pub struct RpgSessionCheckpoint {
     pub schema: RpgPortableSchemaIdentity,
     pub schemas: RpgReplaySchemaVersions,
     pub artifact_binding: RpgReplayArtifactBinding,
-    pub artifact: CompiledRulesetArtifact,
-    pub setup: RpgEncounterSetup,
-    pub setup_fingerprint: StateFingerprint,
+    pub artifact: CompiledPlayBundleArtifact,
+    pub scenario: RpgScenario,
+    pub scenario_fingerprint: StateFingerprint,
     pub state: RpgPortableCapabilityState,
     pub turn: RpgTurnState,
     pub log: Vec<RpgEncounterLogEntry>,
@@ -153,7 +152,7 @@ pub enum RpgReplayPhase {
 pub struct RpgReplayBoundary {
     pub revision: u64,
     pub accepted_random_position: u64,
-    pub setup_fingerprint: StateFingerprint,
+    pub scenario_fingerprint: StateFingerprint,
     pub random_source: RpgRandomSourceBinding,
     pub turn: RpgTurnState,
     pub phase: RpgReplayPhase,
@@ -227,28 +226,28 @@ impl RpgAuthoritySession {
             replay_failure(
                 "RPG_CHECKPOINT_ARTIFACT_REQUIRED",
                 "$.artifact",
-                "portable checkpoints require a session created from a compiled ruleset artifact",
+                "portable checkpoints require a session created from a compiled PlayBundle",
             )
         })?;
         let state = portable_state(&self.state);
         let phase = checkpoint_phase(self);
         let accepted_random_position = self.accepted_random_values;
         let state_hash = session_state_hash(
-            &self.encounter.setup,
+            &self.encounter.scenario,
             &state,
             &self.encounter.turn,
             &self.encounter.log,
             accepted_random_position,
             &phase,
         )?;
-        let setup_fingerprint = encounter_setup_fingerprint(&self.encounter.setup)?;
+        let scenario_fingerprint = scenario_fingerprint(&self.encounter.scenario)?;
         Ok(RpgSessionCheckpoint {
             schema: checkpoint_schema(),
             schemas: replay_versions(&artifact),
             artifact_binding: artifact_binding(&artifact),
             artifact,
-            setup: self.encounter.setup.clone(),
-            setup_fingerprint,
+            scenario: self.encounter.scenario.clone(),
+            scenario_fingerprint,
             state,
             turn: self.encounter.turn.clone(),
             log: self.encounter.log.clone(),
@@ -271,28 +270,25 @@ impl RpgAuthoritySession {
     pub fn restore_checkpoint(checkpoint: RpgSessionCheckpoint) -> Result<Self, RpgReplayFailure> {
         validate_checkpoint_schema(&checkpoint)?;
         validate_artifact_binding(&checkpoint.artifact_binding, &checkpoint.artifact)?;
-        let bundle =
-            load_compiled_ruleset_artifact(checkpoint.artifact.clone()).map_err(|failure| {
-                RpgReplayFailure {
-                    diagnostics: failure
-                        .diagnostics
-                        .into_iter()
-                        .map(|diagnostic| {
-                            let code = checkpoint_artifact_mismatch_code(
-                                &diagnostic.path,
-                                &diagnostic.code,
-                            );
-                            RpgReplayDiagnostic {
-                                code: code.to_owned(),
-                                path: diagnostic.path,
-                                message: format!("{}: {}", diagnostic.code, diagnostic.message),
-                                expected: None,
-                                actual: None,
-                            }
-                        })
-                        .collect(),
-                }
-            })?;
+        let bundle = load_compiled_play_bundle(checkpoint.artifact.clone()).map_err(|failure| {
+            RpgReplayFailure {
+                diagnostics: failure
+                    .diagnostics
+                    .into_iter()
+                    .map(|diagnostic| {
+                        let code =
+                            checkpoint_artifact_mismatch_code(&diagnostic.path, &diagnostic.code);
+                        RpgReplayDiagnostic {
+                            code: code.to_owned(),
+                            path: diagnostic.path,
+                            message: format!("{}: {}", diagnostic.code, diagnostic.message),
+                            expected: None,
+                            actual: None,
+                        }
+                    })
+                    .collect(),
+            }
+        })?;
         let expected_versions = replay_versions(bundle.artifact());
         if checkpoint.schemas != expected_versions {
             return Err(replay_mismatch(
@@ -303,17 +299,17 @@ impl RpgAuthoritySession {
             ));
         }
         let state = restore_state(&checkpoint.state)?;
-        let actual_setup_fingerprint = encounter_setup_fingerprint(&checkpoint.setup)?;
-        if checkpoint.setup_fingerprint != actual_setup_fingerprint {
+        let actual_scenario_fingerprint = scenario_fingerprint(&checkpoint.scenario)?;
+        if checkpoint.scenario_fingerprint != actual_scenario_fingerprint {
             return Err(replay_mismatch(
                 "RPG_CHECKPOINT_SETUP_FINGERPRINT_MISMATCH",
-                "$.setupFingerprint",
-                &checkpoint.setup_fingerprint,
-                &actual_setup_fingerprint,
+                "$.scenarioFingerprint",
+                &checkpoint.scenario_fingerprint,
+                &actual_scenario_fingerprint,
             ));
         }
         let actual_hash = session_state_hash(
-            &checkpoint.setup,
+            &checkpoint.scenario,
             &checkpoint.state,
             &checkpoint.turn,
             &checkpoint.log,
@@ -329,7 +325,7 @@ impl RpgAuthoritySession {
             ));
         }
         let mut restored =
-            Self::from_setup(bundle, checkpoint.setup.clone()).map_err(|failure| {
+            Self::from_scenario(bundle, checkpoint.scenario.clone()).map_err(|failure| {
                 RpgReplayFailure {
                     diagnostics: failure
                         .diagnostics
@@ -435,7 +431,7 @@ impl RpgAuthoritySession {
         let state = portable_state(&self.state);
         let phase = checkpoint_phase(self);
         session_state_hash(
-            &self.encounter.setup,
+            &self.encounter.scenario,
             &state,
             &self.encounter.turn,
             &self.encounter.log,
@@ -452,7 +448,7 @@ impl RpgAuthoritySession {
             replay_failure(
                 "RPG_REPLAY_ARTIFACT_REQUIRED",
                 "$.artifact",
-                "recording requires a session created from a compiled ruleset artifact",
+                "recording requires a session created from a compiled PlayBundle",
             )
         })?;
         let schemas = replay_versions(artifact);
@@ -513,15 +509,15 @@ impl RpgAuthoritySession {
 
 pub fn classify_checkpoint_artifact(
     checkpoint: &RpgSessionCheckpoint,
-    candidate: &CompiledRulesetArtifact,
+    candidate: &CompiledPlayBundleArtifact,
 ) -> RpgArtifactCompatibilityReport {
     let historical = &checkpoint.artifact;
     let mut diagnostics = Vec::new();
-    if historical.source_packages != candidate.source_packages {
+    if historical.content_packs != candidate.content_packs {
         diagnostics.push(compatibility_diagnostic(
             "RPG_REPLAY_PACKAGE_SET_CHANGED",
-            "$.artifact.sourcePackages",
-            "exact source package identities, versions, or fingerprints changed",
+            "$.artifact.contentPacks",
+            "exact content pack identities, versions, or fingerprints changed",
         ));
     }
     if historical.dependency_lock != candidate.dependency_lock {
@@ -600,23 +596,23 @@ fn replay_entry_schema() -> RpgPortableSchemaIdentity {
     }
 }
 
-fn replay_versions(artifact: &CompiledRulesetArtifact) -> RpgReplaySchemaVersions {
+fn replay_versions(artifact: &CompiledPlayBundleArtifact) -> RpgReplaySchemaVersions {
     RpgReplaySchemaVersions {
         checkpoint: RPG_CHECKPOINT_SCHEMA_VERSION,
         replay_entry: RPG_REPLAY_ENTRY_SCHEMA_VERSION,
         event: RPG_EVENT_SCHEMA_VERSION,
-        operations: artifact.required_operations.clone(),
-        capabilities: artifact.required_capabilities.clone(),
+        operations: artifact.content_requirements.operations.clone(),
+        capabilities: artifact.content_requirements.capabilities.clone(),
     }
 }
 
-fn artifact_binding(artifact: &CompiledRulesetArtifact) -> RpgReplayArtifactBinding {
+fn artifact_binding(artifact: &CompiledPlayBundleArtifact) -> RpgReplayArtifactBinding {
     RpgReplayArtifactBinding {
         artifact_schema: artifact.artifact_schema.clone(),
         artifact_id: artifact.artifact_id.clone(),
-        composition: artifact.composition_identity.clone(),
-        language: artifact.language_identity.clone(),
-        source_packages: artifact.source_packages.clone(),
+        play_bundle: artifact.play_bundle_identity.clone(),
+        ruleset: artifact.ruleset.identity.clone(),
+        content_packs: artifact.content_packs.clone(),
         dependency_lock: artifact.dependency_lock.clone(),
         fingerprints: artifact.fingerprints.clone(),
         definitions: artifact
@@ -632,7 +628,7 @@ fn artifact_binding(artifact: &CompiledRulesetArtifact) -> RpgReplayArtifactBind
 
 fn validate_artifact_binding(
     expected: &RpgReplayArtifactBinding,
-    artifact: &CompiledRulesetArtifact,
+    artifact: &CompiledPlayBundleArtifact,
 ) -> Result<(), RpgReplayFailure> {
     let actual = artifact_binding(artifact);
     if expected.artifact_schema != actual.artifact_schema {
@@ -651,28 +647,28 @@ fn validate_artifact_binding(
             &actual.artifact_id,
         ));
     }
-    if expected.composition != actual.composition {
+    if expected.play_bundle != actual.play_bundle {
         return Err(replay_mismatch(
-            "RPG_CHECKPOINT_COMPOSITION_MISMATCH",
-            "$.artifact.compositionIdentity",
-            &expected.composition,
-            &actual.composition,
+            "RPG_CHECKPOINT_PLAY_BUNDLE_MISMATCH",
+            "$.artifact.playBundle",
+            &expected.play_bundle,
+            &actual.play_bundle,
         ));
     }
-    if expected.language != actual.language {
+    if expected.ruleset != actual.ruleset {
         return Err(replay_mismatch(
-            "RPG_CHECKPOINT_LANGUAGE_MISMATCH",
-            "$.artifact.languageIdentity",
-            &expected.language,
-            &actual.language,
+            "RPG_CHECKPOINT_RULESET_MISMATCH",
+            "$.artifact.ruleset",
+            &expected.ruleset,
+            &actual.ruleset,
         ));
     }
-    if expected.source_packages != actual.source_packages {
+    if expected.content_packs != actual.content_packs {
         return Err(replay_mismatch(
-            "RPG_CHECKPOINT_PACKAGE_MISMATCH",
-            "$.artifact.sourcePackages",
-            &expected.source_packages,
-            &actual.source_packages,
+            "RPG_CHECKPOINT_CONTENT_PACK_MISMATCH",
+            "$.artifact.contentPacks",
+            &expected.content_packs,
+            &actual.content_packs,
         ));
     }
     if expected.dependency_lock != actual.dependency_lock {
@@ -929,8 +925,8 @@ fn replay_boundary(session: &RpgAuthoritySession) -> Result<RpgReplayBoundary, R
     Ok(RpgReplayBoundary {
         revision: session.state.revision(),
         accepted_random_position: session.accepted_random_values,
-        setup_fingerprint: encounter_setup_fingerprint(&session.encounter.setup)?,
-        random_source: session.encounter.setup.random_source.clone(),
+        scenario_fingerprint: scenario_fingerprint(&session.encounter.scenario)?,
+        random_source: session.encounter.scenario.random_source.clone(),
         turn: session.encounter.turn.clone(),
         phase,
         state_hash: session.state_hash()?,
@@ -940,7 +936,7 @@ fn replay_boundary(session: &RpgAuthoritySession) -> Result<RpgReplayBoundary, R
 #[derive(Serialize)]
 #[serde(rename_all = "camelCase")]
 struct SessionHashInput<'a> {
-    setup: &'a RpgEncounterSetup,
+    scenario: &'a RpgScenario,
     state: &'a RpgPortableCapabilityState,
     turn: &'a RpgTurnState,
     log: &'a [RpgEncounterLogEntry],
@@ -949,7 +945,7 @@ struct SessionHashInput<'a> {
 }
 
 fn session_state_hash(
-    setup: &RpgEncounterSetup,
+    scenario: &RpgScenario,
     state: &RpgPortableCapabilityState,
     turn: &RpgTurnState,
     log: &[RpgEncounterLogEntry],
@@ -957,7 +953,7 @@ fn session_state_hash(
     phase: &RpgCheckpointPhase,
 ) -> Result<StateFingerprint, RpgReplayFailure> {
     let bytes = serde_json::to_vec(&SessionHashInput {
-        setup,
+        scenario,
         state,
         turn,
         log,
@@ -982,14 +978,12 @@ fn session_state_hash(
     })
 }
 
-fn encounter_setup_fingerprint(
-    setup: &RpgEncounterSetup,
-) -> Result<StateFingerprint, RpgReplayFailure> {
-    let bytes = serde_json::to_vec(setup).map_err(|error| {
+fn scenario_fingerprint(scenario: &RpgScenario) -> Result<StateFingerprint, RpgReplayFailure> {
+    let bytes = serde_json::to_vec(scenario).map_err(|error| {
         replay_failure(
             "RPG_CHECKPOINT_SETUP_HASH_FAILED",
-            "$.setup",
-            format!("canonical setup hashing failed: {error}"),
+            "$.scenario",
+            format!("canonical scenario hashing failed: {error}"),
         )
     })?;
     let mut hash = 0xcbf29ce484222325u64;
@@ -998,7 +992,7 @@ fn encounter_setup_fingerprint(
         hash = hash.wrapping_mul(0x100000001b3);
     }
     Ok(StateFingerprint {
-        algorithm: "fnv1a64.rpg-encounter-setup.v1".to_owned(),
+        algorithm: "fnv1a64.rpg-scenario.v1".to_owned(),
         value: format!("{hash:016x}"),
     })
 }
@@ -1032,12 +1026,12 @@ fn compare_boundary(
             &actual.accepted_random_position,
         ));
     }
-    if expected.setup_fingerprint != actual.setup_fingerprint {
+    if expected.scenario_fingerprint != actual.scenario_fingerprint {
         return Err(replay_mismatch(
             "RPG_REPLAY_SETUP_MISMATCH",
-            format!("{path}.setupFingerprint"),
-            &expected.setup_fingerprint,
-            &actual.setup_fingerprint,
+            format!("{path}.scenarioFingerprint"),
+            &expected.scenario_fingerprint,
+            &actual.scenario_fingerprint,
         ));
     }
     if expected.random_source != actual.random_source {
@@ -1193,7 +1187,7 @@ fn compatibility_diagnostic(code: &str, path: &str, message: &str) -> RpgReplayD
 }
 
 fn checkpoint_artifact_mismatch_code(path: &str, compiler_code: &str) -> &'static str {
-    if path.contains("sourcePackages") {
+    if path.contains("contentPacks") {
         "RPG_CHECKPOINT_PACKAGE_MISMATCH"
     } else if path.contains("dependencyLock") {
         "RPG_CHECKPOINT_LOCK_MISMATCH"
@@ -1248,16 +1242,18 @@ mod tests {
     use std::collections::BTreeSet;
 
     use rpg_compiler::{
-        compile_prepared_ruleset, materialized_definition_fingerprint, CompiledRulesetBundle,
+        compile_prepared_play_bundle, materialized_definition_fingerprint, CompiledPlayBundle,
     };
     use rpg_core::{GridPosition, RpgDomainEvent, RpgIntent, Team};
     use rpg_ir::{
-        CompiledRulesetIdentity, MaterializedRulesetDefinition, MaterializedRulesetDefinitionKind,
-        MaterializedRulesetVisibility, PreparedRulesetCompilation, ResolvedRulesetSourcePackage,
-        RulesetArtifactSchema, RulesetDefinitionProvenance, RulesetDependencyLockEntry,
-        RulesetDependencyRelationship, RulesetExtensionPolicy, RulesetRelationshipKind,
-        RulesetRelationshipProvenance, RulesetSourceLocation, VersionedRulesetRequirement,
-        PREPARED_RULESET_IDENTITY, RULESET_ARTIFACT_MAJOR,
+        ContentDefinitionProvenance, ContentExtensionPolicy, ContentPackDependencyLockEntry,
+        ContentPackDependencyRelationship, ContentPackRequirements, ContentRelationshipKind,
+        ContentRelationshipProvenance, ContentSourceLocation, MaterializedContentDefinition,
+        MaterializedContentDefinitionKind, MaterializedContentVisibility, PlayBundleArtifactSchema,
+        PreparedPlayBundle, ResolvedContentPack, RpgVersionedIdentity, Ruleset, RulesetModels,
+        RulesetNumericDomain, RulesetProvisions, RulesetSchema, RulesetValueContract,
+        RulesetValueKind, VersionedRpgRequirement, PLAY_BUNDLE_ARTIFACT_MAJOR,
+        PREPARED_PLAY_BUNDLE_IDENTITY,
     };
     use serde_json::json;
 
@@ -1346,7 +1342,7 @@ mod tests {
         assert_eq!(target.state_hash().unwrap(), target_hash);
 
         let mut setup_mismatch = initial.clone();
-        setup_mismatch.setup.board.width = setup_mismatch.setup.board.width.saturating_add(1);
+        setup_mismatch.scenario.board.width = setup_mismatch.scenario.board.width.saturating_add(1);
         let setup_error = target.replace_from_checkpoint(setup_mismatch).unwrap_err();
         assert_eq!(
             setup_error.diagnostics[0].code,
@@ -1358,14 +1354,14 @@ mod tests {
         lock_mismatch
             .artifact
             .dependency_lock
-            .push(RulesetDependencyLockEntry {
+            .push(ContentPackDependencyLockEntry {
                 requester: "replay.test@1.0.0".to_owned(),
                 package_id: "support.test".to_owned(),
                 requested_version: "^1.0.0".to_owned(),
                 resolved_version: "1.0.0".to_owned(),
                 source_fingerprint: "fnv1a64:2222222222222222".to_owned(),
                 import_as: "support".to_owned(),
-                relationship: RulesetDependencyRelationship::DependsOn,
+                relationship: ContentPackDependencyRelationship::DependsOn,
             });
         let lock_error = target.replace_from_checkpoint(lock_mismatch).unwrap_err();
         assert_eq!(
@@ -1406,12 +1402,12 @@ mod tests {
         assert_eq!(target.state_hash().unwrap(), target_hash);
 
         let mut package_mismatch = initial.clone();
-        package_mismatch.artifact.source_packages[0].version = "9.0.0".to_owned();
+        package_mismatch.artifact.content_packs[0].version = "9.0.0".to_owned();
         let package_error = target
             .replace_from_checkpoint(package_mismatch)
             .unwrap_err();
         assert_eq!(
-            package_error.diagnostics[0].code, "RPG_CHECKPOINT_PACKAGE_MISMATCH",
+            package_error.diagnostics[0].code, "RPG_CHECKPOINT_CONTENT_PACK_MISMATCH",
             "{package_error:?}"
         );
         assert_eq!(target.state_hash().unwrap(), target_hash);
@@ -1540,8 +1536,8 @@ mod tests {
         });
         second_setup.turn.initiative_order.push("scout".to_owned());
 
-        let mut first = RpgAuthoritySession::from_setup(bundle.clone(), first_setup).unwrap();
-        let second = RpgAuthoritySession::from_setup(bundle, second_setup).unwrap();
+        let mut first = RpgAuthoritySession::from_scenario(bundle.clone(), first_setup).unwrap();
+        let second = RpgAuthoritySession::from_scenario(bundle, second_setup).unwrap();
         assert_eq!(first.encounter_view().participants.len(), 2);
         assert_eq!(second.encounter_view().participants.len(), 3);
         assert_eq!(second.encounter_view().board.cells.len(), 1);
@@ -1783,10 +1779,10 @@ mod tests {
     }
 
     #[test]
-    fn invalid_setup_reports_all_authority_diagnostics_before_session_exists() {
+    fn invalid_scenario_reports_all_authority_diagnostics_before_session_exists() {
         let bundle = artifact_bundle();
         let mut invalid = standard_setup(&bundle);
-        invalid.artifact_id = "different-artifact".to_owned();
+        invalid.play_bundle_id = "different-artifact".to_owned();
         invalid.participants[0].definition_ids = vec!["action.missing".to_owned()];
         invalid.board.cells.push(crate::RpgCellSetup {
             id: "cell.blocked".to_owned(),
@@ -1808,35 +1804,45 @@ mod tests {
                 id: "focus".to_owned(),
                 value: BoundedValue { current: 1, max: 1 },
             });
+        invalid.participants[1]
+            .capabilities
+            .push(crate::RpgInitialCapability::Stat {
+                id: "unknown-stat".to_owned(),
+                value: 10,
+            });
         for capability in &mut invalid.participants[0].capabilities {
             match capability {
                 crate::RpgInitialCapability::Vitality { value } => value.current = 0,
                 crate::RpgInitialCapability::Modifier {
                     remaining_turns, ..
                 } => *remaining_turns = rpg_core::MAXIMUM_RPG_MODIFIER_TURNS + 1,
+                crate::RpgInitialCapability::Defense { value, .. } => *value = 101,
                 _ => {}
             }
         }
         invalid.turn.initiative_order = vec!["hero".to_owned(), "hero".to_owned()];
 
-        let failure = RpgAuthoritySession::from_setup(bundle.clone(), invalid).unwrap_err();
+        let failure = RpgAuthoritySession::from_scenario(bundle.clone(), invalid).unwrap_err();
         let codes = failure
             .diagnostics
             .iter()
             .map(|diagnostic| diagnostic.code.as_str())
             .collect::<BTreeSet<_>>();
-        assert!(codes.contains("RPG_SETUP_ARTIFACT_MISMATCH"));
-        assert!(codes.contains("RPG_SETUP_DEFINITION_UNKNOWN"));
-        assert!(codes.contains("RPG_SETUP_POSITION_OUT_OF_BOUNDS"));
-        assert!(codes.contains("RPG_SETUP_POSITION_BLOCKED"));
-        assert!(codes.contains("RPG_SETUP_CAPABILITY_OWNER_INCOMPATIBLE"));
-        assert!(codes.contains("RPG_SETUP_MODIFIER_INVALID"));
-        assert!(codes.contains("RPG_SETUP_CURRENT_ACTOR_INACTIVE"));
-        assert!(codes.contains("RPG_SETUP_TURN_PARTICIPANT_DUPLICATE"));
-        assert!(codes.contains("RPG_SETUP_TURN_ORDER_INCOMPLETE"));
+        assert!(codes.contains("RPG_SCENARIO_PLAY_BUNDLE_MISMATCH"));
+        assert!(codes.contains("RPG_SCENARIO_DEFINITION_UNKNOWN"));
+        assert!(codes.contains("RPG_SCENARIO_POSITION_OUT_OF_BOUNDS"));
+        assert!(codes.contains("RPG_SCENARIO_POSITION_BLOCKED"));
+        assert!(codes.contains("RPG_SCENARIO_CAPABILITY_OWNER_INCOMPATIBLE"));
+        assert!(codes.contains("RPG_SCENARIO_CONTENT_VALUE_UNKNOWN"));
+        assert!(codes.contains("RPG_SCENARIO_RULESET_VALUE_UNKNOWN"));
+        assert!(codes.contains("RPG_SCENARIO_RULESET_VALUE_OUT_OF_DOMAIN"));
+        assert!(codes.contains("RPG_SCENARIO_MODIFIER_INVALID"));
+        assert!(codes.contains("RPG_SCENARIO_CURRENT_ACTOR_INACTIVE"));
+        assert!(codes.contains("RPG_SCENARIO_TURN_PARTICIPANT_DUPLICATE"));
+        assert!(codes.contains("RPG_SCENARIO_TURN_ORDER_INCOMPLETE"));
 
         let valid = standard_setup(&bundle);
-        let session = RpgAuthoritySession::from_setup(bundle, valid).unwrap();
+        let session = RpgAuthoritySession::from_scenario(bundle, valid).unwrap();
         assert_eq!(session.state().revision(), 0);
     }
 
@@ -1844,7 +1850,7 @@ mod tests {
     fn automatic_source_follows_the_selected_random_branch_and_replays_evidence() {
         let mut session = artifact_session();
         let initial = session.checkpoint().unwrap();
-        let binding = session.setup().random_source.clone();
+        let binding = session.scenario().random_source.clone();
         let check_request = required_request(session.submit(RpgAuthorityCommand {
             expected_revision: 0,
             intent: RpgIntent {
@@ -2012,22 +2018,22 @@ mod tests {
             .expect("authority rejection contains an exact random request")
     }
 
-    fn artifact_bundle() -> CompiledRulesetBundle {
-        let source_location = RulesetSourceLocation {
+    fn artifact_bundle() -> CompiledPlayBundle {
+        let source_location = ContentSourceLocation {
             module: "actions/replay.rs".to_owned(),
             declaration: "reactiveStrike".to_owned(),
         };
-        let provenance = RulesetDefinitionProvenance {
+        let provenance = ContentDefinitionProvenance {
             definition_id: "action.reactive".to_owned(),
             package_id: "replay.test".to_owned(),
             package_version: "1.0.0".to_owned(),
             source: source_location.clone(),
         };
-        let mut action = MaterializedRulesetDefinition {
+        let mut action = MaterializedContentDefinition {
             id: "action.reactive".to_owned(),
-            kind: MaterializedRulesetDefinitionKind::Action,
-            visibility: MaterializedRulesetVisibility::Exported,
-            extension_policy: RulesetExtensionPolicy::Sealed,
+            kind: MaterializedContentDefinitionKind::Action,
+            visibility: MaterializedContentVisibility::Exported,
+            extension_policy: ContentExtensionPolicy::Sealed,
             semantic: json!({
                 "id": "action.reactive",
                 "name": "Reactive strike",
@@ -2056,20 +2062,20 @@ mod tests {
         };
         action.fingerprint = materialized_definition_fingerprint(&action).unwrap();
 
-        let support_provenance = RulesetDefinitionProvenance {
+        let support_provenance = ContentDefinitionProvenance {
             definition_id: "catalog.damage.force".to_owned(),
             package_id: "replay.test".to_owned(),
             package_version: "1.0.0".to_owned(),
-            source: RulesetSourceLocation {
+            source: ContentSourceLocation {
                 module: "catalogs/replay.rs".to_owned(),
                 declaration: "force".to_owned(),
             },
         };
-        let mut support = MaterializedRulesetDefinition {
+        let mut support = MaterializedContentDefinition {
             id: "catalog.damage.force".to_owned(),
-            kind: MaterializedRulesetDefinitionKind::Support,
-            visibility: MaterializedRulesetVisibility::Exported,
-            extension_policy: RulesetExtensionPolicy::Sealed,
+            kind: MaterializedContentDefinitionKind::Support,
+            visibility: MaterializedContentVisibility::Exported,
+            extension_policy: ContentExtensionPolicy::Sealed,
             semantic: json!({"catalog": "damageType", "id": "force"}),
             presentation: json!({"label": "Force"}),
             references: Vec::new(),
@@ -2078,20 +2084,20 @@ mod tests {
         };
         support.fingerprint = materialized_definition_fingerprint(&support).unwrap();
 
-        let guard_provenance = RulesetDefinitionProvenance {
+        let guard_provenance = ContentDefinitionProvenance {
             definition_id: "catalog.defense.guard".to_owned(),
             package_id: "replay.test".to_owned(),
             package_version: "1.0.0".to_owned(),
-            source: RulesetSourceLocation {
+            source: ContentSourceLocation {
                 module: "catalogs/replay.rs".to_owned(),
                 declaration: "guard".to_owned(),
             },
         };
-        let mut guard = MaterializedRulesetDefinition {
+        let mut guard = MaterializedContentDefinition {
             id: "catalog.defense.guard".to_owned(),
-            kind: MaterializedRulesetDefinitionKind::Support,
-            visibility: MaterializedRulesetVisibility::Exported,
-            extension_policy: RulesetExtensionPolicy::Sealed,
+            kind: MaterializedContentDefinitionKind::Support,
+            visibility: MaterializedContentVisibility::Exported,
+            extension_policy: ContentExtensionPolicy::Sealed,
             semantic: json!({"catalog": "defense", "id": "guard"}),
             presentation: json!({"label": "Guard"}),
             references: Vec::new(),
@@ -2100,105 +2106,197 @@ mod tests {
         };
         guard.fingerprint = materialized_definition_fingerprint(&guard).unwrap();
 
+        let modifier_provenance = ContentDefinitionProvenance {
+            definition_id: "catalog.modifier.impeded".to_owned(),
+            package_id: "replay.test".to_owned(),
+            package_version: "1.0.0".to_owned(),
+            source: ContentSourceLocation {
+                module: "catalogs/replay.rs".to_owned(),
+                declaration: "impeded".to_owned(),
+            },
+        };
+        let mut modifier = MaterializedContentDefinition {
+            id: "catalog.modifier.impeded".to_owned(),
+            kind: MaterializedContentDefinitionKind::Support,
+            visibility: MaterializedContentVisibility::Exported,
+            extension_policy: ContentExtensionPolicy::Sealed,
+            semantic: json!({"catalog": "modifier", "id": "impeded"}),
+            presentation: json!({"label": "Impeded"}),
+            references: Vec::new(),
+            provenance: modifier_provenance.clone(),
+            fingerprint: String::new(),
+        };
+        modifier.fingerprint = materialized_definition_fingerprint(&modifier).unwrap();
+
         let operations = vec![
-            VersionedRulesetRequirement {
+            VersionedRpgRequirement {
                 id: "operation.damage".to_owned(),
                 version: 1,
             },
-            VersionedRulesetRequirement {
+            VersionedRpgRequirement {
                 id: "operation.openReaction".to_owned(),
                 version: 1,
             },
         ];
         let capabilities = vec![
-            VersionedRulesetRequirement {
+            VersionedRpgRequirement {
                 id: "capability.defenses".to_owned(),
                 version: 1,
             },
-            VersionedRulesetRequirement {
+            VersionedRpgRequirement {
                 id: "capability.modifiers".to_owned(),
                 version: 1,
             },
-            VersionedRulesetRequirement {
+            VersionedRpgRequirement {
                 id: "capability.random".to_owned(),
                 version: 1,
             },
-            VersionedRulesetRequirement {
+            VersionedRpgRequirement {
                 id: "capability.reactions".to_owned(),
                 version: 1,
             },
-            VersionedRulesetRequirement {
+            VersionedRpgRequirement {
                 id: "capability.vitality".to_owned(),
                 version: 1,
             },
         ];
         let package_identity = "replay.test@1.0.0".to_owned();
-        let prepared = PreparedRulesetCompilation {
-            schema: RulesetArtifactSchema {
-                identity: PREPARED_RULESET_IDENTITY.to_owned(),
-                major: RULESET_ARTIFACT_MAJOR,
+        let prepared = PreparedPlayBundle {
+            schema: PlayBundleArtifactSchema {
+                identity: PREPARED_PLAY_BUNDLE_IDENTITY.to_owned(),
+                major: PLAY_BUNDLE_ARTIFACT_MAJOR,
             },
-            composition_identity: CompiledRulesetIdentity {
+            play_bundle_identity: RpgVersionedIdentity {
                 id: "replay.test".to_owned(),
                 version: "1.0.0".to_owned(),
             },
-            language_identity: CompiledRulesetIdentity {
-                id: "asha-rpg".to_owned(),
-                version: "1.0.0".to_owned(),
+            ruleset: Ruleset {
+                schema: RulesetSchema {
+                    identity: "asha.rpg.ruleset".to_owned(),
+                    major: 1,
+                },
+                identity: RpgVersionedIdentity {
+                    id: "replay.rules".to_owned(),
+                    version: "1.0.0".to_owned(),
+                },
+                language: RpgVersionedIdentity {
+                    id: "asha-rpg".to_owned(),
+                    version: "1.0.0".to_owned(),
+                },
+                models: RulesetModels {
+                    checks: VersionedRpgRequirement {
+                        id: "check.d20-roll-over".to_owned(),
+                        version: 1,
+                    },
+                    turns: VersionedRpgRequirement {
+                        id: "turn.ordered-one-action".to_owned(),
+                        version: 1,
+                    },
+                    reactions: VersionedRpgRequirement {
+                        id: "reaction.before-damage-choice".to_owned(),
+                        version: 1,
+                    },
+                    action_economy: VersionedRpgRequirement {
+                        id: "action-economy.one-action-plus-reaction".to_owned(),
+                        version: 1,
+                    },
+                },
+                provides: RulesetProvisions {
+                    operations: operations.clone(),
+                    capabilities: capabilities.clone(),
+                    values: vec![
+                        RulesetValueContract {
+                            kind: RulesetValueKind::Defense,
+                            id: "catalog.defense.guard".to_owned(),
+                            label: "Guard action reference".to_owned(),
+                            numeric_domain_id: "defense".to_owned(),
+                        },
+                        RulesetValueContract {
+                            kind: RulesetValueKind::Defense,
+                            id: "guard".to_owned(),
+                            label: "Guard".to_owned(),
+                            numeric_domain_id: "defense".to_owned(),
+                        },
+                    ],
+                    numeric_domains: vec![RulesetNumericDomain {
+                        id: "defense".to_owned(),
+                        minimum: 0,
+                        maximum: 100,
+                    }],
+                },
             },
-            source_packages: vec![ResolvedRulesetSourcePackage {
+            content_packs: vec![ResolvedContentPack {
                 id: "replay.test".to_owned(),
                 version: "1.0.0".to_owned(),
                 source_fingerprint: "fnv1a64:1111111111111111".to_owned(),
             }],
             dependency_lock: Vec::new(),
-            required_operations: operations,
-            required_capabilities: capabilities,
+            content_requirements: ContentPackRequirements {
+                operations,
+                capabilities,
+                values: vec![rpg_ir::ContentValueRequirement {
+                    kind: RulesetValueKind::Defense,
+                    id: "catalog.defense.guard".to_owned(),
+                }],
+                numeric_domains: Vec::new(),
+            },
             exported_roots: vec![
                 "action.reactive".to_owned(),
                 "catalog.damage.force".to_owned(),
                 "catalog.defense.guard".to_owned(),
+                "catalog.modifier.impeded".to_owned(),
             ],
-            materialized_definitions: vec![action, support, guard],
+            materialized_definitions: vec![action, support, guard, modifier],
             compiled_policy_bindings: Vec::new(),
-            definition_provenance: vec![provenance, support_provenance, guard_provenance],
+            definition_provenance: vec![
+                provenance,
+                support_provenance,
+                guard_provenance,
+                modifier_provenance,
+            ],
             definition_commitments: Vec::new(),
             relationships: vec![
-                RulesetRelationshipProvenance {
-                    kind: RulesetRelationshipKind::Exports,
+                ContentRelationshipProvenance {
+                    kind: ContentRelationshipKind::Exports,
                     source: package_identity.clone(),
                     target: "action.reactive".to_owned(),
                     order: 0,
                 },
-                RulesetRelationshipProvenance {
-                    kind: RulesetRelationshipKind::Exports,
+                ContentRelationshipProvenance {
+                    kind: ContentRelationshipKind::Exports,
                     source: package_identity.clone(),
                     target: "catalog.damage.force".to_owned(),
                     order: 1,
                 },
-                RulesetRelationshipProvenance {
-                    kind: RulesetRelationshipKind::Exports,
-                    source: package_identity,
+                ContentRelationshipProvenance {
+                    kind: ContentRelationshipKind::Exports,
+                    source: package_identity.clone(),
                     target: "catalog.defense.guard".to_owned(),
                     order: 2,
+                },
+                ContentRelationshipProvenance {
+                    kind: ContentRelationshipKind::Exports,
+                    source: package_identity,
+                    target: "catalog.modifier.impeded".to_owned(),
+                    order: 3,
                 },
             ],
             derivation_provenance: Vec::new(),
             overlay_provenance: Vec::new(),
         };
-        compile_prepared_ruleset(prepared).expect("prepared replay artifact compiles")
+        compile_prepared_play_bundle(prepared).expect("prepared replay artifact compiles")
     }
 
     fn artifact_session() -> RpgAuthoritySession {
         let bundle = artifact_bundle();
-        let setup = standard_setup(&bundle);
-        RpgAuthoritySession::from_setup(bundle, setup).expect("replay setup is valid")
+        let scenario = standard_setup(&bundle);
+        RpgAuthoritySession::from_scenario(bundle, scenario).expect("replay scenario is valid")
     }
 
-    fn standard_setup(bundle: &CompiledRulesetBundle) -> RpgEncounterSetup {
-        RpgEncounterSetup {
-            schema: RpgEncounterSetup::schema(),
-            artifact_id: bundle.artifact().artifact_id.clone(),
+    fn standard_setup(bundle: &CompiledPlayBundle) -> RpgScenario {
+        RpgScenario {
+            schema: RpgScenario::schema(),
+            play_bundle_id: bundle.artifact().artifact_id.clone(),
             board: crate::RpgBoardSetup {
                 width: 4,
                 height: 4,

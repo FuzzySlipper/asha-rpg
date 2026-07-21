@@ -2,24 +2,24 @@ import {
   createLowLevelCatalogReference,
 } from './catalogs.js';
 import type {
-  RulesetCatalogCategory,
-  RulesetCatalogReference,
-  RulesetCatalogValue,
+  ContentCatalogCategory,
+  ContentCatalogReference,
+  ContentCatalogValue,
 } from './catalogs.js';
 
 /**
  * Explicit compiler-fixture escape hatch for references that do not come from
- * defineRulesetCatalog. The owner package remains mandatory and participates
+ * defineContentCatalog. The owner package remains mandatory and participates
  * in normal dependency resolution; this never performs first-match lookup.
  */
 export function lowLevelCatalogReference<
-  const Category extends RulesetCatalogCategory,
+  const Category extends ContentCatalogCategory,
   const PackageId extends string,
 >(input: {
   readonly category: Category;
   readonly packageId: PackageId;
   readonly definitionId: string;
-}): RulesetCatalogReference<Category, PackageId> {
+}): ContentCatalogReference<Category, PackageId> {
   return createLowLevelCatalogReference(input);
 }
 
@@ -29,14 +29,14 @@ export function lowLevelCatalogReference<
  * consumers cannot erase ownership accidentally at the call site.
  */
 export function unsafeNormalizedCatalogId<
-  const Category extends RulesetCatalogCategory,
+  const Category extends ContentCatalogCategory,
   const PackageId extends string,
 >(input: {
   readonly category: Category;
   readonly packageId: PackageId;
   readonly definitionId: string;
-}): RulesetCatalogValue<Category> {
+}): ContentCatalogValue<Category> {
   return createLowLevelCatalogReference(input).definitionId;
 }
 
-export type { RulesetCatalogValue } from './catalogs.js';
+export type { ContentCatalogValue } from './catalogs.js';

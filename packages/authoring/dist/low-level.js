@@ -1,7 +1,7 @@
 import { createLowLevelCatalogReference, } from './catalogs.js';
 /**
  * Explicit compiler-fixture escape hatch for references that do not come from
- * defineRulesetCatalog. The owner package remains mandatory and participates
+ * defineContentCatalog. The owner package remains mandatory and participates
  * in normal dependency resolution; this never performs first-match lookup.
  */
 export function lowLevelCatalogReference(input) {

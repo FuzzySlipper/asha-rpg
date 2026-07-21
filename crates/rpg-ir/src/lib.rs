@@ -1,11 +1,11 @@
-//! Portable normalized RPG language and compiled ruleset artifact contracts.
+//! Portable normalized RPG language, Ruleset, and compiled PlayBundle contracts.
 //!
 //! This crate exposes the two data representations that cross the Rust
 //! authority boundary. It does not expose an alternate provider, module, or
 //! action-definition model.
 
 mod normalized;
-mod ruleset_artifact;
+mod play_bundle_artifact;
 
 pub use normalized::*;
-pub use ruleset_artifact::*;
+pub use play_bundle_artifact::*;

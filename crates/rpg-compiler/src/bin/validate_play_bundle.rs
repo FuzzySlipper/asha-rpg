@@ -4,8 +4,8 @@ fn main() {
     let mut source = Vec::new();
     std::io::stdin()
         .read_to_end(&mut source)
-        .expect("read compiled ruleset artifact from stdin");
-    match rpg_compiler::load_compiled_ruleset_artifact_json(&source) {
+        .expect("read compiled PlayBundle artifact from stdin");
+    match rpg_compiler::load_compiled_play_bundle_json(&source) {
         Ok(bundle) => println!(
             "accepted {} definitions={}",
             bundle.artifact().artifact_id,

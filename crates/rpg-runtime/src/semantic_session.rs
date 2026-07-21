@@ -1,20 +1,20 @@
 use std::{collections::BTreeSet, fmt};
 
-use rpg_compiler::{CompiledRpgRuleset, CompiledRulesetBundle};
+use rpg_compiler::{CompiledPlayBundle, CompiledRpgRules};
 use rpg_core::{
     DeterministicRandomStream, RpgCapabilityState, RpgIntent, RpgModifierTurnChange,
     RpgRandomEvidence, RpgReactionDecision, RpgReactionRequest, RpgResolutionReceipt,
     RpgResolutionRejection, RpgTraceStep,
 };
-use rpg_ir::CompiledRulesetArtifact;
+use rpg_ir::CompiledPlayBundleArtifact;
 use serde::{Deserialize, Serialize};
 
 use crate::encounter::{
     action_view, build_encounter, encounter_outcome, living_intent_rejection, participant_view,
     random_failure, runtime_board_rejection, RpgActionProposal, RpgEncounterAuthority,
-    RpgEncounterOutcomeView, RpgEncounterSetup, RpgEncounterSetupFailure, RpgEncounterView,
-    RpgRandomSource, RpgRandomSourceFailure, RpgReactionProposal, RpgSchemaIdentity,
-    RpgTurnControl, RpgTurnControlProposal, RpgTurnControlView, RPG_ENCOUNTER_VIEW_SCHEMA_ID,
+    RpgEncounterOutcomeView, RpgEncounterView, RpgRandomSource, RpgRandomSourceFailure,
+    RpgReactionProposal, RpgScenario, RpgScenarioFailure, RpgSchemaIdentity, RpgTurnControl,
+    RpgTurnControlProposal, RpgTurnControlView, RPG_ENCOUNTER_VIEW_SCHEMA_ID,
     RPG_ENCOUNTER_VIEW_SCHEMA_VERSION,
 };
 use crate::{RpgReplayEntry, RpgReplayFailure};
@@ -104,8 +104,8 @@ pub(crate) struct PendingTransaction {
 /// reaction transaction.
 #[derive(Debug, Clone)]
 pub struct RpgAuthoritySession {
-    pub(crate) artifact: Option<CompiledRulesetArtifact>,
-    pub(crate) ruleset: CompiledRpgRuleset,
+    pub(crate) artifact: Option<CompiledPlayBundleArtifact>,
+    pub(crate) rules: CompiledRpgRules,
     pub(crate) state: RpgCapabilityState,
     pub(crate) pending: Option<PendingTransaction>,
     pub(crate) accepted_random_values: u64,
@@ -113,14 +113,14 @@ pub struct RpgAuthoritySession {
 }
 
 impl RpgAuthoritySession {
-    pub fn from_setup(
-        bundle: CompiledRulesetBundle,
-        setup: RpgEncounterSetup,
-    ) -> Result<Self, RpgEncounterSetupFailure> {
-        let (state, encounter) = build_encounter(&bundle, setup)?;
+    pub fn from_scenario(
+        bundle: CompiledPlayBundle,
+        scenario: RpgScenario,
+    ) -> Result<Self, RpgScenarioFailure> {
+        let (state, encounter) = build_encounter(&bundle, scenario)?;
         Ok(Self {
             artifact: Some(bundle.artifact().clone()),
-            ruleset: bundle.ruleset().clone(),
+            rules: bundle.rules().clone(),
             state,
             pending: None,
             accepted_random_values: 0,
@@ -128,12 +128,12 @@ impl RpgAuthoritySession {
         })
     }
 
-    pub fn artifact(&self) -> Option<&CompiledRulesetArtifact> {
+    pub fn artifact(&self) -> Option<&CompiledPlayBundleArtifact> {
         self.artifact.as_ref()
     }
 
-    pub fn ruleset(&self) -> &CompiledRpgRuleset {
-        &self.ruleset
+    pub fn rules(&self) -> &CompiledRpgRules {
+        &self.rules
     }
 
     pub fn state(&self) -> &RpgCapabilityState {
@@ -150,8 +150,8 @@ impl RpgAuthoritySession {
         self.accepted_random_values
     }
 
-    pub fn setup(&self) -> &RpgEncounterSetup {
-        &self.encounter.setup
+    pub fn scenario(&self) -> &RpgScenario {
+        &self.encounter.scenario
     }
 
     pub fn turn(&self) -> &crate::RpgTurnState {
@@ -167,7 +167,7 @@ impl RpgAuthoritySession {
             .cloned()
             .unwrap_or_default();
         let actions = self
-            .ruleset
+            .rules
             .actions()
             .filter(|action| action_definitions.contains(&action.id))
             .map(|action| {
@@ -178,7 +178,7 @@ impl RpgAuthoritySession {
                 };
                 let actor_rejection = living_intent_rejection(&self.state, &actor_intent);
                 let candidates = self
-                    .ruleset
+                    .rules
                     .candidate_ids(&self.state, actor_id, &action.id)
                     .unwrap_or_default()
                     .into_iter();
@@ -196,7 +196,7 @@ impl RpgAuthoritySession {
                             }
                             return false;
                         }
-                        match self.ruleset.preflight(&self.state, &intent) {
+                        match self.rules.preflight(&self.state, &intent) {
                             Ok(()) => true,
                             Err(rejection) => {
                                 if first_rejection.is_none() {
@@ -274,8 +274,8 @@ impl RpgAuthoritySession {
                 .unwrap_or_default(),
             state_revision: self.state.revision(),
             accepted_random_position: self.accepted_random_values,
-            random_source: self.encounter.setup.random_source.clone(),
-            board: self.encounter.setup.board.clone(),
+            random_source: self.encounter.scenario.random_source.clone(),
+            board: self.encounter.scenario.board.clone(),
             participants,
             turn: self.encounter.turn.clone(),
             actions,
@@ -348,7 +348,7 @@ impl RpgAuthoritySession {
         let mut staged_state = self.state.clone();
         let mut random = DeterministicRandomStream::new(command.random_values.clone());
         match self
-            .ruleset
+            .rules
             .resolve(&mut staged_state, &mut random, &command.intent)
         {
             Ok(mut receipt) => {
@@ -358,7 +358,7 @@ impl RpgAuthoritySession {
                     ));
                 }
                 if let Some(rejection) =
-                    runtime_board_rejection(&self.encounter.setup.board, &staged_state)
+                    runtime_board_rejection(&self.encounter.scenario.board, &staged_state)
                 {
                     return RpgCommandOutcome::Rejected(rejection);
                 }
@@ -436,7 +436,7 @@ impl RpgAuthoritySession {
             reaction_id: command.reaction_id,
             option_id: command.option_id,
         };
-        match self.ruleset.resolve_with_reaction_decision(
+        match self.rules.resolve_with_reaction_decision(
             &mut staged_state,
             &mut random,
             &transaction.intent,
@@ -449,7 +449,7 @@ impl RpgAuthoritySession {
                     ));
                 }
                 if let Some(rejection) =
-                    runtime_board_rejection(&self.encounter.setup.board, &staged_state)
+                    runtime_board_rejection(&self.encounter.scenario.board, &staged_state)
                 {
                     return RpgCommandOutcome::Rejected(rejection);
                 }
@@ -614,7 +614,7 @@ impl RpgAuthoritySession {
         &self,
         source: &dyn RpgRandomSource,
     ) -> Result<(), RpgAutomaticCommandFailure> {
-        if source.binding() == &self.encounter.setup.random_source {
+        if source.binding() == &self.encounter.scenario.random_source {
             return Ok(());
         }
         Err(RpgAutomaticCommandFailure::RandomSource(random_failure(
@@ -623,18 +623,18 @@ impl RpgAuthoritySession {
             format!(
                 "source binding {:?} does not match encounter binding {:?}",
                 source.binding(),
-                self.encounter.setup.random_source
+                self.encounter.scenario.random_source
             ),
         )))
     }
 
     #[cfg(test)]
-    fn for_test(ruleset: CompiledRpgRuleset, state: RpgCapabilityState) -> Self {
+    fn for_test(rules: CompiledRpgRules, state: RpgCapabilityState) -> Self {
         let participant_ids = state
             .entities()
             .map(|entity| entity.id().to_owned())
             .collect::<Vec<_>>();
-        let action_ids = ruleset.action_ids().map(str::to_owned).collect::<Vec<_>>();
+        let action_ids = rules.action_ids().map(str::to_owned).collect::<Vec<_>>();
         let width = state
             .entities()
             .map(|entity| entity.position().x)
@@ -653,9 +653,9 @@ impl RpgAuthoritySession {
             .cloned()
             .or_else(|| participant_ids.first().cloned())
             .unwrap_or_default();
-        let setup = RpgEncounterSetup {
-            schema: RpgEncounterSetup::schema(),
-            artifact_id: String::new(),
+        let scenario = RpgScenario {
+            schema: RpgScenario::schema(),
+            play_bundle_id: String::new(),
             board: crate::RpgBoardSetup {
                 width,
                 height,
@@ -677,12 +677,12 @@ impl RpgAuthoritySession {
         };
         Self {
             artifact: None,
-            ruleset,
+            rules,
             state,
             pending: None,
             accepted_random_values: 0,
             encounter: RpgEncounterAuthority {
-                setup,
+                scenario,
                 turn: crate::RpgTurnState {
                     initiative_order: participant_ids.clone(),
                     current_actor_id,
@@ -854,7 +854,7 @@ mod tests {
 
     use super::*;
 
-    fn reaction_ruleset() -> CompiledRpgRuleset {
+    fn reaction_ruleset() -> CompiledRpgRules {
         let source = br#"{
           "schema":{"identity":"asha.rpg.ir","major":1},
           "package":{"id":"session.test","version":"1.0.0"},
@@ -882,11 +882,11 @@ mod tests {
             ]}}
           }]
         }"#;
-        compile_normalized_rpg_json(source).expect("reaction ruleset compiles")
+        compile_normalized_rpg_json(source).expect("reaction rules compiles")
     }
 
     fn reaction_session() -> RpgAuthoritySession {
-        let ruleset = reaction_ruleset();
+        let rules = reaction_ruleset();
         let actor = RpgEntityState::new("hero", Team::ally(), GridPosition { x: 0, y: 0 }, 20)
             .with_resource("focus", 2, 2);
         let target =
@@ -894,7 +894,7 @@ mod tests {
         let mut state = RpgCapabilityState::default();
         state.insert_entity(actor);
         state.insert_entity(target);
-        RpgAuthoritySession::for_test(ruleset, state)
+        RpgAuthoritySession::for_test(rules, state)
     }
 
     fn living_legality_session(actor_vitality: i32, target_vitality: i32) -> RpgAuthoritySession {

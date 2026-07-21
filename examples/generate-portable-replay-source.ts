@@ -2,25 +2,51 @@ import {
   action,
   actionId,
   canonicalJson,
-  composeRuleset,
+  composePlayBundle,
   damage,
   defineActionDefinition,
-  defineRulesetCatalog,
-  defineRulesetPackage,
+  defineContentCatalog,
+  defineContentPack,
+  defineRuleset,
   dice,
   hostile,
   noRoll,
   onCheck,
   openReaction,
-  prepareRulesetCompilation,
+  preparePlayBundle,
   reactionId,
   reactionOptionId,
-  rulesetPackageRequest,
-  rulesetPackageSource,
+  contentPackRequest,
+  contentPackSource,
   sequence,
 } from '@asha-rpg/authoring';
 
-const catalogs = defineRulesetCatalog({
+const portableRuleset = defineRuleset({
+  schema: { identity: 'asha.rpg.ruleset', major: 1 },
+  identity: { id: 'portable.replay-rules', version: '1.0.0' },
+  language: { id: 'asha-rpg', version: '1.0.0' },
+  models: {
+    checks: { id: 'check.d20-roll-over', version: 1 },
+    turns: { id: 'turn.ordered-one-action', version: 1 },
+    reactions: { id: 'reaction.before-damage-choice', version: 1 },
+    actionEconomy: { id: 'action-economy.one-action-plus-reaction', version: 1 },
+  },
+  provides: {
+    operations: [
+      { id: 'operation.damage', version: 1 },
+      { id: 'operation.openReaction', version: 1 },
+    ],
+    capabilities: [
+      { id: 'capability.random', version: 1 },
+      { id: 'capability.reactions', version: 1 },
+      { id: 'capability.vitality', version: 1 },
+    ],
+    values: [],
+    numericDomains: [],
+  },
+});
+
+const catalogs = defineContentCatalog({
   packageId: 'portable.replay-content',
   sourceModule: 'examples/generate-portable-replay-source.ts',
   entries: {
@@ -76,7 +102,7 @@ const actionDefinition = defineActionDefinition({
   action: reactiveStrike,
 });
 
-const contentPackage = defineRulesetPackage({
+const contentPackage = defineContentPack({
   identity: { id: 'portable.replay-content', version: '1.0.0' },
   entry: {
     module: 'examples/generate-portable-replay-source.ts',
@@ -101,10 +127,10 @@ const contentPackage = defineRulesetPackage({
   relationships: [],
 });
 
-const composition = composeRuleset({
+const playBundle = composePlayBundle({
   identity: { id: 'portable.replay-consumer', version: '1.0.0' },
-  language: { id: 'asha-rpg', version: '^1.0.0' },
-  base: rulesetPackageRequest({
+  ruleset: portableRuleset,
+  base: contentPackRequest({
     id: contentPackage.identity.id,
     version: contentPackage.identity.version,
   }),
@@ -113,9 +139,9 @@ const composition = composeRuleset({
   configure: {},
 });
 
-const prepared = prepareRulesetCompilation({
-  composition,
-  packages: [rulesetPackageSource(contentPackage)],
+const prepared = preparePlayBundle({
+  bundle: playBundle,
+  contentPacks: [contentPackSource(contentPackage)],
 });
 if (!prepared.ok) {
   throw new Error(canonicalJson(prepared.diagnostics));

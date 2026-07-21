@@ -1,16 +1,19 @@
 # @asha-rpg/authoring
 
-Immutable builders and deterministic normalization for the published RPG IR
-vocabulary. Pure consumer helpers may compose these builders; normalization
-emits data only and Rust remains the semantic authority.
+Immutable builders for four explicit contracts:
 
-Use `defineRulesetCatalog` for nominal category- and package-owned stat,
-defense, resource, modifier, and damage references. Action definitions derive
-their package graph edges from the immutable action AST. Use `actionPatch`,
-`deriveAction`, and `defineRulesetOverlay` for ordinary materialization work;
-raw patch records and explicit graph edges are low-level compiler escape
-hatches.
+- `defineRuleset`, `rulesetStat`, and `rulesetDefense` describe Rust-executed
+  semantic provisions and ergonomic named values;
+- `defineContentPack` owns authored definitions, presentation, dependencies,
+  derivation, mixins, and overlays;
+- `composePlayBundle` plus `preparePlayBundle` resolve one Ruleset and selected
+  compatible Content Packs;
+- `defineScenario` creates setup-only data for one compiled PlayBundle.
 
-See `../../examples/representative-actions.ts` for branching damage,
-turn-duration modifier stacking, bounded movement, source composition, and a
-consumer-defined action-family helper.
+Use `defineContentCatalog` for Content Pack-owned resources, modifiers, damage
+types, and presentation aliases. Action AST references close the package graph
+without a second ledger. Use `actionPatch`, `deriveAction`, and
+`defineContentOverlay` for materialization; raw patches and explicit graph edges
+are low-level compiler-fixture escape hatches.
+
+The package emits data only. Rust remains semantic and state authority.

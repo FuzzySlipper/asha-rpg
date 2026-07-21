@@ -10,19 +10,19 @@ owns = ["authority values", "open team identities", "accepted DomainEvents", "st
 lane = "rust-language"
 implementation_status = "active"
 may_depend_on = ["rpg-core", "serde"]
-owns = ["normalized RPG IR", "closed ruleset artifact wire contract", "typed derivation and overlay provenance wire contracts"]
+owns = ["normalized RPG IR", "Ruleset wire contract", "compiled PlayBundle artifact wire contract", "typed derivation and overlay provenance wire contracts"]
 
 [crate."crates/rpg-compiler"]
 lane = "rust-language"
 implementation_status = "active"
 may_depend_on = ["rpg-core", "rpg-ir", "serde", "serde_json"]
-owns = ["semantic compilation", "private compiled plans", "ruleset artifact validation and fingerprints", "materialized definition fingerprint validation"]
+owns = ["semantic compilation", "private compiled plans", "Ruleset provision validation", "PlayBundle artifact validation and fingerprints", "materialized Content Pack definition validation"]
 
 [crate."crates/rpg-runtime"]
 lane = "rust-authority"
 implementation_status = "active"
 may_depend_on = ["rpg-core", "rpg-ir", "rpg-compiler", "serde", "serde_json"]
-owns = ["artifact-bound encounter setup validation", "single authority session", "turn and encounter readback authority", "host-supplied random evidence interface", "bounded roll-tape source", "portable checkpoint and replay contracts", "canonical session state hash", "pending reaction restore"]
+owns = ["PlayBundle-bound Scenario validation", "single authority session", "turn and encounter readback authority", "host-supplied random evidence interface", "bounded roll-tape source", "portable checkpoint and replay contracts", "canonical session state hash", "pending reaction restore"]
 
 [crate."crates/asha-rpg"]
 lane = "rust-api"
@@ -44,4 +44,4 @@ type = "lib"
 layer = "domain"
 implementation_status = "active"
 may_depend_on = ["@asha-rpg/ir"]
-owns = ["immutable authoring AST", "explicit package composition and resolution", "deterministic base, mixin, overlay, and configuration materialization into prepared rulesets"]
+owns = ["immutable Ruleset, Content Pack, PlayBundle, and Scenario authoring contracts", "explicit Content Pack dependency resolution", "deterministic base, mixin, overlay, and configuration materialization into prepared PlayBundles"]

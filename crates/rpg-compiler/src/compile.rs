@@ -43,14 +43,14 @@ enum CheckKind {
 }
 
 #[derive(Debug, Clone)]
-pub struct CompiledRpgRuleset {
+pub struct CompiledRpgRules {
     package_id: String,
     package_version: String,
     capability_plan: BTreeMap<String, u32>,
     actions: BTreeMap<String, CompiledAction>,
 }
 
-impl CompiledRpgRuleset {
+impl CompiledRpgRules {
     pub fn package_id(&self) -> &str {
         &self.package_id
     }
@@ -175,7 +175,7 @@ pub(crate) enum CompiledProgram {
     Atomic(Box<CompiledProgram>),
 }
 
-pub fn compile_normalized_rpg_json(source: &[u8]) -> Result<CompiledRpgRuleset, RpgCompileFailure> {
+pub fn compile_normalized_rpg_json(source: &[u8]) -> Result<CompiledRpgRules, RpgCompileFailure> {
     let decoded =
         serde_json::from_slice::<NormalizedRpgIr>(source).map_err(|error| RpgCompileFailure {
             diagnostics: vec![RpgDiagnostic::error(
@@ -190,7 +190,7 @@ pub fn compile_normalized_rpg_json(source: &[u8]) -> Result<CompiledRpgRuleset, 
 
 pub fn compile_normalized_rpg_ir(
     source: NormalizedRpgIr,
-) -> Result<CompiledRpgRuleset, RpgCompileFailure> {
+) -> Result<CompiledRpgRules, RpgCompileFailure> {
     let mut validator = Validator::new(&source);
     validator.validate();
     if !validator.diagnostics.is_empty() {
@@ -207,7 +207,7 @@ pub fn compile_normalized_rpg_ir(
         .map(|requirement| (requirement.id.clone(), requirement.version))
         .collect();
 
-    Ok(CompiledRpgRuleset {
+    Ok(CompiledRpgRules {
         package_id: source.package.id,
         package_version: source.package.version,
         capability_plan,

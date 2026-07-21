@@ -3,31 +3,31 @@ import {
   catalogDefinitionId,
   retainCatalogOwnership,
 } from './catalogs.js';
-import type { RulesetCatalogReference } from './catalogs.js';
+import type { ContentCatalogReference } from './catalogs.js';
 import type {
-  RulesetPatch,
-  RulesetPatchNumber,
-  RulesetPatchOperation,
-  RulesetPatchPathSegment,
-  RulesetPatchScalar,
-} from './ruleset-types.js';
+  ContentPatch,
+  ContentPatchNumber,
+  ContentPatchOperation,
+  ContentPatchPathSegment,
+  ContentPatchScalar,
+} from './play-bundle-types.js';
 
 export interface NumberAdjustment {
-  readonly multiply?: RulesetPatchNumber;
-  readonly add?: RulesetPatchNumber;
+  readonly multiply?: ContentPatchNumber;
+  readonly add?: ContentPatchNumber;
 }
 
 type PatchPathInput =
   | string
-  | Extract<RulesetPatchPathSegment, { readonly kind: 'member' }>;
+  | Extract<ContentPatchPathSegment, { readonly kind: 'member' }>;
 
 export function patchParameter(id: string): { readonly parameter: string } {
   return immutable({ parameter: id });
 }
 
-export function combineRulesetPatches(
-  ...patches: readonly RulesetPatch[]
-): RulesetPatch {
+export function combineContentPatches(
+  ...patches: readonly ContentPatch[]
+): ContentPatch {
   return patch(patches.flatMap((entry) => entry.operations));
 }
 
@@ -35,7 +35,7 @@ export const actionPatch = immutable({
   semantic: immutable({
     maximumRange: numberField('semantic', ['targets', 'maximumRange']),
     maximumTargets: numberField('semantic', ['targets', 'maximumTargets']),
-    cost(resource: RulesetCatalogReference<'resource', string>) {
+    cost(resource: ContentCatalogReference<'resource', string>) {
       const member = retainCatalogOwnership(
         {
           kind: 'member' as const,
@@ -46,7 +46,7 @@ export const actionPatch = immutable({
       );
       return immutable({
         amount: numberField('semantic', ['costs', member, 'amount']),
-        remove(): RulesetPatch {
+        remove(): ContentPatch {
           return patch([
             {
               kind: 'removeMember',
@@ -70,12 +70,12 @@ function numberField(
   path: readonly PatchPathInput[],
 ) {
   return immutable({
-    set(value: number | { readonly parameter: string }): RulesetPatch {
+    set(value: number | { readonly parameter: string }): ContentPatch {
       return patch([
         { kind: 'setScalar', plane, path: segments(path), value },
       ]);
     },
-    adjust(options: NumberAdjustment): RulesetPatch {
+    adjust(options: NumberAdjustment): ContentPatch {
       return patch([
         {
           kind: 'adjustNumber',
@@ -89,12 +89,12 @@ function numberField(
   });
 }
 
-function scalarField<Value extends RulesetPatchScalar>(
+function scalarField<Value extends ContentPatchScalar>(
   plane: 'semantic' | 'presentation',
   path: readonly string[],
 ) {
   return immutable({
-    set(value: Value | { readonly parameter: string }): RulesetPatch {
+    set(value: Value | { readonly parameter: string }): ContentPatch {
       return patch([
         { kind: 'setScalar', plane, path: segments(path), value },
       ]);
@@ -102,12 +102,12 @@ function scalarField<Value extends RulesetPatchScalar>(
   });
 }
 
-function upsertScalarField<Value extends RulesetPatchScalar>(
+function upsertScalarField<Value extends ContentPatchScalar>(
   plane: 'semantic' | 'presentation',
   path: readonly string[],
 ) {
   return immutable({
-    set(value: Value | { readonly parameter: string }): RulesetPatch {
+    set(value: Value | { readonly parameter: string }): ContentPatch {
       return patch([
         { kind: 'upsertScalar', plane, path: segments(path), value },
       ]);
@@ -115,7 +115,7 @@ function upsertScalarField<Value extends RulesetPatchScalar>(
   });
 }
 
-function patch(operations: readonly RulesetPatchOperation[]): RulesetPatch {
+function patch(operations: readonly ContentPatchOperation[]): ContentPatch {
   return immutable({ version: 1, operations: [...operations] });
 }
 

@@ -10,23 +10,24 @@ import {
   canonicalJson,
   constant,
   defineActionDefinition,
-  defineRulesetCatalog,
-  defineRulesetPackage,
+  defineContentCatalog,
+  defineContentPack,
   definitionReference,
   noRoll,
   onCheck,
-  prepareRulesetCompilation,
+  preparePlayBundle,
   readStat,
-  rulesetDependency,
-  rulesetPackageRequest,
-  rulesetPackageSource,
+  contentPackDependency,
+  contentPackRequest,
+  contentPackSource,
   spend,
   withLowLevelDefinitionReferences,
 } from '@asha-rpg/authoring';
-import type { RulesetCatalogReference } from '@asha-rpg/authoring';
+import type { ContentCatalogReference } from '@asha-rpg/authoring';
 import { unsafeNormalizedCatalogId } from '@asha-rpg/authoring/low-level';
+import { contractTestRuleset } from './test-ruleset.ts';
 
-const primitives = defineRulesetCatalog({
+const primitives = defineContentCatalog({
   packageId: 'sample.primitives',
   sourceModule: 'sample/primitives.ts',
   entries: {
@@ -85,7 +86,7 @@ test('action AST references close the package graph without a second ledger', ()
 });
 
 test('catalog owner identity selects one same-ID dependency deterministically', () => {
-  const first = defineRulesetCatalog({
+  const first = defineContentCatalog({
     packageId: 'sample.first-primitives',
     sourceModule: 'sample/first-primitives.ts',
     entries: {
@@ -97,7 +98,7 @@ test('catalog owner identity selects one same-ID dependency deterministically', 
       },
     },
   });
-  const second = defineRulesetCatalog({
+  const second = defineContentCatalog({
     packageId: 'sample.second-primitives',
     sourceModule: 'sample/second-primitives.ts',
     entries: {
@@ -124,16 +125,16 @@ test('catalog owner identity selects one same-ID dependency deterministically', 
       }),
     }),
   });
-  const content = defineRulesetPackage({
+  const content = defineContentPack({
     identity: { id: 'sample.same-id-content', version: '1.0.0' },
     entry: { module: 'sample/content.ts', declaration: 'default' },
     dependencies: [
-      rulesetDependency({
+      contentPackDependency({
         id: 'sample.first-primitives',
         version: '1.0.0',
         importAs: 'first',
       }),
-      rulesetDependency({
+      contentPackDependency({
         id: 'sample.second-primitives',
         version: '1.0.0',
         importAs: 'second',
@@ -150,11 +151,11 @@ test('catalog owner identity selects one same-ID dependency deterministically', 
     ],
   });
   assert.equal(canonicalJson(focused).includes('sample.first-primitives'), false);
-  const result = prepareRulesetCompilation({
-    composition: {
-      identity: { id: 'sample.same-id-composition', version: '1.0.0' },
-      language: { id: 'asha-rpg', version: '^1.0.0' },
-      base: rulesetPackageRequest({
+  const result = preparePlayBundle({
+    bundle: {
+      identity: { id: 'sample.same-id-bundle', version: '1.0.0' },
+      ruleset: contractTestRuleset,
+      base: contentPackRequest({
         id: 'sample.same-id-content',
         version: '1.0.0',
       }),
@@ -162,17 +163,17 @@ test('catalog owner identity selects one same-ID dependency deterministically', 
       overlays: [],
       configure: {},
     },
-    packages: [
-      rulesetPackageSource(content),
-      rulesetPackageSource(
-        defineRulesetPackage({
+    contentPacks: [
+      contentPackSource(content),
+      contentPackSource(
+        defineContentPack({
           identity: { id: first.packageId, version: '1.0.0' },
           entry: { module: 'sample/first-primitives.ts', declaration: 'default' },
           definitions: first.definitions,
         }),
       ),
-      rulesetPackageSource(
-        defineRulesetPackage({
+      contentPackSource(
+        defineContentPack({
           identity: { id: second.packageId, version: '1.0.0' },
           entry: { module: 'sample/second-primitives.ts', declaration: 'default' },
           definitions: second.definitions,
@@ -193,7 +194,7 @@ test('catalog owner identity selects one same-ID dependency deterministically', 
 });
 
 test('catalog references retain nominal category and package ownership', () => {
-  const other = defineRulesetCatalog({
+  const other = defineContentCatalog({
     packageId: 'sample.other',
     sourceModule: 'sample/other.ts',
     entries: {
@@ -206,7 +207,7 @@ test('catalog references retain nominal category and package ownership', () => {
     },
   });
   const requirePrimitiveStat = (
-    _reference: RulesetCatalogReference<'stat', 'sample.primitives'>,
+    _reference: ContentCatalogReference<'stat', 'sample.primitives'>,
   ): void => undefined;
 
   requirePrimitiveStat(primitives.references.power);
@@ -249,20 +250,20 @@ test('bare normalized catalog IDs require an explicit low-level graph edge', () 
     action: rawAction,
   });
 
-  const compile = (explicit: boolean) => prepareRulesetCompilation({
-    composition: {
-      identity: { id: 'sample.raw-composition', version: '1.0.0' },
-      language: { id: 'asha-rpg', version: '^1.0.0' },
-      base: rulesetPackageRequest({ id: 'sample.raw-content', version: '1.0.0' }),
+  const compile = (explicit: boolean) => preparePlayBundle({
+    bundle: {
+      identity: { id: 'sample.raw-bundle', version: '1.0.0' },
+      ruleset: contractTestRuleset,
+      base: contentPackRequest({ id: 'sample.raw-content', version: '1.0.0' }),
       add: [],
       overlays: [],
       configure: {},
     },
-    packages: [
-      rulesetPackageSource(defineRulesetPackage({
+    contentPacks: [
+      contentPackSource(defineContentPack({
         identity: { id: 'sample.raw-content', version: '1.0.0' },
         entry: { module: 'sample/raw-content.ts', declaration: 'default' },
-        dependencies: [rulesetDependency({
+        dependencies: [contentPackDependency({
           id: 'sample.primitives',
           version: '1.0.0',
           importAs: 'primitives',
@@ -278,7 +279,7 @@ test('bare normalized catalog IDs require an explicit low-level graph edge', () 
             : definition,
         ],
       })),
-      rulesetPackageSource(defineRulesetPackage({
+      contentPackSource(defineContentPack({
         identity: { id: primitives.packageId, version: '1.0.0' },
         entry: { module: 'sample/primitives.ts', declaration: 'default' },
         definitions: primitives.definitions,
@@ -290,7 +291,7 @@ test('bare normalized catalog IDs require an explicit low-level graph edge', () 
   assert.equal(rejected.ok, false);
   if (!rejected.ok) {
     assert.ok(rejected.diagnostics.some(
-      (entry) => entry.code === 'RULESET_CATALOG_REFERENCE_OWNER_REQUIRED',
+      (entry) => entry.code === 'CONTENT_PACK_CATALOG_REFERENCE_OWNER_REQUIRED',
     ));
   }
 
@@ -330,7 +331,7 @@ test('schema-aware action patches own paths, planes, and valid operations', () =
 });
 
 function preparedForStat(
-  stat: RulesetCatalogReference<'stat', 'sample.primitives'>,
+  stat: ContentCatalogReference<'stat', 'sample.primitives'>,
 ) {
   const strike = action({
     id: actionId('sample.strike'),
@@ -348,16 +349,16 @@ function preparedForStat(
       }),
     }),
   });
-  const primitivePackage = defineRulesetPackage({
+  const primitivePackage = defineContentPack({
     identity: { id: 'sample.primitives', version: '1.0.0' },
     entry: { module: 'sample/primitives.ts', declaration: 'default' },
     definitions: primitives.definitions,
   });
-  const contentPackage = defineRulesetPackage({
+  const contentPackage = defineContentPack({
     identity: { id: 'sample.content', version: '1.0.0' },
     entry: { module: 'sample/content.ts', declaration: 'default' },
     dependencies: [
-      rulesetDependency({
+      contentPackDependency({
         id: 'sample.primitives',
         version: '1.0.0',
         importAs: 'primitives',
@@ -373,18 +374,18 @@ function preparedForStat(
       }),
     ],
   });
-  return prepareRulesetCompilation({
-    composition: {
-      identity: { id: 'sample.composition', version: '1.0.0' },
-      language: { id: 'asha-rpg', version: '^1.0.0' },
-      base: rulesetPackageRequest({ id: 'sample.content', version: '1.0.0' }),
+  return preparePlayBundle({
+    bundle: {
+      identity: { id: 'sample.bundle', version: '1.0.0' },
+      ruleset: contractTestRuleset,
+      base: contentPackRequest({ id: 'sample.content', version: '1.0.0' }),
       add: [],
       overlays: [],
       configure: {},
     },
-    packages: [
-      rulesetPackageSource(contentPackage),
-      rulesetPackageSource(primitivePackage),
+    contentPacks: [
+      contentPackSource(contentPackage),
+      contentPackSource(primitivePackage),
     ],
   });
 }

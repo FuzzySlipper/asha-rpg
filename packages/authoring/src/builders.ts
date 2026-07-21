@@ -26,7 +26,16 @@ import {
   catalogDefinitionId,
   retainCatalogOwnership,
 } from './catalogs.js';
-import type { RulesetCatalogReference } from './catalogs.js';
+import type { ContentCatalogReference } from './catalogs.js';
+import { rulesetValueId } from './ruleset-builders.js';
+import type { RulesetValueReference } from './ruleset-builders.js';
+
+type AuthoredStatReference =
+  | ContentCatalogReference<'stat', string>
+  | RulesetValueReference<'stat', string, string>;
+type AuthoredDefenseReference =
+  | ContentCatalogReference<'defense', string>
+  | RulesetValueReference<'defense', string, string>;
 
 export function actionId(value: string): RpgActionId {
   return checkedIdentifier(value, 'action id') as RpgActionId;
@@ -88,10 +97,10 @@ export function constant(value: number): RpgIrFormula {
 
 export function readStat(
   subject: RpgIrSubject,
-  id: RulesetCatalogReference<'stat', string>,
+  id: AuthoredStatReference,
 ): RpgIrFormula {
   return frozenWithCatalogOwnership(
-    { kind: 'readStat' as const, subject, statId: catalogDefinitionId(id) },
+    { kind: 'readStat' as const, subject, statId: authoredValueId(id) },
     'statId',
     id,
   );
@@ -148,13 +157,13 @@ export function noRoll(): Extract<import('@asha-rpg/ir').RpgIrCheck, { kind: 'no
 
 export function attack(options: {
   readonly modifier: RpgIrFormula;
-  readonly defense: RulesetCatalogReference<'defense', string>;
+  readonly defense: AuthoredDefenseReference;
 }): Extract<import('@asha-rpg/ir').RpgIrCheck, { kind: 'attack' }> {
   return frozenWithCatalogOwnership(
     {
       kind: 'attack' as const,
       modifier: options.modifier,
-      defenseId: catalogDefinitionId(options.defense),
+      defenseId: authoredValueId(options.defense),
     },
     'defenseId',
     options.defense,
@@ -163,13 +172,13 @@ export function attack(options: {
 
 export function savingThrow(options: {
   readonly difficulty: RpgIrFormula;
-  readonly defense: RulesetCatalogReference<'defense', string>;
+  readonly defense: AuthoredDefenseReference;
 }): Extract<import('@asha-rpg/ir').RpgIrCheck, { kind: 'savingThrow' }> {
   return frozenWithCatalogOwnership(
     {
       kind: 'savingThrow' as const,
       difficulty: options.difficulty,
-      defenseId: catalogDefinitionId(options.defense),
+      defenseId: authoredValueId(options.defense),
     },
     'defenseId',
     options.defense,
@@ -177,7 +186,7 @@ export function savingThrow(options: {
 }
 
 export function spend(
-  resource: RulesetCatalogReference<'resource', string>,
+  resource: ContentCatalogReference<'resource', string>,
   amount: number,
 ): RpgIrResourceCost {
   return frozenWithCatalogOwnership(
@@ -205,7 +214,7 @@ export function refresh(group: RpgStackingGroup): AuthoringStacking {
 
 export function damage(options: {
   readonly amount: RpgIrFormula;
-  readonly type: RulesetCatalogReference<'damageType', string>;
+  readonly type: ContentCatalogReference<'damageType', string>;
   readonly timing?: AuthoringTiming;
 }): AuthoringProgram {
   return operation(
@@ -231,7 +240,7 @@ export function heal(options: {
 
 export function changeResource(options: {
   readonly subject: RpgIrSubject;
-  readonly resource: RulesetCatalogReference<'resource', string>;
+  readonly resource: ContentCatalogReference<'resource', string>;
   readonly delta: RpgIrFormula;
   readonly timing?: AuthoringTiming;
 }): AuthoringProgram {
@@ -251,7 +260,7 @@ export function changeResource(options: {
 }
 
 export function applyModifier(options: {
-  readonly modifier: RulesetCatalogReference<'modifier', string>;
+  readonly modifier: ContentCatalogReference<'modifier', string>;
   readonly value: RpgIrFormula;
   readonly duration: AuthoringDuration;
   readonly stacking: AuthoringStacking;
@@ -369,13 +378,6 @@ export function defineItem(id: string, actions: readonly AuthoredAction[]): Auth
   return source('item', id, actions);
 }
 
-export function defineScenario(
-  id: string,
-  actions: readonly AuthoredAction[],
-): AuthoredActionSource {
-  return source('scenario', id, actions);
-}
-
 export function definePackage(options: {
   readonly id: string;
   readonly version: string;
@@ -414,6 +416,20 @@ function frozenWithCatalogOwnership<Value extends object>(
 ): Readonly<Value> {
   retainCatalogOwnership(value, [{ field, reference }]);
   return frozen(value);
+}
+
+function authoredValueId(
+  reference: AuthoredStatReference,
+): import('@asha-rpg/ir').RpgStatId;
+function authoredValueId(
+  reference: AuthoredDefenseReference,
+): import('@asha-rpg/ir').RpgDefenseId;
+function authoredValueId(
+  reference: AuthoredStatReference | AuthoredDefenseReference,
+): import('@asha-rpg/ir').RpgStatId | import('@asha-rpg/ir').RpgDefenseId {
+  return 'definitionId' in reference
+    ? catalogDefinitionId(reference)
+    : rulesetValueId(reference);
 }
 
 function frozenList<Value>(values: readonly Value[]): readonly Value[] {

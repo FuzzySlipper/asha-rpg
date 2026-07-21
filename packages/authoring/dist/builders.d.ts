@@ -1,6 +1,9 @@
 import type { RpgActionId, RpgIrComparison, RpgIrFormula, RpgIrPredicate, RpgIrResourceCost, RpgIrSubject, RpgIrTargetSelector, RpgReactionId, RpgReactionOptionId, RpgStackingGroup } from '@asha-rpg/ir';
 import type { ActionInput, AuthoredAction, AuthoredActionSource, AuthoredPackage, AuthoringDuration, AuthoringProgram, AuthoringStacking, AuthoringTiming, CheckBranchInput } from './types.js';
-import type { RulesetCatalogReference } from './catalogs.js';
+import type { ContentCatalogReference } from './catalogs.js';
+import type { RulesetValueReference } from './ruleset-builders.js';
+type AuthoredStatReference = ContentCatalogReference<'stat', string> | RulesetValueReference<'stat', string, string>;
+type AuthoredDefenseReference = ContentCatalogReference<'defense', string> | RulesetValueReference<'defense', string, string>;
 export declare function actionId(value: string): RpgActionId;
 export declare function stackingGroup(value: string): RpgStackingGroup;
 export declare function reactionId(value: string): RpgReactionId;
@@ -19,7 +22,7 @@ export declare function ally(options: {
     readonly maximum?: number;
 }): RpgIrTargetSelector;
 export declare function constant(value: number): RpgIrFormula;
-export declare function readStat(subject: RpgIrSubject, id: RulesetCatalogReference<'stat', string>): RpgIrFormula;
+export declare function readStat(subject: RpgIrSubject, id: AuthoredStatReference): RpgIrFormula;
 export declare function add(...terms: readonly RpgIrFormula[]): RpgIrFormula;
 export declare function dice(options: {
     readonly count: number;
@@ -37,24 +40,24 @@ export declare function noRoll(): Extract<import('@asha-rpg/ir').RpgIrCheck, {
 }>;
 export declare function attack(options: {
     readonly modifier: RpgIrFormula;
-    readonly defense: RulesetCatalogReference<'defense', string>;
+    readonly defense: AuthoredDefenseReference;
 }): Extract<import('@asha-rpg/ir').RpgIrCheck, {
     kind: 'attack';
 }>;
 export declare function savingThrow(options: {
     readonly difficulty: RpgIrFormula;
-    readonly defense: RulesetCatalogReference<'defense', string>;
+    readonly defense: AuthoredDefenseReference;
 }): Extract<import('@asha-rpg/ir').RpgIrCheck, {
     kind: 'savingThrow';
 }>;
-export declare function spend(resource: RulesetCatalogReference<'resource', string>, amount: number): RpgIrResourceCost;
+export declare function spend(resource: ContentCatalogReference<'resource', string>, amount: number): RpgIrResourceCost;
 export declare function immediate(): AuthoringTiming;
 export declare function turns(count: number): AuthoringDuration;
 export declare function replace(group: RpgStackingGroup): AuthoringStacking;
 export declare function refresh(group: RpgStackingGroup): AuthoringStacking;
 export declare function damage(options: {
     readonly amount: RpgIrFormula;
-    readonly type: RulesetCatalogReference<'damageType', string>;
+    readonly type: ContentCatalogReference<'damageType', string>;
     readonly timing?: AuthoringTiming;
 }): AuthoringProgram;
 export declare function heal(options: {
@@ -63,12 +66,12 @@ export declare function heal(options: {
 }): AuthoringProgram;
 export declare function changeResource(options: {
     readonly subject: RpgIrSubject;
-    readonly resource: RulesetCatalogReference<'resource', string>;
+    readonly resource: ContentCatalogReference<'resource', string>;
     readonly delta: RpgIrFormula;
     readonly timing?: AuthoringTiming;
 }): AuthoringProgram;
 export declare function applyModifier(options: {
-    readonly modifier: RulesetCatalogReference<'modifier', string>;
+    readonly modifier: ContentCatalogReference<'modifier', string>;
     readonly value: RpgIrFormula;
     readonly duration: AuthoringDuration;
     readonly stacking: AuthoringStacking;
@@ -100,10 +103,10 @@ export declare function action(input: ActionInput): AuthoredAction;
 export declare function defineActions(id: string, actions: readonly AuthoredAction[]): AuthoredActionSource;
 export declare function defineArchetype(id: string, actions: readonly AuthoredAction[]): AuthoredActionSource;
 export declare function defineItem(id: string, actions: readonly AuthoredAction[]): AuthoredActionSource;
-export declare function defineScenario(id: string, actions: readonly AuthoredAction[]): AuthoredActionSource;
 export declare function definePackage(options: {
     readonly id: string;
     readonly version: string;
     readonly sources: readonly AuthoredActionSource[];
 }): AuthoredPackage;
+export {};
 //# sourceMappingURL=builders.d.ts.map

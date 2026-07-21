@@ -1,23 +1,23 @@
 use asha_rpg::{
-    compile_prepared_ruleset, materialized_definition_fingerprint, BoundedValue,
-    CompiledRulesetIdentity, GridPosition, MaterializedRulesetDefinition,
-    MaterializedRulesetDefinitionKind, MaterializedRulesetVisibility, PreparedRulesetCompilation,
-    ResolvedRulesetSourcePackage, RpgActionProposal, RpgAuthoritySession, RpgBoardSetup,
-    RpgCommandOutcome, RpgEncounterSetup, RpgInitialCapability, RpgParticipantSetup,
-    RpgRandomSourceBinding, RpgRollTapeSource, RpgTeamId, RpgTurnControl, RpgTurnControlProposal,
-    RpgTurnInitialization, RulesetArtifactSchema, RulesetDefinitionProvenance,
-    RulesetExtensionPolicy, RulesetRelationshipKind, RulesetRelationshipProvenance,
-    RulesetSourceLocation, VersionedRulesetRequirement, PREPARED_RULESET_IDENTITY,
-    RULESET_ARTIFACT_MAJOR,
+    compile_prepared_play_bundle, materialized_definition_fingerprint, BoundedValue,
+    ContentDefinitionProvenance, ContentExtensionPolicy, ContentPackRequirements,
+    ContentRelationshipKind, ContentRelationshipProvenance, ContentSourceLocation, GridPosition,
+    MaterializedContentDefinition, MaterializedContentDefinitionKind,
+    MaterializedContentVisibility, PlayBundleArtifactSchema, PreparedPlayBundle,
+    ResolvedContentPack, RpgActionProposal, RpgAuthoritySession, RpgBoardSetup, RpgCommandOutcome,
+    RpgInitialCapability, RpgParticipantSetup, RpgRandomSourceBinding, RpgRollTapeSource,
+    RpgScenario, RpgTeamId, RpgTurnControl, RpgTurnControlProposal, RpgTurnInitialization,
+    RpgVersionedIdentity, Ruleset, RulesetModels, RulesetProvisions, RulesetSchema,
+    VersionedRpgRequirement, PLAY_BUNDLE_ARTIFACT_MAJOR, PREPARED_PLAY_BUNDLE_IDENTITY,
 };
 use serde_json::json;
 
 #[test]
 fn public_facade_builds_an_artifact_bound_setup_and_executes_a_turn() {
     let bundle = healing_bundle();
-    let setup = RpgEncounterSetup {
-        schema: RpgEncounterSetup::schema(),
-        artifact_id: bundle.artifact().artifact_id.clone(),
+    let scenario = RpgScenario {
+        schema: RpgScenario::schema(),
+        play_bundle_id: bundle.artifact().artifact_id.clone(),
         board: RpgBoardSetup {
             width: 5,
             height: 3,
@@ -45,8 +45,8 @@ fn public_facade_builds_an_artifact_bound_setup_and_executes_a_turn() {
             source_version: 1,
         },
     };
-    let mut session = RpgAuthoritySession::from_setup(bundle, setup).unwrap();
-    let mut source = RpgRollTapeSource::new(session.setup().random_source.clone(), Vec::new());
+    let mut session = RpgAuthoritySession::from_scenario(bundle, scenario).unwrap();
+    let mut source = RpgRollTapeSource::new(session.scenario().random_source.clone(), Vec::new());
 
     let (outcome, _) = session
         .submit_with_random_source_recorded(
@@ -108,21 +108,21 @@ fn participant(
     }
 }
 
-fn healing_bundle() -> asha_rpg::CompiledRulesetBundle {
-    let provenance = RulesetDefinitionProvenance {
+fn healing_bundle() -> asha_rpg::CompiledPlayBundle {
+    let provenance = ContentDefinitionProvenance {
         definition_id: "action.heal".to_owned(),
         package_id: "consumer.package".to_owned(),
         package_version: "1.0.0".to_owned(),
-        source: RulesetSourceLocation {
+        source: ContentSourceLocation {
             module: "actions/heal.ts".to_owned(),
             declaration: "heal".to_owned(),
         },
     };
-    let mut action = MaterializedRulesetDefinition {
+    let mut action = MaterializedContentDefinition {
         id: "action.heal".to_owned(),
-        kind: MaterializedRulesetDefinitionKind::Action,
-        visibility: MaterializedRulesetVisibility::Exported,
-        extension_policy: RulesetExtensionPolicy::Sealed,
+        kind: MaterializedContentDefinitionKind::Action,
+        visibility: MaterializedContentVisibility::Exported,
+        extension_policy: ContentExtensionPolicy::Sealed,
         semantic: json!({
             "id": "action.heal",
             "name": "Heal",
@@ -143,40 +143,84 @@ fn healing_bundle() -> asha_rpg::CompiledRulesetBundle {
     };
     action.fingerprint = materialized_definition_fingerprint(&action).unwrap();
     let package = "consumer.package@1.0.0".to_owned();
-    compile_prepared_ruleset(PreparedRulesetCompilation {
-        schema: RulesetArtifactSchema {
-            identity: PREPARED_RULESET_IDENTITY.to_owned(),
-            major: RULESET_ARTIFACT_MAJOR,
+    compile_prepared_play_bundle(PreparedPlayBundle {
+        schema: PlayBundleArtifactSchema {
+            identity: PREPARED_PLAY_BUNDLE_IDENTITY.to_owned(),
+            major: PLAY_BUNDLE_ARTIFACT_MAJOR,
         },
-        composition_identity: CompiledRulesetIdentity {
+        play_bundle_identity: RpgVersionedIdentity {
             id: "consumer.package".to_owned(),
             version: "1.0.0".to_owned(),
         },
-        language_identity: CompiledRulesetIdentity {
-            id: "asha-rpg".to_owned(),
-            version: "1.0.0".to_owned(),
+        ruleset: Ruleset {
+            schema: RulesetSchema {
+                identity: "asha.rpg.ruleset".to_owned(),
+                major: 1,
+            },
+            identity: RpgVersionedIdentity {
+                id: "consumer.rules".to_owned(),
+                version: "1.0.0".to_owned(),
+            },
+            language: RpgVersionedIdentity {
+                id: "asha-rpg".to_owned(),
+                version: "1.0.0".to_owned(),
+            },
+            models: RulesetModels {
+                checks: VersionedRpgRequirement {
+                    id: "check.d20-roll-over".to_owned(),
+                    version: 1,
+                },
+                turns: VersionedRpgRequirement {
+                    id: "turn.ordered-one-action".to_owned(),
+                    version: 1,
+                },
+                reactions: VersionedRpgRequirement {
+                    id: "reaction.before-damage-choice".to_owned(),
+                    version: 1,
+                },
+                action_economy: VersionedRpgRequirement {
+                    id: "action-economy.one-action-plus-reaction".to_owned(),
+                    version: 1,
+                },
+            },
+            provides: RulesetProvisions {
+                operations: vec![VersionedRpgRequirement {
+                    id: "operation.heal".to_owned(),
+                    version: 1,
+                }],
+                capabilities: vec![VersionedRpgRequirement {
+                    id: "capability.vitality".to_owned(),
+                    version: 1,
+                }],
+                values: Vec::new(),
+                numeric_domains: Vec::new(),
+            },
         },
-        source_packages: vec![ResolvedRulesetSourcePackage {
+        content_packs: vec![ResolvedContentPack {
             id: "consumer.package".to_owned(),
             version: "1.0.0".to_owned(),
             source_fingerprint: "fnv1a64:1111111111111111".to_owned(),
         }],
         dependency_lock: Vec::new(),
-        required_operations: vec![VersionedRulesetRequirement {
-            id: "operation.heal".to_owned(),
-            version: 1,
-        }],
-        required_capabilities: vec![VersionedRulesetRequirement {
-            id: "capability.vitality".to_owned(),
-            version: 1,
-        }],
+        content_requirements: ContentPackRequirements {
+            operations: vec![VersionedRpgRequirement {
+                id: "operation.heal".to_owned(),
+                version: 1,
+            }],
+            capabilities: vec![VersionedRpgRequirement {
+                id: "capability.vitality".to_owned(),
+                version: 1,
+            }],
+            values: Vec::new(),
+            numeric_domains: Vec::new(),
+        },
         exported_roots: vec!["action.heal".to_owned()],
         materialized_definitions: vec![action],
         compiled_policy_bindings: Vec::new(),
         definition_provenance: vec![provenance],
         definition_commitments: Vec::new(),
-        relationships: vec![RulesetRelationshipProvenance {
-            kind: RulesetRelationshipKind::Exports,
+        relationships: vec![ContentRelationshipProvenance {
+            kind: ContentRelationshipKind::Exports,
             source: package,
             target: "action.heal".to_owned(),
             order: 0,

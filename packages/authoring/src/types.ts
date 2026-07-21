@@ -64,7 +64,7 @@ export interface AuthoredAction {
   readonly program: AuthoringProgram;
 }
 
-export type AuthoredSourceKind = 'actions' | 'archetype' | 'item' | 'scenario';
+export type AuthoredSourceKind = 'actions' | 'archetype' | 'item';
 
 export interface AuthoredActionSource {
   readonly kind: AuthoredSourceKind;

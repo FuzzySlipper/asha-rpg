@@ -145,11 +145,11 @@ export function inspectAuthoringBoundary(
 
     if (
       ts.isTypeAliasDeclaration(node) &&
-      normalizedName(node.name) === 'rulesetcataloginput'
+      normalizedName(node.name) === 'contentcataloginput'
     ) {
       report(
         node,
-        'RulesetCatalogInput is forbidden because it permits a parallel bare-ID high-level API',
+        'ContentCatalogInput is forbidden because it permits a parallel bare-ID high-level API',
       );
     }
 

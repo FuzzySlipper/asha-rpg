@@ -1,124 +1,63 @@
-# Encounter session contract
+# Scenario and authority-session contract
 
 ## Purpose
 
-`RpgEncounterSetup` is the versioned, portable input for creating one
-artifact-bound authority session. A consumer compiles or loads a
-`CompiledRulesetBundle`, constructs setup-only encounter data, and calls
-`RpgAuthoritySession::from_setup`. Rust validates the complete setup before it
-creates mutable authority state.
+`RpgScenario` is the versioned setup-only input for one authority session. A
+consumer compiles or loads a `CompiledPlayBundle` and calls
+`RpgAuthoritySession::from_scenario`. Rust validates the entire Scenario before
+creating mutable authority state.
 
-The setup schema is `asha.rpg.encounter.setup@1`. Its `artifactId` must exactly
-match the compiled artifact. Checkpoint schema
-`asha.rpg.session.checkpoint@2` stores the complete setup and its
-`fnv1a64.rpg-encounter-setup.v1` fingerprint. Replay entry schema version 3
-binds every before/after boundary to that setup fingerprint, the exact random
-source binding, current turn, state revision, and state hash.
+The schema is `asha.rpg.scenario@1`. `playBundleId` must exactly match the
+compiled artifact. Checkpoint schema `asha.rpg.session.checkpoint@3` stores the
+Scenario and its `fnv1a64.rpg-scenario.v1` fingerprint. Replay entry schema
+version 4 binds before/after boundaries to that Scenario, source binding, turn,
+revision, and state hash.
 
 ## Setup-only data
 
-A setup contains:
+A Scenario contains only:
 
-- a rectangular board extent and optional stable cell records;
-- typed, versioned cell capabilities, with optional artifact definition
-  references;
-- stable participants, open `RpgTeamId` values, starting positions, artifact
-  definition references, and typed initial capability-owner values;
-- an explicit initiative order, current actor, round, and turn;
-- a random policy/source identity and version binding.
+- board extent and typed cell capabilities;
+- participants, teams, positions, and selected exported Content Pack definition ids;
+- initial vitality, named Ruleset stat/defense values, and Content Pack resource/modifier values;
+- initiative order, current actor, round, and turn;
+- random policy/source identity and versions.
 
-Participant capability entries are tagged by their Rust owner (`vitality`,
-`stat`, `defense`, `resource`, or `modifier`). An entry whose owner is not
-declared by the artifact fails before session construction. Every participant
-requires exactly one bounded vitality value and at least one referenced action
-from the materialized artifact. The initialized current actor must have
-positive vitality; inactive participants remain in initiative order but are
-skipped by turn authority and cannot act or be submitted as targets.
+Initial stat/defense ids must be provided by the selected Ruleset and their
+values must be inside the named numeric domain. Resource/modifier ids must be
+defined by the selected Content Packs. Each participant needs exactly one
+vitality value and at least one selected action.
 
-Setup is not an execution script. It has no action order, target order,
-reaction decisions, random results, expected events, or expected outcomes.
-Strict decoding rejects additional fields, so those concepts cannot silently
-be smuggled into setup version 1.
+Scenario is not an execution script. It cannot encode definitions, commands,
+targets, reactions, roll values, expected events/outcomes, or Tester settings.
+Strict decoding rejects every additional field.
 
 ## Authority and readbacks
 
-An accepted action advances capability state, appends an accepted-event log
-entry, and advances to the next living initiative participant in the same
-session transaction. The explicit `endTurn` control is a separate typed
-authority proposal. When legal, it advances state revision, modifier tenure,
-the accepted log, and the next living initiative participant atomically
-without inventing a gameplay action. A reaction keeps an action transaction
-suspended; neither an action nor turn control can proceed until the reaction
-is resolved. Rejections preserve state, log, turn, pending reaction, and
-accepted-random position.
+Accepted actions and explicit end-turn controls atomically update state,
+modifier tenure, accepted events, and the next living initiative participant.
+A pending reaction blocks other commands until resolved. Rejections preserve
+state, log, turn, reaction, and accepted-random position.
 
-Every accepted transition to a next turn ages each unchanged active modifier
-exactly once. Positive tenure decrements through a
-`modifierDurationChanged` event and tenure one expires through a
-`modifierExpired` event. A modifier applied, replaced, or refreshed by the
-accepted action begins its full authored 1-to-1000-turn tenure and first ages
-on a later accepted turn transition. A completed encounter does not advance a
-turn or age modifiers. Event schema version 2 adds these authority-owned turn
-events; checkpoint and replay schema bindings reject older event vocabularies.
-
-`RpgAuthoritySession::encounter_view` is the renderer-facing structured
-readback. It provides:
-
-- board and cell capabilities;
-- participant state and artifact definition identities;
-- current round, turn, actor, and initiative order;
-- only the current participant's referenced actions and legal participant
-  target candidates;
-- typed extension slots for cell and area choices (empty in the initial entity
-  target profile);
-- authority-provided turn controls with availability and rejection readback;
-- a pending reaction with its exact options;
-- accepted DomainEvents in the encounter log;
-- in-progress or completed outcome data.
-
-The view is descriptive output. A host sends an `RpgActionProposal`,
-`RpgReactionProposal`, or `RpgTurnControlProposal` tied to the expected state
-revision. Rust repeats all legality checks and is the only state/turn mutation
-authority. Turn controls are rejected for a stale revision, wrong or inactive
-actor, completed encounter, or pending reaction.
+`RpgAuthoritySession::encounter_view` exposes board/cells, participant state,
+current actor and initiative, selected and legal actions/targets, available
+turn controls, pending reaction options, accepted events, and encounter
+outcome. It is descriptive output; only Rust mutates authority state.
 
 ## Random evidence
 
-Normal interactive calls use
-`submit_with_random_source_recorded` and
-`react_with_random_source_recorded`. The `RpgRandomSource` trait exposes only
-an exact source binding and `draw` for the request Rust currently issued. The
-session probes its own ordinary authority path to discover each request, checks
-the source binding, validates count and die range, and records one terminal raw
-command containing the consumed evidence. Hosts do not inspect random plans or
-choose branches.
+Interactive calls use a bound `RpgRandomSource`. Rust requests the exact draw,
+validates its shape and range, and records consumed evidence. Hosts do not
+inspect a random plan or select semantic branches. `RpgRollTapeSource` remains
+a bounded portable source for consumers and focused tests; no seeded algorithm
+is a portability claim.
 
-The evidence-bearing `RpgAuthorityCommand` and `RpgReactionCommand` remain
-serialized replay vocabulary, but their direct execution methods are crate
-internal. Public interactive callers use the proposal-plus-source methods, so
-precomputed random arrays are not a second host authority path.
+Replay invokes ordinary submit/reaction/turn-control paths with recorded
+evidence. It never rematerializes content, resolves versions, regenerates
+randomness, or reapplies events.
 
-`RpgRollTapeSource` is the portable bounded source for consumers and tests. Its
-entries pair an exact `RpgRandomRequest` with values. It diagnoses exhaustion,
-request-order mismatch, out-of-range values, excess values within an entry,
-and unconsumed entries through `require_exhausted`. Invalid entries are not
-removed from the tape. No seeded generator or unspecified default RNG is a
-portability claim in version 1.
+## Non-claims
 
-Replay executes recorded action, reaction, and turn-control commands through
-the ordinary session paths. It does not call a random source or regenerate
-evidence. Replay entry schema version 3 adds the typed `turnControl` operation
-and `controlAccepted` outcome.
-
-## Compatibility
-
-Setup, encounter view, checkpoint, replay entry, event, operation, capability,
-random policy, and source versions are independent compatibility identities.
-Unknown setup/view schema versions, an artifact mismatch, a source binding
-mismatch, or a changed setup fingerprint fail closed. Adding a new setup field
-requires a new setup schema version because version 1 uses strict decode.
-
-The initial board authority enforces extent, unique occupancy, and impassable
-destination cells. It does not claim terrain pathfinding, area target
-semantics, movement-cost evaluation, campaign persistence, scripted runners,
-AI control, or Rulebench product protocols.
+The initial board authority does not claim pathfinding, area-target semantics,
+movement-cost evaluation, campaign persistence, scripted runners, AI control,
+Tester configuration, or Rulebench product protocols.

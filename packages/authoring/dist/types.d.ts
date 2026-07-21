@@ -48,7 +48,7 @@ export interface AuthoredAction {
     readonly costs: readonly RpgIrResourceCost[];
     readonly program: AuthoringProgram;
 }
-export type AuthoredSourceKind = 'actions' | 'archetype' | 'item' | 'scenario';
+export type AuthoredSourceKind = 'actions' | 'archetype' | 'item';
 export interface AuthoredActionSource {
     readonly kind: AuthoredSourceKind;
     readonly id: string;

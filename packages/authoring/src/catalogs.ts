@@ -7,9 +7,9 @@ import type {
 } from '@asha-rpg/ir';
 
 import { immutable } from './canonical.js';
-import type { RulesetSupportDefinition } from './ruleset-types.js';
+import type { ContentSupportDefinition } from './play-bundle-types.js';
 
-export type RulesetCatalogCategory =
+export type ContentCatalogCategory =
   | 'stat'
   | 'defense'
   | 'resource'
@@ -21,7 +21,7 @@ const authoredCatalogOwnership: unique symbol = Symbol(
   'asha-rpg.authored-catalog-ownership',
 );
 
-export type RulesetCatalogValue<Category extends RulesetCatalogCategory> =
+export type ContentCatalogValue<Category extends ContentCatalogCategory> =
   Category extends 'stat'
     ? RpgStatId
     : Category extends 'defense'
@@ -33,11 +33,11 @@ export type RulesetCatalogValue<Category extends RulesetCatalogCategory> =
           : RpgDamageType;
 
 /** A nominal authored ID bound to both its catalog category and owner package. */
-export type RulesetCatalogReference<
-  Category extends RulesetCatalogCategory,
+export type ContentCatalogReference<
+  Category extends ContentCatalogCategory,
   PackageId extends string,
 > = Readonly<{
-  readonly definitionId: RulesetCatalogValue<Category>;
+  readonly definitionId: ContentCatalogValue<Category>;
   readonly category: Category;
   readonly packageId: PackageId;
   readonly [catalogReferenceBrand]: true;
@@ -46,12 +46,12 @@ export type RulesetCatalogReference<
 export interface AuthoredCatalogOwnership {
   readonly field: string;
   readonly definitionId: string;
-  readonly category: RulesetCatalogCategory;
+  readonly category: ContentCatalogCategory;
   readonly packageId: string;
 }
 
-export interface RulesetCatalogEntry<
-  Category extends RulesetCatalogCategory = RulesetCatalogCategory,
+export interface ContentCatalogEntry<
+  Category extends ContentCatalogCategory = ContentCatalogCategory,
 > {
   readonly definitionId: string;
   readonly category: Category;
@@ -61,34 +61,34 @@ export interface RulesetCatalogEntry<
   readonly tags?: readonly string[];
 }
 
-export interface RulesetCatalog<
+export interface ContentCatalog<
   PackageId extends string,
-  Entries extends Readonly<Record<string, RulesetCatalogEntry>>,
+  Entries extends Readonly<Record<string, ContentCatalogEntry>>,
 > {
   readonly packageId: PackageId;
-  readonly definitions: readonly RulesetSupportDefinition[];
+  readonly definitions: readonly ContentSupportDefinition[];
   readonly references: {
-    readonly [Key in keyof Entries]: RulesetCatalogReference<
+    readonly [Key in keyof Entries]: ContentCatalogReference<
       Entries[Key]['category'],
       PackageId
     >;
   };
 }
 
-export function defineRulesetCatalog<
+export function defineContentCatalog<
   const PackageId extends string,
-  const Entries extends Readonly<Record<string, RulesetCatalogEntry>>,
+  const Entries extends Readonly<Record<string, ContentCatalogEntry>>,
 >(input: {
   readonly packageId: PackageId;
   readonly sourceModule: string;
   readonly entries: Entries;
-}): RulesetCatalog<PackageId, Entries> {
+}): ContentCatalog<PackageId, Entries> {
   assertIdentifier(input.packageId, 'catalog package id');
   if (input.sourceModule.length === 0) {
     throw new Error('catalog source module must not be empty');
   }
 
-  const definitions: RulesetSupportDefinition[] = [];
+  const definitions: ContentSupportDefinition[] = [];
   const references: Record<string, unknown> = {};
   for (const [name, entry] of Object.entries(input.entries)) {
     assertIdentifier(name, 'catalog entry name');
@@ -128,28 +128,28 @@ export function defineRulesetCatalog<
     packageId: input.packageId,
     definitions: immutable(definitions),
     references: immutable(references),
-  }) as unknown as RulesetCatalog<PackageId, Entries>;
+  }) as unknown as ContentCatalog<PackageId, Entries>;
 }
 
-export function catalogDefinitionId<Category extends RulesetCatalogCategory>(
-  reference: RulesetCatalogReference<Category, string>,
-): RulesetCatalogValue<Category> {
+export function catalogDefinitionId<Category extends ContentCatalogCategory>(
+  reference: ContentCatalogReference<Category, string>,
+): ContentCatalogValue<Category> {
   return reference.definitionId;
 }
 
 /** @internal Used only by the explicit low-level authoring subpath. */
 export function createLowLevelCatalogReference<
-  const Category extends RulesetCatalogCategory,
+  const Category extends ContentCatalogCategory,
   const PackageId extends string,
 >(input: {
   readonly category: Category;
   readonly packageId: PackageId;
   readonly definitionId: string;
-}): RulesetCatalogReference<Category, PackageId> {
+}): ContentCatalogReference<Category, PackageId> {
   assertIdentifier(input.packageId, 'catalog package id');
   assertIdentifier(input.definitionId, 'catalog definition id');
   return immutable({
-    definitionId: input.definitionId as RulesetCatalogValue<Category>,
+    definitionId: input.definitionId as ContentCatalogValue<Category>,
     category: input.category,
     packageId: input.packageId,
     [catalogReferenceBrand]: true as const,
@@ -196,7 +196,7 @@ export function catalogOwnershipOf(value: object): readonly AuthoredCatalogOwner
 
 function isCatalogReference(
   value: unknown,
-): value is RulesetCatalogReference<RulesetCatalogCategory, string> {
+): value is ContentCatalogReference<ContentCatalogCategory, string> {
   return (
     value !== null &&
     typeof value === 'object' &&

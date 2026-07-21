@@ -9,34 +9,35 @@ import {
   actionId,
   actionPatch,
   canonicalJson,
-  combineRulesetPatches,
-  composeRuleset,
+  combineContentPatches,
+  composePlayBundle,
   constant,
   damage,
   defineActionDefinition,
   defineDerivedDefinition,
   defineMixinDefinition,
-  defineRulesetPackage,
-  defineRulesetCatalog,
-  defineRulesetRelationship,
+  defineContentPack,
+  defineContentCatalog,
+  defineContentRelationship,
   defineSupportDefinition,
   defineTemplateDefinition,
   definitionReference,
   hostile,
   noRoll,
   onCheck,
-  prepareRulesetCompilation,
-  rulesetDependency,
-  rulesetPackageRequest,
-  rulesetPackageSource,
+  preparePlayBundle,
+  contentPackDependency,
+  contentPackRequest,
+  contentPackSource,
   stableFingerprint,
   withLowLevelDefinitionReferences,
 } from '@asha-rpg/authoring';
 import type {
-  PreparedRulesetCompilation,
-  RulesetMixinApplication,
-  RulesetPackageSource,
+  PreparedPlayBundle,
+  ContentMixinApplication,
+  ContentPackSource,
 } from '@asha-rpg/authoring';
+import { contractTestRuleset } from './test-ruleset.ts';
 
 const root = fileURLToPath(new URL('../../../', import.meta.url));
 
@@ -62,7 +63,7 @@ type CompilePreparedResult =
 
 test('ordered mixins, local patches, and overlays materialize deterministically', () => {
   const baseSources = materializationSources('multiplyThenAdd');
-  const baseline = acceptedPrepared(composition([]), baseSources);
+  const baseline = acceptedPrepared(playBundle([]), baseSources);
   const derived = baseline.derivationProvenance[0];
   assert.ok(derived);
   assert.deepEqual(
@@ -96,7 +97,7 @@ test('ordered mixins, local patches, and overlays materialize deterministically'
     value: 11,
   });
   const semanticPrepared = acceptedPrepared(
-    composition(['sample.semantic-overlay']),
+    playBundle(['sample.semantic-overlay']),
     [...baseSources, semanticOverlay],
   );
   const semanticProvenance = semanticPrepared.overlayProvenance[0];
@@ -112,12 +113,12 @@ test('ordered mixins, local patches, and overlays materialize deterministically'
     value: 'Arc Variant: Stormfront',
   });
   const finalPrepared = acceptedPrepared(
-    composition(['sample.semantic-overlay', 'sample.presentation-overlay']),
+    playBundle(['sample.semantic-overlay', 'sample.presentation-overlay']),
     [...baseSources, semanticOverlay, presentationOverlay],
   );
   const reorderedSources = [...baseSources, presentationOverlay, semanticOverlay].reverse();
   const repeated = acceptedPrepared(
-    composition(['sample.semantic-overlay', 'sample.presentation-overlay']),
+    playBundle(['sample.semantic-overlay', 'sample.presentation-overlay']),
     reorderedSources,
   );
   assert.equal(canonicalJson(finalPrepared), canonicalJson(repeated));
@@ -157,7 +158,7 @@ test('ordered mixins, local patches, and overlays materialize deterministically'
   );
 
   const reversedMixins = acceptedPrepared(
-    composition([]),
+    playBundle([]),
     materializationSources('addThenMultiply'),
   );
   assert.notEqual(
@@ -172,8 +173,8 @@ test('ordered mixins, local patches, and overlays materialize deterministically'
 
 test('Rust rejects provenance fingerprints and coverage that do not match materialized definitions', () => {
   const sources = materializationSources('multiplyThenAdd');
-  const baseline = acceptedPrepared(composition([]), sources);
-  const falseDerivationFingerprint: PreparedRulesetCompilation = {
+  const baseline = acceptedPrepared(playBundle([]), sources);
+  const falseDerivationFingerprint: PreparedPlayBundle = {
     ...baseline,
     derivationProvenance: baseline.derivationProvenance.map((provenance, index) =>
       index === 0
@@ -183,7 +184,7 @@ test('Rust rejects provenance fingerprints and coverage that do not match materi
   };
   assertCompilationFailsWith(
     falseDerivationFingerprint,
-    'RULESET_DERIVATION_MATERIALIZED_FINGERPRINT_MISMATCH',
+    'CONTENT_PACK_DERIVATION_MATERIALIZED_FINGERPRINT_MISMATCH',
   );
 
   const derived = baseline.derivationProvenance[0];
@@ -193,7 +194,7 @@ test('Rust rejects provenance fingerprints and coverage that do not match materi
     ...derived.materialized,
     id: derived.baseDefinitionId,
   };
-  const coordinatedSourceSubstitution: PreparedRulesetCompilation = {
+  const coordinatedSourceSubstitution: PreparedPlayBundle = {
     ...baseline,
     derivationProvenance: baseline.derivationProvenance.map(
       (provenance, index) =>
@@ -216,7 +217,7 @@ test('Rust rejects provenance fingerprints and coverage that do not match materi
   };
   assertCompilationFailsWith(
     coordinatedSourceSubstitution,
-    'RULESET_DERIVATION_BASE_COMMITMENT_MISMATCH',
+    'CONTENT_PACK_DERIVATION_BASE_COMMITMENT_MISMATCH',
   );
   const semanticOverlay = overlayPackage({
     id: 'sample.semantic-overlay',
@@ -226,10 +227,10 @@ test('Rust rejects provenance fingerprints and coverage that do not match materi
     value: 11,
   });
   const semanticPrepared = acceptedPrepared(
-    composition(['sample.semantic-overlay']),
+    playBundle(['sample.semantic-overlay']),
     [...sources, semanticOverlay],
   );
-  const falseOverlayFingerprint: PreparedRulesetCompilation = {
+  const falseOverlayFingerprint: PreparedPlayBundle = {
     ...semanticPrepared,
     overlayProvenance: semanticPrepared.overlayProvenance.map((provenance, index) =>
       index === 0
@@ -239,10 +240,10 @@ test('Rust rejects provenance fingerprints and coverage that do not match materi
   };
   assertCompilationFailsWith(
     falseOverlayFingerprint,
-    'RULESET_OVERLAY_AFTER_FINGERPRINT_MISMATCH',
+    'CONTENT_PACK_OVERLAY_AFTER_FINGERPRINT_MISMATCH',
   );
 
-  const coordinatedFalseBoundaryFingerprint: PreparedRulesetCompilation = {
+  const coordinatedFalseBoundaryFingerprint: PreparedPlayBundle = {
     ...semanticPrepared,
     derivationProvenance: semanticPrepared.derivationProvenance.map(
       (provenance, index) =>
@@ -266,12 +267,12 @@ test('Rust rejects provenance fingerprints and coverage that do not match materi
   };
   assertCompilationFailsWith(
     coordinatedFalseBoundaryFingerprint,
-    'RULESET_DERIVATION_MATERIALIZED_FINGERPRINT_MISMATCH',
+    'CONTENT_PACK_DERIVATION_MATERIALIZED_FINGERPRINT_MISMATCH',
   );
 
   const finalFingerprint = semanticPrepared.overlayProvenance[0]?.afterFingerprint;
   assert.ok(finalFingerprint);
-  const omittedOverlayChanges: PreparedRulesetCompilation = {
+  const omittedOverlayChanges: PreparedPlayBundle = {
     ...semanticPrepared,
     derivationProvenance: semanticPrepared.derivationProvenance.map(
       (provenance, index) =>
@@ -294,16 +295,16 @@ test('Rust rejects provenance fingerprints and coverage that do not match materi
   };
   assertCompilationFailsWith(
     omittedOverlayChanges,
-    'RULESET_OVERLAY_CHANGE_COVERAGE_MISMATCH',
+    'CONTENT_PACK_OVERLAY_CHANGE_COVERAGE_MISMATCH',
   );
 
-  const missingOverlayProvenance: PreparedRulesetCompilation = {
+  const missingOverlayProvenance: PreparedPlayBundle = {
     ...semanticPrepared,
     overlayProvenance: [],
   };
   assertCompilationFailsWith(
     missingOverlayProvenance,
-    'RULESET_OVERLAY_PROVENANCE_COVERAGE_MISMATCH',
+    'CONTENT_PACK_OVERLAY_PROVENANCE_COVERAGE_MISMATCH',
   );
 
   const directDefinition = defineSupportDefinition({
@@ -315,7 +316,7 @@ test('Rust rejects provenance fingerprints and coverage that do not match materi
     semantic: { catalog: 'stat', id: 'direct-overlay-target' },
     presentation: { label: 'Direct target' },
   });
-  const directSource = rulesetPackageSource(defineRulesetPackage({
+  const directSource = contentPackSource(defineContentPack({
     identity: { id: 'sample.direct', version: '1.0.0' },
     entry: { module: 'direct/index.ts', declaration: 'default' },
     language: { id: 'asha-rpg', version: '^1.0.0' },
@@ -336,12 +337,12 @@ test('Rust rejects provenance fingerprints and coverage that do not match materi
     },
     references: [],
   } as const;
-  const directOverlay = rulesetPackageSource(defineRulesetPackage({
+  const directOverlay = contentPackSource(defineContentPack({
     identity: { id: 'sample.direct-overlay', version: '1.0.0' },
     entry: { module: 'direct-overlay.ts', declaration: 'default' },
     language: { id: 'asha-rpg', version: '^1.0.0' },
     dependencies: [
-      rulesetDependency({
+      contentPackDependency({
         id: 'sample.direct',
         version: '1.0.0',
         importAs: 'direct',
@@ -351,7 +352,7 @@ test('Rust rejects provenance fingerprints and coverage that do not match materi
     definitions: [],
     exports: [],
     policyBindings: [],
-    relationships: [defineRulesetRelationship({
+    relationships: [defineContentRelationship({
       kind: 'patches',
       definitionId: 'sample.direct-overlay.patch',
       target: definitionReference({
@@ -367,13 +368,13 @@ test('Rust rejects provenance fingerprints and coverage that do not match materi
     })],
   }));
   const directPrepared = acceptedPrepared(
-    composeRuleset({
-      identity: { id: 'sample.direct-composition', version: '1.0.0' },
-      language: { id: 'asha-rpg', version: '^1.0.0' },
-      base: rulesetPackageRequest({ id: 'sample.direct', version: '1.0.0' }),
+    composePlayBundle({
+      identity: { id: 'sample.direct-bundle', version: '1.0.0' },
+      ruleset: contractTestRuleset,
+      base: contentPackRequest({ id: 'sample.direct', version: '1.0.0' }),
       add: [],
       overlays: [
-        rulesetPackageRequest({ id: 'sample.direct-overlay', version: '1.0.0' }),
+        contentPackRequest({ id: 'sample.direct-overlay', version: '1.0.0' }),
       ],
       configure: {},
     }),
@@ -388,7 +389,7 @@ test('Rust rejects provenance fingerprints and coverage that do not match materi
   assert.equal(directPrepared.definitionCommitments.length, 1);
   assertCompilationFailsWith(
     { ...directPrepared, definitionCommitments: [] },
-    'RULESET_OVERLAY_INITIAL_COMMITMENT_MISSING',
+    'CONTENT_PACK_OVERLAY_INITIAL_COMMITMENT_MISSING',
   );
   const fabricatedFinalStage = {
     ...directProvenance.before,
@@ -399,7 +400,7 @@ test('Rust rejects provenance fingerprints and coverage that do not match materi
     references: directFinal.references,
   };
   const fabricatedFinalFingerprint = stableFingerprint(fabricatedFinalStage);
-  const concreteOverlaySubstitution: PreparedRulesetCompilation = {
+  const concreteOverlaySubstitution: PreparedPlayBundle = {
     ...directPrepared,
     overlayProvenance: [{
       ...directProvenance,
@@ -414,26 +415,26 @@ test('Rust rejects provenance fingerprints and coverage that do not match materi
   };
   assertCompilationFailsWith(
     concreteOverlaySubstitution,
-    'RULESET_OVERLAY_BEFORE_STAGE_MISMATCH',
+    'CONTENT_PACK_OVERLAY_BEFORE_STAGE_MISMATCH',
   );
 });
 
 test('derivation and overlay errors retain exact path and policy diagnostics', () => {
-  const cycle = prepareRulesetCompilation({
-    composition: composeRuleset({
-      identity: { id: 'sample.cycle-composition', version: '1.0.0' },
-      language: { id: 'asha-rpg', version: '^1.0.0' },
-      base: rulesetPackageRequest({ id: 'sample.cycle', version: '1.0.0' }),
+  const cycle = preparePlayBundle({
+    bundle: composePlayBundle({
+      identity: { id: 'sample.cycle-bundle', version: '1.0.0' },
+      ruleset: contractTestRuleset,
+      base: contentPackRequest({ id: 'sample.cycle', version: '1.0.0' }),
       add: [],
       overlays: [],
       configure: {},
     }),
-    packages: [cyclePackage()],
+    contentPacks: [cyclePackage()],
   });
   assert.equal(cycle.ok, false);
   if (!cycle.ok) {
     const diagnostic = cycle.diagnostics.find(
-      (entry) => entry.code === 'RULESET_DERIVATION_CYCLE',
+      (entry) => entry.code === 'CONTENT_PACK_DERIVATION_CYCLE',
     );
     assert.deepEqual(diagnostic?.graphPath, [
       'sample.cycle@1.0.0#sample.a',
@@ -442,23 +443,23 @@ test('derivation and overlay errors retain exact path and policy diagnostics', (
     ]);
   }
 
-  const incompatible = prepareRulesetCompilation({
-    composition: composeRuleset({
-      identity: { id: 'sample.incompatible-composition', version: '1.0.0' },
-      language: { id: 'asha-rpg', version: '^1.0.0' },
-      base: rulesetPackageRequest({ id: 'sample.incompatible', version: '1.0.0' }),
+  const incompatible = preparePlayBundle({
+    bundle: composePlayBundle({
+      identity: { id: 'sample.incompatible-bundle', version: '1.0.0' },
+      ruleset: contractTestRuleset,
+      base: contentPackRequest({ id: 'sample.incompatible', version: '1.0.0' }),
       add: [],
       overlays: [],
       configure: {},
     }),
-    packages: [incompatibleBasePackage()],
+    contentPacks: [incompatibleBasePackage()],
   });
   assert.equal(incompatible.ok, false);
   if (!incompatible.ok) {
     assert.ok(
       incompatible.diagnostics.some(
         (entry) =>
-          entry.code === 'RULESET_DERIVATION_KIND_INCOMPATIBLE' &&
+          entry.code === 'CONTENT_PACK_DERIVATION_KIND_INCOMPATIBLE' &&
           entry.definitionId === 'sample.invalid-derived' &&
           entry.actual === 'template',
       ),
@@ -466,7 +467,7 @@ test('derivation and overlay errors retain exact path and policy diagnostics', (
   }
 
   const sources = materializationSources('multiplyThenAdd');
-  const baseline = acceptedPrepared(composition([]), sources);
+  const baseline = acceptedPrepared(playBundle([]), sources);
   const expected = baseline.derivationProvenance[0]?.materializedFingerprint;
   assert.ok(expected);
   const mismatch = overlayPackage({
@@ -476,16 +477,16 @@ test('derivation and overlay errors retain exact path and policy diagnostics', (
     path: ['targets', 'maximumRange'],
     value: 9,
   });
-  const mismatchResult = prepareRulesetCompilation({
-    composition: composition(['sample.mismatch-overlay']),
-    packages: [...sources, mismatch],
+  const mismatchResult = preparePlayBundle({
+    bundle: playBundle(['sample.mismatch-overlay']),
+    contentPacks: [...sources, mismatch],
   });
   assert.equal(mismatchResult.ok, false);
   if (!mismatchResult.ok) {
     assert.ok(
       mismatchResult.diagnostics.some(
         (entry) =>
-          entry.code === 'RULESET_OVERLAY_EXPECTED_FINGERPRINT_MISMATCH' &&
+          entry.code === 'CONTENT_PACK_OVERLAY_EXPECTED_FINGERPRINT_MISMATCH' &&
           entry.expected === 'fnv1a64:0000000000000000' &&
           entry.actual === expected,
       ),
@@ -493,15 +494,15 @@ test('derivation and overlay errors retain exact path and policy diagnostics', (
   }
 
   const forbidden = forbiddenOverlayPackage();
-  const forbiddenResult = prepareRulesetCompilation({
-    composition: composition(['sample.forbidden-overlay']),
-    packages: [...sources, forbidden],
+  const forbiddenResult = preparePlayBundle({
+    bundle: playBundle(['sample.forbidden-overlay']),
+    contentPacks: [...sources, forbidden],
   });
   assert.equal(forbiddenResult.ok, false);
   if (!forbiddenResult.ok) {
     assert.ok(
       forbiddenResult.diagnostics.some(
-        (entry) => entry.code === 'RULESET_OVERLAY_TARGET_FORBIDDEN',
+        (entry) => entry.code === 'CONTENT_PACK_OVERLAY_TARGET_FORBIDDEN',
       ),
     );
   }
@@ -517,7 +518,7 @@ test('configuration applies only an explicitly exposed typed option', () => {
     semantic: { catalog: 'damageType', id: 'storm' },
     presentation: { label: 'Configurable damage' },
   });
-  const source = rulesetPackageSource(defineRulesetPackage({
+  const source = contentPackSource(defineContentPack({
     identity: { id: 'sample.config', version: '1.0.0' },
     entry: { module: 'config/index.ts', declaration: 'default' },
     language: { id: 'asha-rpg', version: '^1.0.0' },
@@ -526,7 +527,7 @@ test('configuration applies only an explicitly exposed typed option', () => {
     definitions: [configurable],
     exports: [configurable.id],
     policyBindings: [],
-    relationships: [defineRulesetRelationship({
+    relationships: [defineContentRelationship({
       kind: 'configures',
       optionId: 'sample.damage-kind',
       target: definitionReference({ definitionId: configurable.id }),
@@ -543,16 +544,16 @@ test('configuration applies only an explicitly exposed typed option', () => {
       version: 1,
     })],
   }));
-  const selected = prepareRulesetCompilation({
-    composition: composeRuleset({
+  const selected = preparePlayBundle({
+    bundle: composePlayBundle({
       identity: { id: 'sample.configured', version: '1.0.0' },
-      language: { id: 'asha-rpg', version: '^1.0.0' },
-      base: rulesetPackageRequest({ id: 'sample.config', version: '1.0.0' }),
+      ruleset: contractTestRuleset,
+      base: contentPackRequest({ id: 'sample.config', version: '1.0.0' }),
       add: [],
       overlays: [],
       configure: { 'sample.damage-kind': 'shadow' },
     }),
-    packages: [source],
+    contentPacks: [source],
   });
   assert.equal(selected.ok, true, JSON.stringify(selected));
   if (!selected.ok) return;
@@ -566,22 +567,22 @@ test('configuration applies only an explicitly exposed typed option', () => {
     ),
   );
 
-  const unavailable = prepareRulesetCompilation({
-    composition: composeRuleset({
+  const unavailable = preparePlayBundle({
+    bundle: composePlayBundle({
       identity: { id: 'sample.configured', version: '1.0.0' },
-      language: { id: 'asha-rpg', version: '^1.0.0' },
-      base: rulesetPackageRequest({ id: 'sample.config', version: '1.0.0' }),
+      ruleset: contractTestRuleset,
+      base: contentPackRequest({ id: 'sample.config', version: '1.0.0' }),
       add: [],
       overlays: [],
       configure: { 'sample.damage-kind': 'radiant' },
     }),
-    packages: [source],
+    contentPacks: [source],
   });
   assert.equal(unavailable.ok, false);
   if (!unavailable.ok) {
     assert.ok(
       unavailable.diagnostics.some(
-        (entry) => entry.code === 'RULESET_CONFIGURATION_OPTION_UNAVAILABLE',
+        (entry) => entry.code === 'CONTENT_PACK_CONFIGURATION_OPTION_UNAVAILABLE',
       ),
     );
   }
@@ -589,8 +590,8 @@ test('configuration applies only an explicitly exposed typed option', () => {
 
 function materializationSources(
   order: 'multiplyThenAdd' | 'addThenMultiply',
-): readonly RulesetPackageSource[] {
-  const catalogs = defineRulesetCatalog({
+): readonly ContentPackSource[] {
+  const catalogs = defineContentCatalog({
     packageId: 'sample.foundation',
     sourceModule: 'foundation/catalog.ts',
     entries: {
@@ -662,7 +663,7 @@ function materializationSources(
       }],
     },
   });
-  const foundation = rulesetPackageSource(defineRulesetPackage({
+  const foundation = contentPackSource(defineContentPack({
     identity: { id: 'sample.foundation', version: '1.0.0' },
     entry: { module: 'foundation/index.ts', declaration: 'default' },
     language: { id: 'asha-rpg', version: '^1.0.0' },
@@ -681,7 +682,7 @@ function materializationSources(
     relationships: [],
   }));
 
-  const mixins: readonly RulesetMixinApplication[] = order === 'multiplyThenAdd'
+  const mixins: readonly ContentMixinApplication[] = order === 'multiplyThenAdd'
     ? [
         { target: definitionReference({ importAs: 'foundation', definitionId: multiply.id }), parameters: { factor: 2 } },
         { target: definitionReference({ importAs: 'foundation', definitionId: add.id }), parameters: { amount: 1 } },
@@ -699,11 +700,11 @@ function materializationSources(
     source: { module: 'core/derived.ts', declaration: 'arcVariant' },
     presentation: { label: 'ignored authored placeholder' },
   });
-  const core = rulesetPackageSource(defineRulesetPackage({
+  const core = contentPackSource(defineContentPack({
     identity: { id: 'sample.core', version: '1.0.0' },
     entry: { module: 'core/index.ts', declaration: 'default' },
     language: { id: 'asha-rpg', version: '^1.0.0' },
-    dependencies: [rulesetDependency({ id: 'sample.foundation', version: '1.0.0', importAs: 'foundation' })],
+    dependencies: [contentPackDependency({ id: 'sample.foundation', version: '1.0.0', importAs: 'foundation' })],
     requirements: {
       operations: [{ id: 'operation.damage', version: 1 }],
       capabilities: [{ id: 'capability.vitality', version: 1 }],
@@ -711,12 +712,12 @@ function materializationSources(
     definitions: [derived],
     exports: [derived.id],
     policyBindings: [],
-    relationships: [defineRulesetRelationship({
+    relationships: [defineContentRelationship({
       kind: 'derivesFrom',
       definitionId: derived.id,
       target: definitionReference({ importAs: 'foundation', definitionId: baseAction.id }),
       mixins,
-      localPatch: combineRulesetPatches(
+      localPatch: combineContentPatches(
         actionPatch.presentation.label.set('Arc Base'),
         actionPatch.presentation.description.set(
           'Derived locally after ordered mixins',
@@ -734,17 +735,17 @@ function overlayPackage(options: {
   readonly plane: 'semantic' | 'presentation';
   readonly path: readonly string[];
   readonly value: string | number | boolean;
-}): RulesetPackageSource {
-  return rulesetPackageSource(defineRulesetPackage({
+}): ContentPackSource {
+  return contentPackSource(defineContentPack({
     identity: { id: options.id, version: '1.0.0' },
     entry: { module: `${options.id}.ts`, declaration: 'default' },
     language: { id: 'asha-rpg', version: '^1.0.0' },
-    dependencies: [rulesetDependency({ id: 'sample.core', version: '1.0.0', importAs: 'core' })],
+    dependencies: [contentPackDependency({ id: 'sample.core', version: '1.0.0', importAs: 'core' })],
     requirements: { operations: [], capabilities: [] },
     definitions: [],
     exports: [],
     policyBindings: [],
-    relationships: [defineRulesetRelationship({
+    relationships: [defineContentRelationship({
       kind: 'patches',
       definitionId: `${options.id}.patch`,
       target: definitionReference({ importAs: 'core', definitionId: 'sample.arc-variant' }),
@@ -766,17 +767,17 @@ function overlayPackage(options: {
   }));
 }
 
-function forbiddenOverlayPackage(): RulesetPackageSource {
-  return rulesetPackageSource(defineRulesetPackage({
+function forbiddenOverlayPackage(): ContentPackSource {
+  return contentPackSource(defineContentPack({
     identity: { id: 'sample.forbidden-overlay', version: '1.0.0' },
     entry: { module: 'forbidden.ts', declaration: 'default' },
     language: { id: 'asha-rpg', version: '^1.0.0' },
-    dependencies: [rulesetDependency({ id: 'sample.foundation', version: '1.0.0', importAs: 'foundation' })],
+    dependencies: [contentPackDependency({ id: 'sample.foundation', version: '1.0.0', importAs: 'foundation' })],
     requirements: { operations: [], capabilities: [] },
     definitions: [],
     exports: [],
     policyBindings: [],
-    relationships: [defineRulesetRelationship({
+    relationships: [defineContentRelationship({
       kind: 'patches',
       definitionId: 'sample.forbidden-overlay.patch',
       target: definitionReference({ importAs: 'foundation', definitionId: 'sample.arc-base' }),
@@ -790,7 +791,7 @@ function forbiddenOverlayPackage(): RulesetPackageSource {
   }));
 }
 
-function cyclePackage(): RulesetPackageSource {
+function cyclePackage(): ContentPackSource {
   const a = defineDerivedDefinition({
     kind: 'derived', id: 'sample.a', materializesAs: 'action', visibility: 'public', extensionPolicy: 'derivable',
     source: { module: 'cycle.ts', declaration: 'a' },
@@ -799,12 +800,12 @@ function cyclePackage(): RulesetPackageSource {
     kind: 'derived', id: 'sample.b', materializesAs: 'action', visibility: 'public', extensionPolicy: 'derivable',
     source: { module: 'cycle.ts', declaration: 'b' },
   });
-  return rulesetPackageSource(defineRulesetPackage({
+  return contentPackSource(defineContentPack({
     identity: { id: 'sample.cycle', version: '1.0.0' },
     entry: { module: 'cycle.ts', declaration: 'default' },
     language: { id: 'asha-rpg', version: '^1.0.0' }, dependencies: [],
     requirements: { operations: [], capabilities: [] }, definitions: [a, b], exports: [a.id], policyBindings: [],
-    relationships: [a, b].map((definition, index) => defineRulesetRelationship({
+    relationships: [a, b].map((definition, index) => defineContentRelationship({
       kind: 'derivesFrom', definitionId: definition.id,
       target: definitionReference({ definitionId: index === 0 ? b.id : a.id }),
       mixins: [], localPatch: { version: 1, operations: [] }, version: 1,
@@ -812,7 +813,7 @@ function cyclePackage(): RulesetPackageSource {
   }));
 }
 
-function incompatibleBasePackage(): RulesetPackageSource {
+function incompatibleBasePackage(): ContentPackSource {
   const template = defineTemplateDefinition({
     kind: 'template',
     id: 'sample.template-base',
@@ -828,7 +829,7 @@ function incompatibleBasePackage(): RulesetPackageSource {
     extensionPolicy: 'sealed',
     source: { module: 'incompatible.ts', declaration: 'invalidDerived' },
   });
-  return rulesetPackageSource(defineRulesetPackage({
+  return contentPackSource(defineContentPack({
     identity: { id: 'sample.incompatible', version: '1.0.0' },
     entry: { module: 'incompatible.ts', declaration: 'default' },
     language: { id: 'asha-rpg', version: '^1.0.0' },
@@ -837,7 +838,7 @@ function incompatibleBasePackage(): RulesetPackageSource {
     definitions: [template, derived],
     exports: [derived.id],
     policyBindings: [],
-    relationships: [defineRulesetRelationship({
+    relationships: [defineContentRelationship({
       kind: 'derivesFrom',
       definitionId: derived.id,
       target: definitionReference({ definitionId: template.id }),
@@ -848,36 +849,36 @@ function incompatibleBasePackage(): RulesetPackageSource {
   }));
 }
 
-function composition(overlays: readonly string[]) {
-  return composeRuleset({
+function playBundle(overlays: readonly string[]) {
+  return composePlayBundle({
     identity: { id: 'sample.materialized', version: '1.0.0' },
-    language: { id: 'asha-rpg', version: '^1.0.0' },
-    base: rulesetPackageRequest({ id: 'sample.core', version: '1.0.0' }),
+    ruleset: contractTestRuleset,
+    base: contentPackRequest({ id: 'sample.core', version: '1.0.0' }),
     add: [],
-    overlays: overlays.map((id) => rulesetPackageRequest({ id, version: '1.0.0' })),
+    overlays: overlays.map((id) => contentPackRequest({ id, version: '1.0.0' })),
     configure: {},
   });
 }
 
 function acceptedPrepared(
-  selectedComposition: ReturnType<typeof composition>,
-  packages: readonly RulesetPackageSource[],
-): PreparedRulesetCompilation {
-  const result = prepareRulesetCompilation({ composition: selectedComposition, packages });
+  selectedComposition: ReturnType<typeof playBundle>,
+  contentPacks: readonly ContentPackSource[],
+): PreparedPlayBundle {
+  const result = preparePlayBundle({ bundle: selectedComposition, contentPacks });
   if (!result.ok) assert.fail(JSON.stringify(result.diagnostics));
   return result.prepared;
 }
 
-function compilePrepared(prepared: PreparedRulesetCompilation) {
+function compilePrepared(prepared: PreparedPlayBundle) {
   const result = compilePreparedResult(prepared);
   if (!result.ok) assert.fail(JSON.stringify(result.diagnostics));
   return result.artifact;
 }
 
-function compilePreparedResult(prepared: PreparedRulesetCompilation): CompilePreparedResult {
+function compilePreparedResult(prepared: PreparedPlayBundle): CompilePreparedResult {
   const compilation = spawnSync(
     'cargo',
-    ['run', '--quiet', '--manifest-path', join(root, 'Cargo.toml'), '-p', 'rpg-compiler', '--bin', 'compile_ruleset'],
+    ['run', '--quiet', '--manifest-path', join(root, 'Cargo.toml'), '-p', 'rpg-compiler', '--bin', 'compile_play_bundle'],
     { cwd: root, encoding: 'utf8', input: canonicalJson(prepared) },
   );
   assert.equal(compilation.status, 0, compilation.stderr);
@@ -885,7 +886,7 @@ function compilePreparedResult(prepared: PreparedRulesetCompilation): CompilePre
 }
 
 function assertCompilationFailsWith(
-  prepared: PreparedRulesetCompilation,
+  prepared: PreparedPlayBundle,
   diagnosticCode: string,
 ): void {
   const result = compilePreparedResult(prepared);

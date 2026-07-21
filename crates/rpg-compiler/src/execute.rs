@@ -13,7 +13,7 @@ use rpg_ir::{
 };
 
 use crate::compile::{CompiledAction, CompiledOperation, CompiledProgram};
-use crate::CompiledRpgRuleset;
+use crate::CompiledRpgRules;
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 enum CheckOutcome {
@@ -24,7 +24,7 @@ enum CheckOutcome {
     NoRoll,
 }
 
-impl CompiledRpgRuleset {
+impl CompiledRpgRules {
     pub fn resolve(
         &self,
         state: &mut RpgCapabilityState,

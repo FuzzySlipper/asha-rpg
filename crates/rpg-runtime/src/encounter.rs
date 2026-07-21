@@ -3,17 +3,17 @@ use std::{
     fmt,
 };
 
-use rpg_compiler::{CompiledRpgAction, CompiledRulesetBundle};
+use rpg_compiler::{CompiledPlayBundle, CompiledRpgAction};
 use rpg_core::{
     ActiveRpgModifier, BoundedValue, GridPosition, RpgCapabilityState, RpgEntityState, RpgIntent,
     RpgRandomRequest, RpgReactionRequest, RpgResolutionRejection, RpgTeamId,
     MAXIMUM_RPG_MODIFIER_TURNS,
 };
-use rpg_ir::{MaterializedRulesetDefinitionKind, MaterializedRulesetVisibility};
+use rpg_ir::{MaterializedContentDefinitionKind, MaterializedContentVisibility, RulesetValueKind};
 use serde::{Deserialize, Serialize};
 
-pub const RPG_ENCOUNTER_SETUP_SCHEMA_ID: &str = "asha.rpg.encounter.setup";
-pub const RPG_ENCOUNTER_SETUP_SCHEMA_VERSION: u32 = 1;
+pub const RPG_SCENARIO_SCHEMA_ID: &str = "asha.rpg.scenario";
+pub const RPG_SCENARIO_SCHEMA_VERSION: u32 = 1;
 pub const RPG_ENCOUNTER_VIEW_SCHEMA_ID: &str = "asha.rpg.encounter.view";
 pub const RPG_ENCOUNTER_VIEW_SCHEMA_VERSION: u32 = 2;
 pub const RPG_END_TURN_CONTROL_ID: &str = "control.end-turn";
@@ -29,20 +29,20 @@ pub struct RpgSchemaIdentity {
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase", deny_unknown_fields)]
-pub struct RpgEncounterSetup {
+pub struct RpgScenario {
     pub schema: RpgSchemaIdentity,
-    pub artifact_id: String,
+    pub play_bundle_id: String,
     pub board: RpgBoardSetup,
     pub participants: Vec<RpgParticipantSetup>,
     pub turn: RpgTurnInitialization,
     pub random_source: RpgRandomSourceBinding,
 }
 
-impl RpgEncounterSetup {
+impl RpgScenario {
     pub fn schema() -> RpgSchemaIdentity {
         RpgSchemaIdentity {
-            id: RPG_ENCOUNTER_SETUP_SCHEMA_ID.to_owned(),
-            version: RPG_ENCOUNTER_SETUP_SCHEMA_VERSION,
+            id: RPG_SCENARIO_SCHEMA_ID.to_owned(),
+            version: RPG_SCENARIO_SCHEMA_VERSION,
         }
     }
 }
@@ -160,7 +160,7 @@ pub struct RpgRandomSourceBinding {
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase", deny_unknown_fields)]
-pub struct RpgSetupDiagnostic {
+pub struct RpgScenarioDiagnostic {
     pub code: String,
     pub path: String,
     pub message: String,
@@ -168,22 +168,22 @@ pub struct RpgSetupDiagnostic {
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase", deny_unknown_fields)]
-pub struct RpgEncounterSetupFailure {
-    pub diagnostics: Vec<RpgSetupDiagnostic>,
+pub struct RpgScenarioFailure {
+    pub diagnostics: Vec<RpgScenarioDiagnostic>,
 }
 
-impl fmt::Display for RpgEncounterSetupFailure {
+impl fmt::Display for RpgScenarioFailure {
     fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
         formatter.write_str(
             self.diagnostics
                 .first()
                 .map(|diagnostic| diagnostic.message.as_str())
-                .unwrap_or("encounter setup failed"),
+                .unwrap_or("encounter scenario failed"),
         )
     }
 }
 
-impl std::error::Error for RpgEncounterSetupFailure {}
+impl std::error::Error for RpgScenarioFailure {}
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase", deny_unknown_fields)]
@@ -495,7 +495,7 @@ impl RpgRandomSource for RpgRollTapeSource {
 
 #[derive(Debug, Clone)]
 pub(crate) struct RpgEncounterAuthority {
-    pub(crate) setup: RpgEncounterSetup,
+    pub(crate) scenario: RpgScenario,
     pub(crate) turn: RpgTurnState,
     pub(crate) participant_definitions: BTreeMap<String, Vec<String>>,
     pub(crate) participant_labels: BTreeMap<String, String>,
@@ -563,16 +563,16 @@ impl RpgEncounterAuthority {
 }
 
 pub(crate) fn build_encounter(
-    bundle: &CompiledRulesetBundle,
-    setup: RpgEncounterSetup,
-) -> Result<(RpgCapabilityState, RpgEncounterAuthority), RpgEncounterSetupFailure> {
-    let diagnostics = validate_setup(bundle, &setup);
+    bundle: &CompiledPlayBundle,
+    scenario: RpgScenario,
+) -> Result<(RpgCapabilityState, RpgEncounterAuthority), RpgScenarioFailure> {
+    let diagnostics = validate_scenario(bundle, &scenario);
     if !diagnostics.is_empty() {
-        return Err(RpgEncounterSetupFailure { diagnostics });
+        return Err(RpgScenarioFailure { diagnostics });
     }
 
     let mut state = RpgCapabilityState::default();
-    for participant in &setup.participants {
+    for participant in &scenario.participants {
         let vitality = participant
             .capabilities
             .iter()
@@ -619,51 +619,51 @@ pub(crate) fn build_encounter(
 
     let authority = RpgEncounterAuthority {
         turn: RpgTurnState {
-            initiative_order: setup.turn.initiative_order.clone(),
-            current_actor_id: setup.turn.current_actor_id.clone(),
-            round: setup.turn.round,
-            turn: setup.turn.turn,
+            initiative_order: scenario.turn.initiative_order.clone(),
+            current_actor_id: scenario.turn.current_actor_id.clone(),
+            round: scenario.turn.round,
+            turn: scenario.turn.turn,
         },
-        participant_definitions: setup
+        participant_definitions: scenario
             .participants
             .iter()
             .map(|participant| (participant.id.clone(), participant.definition_ids.clone()))
             .collect(),
-        participant_labels: setup
+        participant_labels: scenario
             .participants
             .iter()
             .map(|participant| (participant.id.clone(), participant.label.clone()))
             .collect(),
-        setup,
+        scenario,
         log: Vec::new(),
     };
     Ok((state, authority))
 }
 
-fn validate_setup(
-    bundle: &CompiledRulesetBundle,
-    setup: &RpgEncounterSetup,
-) -> Vec<RpgSetupDiagnostic> {
+fn validate_scenario(
+    bundle: &CompiledPlayBundle,
+    scenario: &RpgScenario,
+) -> Vec<RpgScenarioDiagnostic> {
     let mut diagnostics = Vec::new();
-    if setup.schema != RpgEncounterSetup::schema() {
-        diagnostics.push(setup_diagnostic(
-            "RPG_SETUP_SCHEMA_UNSUPPORTED",
+    if scenario.schema != RpgScenario::schema() {
+        diagnostics.push(scenario_diagnostic(
+            "RPG_SCENARIO_SCHEMA_UNSUPPORTED",
             "$.schema",
             format!(
                 "expected {}@{}",
-                RPG_ENCOUNTER_SETUP_SCHEMA_ID, RPG_ENCOUNTER_SETUP_SCHEMA_VERSION
+                RPG_SCENARIO_SCHEMA_ID, RPG_SCENARIO_SCHEMA_VERSION
             ),
         ));
     }
-    if setup.artifact_id != bundle.artifact().artifact_id {
-        diagnostics.push(setup_diagnostic(
-            "RPG_SETUP_ARTIFACT_MISMATCH",
-            "$.artifactId",
-            format!("expected artifact {}", bundle.artifact().artifact_id),
+    if scenario.play_bundle_id != bundle.artifact().artifact_id {
+        diagnostics.push(scenario_diagnostic(
+            "RPG_SCENARIO_PLAY_BUNDLE_MISMATCH",
+            "$.playBundleId",
+            format!("expected PlayBundle {}", bundle.artifact().artifact_id),
         ));
     }
-    validate_binding(&setup.random_source, &mut diagnostics);
-    validate_board(bundle, &setup.board, &mut diagnostics);
+    validate_binding(&scenario.random_source, &mut diagnostics);
+    validate_board(bundle, &scenario.board, &mut diagnostics);
 
     let definition_kinds = bundle
         .artifact()
@@ -676,61 +676,92 @@ fn validate_setup(
             )
         })
         .collect::<BTreeMap<_, _>>();
-    let action_ids = bundle.ruleset().action_ids().collect::<BTreeSet<_>>();
+    let action_ids = bundle.rules().action_ids().collect::<BTreeSet<_>>();
     let required_capabilities = bundle
-        .ruleset()
+        .rules()
         .required_capabilities()
         .map(|(id, _)| id)
         .collect::<BTreeSet<_>>();
+    let numeric_domains = bundle
+        .artifact()
+        .ruleset
+        .provides
+        .numeric_domains
+        .iter()
+        .map(|domain| (domain.id.as_str(), (domain.minimum, domain.maximum)))
+        .collect::<BTreeMap<_, _>>();
+    let ruleset_values = bundle
+        .artifact()
+        .ruleset
+        .provides
+        .values
+        .iter()
+        .filter_map(|value| {
+            numeric_domains
+                .get(value.numeric_domain_id.as_str())
+                .map(|bounds| ((value.kind, value.id.as_str()), *bounds))
+        })
+        .collect::<BTreeMap<_, _>>();
+    let content_values = bundle
+        .artifact()
+        .materialized_definitions
+        .iter()
+        .filter(|definition| definition.kind == MaterializedContentDefinitionKind::Support)
+        .filter_map(|definition| {
+            let catalog = definition.semantic.get("catalog")?.as_str()?;
+            let id = definition.semantic.get("id")?.as_str()?;
+            Some((catalog, id))
+        })
+        .collect::<BTreeSet<_>>();
     let mut participant_ids = BTreeSet::new();
     let mut occupied = BTreeMap::new();
-    for (index, participant) in setup.participants.iter().enumerate() {
+    for (index, participant) in scenario.participants.iter().enumerate() {
         let path = format!("$.participants[{index}]");
         if participant.id.trim().is_empty() {
-            diagnostics.push(setup_diagnostic(
-                "RPG_SETUP_PARTICIPANT_ID_EMPTY",
+            diagnostics.push(scenario_diagnostic(
+                "RPG_SCENARIO_PARTICIPANT_ID_EMPTY",
                 format!("{path}.id"),
                 "participant identity must not be empty",
             ));
         } else if !participant_ids.insert(participant.id.as_str()) {
-            diagnostics.push(setup_diagnostic(
-                "RPG_SETUP_PARTICIPANT_DUPLICATE",
+            diagnostics.push(scenario_diagnostic(
+                "RPG_SCENARIO_PARTICIPANT_DUPLICATE",
                 format!("{path}.id"),
                 format!("duplicate participant {}", participant.id),
             ));
         }
         if participant.label.trim().is_empty() {
-            diagnostics.push(setup_diagnostic(
-                "RPG_SETUP_PARTICIPANT_LABEL_EMPTY",
+            diagnostics.push(scenario_diagnostic(
+                "RPG_SCENARIO_PARTICIPANT_LABEL_EMPTY",
                 format!("{path}.label"),
                 "participant label must not be empty",
             ));
         }
         if participant.team_id.as_str().trim().is_empty() {
-            diagnostics.push(setup_diagnostic(
-                "RPG_SETUP_TEAM_ID_EMPTY",
+            diagnostics.push(scenario_diagnostic(
+                "RPG_SCENARIO_TEAM_ID_EMPTY",
                 format!("{path}.teamId"),
                 "team identity must not be empty",
             ));
         }
-        if !position_in_board(&setup.board, participant.position) {
-            diagnostics.push(setup_diagnostic(
-                "RPG_SETUP_POSITION_OUT_OF_BOUNDS",
+        if !position_in_board(&scenario.board, participant.position) {
+            diagnostics.push(scenario_diagnostic(
+                "RPG_SCENARIO_POSITION_OUT_OF_BOUNDS",
                 format!("{path}.position"),
                 "participant position is outside the board extent",
             ));
         } else if let Some(previous) =
             occupied.insert(participant.position, participant.id.as_str())
         {
-            diagnostics.push(setup_diagnostic(
-                "RPG_SETUP_POSITION_OCCUPIED",
+            diagnostics.push(scenario_diagnostic(
+                "RPG_SCENARIO_POSITION_OCCUPIED",
                 format!("{path}.position"),
                 format!("participant position is already occupied by {previous}"),
             ));
         }
-        if cell_blocks_position(&setup.board, participant.position) {
-            diagnostics.push(setup_diagnostic(
-                "RPG_SETUP_POSITION_BLOCKED",
+        if cell_blocks_position(&scenario.board, participant.position) {
+            diagnostics.push(scenario_diagnostic(
+                "RPG_SCENARIO_POSITION_BLOCKED",
                 format!("{path}.position"),
                 "participant position is on an impassable cell",
             ));
@@ -741,38 +772,38 @@ fn validate_setup(
         for (definition_index, definition_id) in participant.definition_ids.iter().enumerate() {
             let definition_path = format!("{path}.definitionIds[{definition_index}]");
             if !references.insert(definition_id.as_str()) {
-                diagnostics.push(setup_diagnostic(
-                    "RPG_SETUP_DEFINITION_DUPLICATE",
+                diagnostics.push(scenario_diagnostic(
+                    "RPG_SCENARIO_DEFINITION_DUPLICATE",
                     definition_path,
                     format!("duplicate definition reference {definition_id}"),
                 ));
                 continue;
             }
             let Some((kind, visibility)) = definition_kinds.get(definition_id.as_str()) else {
-                diagnostics.push(setup_diagnostic(
-                    "RPG_SETUP_DEFINITION_UNKNOWN",
+                diagnostics.push(scenario_diagnostic(
+                    "RPG_SCENARIO_DEFINITION_UNKNOWN",
                     definition_path,
                     format!("definition {definition_id} is not in the bound artifact"),
                 ));
                 continue;
             };
-            if *visibility != MaterializedRulesetVisibility::Exported {
-                diagnostics.push(setup_diagnostic(
-                    "RPG_SETUP_DEFINITION_NOT_EXPORTED",
+            if *visibility != MaterializedContentVisibility::Exported {
+                diagnostics.push(scenario_diagnostic(
+                    "RPG_SCENARIO_DEFINITION_NOT_EXPORTED",
                     definition_path,
                     format!("definition {definition_id} is not exported by the bound artifact"),
                 ));
                 continue;
             }
-            if *kind == MaterializedRulesetDefinitionKind::Action
+            if *kind == MaterializedContentDefinitionKind::Action
                 && action_ids.contains(definition_id.as_str())
             {
                 has_action = true;
             }
         }
         if !has_action {
-            diagnostics.push(setup_diagnostic(
-                "RPG_SETUP_PARTICIPANT_ACTION_REQUIRED",
+            diagnostics.push(scenario_diagnostic(
+                "RPG_SCENARIO_PARTICIPANT_ACTION_REQUIRED",
                 format!("{path}.definitionIds"),
                 "each authority-controlled participant must reference an artifact action",
             ));
@@ -781,36 +812,41 @@ fn validate_setup(
             participant,
             &path,
             &required_capabilities,
+            &ruleset_values,
+            &content_values,
             &mut diagnostics,
         );
     }
-    if setup.participants.is_empty() {
-        diagnostics.push(setup_diagnostic(
-            "RPG_SETUP_PARTICIPANTS_REQUIRED",
+    if scenario.participants.is_empty() {
+        diagnostics.push(scenario_diagnostic(
+            "RPG_SCENARIO_PARTICIPANTS_REQUIRED",
             "$.participants",
-            "encounter setup requires at least one participant",
+            "encounter scenario requires at least one participant",
         ));
     }
-    validate_turn(setup, &participant_ids, &mut diagnostics);
+    validate_turn(scenario, &participant_ids, &mut diagnostics);
     diagnostics
 }
 
-fn validate_binding(binding: &RpgRandomSourceBinding, diagnostics: &mut Vec<RpgSetupDiagnostic>) {
+fn validate_binding(
+    binding: &RpgRandomSourceBinding,
+    diagnostics: &mut Vec<RpgScenarioDiagnostic>,
+) {
     for (path, value) in [
         ("$.randomSource.policyId", binding.policy_id.as_str()),
         ("$.randomSource.sourceId", binding.source_id.as_str()),
     ] {
         if value.trim().is_empty() {
-            diagnostics.push(setup_diagnostic(
-                "RPG_SETUP_RANDOM_ID_EMPTY",
+            diagnostics.push(scenario_diagnostic(
+                "RPG_SCENARIO_RANDOM_ID_EMPTY",
                 path,
                 "random source identity must not be empty",
             ));
         }
     }
     if binding.policy_version == 0 || binding.source_version == 0 {
-        diagnostics.push(setup_diagnostic(
-            "RPG_SETUP_RANDOM_VERSION_INVALID",
+        diagnostics.push(scenario_diagnostic(
+            "RPG_SCENARIO_RANDOM_VERSION_INVALID",
             "$.randomSource",
             "random policy and source versions must be positive",
         ));
@@ -818,17 +854,17 @@ fn validate_binding(binding: &RpgRandomSourceBinding, diagnostics: &mut Vec<RpgS
 }
 
 fn validate_board(
-    bundle: &CompiledRulesetBundle,
+    bundle: &CompiledPlayBundle,
     board: &RpgBoardSetup,
-    diagnostics: &mut Vec<RpgSetupDiagnostic>,
+    diagnostics: &mut Vec<RpgScenarioDiagnostic>,
 ) {
     if board.width == 0
         || board.height == 0
         || board.width > MAXIMUM_BOARD_EXTENT
         || board.height > MAXIMUM_BOARD_EXTENT
     {
-        diagnostics.push(setup_diagnostic(
-            "RPG_SETUP_BOARD_EXTENT_INVALID",
+        diagnostics.push(scenario_diagnostic(
+            "RPG_SCENARIO_BOARD_EXTENT_INVALID",
             "$.board",
             format!("board width and height must be within 1..={MAXIMUM_BOARD_EXTENT}"),
         ));
@@ -844,22 +880,22 @@ fn validate_board(
     for (index, cell) in board.cells.iter().enumerate() {
         let path = format!("$.board.cells[{index}]");
         if cell.id.trim().is_empty() || !ids.insert(cell.id.as_str()) {
-            diagnostics.push(setup_diagnostic(
-                "RPG_SETUP_CELL_ID_INVALID",
+            diagnostics.push(scenario_diagnostic(
+                "RPG_SCENARIO_CELL_ID_INVALID",
                 format!("{path}.id"),
                 "cell identity must be non-empty and unique",
             ));
         }
         if !positions.insert(cell.position) {
-            diagnostics.push(setup_diagnostic(
-                "RPG_SETUP_CELL_POSITION_DUPLICATE",
+            diagnostics.push(scenario_diagnostic(
+                "RPG_SCENARIO_CELL_POSITION_DUPLICATE",
                 format!("{path}.position"),
                 "only one cell record may describe a board position",
             ));
         }
         if !position_in_board(board, cell.position) {
-            diagnostics.push(setup_diagnostic(
-                "RPG_SETUP_CELL_OUT_OF_BOUNDS",
+            diagnostics.push(scenario_diagnostic(
+                "RPG_SCENARIO_CELL_OUT_OF_BOUNDS",
                 format!("{path}.position"),
                 "cell position is outside the board extent",
             ));
@@ -869,41 +905,41 @@ fn validate_board(
         for (capability_index, capability) in cell.capabilities.iter().enumerate() {
             let capability_path = format!("{path}.capabilities[{capability_index}]");
             if capability.id.trim().is_empty() || !capability_ids.insert(capability.id.as_str()) {
-                diagnostics.push(setup_diagnostic(
-                    "RPG_SETUP_CELL_CAPABILITY_ID_INVALID",
+                diagnostics.push(scenario_diagnostic(
+                    "RPG_SCENARIO_CELL_CAPABILITY_ID_INVALID",
                     format!("{capability_path}.id"),
                     "cell capability identity must be non-empty and unique per cell",
                 ));
             }
             if capability.version == 0 {
-                diagnostics.push(setup_diagnostic(
-                    "RPG_SETUP_CELL_CAPABILITY_VERSION_INVALID",
+                diagnostics.push(scenario_diagnostic(
+                    "RPG_SCENARIO_CELL_CAPABILITY_VERSION_INVALID",
                     format!("{capability_path}.version"),
                     "cell capability version must be positive",
                 ));
             }
             if let Some(definition_id) = &capability.definition_id {
                 match definitions.get(definition_id.as_str()) {
-                    None => diagnostics.push(setup_diagnostic(
-                        "RPG_SETUP_DEFINITION_UNKNOWN",
+                    None => diagnostics.push(scenario_diagnostic(
+                        "RPG_SCENARIO_DEFINITION_UNKNOWN",
                         format!("{capability_path}.definitionId"),
                         format!("definition {definition_id} is not in the bound artifact"),
                     )),
-                    Some(MaterializedRulesetDefinitionKind::Action) => {
-                        diagnostics.push(setup_diagnostic(
-                            "RPG_SETUP_CELL_DEFINITION_INCOMPATIBLE",
+                    Some(MaterializedContentDefinitionKind::Action) => {
+                        diagnostics.push(scenario_diagnostic(
+                            "RPG_SCENARIO_CELL_DEFINITION_INCOMPATIBLE",
                             format!("{capability_path}.definitionId"),
                             "cell capabilities must reference an artifact support definition",
                         ))
                     }
-                    Some(MaterializedRulesetDefinitionKind::Support) => {}
+                    Some(MaterializedContentDefinitionKind::Support) => {}
                 }
             }
             match &capability.value {
                 RpgCellCapabilityValue::Traversal { movement_cost, .. } => {
                     if traversal_seen || *movement_cost == 0 {
-                        diagnostics.push(setup_diagnostic(
-                            "RPG_SETUP_CELL_TRAVERSAL_INVALID",
+                        diagnostics.push(scenario_diagnostic(
+                            "RPG_SCENARIO_CELL_TRAVERSAL_INVALID",
                             format!("{capability_path}.value"),
                             "a cell permits one traversal capability with positive movement cost",
                         ));
@@ -911,8 +947,8 @@ fn validate_board(
                     traversal_seen = true;
                 }
                 RpgCellCapabilityValue::Identifier { value_id } if value_id.trim().is_empty() => {
-                    diagnostics.push(setup_diagnostic(
-                        "RPG_SETUP_CELL_VALUE_ID_EMPTY",
+                    diagnostics.push(scenario_diagnostic(
+                        "RPG_SCENARIO_CELL_VALUE_ID_EMPTY",
                         format!("{capability_path}.value.valueId"),
                         "cell capability value identity must not be empty",
                     ));
@@ -927,7 +963,9 @@ fn validate_participant_capabilities(
     participant: &RpgParticipantSetup,
     path: &str,
     required: &BTreeSet<&str>,
-    diagnostics: &mut Vec<RpgSetupDiagnostic>,
+    ruleset_values: &BTreeMap<(RulesetValueKind, &str), (i64, i64)>,
+    content_values: &BTreeSet<(&str, &str)>,
+    diagnostics: &mut Vec<RpgScenarioDiagnostic>,
 ) {
     let mut vitality = 0;
     let mut identities = BTreeSet::new();
@@ -935,8 +973,8 @@ fn validate_participant_capabilities(
         let capability_path = format!("{path}.capabilities[{index}]");
         let owner = capability.owner_id();
         if !required.contains(owner) && owner != "capability.vitality" {
-            diagnostics.push(setup_diagnostic(
-                "RPG_SETUP_CAPABILITY_OWNER_INCOMPATIBLE",
+            diagnostics.push(scenario_diagnostic(
+                "RPG_SCENARIO_CAPABILITY_OWNER_INCOMPATIBLE",
                 &capability_path,
                 format!("artifact does not declare initial capability owner {owner}"),
             ));
@@ -947,11 +985,37 @@ fn validate_participant_capabilities(
                 validate_bounded(value, &capability_path, diagnostics);
                 (owner, "vitality")
             }
-            RpgInitialCapability::Stat { id, .. } | RpgInitialCapability::Defense { id, .. } => {
+            RpgInitialCapability::Stat { id, value } => {
+                validate_initial_ruleset_value(
+                    RulesetValueKind::Stat,
+                    id,
+                    *value,
+                    &capability_path,
+                    ruleset_values,
+                    diagnostics,
+                );
+                (owner, id.as_str())
+            }
+            RpgInitialCapability::Defense { id, value } => {
+                validate_initial_ruleset_value(
+                    RulesetValueKind::Defense,
+                    id,
+                    *value,
+                    &capability_path,
+                    ruleset_values,
+                    diagnostics,
+                );
                 (owner, id.as_str())
             }
             RpgInitialCapability::Resource { id, value } => {
                 validate_bounded(value, &capability_path, diagnostics);
+                validate_initial_content_value(
+                    "resource",
+                    id,
+                    &capability_path,
+                    content_values,
+                    diagnostics,
+                );
                 (owner, id.as_str())
             }
             RpgInitialCapability::Modifier {
@@ -960,11 +1024,18 @@ fn validate_participant_capabilities(
                 remaining_turns,
                 ..
             } => {
+                validate_initial_content_value(
+                    "modifier",
+                    id,
+                    &capability_path,
+                    content_values,
+                    diagnostics,
+                );
                 if id.trim().is_empty()
                     || !(1..=MAXIMUM_RPG_MODIFIER_TURNS).contains(remaining_turns)
                 {
-                    diagnostics.push(setup_diagnostic(
-                        "RPG_SETUP_MODIFIER_INVALID",
+                    diagnostics.push(scenario_diagnostic(
+                        "RPG_SCENARIO_MODIFIER_INVALID",
                         &capability_path,
                         format!(
                             "modifier identity and remaining turns within 1..={MAXIMUM_RPG_MODIFIER_TURNS} are required"
@@ -975,8 +1046,8 @@ fn validate_participant_capabilities(
             }
         };
         if identity.1.trim().is_empty() || !identities.insert(identity) {
-            diagnostics.push(setup_diagnostic(
-                "RPG_SETUP_CAPABILITY_DUPLICATE",
+            diagnostics.push(scenario_diagnostic(
+                "RPG_SCENARIO_CAPABILITY_DUPLICATE",
                 capability_path,
                 format!(
                     "capability identity {} must be non-empty and unique within owner {}",
@@ -986,18 +1057,68 @@ fn validate_participant_capabilities(
         }
     }
     if vitality != 1 {
-        diagnostics.push(setup_diagnostic(
-            "RPG_SETUP_VITALITY_REQUIRED",
+        diagnostics.push(scenario_diagnostic(
+            "RPG_SCENARIO_VITALITY_REQUIRED",
             format!("{path}.capabilities"),
             "each participant requires exactly one vitality capability",
         ));
     }
 }
 
-fn validate_bounded(value: &BoundedValue, path: &str, diagnostics: &mut Vec<RpgSetupDiagnostic>) {
+fn validate_initial_ruleset_value(
+    kind: RulesetValueKind,
+    id: &str,
+    value: i32,
+    path: &str,
+    values: &BTreeMap<(RulesetValueKind, &str), (i64, i64)>,
+    diagnostics: &mut Vec<RpgScenarioDiagnostic>,
+) {
+    let Some((minimum, maximum)) = values.get(&(kind, id)) else {
+        diagnostics.push(scenario_diagnostic(
+            "RPG_SCENARIO_RULESET_VALUE_UNKNOWN",
+            format!("{path}.id"),
+            format!(
+                "initial {:?} {id} is not provided by the bound ruleset",
+                kind
+            ),
+        ));
+        return;
+    };
+    let value = i64::from(value);
+    if value < *minimum || value > *maximum {
+        diagnostics.push(scenario_diagnostic(
+            "RPG_SCENARIO_RULESET_VALUE_OUT_OF_DOMAIN",
+            format!("{path}.value"),
+            format!("initial value must be within {minimum}..={maximum}"),
+        ));
+    }
+}
+
+fn validate_initial_content_value(
+    catalog: &str,
+    id: &str,
+    path: &str,
+    values: &BTreeSet<(&str, &str)>,
+    diagnostics: &mut Vec<RpgScenarioDiagnostic>,
+) {
+    if values.contains(&(catalog, id)) {
+        return;
+    }
+    diagnostics.push(scenario_diagnostic(
+        "RPG_SCENARIO_CONTENT_VALUE_UNKNOWN",
+        format!("{path}.id"),
+        format!("initial {catalog} {id} is not defined by the bound content packs"),
+    ));
+}
+
+fn validate_bounded(
+    value: &BoundedValue,
+    path: &str,
+    diagnostics: &mut Vec<RpgScenarioDiagnostic>,
+) {
     if value.max < 0 || value.current < 0 || value.current > value.max {
-        diagnostics.push(setup_diagnostic(
-            "RPG_SETUP_CAPABILITY_VALUE_OUT_OF_BOUNDS",
+        diagnostics.push(scenario_diagnostic(
+            "RPG_SCENARIO_CAPABILITY_VALUE_OUT_OF_BOUNDS",
             path,
             "bounded capability values require 0 <= current <= max",
         ));
@@ -1005,44 +1126,44 @@ fn validate_bounded(value: &BoundedValue, path: &str, diagnostics: &mut Vec<RpgS
 }
 
 fn validate_turn(
-    setup: &RpgEncounterSetup,
+    scenario: &RpgScenario,
     participant_ids: &BTreeSet<&str>,
-    diagnostics: &mut Vec<RpgSetupDiagnostic>,
+    diagnostics: &mut Vec<RpgScenarioDiagnostic>,
 ) {
     let mut order = BTreeSet::new();
-    for (index, participant_id) in setup.turn.initiative_order.iter().enumerate() {
+    for (index, participant_id) in scenario.turn.initiative_order.iter().enumerate() {
         if !participant_ids.contains(participant_id.as_str()) {
-            diagnostics.push(setup_diagnostic(
-                "RPG_SETUP_TURN_PARTICIPANT_UNKNOWN",
+            diagnostics.push(scenario_diagnostic(
+                "RPG_SCENARIO_TURN_PARTICIPANT_UNKNOWN",
                 format!("$.turn.initiativeOrder[{index}]"),
                 format!("unknown initiative participant {participant_id}"),
             ));
         }
         if !order.insert(participant_id.as_str()) {
-            diagnostics.push(setup_diagnostic(
-                "RPG_SETUP_TURN_PARTICIPANT_DUPLICATE",
+            diagnostics.push(scenario_diagnostic(
+                "RPG_SCENARIO_TURN_PARTICIPANT_DUPLICATE",
                 format!("$.turn.initiativeOrder[{index}]"),
                 format!("duplicate initiative participant {participant_id}"),
             ));
         }
     }
     if order != *participant_ids {
-        diagnostics.push(setup_diagnostic(
-            "RPG_SETUP_TURN_ORDER_INCOMPLETE",
+        diagnostics.push(scenario_diagnostic(
+            "RPG_SCENARIO_TURN_ORDER_INCOMPLETE",
             "$.turn.initiativeOrder",
             "initiative order must contain every participant exactly once",
         ));
     }
-    if !order.contains(setup.turn.current_actor_id.as_str()) {
-        diagnostics.push(setup_diagnostic(
-            "RPG_SETUP_CURRENT_ACTOR_UNKNOWN",
+    if !order.contains(scenario.turn.current_actor_id.as_str()) {
+        diagnostics.push(scenario_diagnostic(
+            "RPG_SCENARIO_CURRENT_ACTOR_UNKNOWN",
             "$.turn.currentActorId",
             "current actor must appear in initiative order",
         ));
-    } else if !setup
+    } else if !scenario
         .participants
         .iter()
-        .find(|participant| participant.id == setup.turn.current_actor_id)
+        .find(|participant| participant.id == scenario.turn.current_actor_id)
         .and_then(|participant| {
             participant
                 .capabilities
@@ -1054,15 +1175,15 @@ fn validate_turn(
         })
         .unwrap_or(false)
     {
-        diagnostics.push(setup_diagnostic(
-            "RPG_SETUP_CURRENT_ACTOR_INACTIVE",
+        diagnostics.push(scenario_diagnostic(
+            "RPG_SCENARIO_CURRENT_ACTOR_INACTIVE",
             "$.turn.currentActorId",
             "current actor must have positive vitality",
         ));
     }
-    if setup.turn.round == 0 || setup.turn.turn == 0 {
-        diagnostics.push(setup_diagnostic(
-            "RPG_SETUP_TURN_COUNTER_INVALID",
+    if scenario.turn.round == 0 || scenario.turn.turn == 0 {
+        diagnostics.push(scenario_diagnostic(
+            "RPG_SCENARIO_TURN_COUNTER_INVALID",
             "$.turn",
             "round and turn counters must be positive",
         ));
@@ -1129,10 +1250,10 @@ pub(crate) fn runtime_board_rejection(
 pub(crate) fn validate_restored_encounter(
     authority: &RpgEncounterAuthority,
     state: &RpgCapabilityState,
-) -> Vec<RpgSetupDiagnostic> {
+) -> Vec<RpgScenarioDiagnostic> {
     let mut diagnostics = Vec::new();
     let setup_ids = authority
-        .setup
+        .scenario
         .participants
         .iter()
         .map(|participant| participant.id.as_str())
@@ -1142,17 +1263,17 @@ pub(crate) fn validate_restored_encounter(
         .map(RpgEntityState::id)
         .collect::<BTreeSet<_>>();
     if setup_ids != state_ids {
-        diagnostics.push(setup_diagnostic(
+        diagnostics.push(scenario_diagnostic(
             "RPG_CHECKPOINT_PARTICIPANT_SET_MISMATCH",
             "$.state.entities",
-            "checkpoint state must contain exactly the setup participants",
+            "checkpoint state must contain exactly the scenario participants",
         ));
     }
-    if authority.turn.initiative_order != authority.setup.turn.initiative_order {
-        diagnostics.push(setup_diagnostic(
+    if authority.turn.initiative_order != authority.scenario.turn.initiative_order {
+        diagnostics.push(scenario_diagnostic(
             "RPG_CHECKPOINT_TURN_ORDER_MISMATCH",
             "$.turn.initiativeOrder",
-            "checkpoint initiative order must match the setup binding",
+            "checkpoint initiative order must match the scenario binding",
         ));
     }
     let current_actor_active = state
@@ -1167,14 +1288,14 @@ pub(crate) fn validate_restored_encounter(
             RpgEncounterOutcomeView::InProgress
         ) && !current_actor_active)
     {
-        diagnostics.push(setup_diagnostic(
+        diagnostics.push(scenario_diagnostic(
             "RPG_CHECKPOINT_TURN_STATE_INVALID",
             "$.turn",
-            "checkpoint turn state must identify an active setup participant with positive counters",
+            "checkpoint turn state must identify an active scenario participant with positive counters",
         ));
     }
-    if let Some(rejection) = runtime_board_rejection(&authority.setup.board, state) {
-        diagnostics.push(setup_diagnostic(
+    if let Some(rejection) = runtime_board_rejection(&authority.scenario.board, state) {
+        diagnostics.push(scenario_diagnostic(
             "RPG_CHECKPOINT_BOARD_STATE_INVALID",
             rejection.path,
             format!("{}: {}", rejection.code, rejection.message),
@@ -1194,7 +1315,7 @@ pub(crate) fn validate_restored_encounter(
             || entry.state_revision > state.revision()
             || !action_owned
         {
-            diagnostics.push(setup_diagnostic(
+            diagnostics.push(scenario_diagnostic(
                 "RPG_CHECKPOINT_LOG_INVALID",
                 format!("$.log[{index}]"),
                 "checkpoint log sequence, revision, actor, or action is invalid",
@@ -1337,12 +1458,12 @@ pub(crate) fn random_failure(
     }
 }
 
-fn setup_diagnostic(
+fn scenario_diagnostic(
     code: &str,
     path: impl Into<String>,
     message: impl Into<String>,
-) -> RpgSetupDiagnostic {
-    RpgSetupDiagnostic {
+) -> RpgScenarioDiagnostic {
+    RpgScenarioDiagnostic {
         code: code.to_owned(),
         path: path.into(),
         message: message.into(),
@@ -1373,10 +1494,10 @@ mod tests {
     use super::*;
 
     #[test]
-    fn setup_decode_rejects_script_and_expected_result_fields() {
-        let source = json!({
-            "schema": {"id": RPG_ENCOUNTER_SETUP_SCHEMA_ID, "version": 1},
-            "artifactId": "artifact.test",
+    fn scenario_decode_rejects_every_definition_script_and_tester_field() {
+        let base = json!({
+            "schema": {"id": RPG_SCENARIO_SCHEMA_ID, "version": 1},
+            "playBundleId": "artifact.test",
             "board": {"width": 2, "height": 2, "cells": []},
             "participants": [],
             "turn": {
@@ -1390,12 +1511,28 @@ mod tests {
                 "policyVersion": 1,
                 "sourceId": "source.test",
                 "sourceVersion": 1
-            },
-            "actionOrder": ["action.test"],
-            "rollResults": [20],
-            "expectedEvents": []
+            }
         });
-        let failure = serde_json::from_value::<RpgEncounterSetup>(source).unwrap_err();
-        assert!(failure.to_string().contains("unknown field"));
+        for (field, value) in [
+            ("definitions", json!([])),
+            ("commands", json!([])),
+            ("targets", json!([])),
+            ("reactions", json!([])),
+            ("rolls", json!([])),
+            ("expectedEvents", json!([])),
+            ("expectedOutcomes", json!([])),
+            ("tester", json!({})),
+        ] {
+            let mut source = base.clone();
+            source
+                .as_object_mut()
+                .expect("scenario fixture is an object")
+                .insert(field.to_owned(), value);
+            let failure = serde_json::from_value::<RpgScenario>(source).unwrap_err();
+            assert!(
+                failure.to_string().contains("unknown field"),
+                "field {field} must fail strict decode: {failure}"
+            );
+        }
     }
 }
