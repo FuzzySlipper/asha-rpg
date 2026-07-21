@@ -15,11 +15,42 @@ export interface RpgLanguageCompatibility {
     readonly version: string;
 }
 export type RulesetValueKind = "stat" | "defense";
+export interface RulesetValueFormulaSchema {
+    readonly identity: "asha.rpg.ruleset-value-formula";
+    readonly version: 1;
+}
+export type RulesetValueExpression = {
+    readonly kind: "constant";
+    readonly value: number;
+} | {
+    readonly kind: "readValue";
+    readonly rulesetId: string;
+    readonly valueKind: RulesetValueKind;
+    readonly valueId: string;
+} | {
+    readonly kind: "subtract";
+    readonly minuend: RulesetValueExpression;
+    readonly subtrahend: RulesetValueExpression;
+} | {
+    readonly kind: "floorDivide";
+    readonly dividend: RulesetValueExpression;
+    readonly divisor: RulesetValueExpression;
+};
+export type RulesetValueSource = {
+    readonly kind: "input";
+} | {
+    readonly kind: "derived";
+    readonly formula: {
+        readonly schema: RulesetValueFormulaSchema;
+        readonly expression: RulesetValueExpression;
+    };
+};
 export interface RulesetValueContract {
     readonly kind: RulesetValueKind;
     readonly id: string;
     readonly label: string;
     readonly numericDomainId: string;
+    readonly source: RulesetValueSource;
 }
 export interface RulesetNumericDomain {
     readonly id: string;

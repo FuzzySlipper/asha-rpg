@@ -8,8 +8,42 @@ export function defineRuleset(input) {
         provides: {
             operations: [...input.provides.operations].sort(compareVersionedProvision),
             capabilities: [...input.provides.capabilities].sort(compareVersionedProvision),
-            values: [...input.provides.values].sort((left, right) => left.kind.localeCompare(right.kind) || left.id.localeCompare(right.id)),
+            values: input.provides.values
+                .map((value) => ({
+                ...value,
+                source: value.source ?? { kind: 'input' },
+            }))
+                .sort((left, right) => left.kind.localeCompare(right.kind) || left.id.localeCompare(right.id)),
             numericDomains: [...input.provides.numericDomains].sort((left, right) => left.id.localeCompare(right.id)),
+        },
+    });
+}
+export function rulesetValueConstant(value) {
+    return immutable({ kind: 'constant', value });
+}
+export function readRulesetValue(reference) {
+    return immutable({
+        kind: 'readValue',
+        rulesetId: reference.rulesetId,
+        valueKind: reference.kind,
+        valueId: reference.id,
+    });
+}
+export function subtractRulesetValues(minuend, subtrahend) {
+    return immutable({ kind: 'subtract', minuend, subtrahend });
+}
+export function floorDivideRulesetValues(dividend, divisor) {
+    return immutable({ kind: 'floorDivide', dividend, divisor });
+}
+export function derivedRulesetValue(expression) {
+    return immutable({
+        kind: 'derived',
+        formula: {
+            schema: {
+                identity: 'asha.rpg.ruleset-value-formula',
+                version: 1,
+            },
+            expression,
         },
     });
 }

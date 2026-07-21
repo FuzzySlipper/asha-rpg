@@ -16,8 +16,8 @@ use crate::semantic_session::{
     RpgPendingReaction, RpgReactionCommand, RpgTurnControlCommand,
 };
 use crate::{
-    encounter::validate_restored_encounter, RpgEncounterLogEntry, RpgRandomSourceBinding,
-    RpgScenario, RpgTurnState,
+    encounter::{validate_derived_state, validate_restored_encounter},
+    RpgEncounterLogEntry, RpgRandomSourceBinding, RpgScenario, RpgTurnState,
 };
 
 pub const RPG_CHECKPOINT_SCHEMA_ID: &str = "asha.rpg.session.checkpoint";
@@ -299,6 +299,21 @@ impl RpgAuthoritySession {
             ));
         }
         let state = restore_state(&checkpoint.state)?;
+        let derived_diagnostics = validate_derived_state(&bundle, &state);
+        if !derived_diagnostics.is_empty() {
+            return Err(RpgReplayFailure {
+                diagnostics: derived_diagnostics
+                    .into_iter()
+                    .map(|diagnostic| RpgReplayDiagnostic {
+                        code: diagnostic.code,
+                        path: diagnostic.path,
+                        message: diagnostic.message,
+                        expected: None,
+                        actual: None,
+                    })
+                    .collect(),
+            });
+        }
         let actual_scenario_fingerprint = scenario_fingerprint(&checkpoint.scenario)?;
         if checkpoint.scenario_fingerprint != actual_scenario_fingerprint {
             return Err(replay_mismatch(
@@ -1252,7 +1267,7 @@ mod tests {
         MaterializedContentDefinitionKind, MaterializedContentVisibility, PlayBundleArtifactSchema,
         PreparedPlayBundle, ResolvedContentPack, RpgVersionedIdentity, Ruleset, RulesetModels,
         RulesetNumericDomain, RulesetProvisions, RulesetSchema, RulesetValueContract,
-        RulesetValueKind, VersionedRpgRequirement, PLAY_BUNDLE_ARTIFACT_MAJOR,
+        RulesetValueKind, RulesetValueSource, VersionedRpgRequirement, PLAY_BUNDLE_ARTIFACT_MAJOR,
         PREPARED_PLAY_BUNDLE_IDENTITY,
     };
     use serde_json::json;
@@ -2214,12 +2229,14 @@ mod tests {
                             id: "catalog.defense.guard".to_owned(),
                             label: "Guard action reference".to_owned(),
                             numeric_domain_id: "defense".to_owned(),
+                            source: RulesetValueSource::Input,
                         },
                         RulesetValueContract {
                             kind: RulesetValueKind::Defense,
                             id: "guard".to_owned(),
                             label: "Guard".to_owned(),
                             numeric_domain_id: "defense".to_owned(),
+                            source: RulesetValueSource::Input,
                         },
                     ],
                     numeric_domains: vec![RulesetNumericDomain {

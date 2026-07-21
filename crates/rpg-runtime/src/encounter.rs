@@ -3,7 +3,7 @@ use std::{
     fmt,
 };
 
-use rpg_compiler::{CompiledPlayBundle, CompiledRpgAction};
+use rpg_compiler::{CompiledPlayBundle, CompiledRpgAction, RulesetValueKey};
 use rpg_core::{
     ActiveRpgModifier, BoundedValue, GridPosition, RpgCapabilityState, RpgEntityState, RpgIntent,
     RpgRandomRequest, RpgReactionRequest, RpgResolutionRejection, RpgTeamId,
@@ -614,6 +614,21 @@ pub(crate) fn build_encounter(
                     .expect("validated modifier restores"),
             }
         }
+        let supplied_values = participant_ruleset_values(participant, bundle, false);
+        let derived_values = bundle
+            .value_plan()
+            .evaluate(&supplied_values)
+            .expect("validated ruleset value derivations evaluate");
+        for (key, value) in derived_values {
+            match key.kind {
+                RulesetValueKind::Stat => entity
+                    .restore_stat(key.id, value)
+                    .expect("validated derived stat restores"),
+                RulesetValueKind::Defense => entity
+                    .restore_defense(key.id, value)
+                    .expect("validated derived defense restores"),
+            }
+        }
         state.insert_entity(entity);
     }
 
@@ -809,6 +824,7 @@ fn validate_scenario(
             ));
         }
         validate_participant_capabilities(
+            bundle,
             participant,
             &path,
             &required_capabilities,
@@ -960,6 +976,7 @@ fn validate_board(
 }
 
 fn validate_participant_capabilities(
+    bundle: &CompiledPlayBundle,
     participant: &RpgParticipantSetup,
     path: &str,
     required: &BTreeSet<&str>,
@@ -986,7 +1003,8 @@ fn validate_participant_capabilities(
                 (owner, "vitality")
             }
             RpgInitialCapability::Stat { id, value } => {
-                validate_initial_ruleset_value(
+                validate_initial_ruleset_value_source(
+                    bundle,
                     RulesetValueKind::Stat,
                     id,
                     *value,
@@ -997,7 +1015,8 @@ fn validate_participant_capabilities(
                 (owner, id.as_str())
             }
             RpgInitialCapability::Defense { id, value } => {
-                validate_initial_ruleset_value(
+                validate_initial_ruleset_value_source(
+                    bundle,
                     RulesetValueKind::Defense,
                     id,
                     *value,
@@ -1063,6 +1082,133 @@ fn validate_participant_capabilities(
             "each participant requires exactly one vitality capability",
         ));
     }
+    let supplied_values = participant_ruleset_values(participant, bundle, false);
+    if let Err(failure) = bundle.value_plan().evaluate(&supplied_values) {
+        diagnostics.push(scenario_diagnostic(
+            failure.code,
+            format!("{path}.capabilities"),
+            format!(
+                "cannot derive ruleset value {}: {}",
+                failure.target.id, failure.message
+            ),
+        ));
+    }
+}
+
+fn validate_initial_ruleset_value_source(
+    bundle: &CompiledPlayBundle,
+    kind: RulesetValueKind,
+    id: &str,
+    value: i32,
+    path: &str,
+    values: &BTreeMap<(RulesetValueKind, &str), (i64, i64)>,
+    diagnostics: &mut Vec<RpgScenarioDiagnostic>,
+) {
+    if bundle.value_plan().is_derived(kind, id) {
+        diagnostics.push(scenario_diagnostic(
+            "RPG_SCENARIO_DERIVED_RULESET_VALUE_SUPPLIED",
+            path,
+            format!("derived ruleset value {id} must not be supplied by a scenario"),
+        ));
+        return;
+    }
+    validate_initial_ruleset_value(kind, id, value, path, values, diagnostics);
+}
+
+fn participant_ruleset_values(
+    participant: &RpgParticipantSetup,
+    bundle: &CompiledPlayBundle,
+    include_derived: bool,
+) -> BTreeMap<RulesetValueKey, i32> {
+    participant
+        .capabilities
+        .iter()
+        .filter_map(|capability| match capability {
+            RpgInitialCapability::Stat { id, value } => {
+                Some((RulesetValueKind::Stat, id.as_str(), *value))
+            }
+            RpgInitialCapability::Defense { id, value } => {
+                Some((RulesetValueKind::Defense, id.as_str(), *value))
+            }
+            _ => None,
+        })
+        .filter(|(kind, id, _)| include_derived || !bundle.value_plan().is_derived(*kind, id))
+        .map(|(kind, id, value)| {
+            (
+                RulesetValueKey {
+                    kind,
+                    id: id.to_owned(),
+                },
+                value,
+            )
+        })
+        .collect()
+}
+
+pub(crate) fn validate_derived_state(
+    bundle: &CompiledPlayBundle,
+    state: &RpgCapabilityState,
+) -> Vec<RpgScenarioDiagnostic> {
+    let mut diagnostics = Vec::new();
+    for (entity_index, entity) in state.entities().enumerate() {
+        let mut supplied = BTreeMap::new();
+        for (id, value) in entity.stats() {
+            if !bundle.value_plan().is_derived(RulesetValueKind::Stat, id) {
+                supplied.insert(
+                    RulesetValueKey {
+                        kind: RulesetValueKind::Stat,
+                        id: id.to_owned(),
+                    },
+                    value,
+                );
+            }
+        }
+        for (id, value) in entity.defenses() {
+            if !bundle
+                .value_plan()
+                .is_derived(RulesetValueKind::Defense, id)
+            {
+                supplied.insert(
+                    RulesetValueKey {
+                        kind: RulesetValueKind::Defense,
+                        id: id.to_owned(),
+                    },
+                    value,
+                );
+            }
+        }
+        let expected = match bundle.value_plan().evaluate(&supplied) {
+            Ok(expected) => expected,
+            Err(failure) => {
+                diagnostics.push(scenario_diagnostic(
+                    failure.code,
+                    format!("$.state.entities[{entity_index}]"),
+                    format!(
+                        "cannot validate derived ruleset value {}: {}",
+                        failure.target.id, failure.message
+                    ),
+                ));
+                continue;
+            }
+        };
+        for (key, expected_value) in expected {
+            let actual_value = match key.kind {
+                RulesetValueKind::Stat => entity.stat(&key.id),
+                RulesetValueKind::Defense => entity.defense(&key.id),
+            };
+            if actual_value != Some(expected_value) {
+                diagnostics.push(scenario_diagnostic(
+                    "RPG_CHECKPOINT_DERIVED_RULESET_VALUE_MISMATCH",
+                    format!("$.state.entities[{entity_index}]"),
+                    format!(
+                        "derived ruleset value {} must be {expected_value}, but checkpoint contains {:?}",
+                        key.id, actual_value
+                    ),
+                ));
+            }
+        }
+    }
+    diagnostics
 }
 
 fn validate_initial_ruleset_value(

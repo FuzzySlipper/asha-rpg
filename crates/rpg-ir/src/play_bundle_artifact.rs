@@ -37,11 +37,59 @@ pub enum RulesetValueKind {
 
 #[derive(Debug, Clone, PartialEq, Eq, PartialOrd, Ord, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase", deny_unknown_fields)]
+pub struct RulesetValueFormulaSchema {
+    pub identity: String,
+    pub version: u32,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, PartialOrd, Ord, Serialize, Deserialize)]
+#[serde(
+    tag = "kind",
+    rename_all = "camelCase",
+    rename_all_fields = "camelCase",
+    deny_unknown_fields
+)]
+pub enum RulesetValueExpression {
+    Constant {
+        value: i64,
+    },
+    ReadValue {
+        ruleset_id: String,
+        value_kind: RulesetValueKind,
+        value_id: String,
+    },
+    Subtract {
+        minuend: Box<RulesetValueExpression>,
+        subtrahend: Box<RulesetValueExpression>,
+    },
+    FloorDivide {
+        dividend: Box<RulesetValueExpression>,
+        divisor: Box<RulesetValueExpression>,
+    },
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, PartialOrd, Ord, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase", deny_unknown_fields)]
+pub struct RulesetValueFormula {
+    pub schema: RulesetValueFormulaSchema,
+    pub expression: RulesetValueExpression,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, PartialOrd, Ord, Serialize, Deserialize)]
+#[serde(tag = "kind", rename_all = "camelCase", deny_unknown_fields)]
+pub enum RulesetValueSource {
+    Input,
+    Derived { formula: RulesetValueFormula },
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, PartialOrd, Ord, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase", deny_unknown_fields)]
 pub struct RulesetValueContract {
     pub kind: RulesetValueKind,
     pub id: String,
     pub label: String,
     pub numeric_domain_id: String,
+    pub source: RulesetValueSource,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, PartialOrd, Ord, Serialize, Deserialize)]

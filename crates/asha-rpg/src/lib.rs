@@ -1,10 +1,12 @@
 //! Supported public facade for portable RPG authority.
 //!
-//! Rust owns normalized semantic declarations and the deterministic authority
-//! loop. Downstream games own authored content and product workflows.
+//! Rust owns Ruleset semantics, compiled PlayBundle validation, and the
+//! deterministic authority loop. Downstream games own immutable Content Pack,
+//! PlayBundle, and Scenario declarations plus product workflows.
 //!
-//! The only supported ruleset path is normalized RPG IR to a compiled artifact
-//! to an artifact-bound authority session.
+//! The supported path is one Ruleset plus selected Content Packs into a closed
+//! PlayBundle artifact, then an artifact-bound Scenario into an authority
+//! Session.
 //!
 //! Removed predecessor declarations are intentionally unavailable:
 //!
@@ -42,7 +44,8 @@ pub use rpg_ir::{
     RpgIrProgram, RpgIrReactionOption, RpgIrRequirement, RpgIrRequirementKind, RpgIrResourceCost,
     RpgIrRollScope, RpgIrSchema, RpgIrStackingPolicy, RpgIrSubject, RpgIrTargetSelector,
     RpgIrTeamConstraint, RpgVersionedIdentity, Ruleset, RulesetModels, RulesetNumericDomain,
-    RulesetProvisions, RulesetSchema, RulesetValueContract, RulesetValueKind,
+    RulesetProvisions, RulesetSchema, RulesetValueContract, RulesetValueExpression,
+    RulesetValueFormula, RulesetValueFormulaSchema, RulesetValueKind, RulesetValueSource,
     VersionedRpgRequirement, COMPILED_PLAY_BUNDLE_IDENTITY, PLAY_BUNDLE_ARTIFACT_MAJOR,
     PREPARED_PLAY_BUNDLE_IDENTITY, RPG_IR_IDENTITY, RPG_IR_MAJOR,
 };

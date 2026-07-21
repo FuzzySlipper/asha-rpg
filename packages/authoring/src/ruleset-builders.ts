@@ -4,7 +4,10 @@ import { immutable } from './canonical.js';
 import type {
   Ruleset,
   RulesetIdentity,
+  RulesetValueContract,
+  RulesetValueExpression,
   RulesetValueKind,
+  RulesetValueSource,
 } from './play-bundle-types.js';
 
 const rulesetValueReferenceBrand: unique symbol = Symbol(
@@ -36,20 +39,79 @@ export type RulesetValueReference<
   readonly [rulesetValueReferenceBrand]: true;
 }>;
 
-export function defineRuleset(input: Ruleset): Ruleset {
+type RulesetValueInput = Omit<RulesetValueContract, 'source'> & {
+  readonly source?: RulesetValueSource;
+};
+
+type RulesetInput = Omit<Ruleset, 'provides'> & {
+  readonly provides: Omit<Ruleset['provides'], 'values'> & {
+    readonly values: readonly RulesetValueInput[];
+  };
+};
+
+export function defineRuleset(input: RulesetInput): Ruleset {
   return immutable({
     ...input,
     schema: { identity: 'asha.rpg.ruleset', major: 1 },
     provides: {
       operations: [...input.provides.operations].sort(compareVersionedProvision),
       capabilities: [...input.provides.capabilities].sort(compareVersionedProvision),
-      values: [...input.provides.values].sort(
-        (left, right) =>
-          left.kind.localeCompare(right.kind) || left.id.localeCompare(right.id),
-      ),
+      values: input.provides.values
+        .map((value) => ({
+          ...value,
+          source: value.source ?? ({ kind: 'input' } as const),
+        }))
+        .sort(
+          (left, right) =>
+            left.kind.localeCompare(right.kind) || left.id.localeCompare(right.id),
+        ),
       numericDomains: [...input.provides.numericDomains].sort((left, right) =>
         left.id.localeCompare(right.id),
       ),
+    },
+  });
+}
+
+export function rulesetValueConstant(value: number): RulesetValueExpression {
+  return immutable({ kind: 'constant' as const, value });
+}
+
+export function readRulesetValue(
+  reference: RulesetValueReference<RulesetValueKind, string, string>,
+): RulesetValueExpression {
+  return immutable({
+    kind: 'readValue' as const,
+    rulesetId: reference.rulesetId,
+    valueKind: reference.kind,
+    valueId: reference.id,
+  });
+}
+
+export function subtractRulesetValues(
+  minuend: RulesetValueExpression,
+  subtrahend: RulesetValueExpression,
+): RulesetValueExpression {
+  return immutable({ kind: 'subtract' as const, minuend, subtrahend });
+}
+
+export function floorDivideRulesetValues(
+  dividend: RulesetValueExpression,
+  divisor: RulesetValueExpression,
+): RulesetValueExpression {
+  return immutable({ kind: 'floorDivide' as const, dividend, divisor });
+}
+
+export function derivedRulesetValue(
+  expression: RulesetValueExpression,
+): RulesetValueSource {
+  return immutable({
+    kind: 'derived' as const,
+    formula: {
+      schema: {
+        identity: 'asha.rpg.ruleset-value-formula' as const,
+        version: 1 as const,
+      },
+      expression,
     },
   });
 }

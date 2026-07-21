@@ -9,9 +9,10 @@ use rpg_ir::{
     MaterializedContentDefinitionKind, MaterializedContentVisibility, NormalizedRpgIr,
     PlayBundleArtifactSchema, PlayBundleFingerprints, PreparedPlayBundle, RpgIrAction,
     RpgIrCatalogs, RpgIrCheck, RpgIrFormula, RpgIrOperation, RpgIrPackage, RpgIrPredicate,
-    RpgIrProgram, RpgIrRequirement, RpgIrRequirementKind, RpgIrSchema, RulesetValueKind,
-    VersionedRpgRequirement, COMPILED_PLAY_BUNDLE_IDENTITY, PLAY_BUNDLE_ARTIFACT_MAJOR,
-    PREPARED_PLAY_BUNDLE_IDENTITY, RPG_IR_IDENTITY, RPG_IR_MAJOR,
+    RpgIrProgram, RpgIrRequirement, RpgIrRequirementKind, RpgIrSchema, Ruleset,
+    RulesetValueExpression, RulesetValueKind, RulesetValueSource, VersionedRpgRequirement,
+    COMPILED_PLAY_BUNDLE_IDENTITY, PLAY_BUNDLE_ARTIFACT_MAJOR, PREPARED_PLAY_BUNDLE_IDENTITY,
+    RPG_IR_IDENTITY, RPG_IR_MAJOR,
 };
 use serde::{Deserialize, Serialize};
 use serde_json::{json, Value};
@@ -25,6 +26,7 @@ use crate::{
 pub struct CompiledPlayBundle {
     artifact: CompiledPlayBundleArtifact,
     rules: CompiledRpgRules,
+    value_plan: CompiledRulesetValuePlan,
 }
 
 impl CompiledPlayBundle {
@@ -36,8 +38,93 @@ impl CompiledPlayBundle {
         &self.rules
     }
 
+    pub fn value_plan(&self) -> &CompiledRulesetValuePlan {
+        &self.value_plan
+    }
+
     pub fn into_artifact(self) -> CompiledPlayBundleArtifact {
         self.artifact
+    }
+}
+
+pub const RULESET_VALUE_FORMULA_IDENTITY: &str = "asha.rpg.ruleset-value-formula";
+pub const RULESET_VALUE_FORMULA_VERSION: u32 = 1;
+const MAX_RULESET_VALUE_FORMULA_DEPTH: usize = 16;
+const MAX_RULESET_VALUE_FORMULA_NODES: usize = 64;
+
+#[derive(Debug, Clone, PartialEq, Eq, PartialOrd, Ord)]
+pub struct RulesetValueKey {
+    pub kind: RulesetValueKind,
+    pub id: String,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct RulesetValueEvaluationFailure {
+    pub code: &'static str,
+    pub target: RulesetValueKey,
+    pub message: String,
+}
+
+#[derive(Debug, Clone)]
+struct CompiledRulesetValueDerivation {
+    expression: RulesetValueExpression,
+    minimum: i64,
+    maximum: i64,
+}
+
+#[derive(Debug, Clone, Default)]
+pub struct CompiledRulesetValuePlan {
+    derivations: BTreeMap<RulesetValueKey, CompiledRulesetValueDerivation>,
+    order: Vec<RulesetValueKey>,
+}
+
+impl CompiledRulesetValuePlan {
+    pub fn is_derived(&self, kind: RulesetValueKind, id: &str) -> bool {
+        self.derivations.contains_key(&RulesetValueKey {
+            kind,
+            id: id.to_owned(),
+        })
+    }
+
+    pub fn evaluate(
+        &self,
+        supplied: &BTreeMap<RulesetValueKey, i32>,
+    ) -> Result<BTreeMap<RulesetValueKey, i32>, RulesetValueEvaluationFailure> {
+        let mut values = supplied
+            .iter()
+            .map(|(key, value)| (key.clone(), i64::from(*value)))
+            .collect::<BTreeMap<_, _>>();
+        let mut derived = BTreeMap::new();
+        for target in &self.order {
+            let derivation = self
+                .derivations
+                .get(target)
+                .expect("compiled derivation order resolves");
+            let value = evaluate_ruleset_value_expression(&derivation.expression, &values)
+                .map_err(|message| RulesetValueEvaluationFailure {
+                    code: "RPG_SCENARIO_RULESET_VALUE_DERIVATION_FAILED",
+                    target: target.clone(),
+                    message,
+                })?;
+            if value < derivation.minimum || value > derivation.maximum {
+                return Err(RulesetValueEvaluationFailure {
+                    code: "RPG_SCENARIO_RULESET_VALUE_DERIVATION_OUT_OF_DOMAIN",
+                    target: target.clone(),
+                    message: format!(
+                        "derived value {value} must be within {}..={}",
+                        derivation.minimum, derivation.maximum
+                    ),
+                });
+            }
+            let value = i32::try_from(value).map_err(|_| RulesetValueEvaluationFailure {
+                code: "RPG_SCENARIO_RULESET_VALUE_DERIVATION_OVERFLOW",
+                target: target.clone(),
+                message: "derived value does not fit the runtime integer domain".to_owned(),
+            })?;
+            values.insert(target.clone(), i64::from(value));
+            derived.insert(target.clone(), value);
+        }
+        Ok(derived)
     }
 }
 
@@ -67,6 +154,7 @@ pub fn compile_prepared_play_bundle(
 
     let normalized_ir = normalized_ir_from_materialized(&prepared)?;
     let rules = compile_normalized_rpg_ir(normalized_ir)?;
+    let value_plan = compile_ruleset_value_plan(&prepared.ruleset)?;
     let fingerprints = fingerprints(&prepared)?;
     let artifact_schema = PlayBundleArtifactSchema {
         identity: COMPILED_PLAY_BUNDLE_IDENTITY.to_owned(),
@@ -110,7 +198,11 @@ pub fn compile_prepared_play_bundle(
         overlay_provenance: prepared.overlay_provenance,
         fingerprints,
     };
-    Ok(CompiledPlayBundle { artifact, rules })
+    Ok(CompiledPlayBundle {
+        artifact,
+        rules,
+        value_plan,
+    })
 }
 
 pub fn load_compiled_play_bundle_json(
@@ -577,6 +669,306 @@ fn validate_ruleset(prepared: &PreparedPlayBundle, diagnostics: &mut Vec<RpgDiag
             ));
         }
         previous_domain = Some(domain.id.as_str());
+    }
+}
+
+fn compile_ruleset_value_plan(
+    ruleset: &Ruleset,
+) -> Result<CompiledRulesetValuePlan, RpgCompileFailure> {
+    let domains = ruleset
+        .provides
+        .numeric_domains
+        .iter()
+        .map(|domain| (domain.id.as_str(), (domain.minimum, domain.maximum)))
+        .collect::<BTreeMap<_, _>>();
+    let contracts = ruleset
+        .provides
+        .values
+        .iter()
+        .map(|value| {
+            (
+                RulesetValueKey {
+                    kind: value.kind,
+                    id: value.id.clone(),
+                },
+                value,
+            )
+        })
+        .collect::<BTreeMap<_, _>>();
+    let mut diagnostics = Vec::new();
+    let mut derivations = BTreeMap::new();
+    let mut dependencies = BTreeMap::<RulesetValueKey, BTreeSet<RulesetValueKey>>::new();
+
+    for (index, value) in ruleset.provides.values.iter().enumerate() {
+        let RulesetValueSource::Derived { formula } = &value.source else {
+            continue;
+        };
+        let value_path = format!("$.ruleset.provides.values[{index}].source.formula");
+        if formula.schema.identity != RULESET_VALUE_FORMULA_IDENTITY
+            || formula.schema.version != RULESET_VALUE_FORMULA_VERSION
+        {
+            diagnostics.push(RpgDiagnostic::error(
+                RpgDiagnosticStage::Compatibility,
+                "RULESET_VALUE_FORMULA_SCHEMA_UNSUPPORTED",
+                format!("{value_path}.schema"),
+                format!(
+                    "expected {RULESET_VALUE_FORMULA_IDENTITY}@{RULESET_VALUE_FORMULA_VERSION}"
+                ),
+            ));
+        }
+
+        let target = RulesetValueKey {
+            kind: value.kind,
+            id: value.id.clone(),
+        };
+        let mut reads = BTreeSet::new();
+        let mut node_count = 0;
+        validate_ruleset_value_expression(
+            &formula.expression,
+            ruleset,
+            &contracts,
+            &format!("{value_path}.expression"),
+            1,
+            &mut node_count,
+            &mut reads,
+            &mut diagnostics,
+        );
+        if node_count > MAX_RULESET_VALUE_FORMULA_NODES {
+            diagnostics.push(RpgDiagnostic::error(
+                RpgDiagnosticStage::Semantics,
+                "RULESET_VALUE_FORMULA_TOO_LARGE",
+                format!("{value_path}.expression"),
+                format!(
+                    "a ruleset value formula may contain at most {MAX_RULESET_VALUE_FORMULA_NODES} nodes"
+                ),
+            ));
+        }
+        let Some((minimum, maximum)) = domains.get(value.numeric_domain_id.as_str()).copied()
+        else {
+            continue;
+        };
+        derivations.insert(
+            target.clone(),
+            CompiledRulesetValueDerivation {
+                expression: formula.expression.clone(),
+                minimum,
+                maximum,
+            },
+        );
+        dependencies.insert(target, reads);
+    }
+
+    if !diagnostics.is_empty() {
+        return Err(RpgCompileFailure { diagnostics });
+    }
+
+    let derived_keys = derivations.keys().cloned().collect::<BTreeSet<_>>();
+    for reads in dependencies.values_mut() {
+        reads.retain(|read| derived_keys.contains(read));
+    }
+    let mut remaining_dependency_count = dependencies
+        .iter()
+        .map(|(target, reads)| (target.clone(), reads.len()))
+        .collect::<BTreeMap<_, _>>();
+    let mut dependents = BTreeMap::<RulesetValueKey, BTreeSet<RulesetValueKey>>::new();
+    for (target, reads) in &dependencies {
+        for read in reads {
+            dependents
+                .entry(read.clone())
+                .or_default()
+                .insert(target.clone());
+        }
+    }
+    let mut ready = remaining_dependency_count
+        .iter()
+        .filter_map(|(target, count)| (*count == 0).then_some(target.clone()))
+        .collect::<BTreeSet<_>>();
+    let mut order = Vec::with_capacity(derivations.len());
+    while let Some(target) = ready.pop_first() {
+        order.push(target.clone());
+        for dependent in dependents.get(&target).into_iter().flatten() {
+            let count = remaining_dependency_count
+                .get_mut(dependent)
+                .expect("compiled dependency target exists");
+            *count -= 1;
+            if *count == 0 {
+                ready.insert(dependent.clone());
+            }
+        }
+    }
+    if order.len() != derivations.len() {
+        let cycle = remaining_dependency_count
+            .iter()
+            .filter_map(|(target, count)| (*count > 0).then_some(target.id.as_str()))
+            .collect::<Vec<_>>()
+            .join(", ");
+        return Err(RpgCompileFailure {
+            diagnostics: vec![RpgDiagnostic::error(
+                RpgDiagnosticStage::References,
+                "RULESET_VALUE_DERIVATION_CYCLE",
+                "$.ruleset.provides.values",
+                format!("derived ruleset values contain a dependency cycle: {cycle}"),
+            )],
+        });
+    }
+
+    Ok(CompiledRulesetValuePlan { derivations, order })
+}
+
+#[allow(clippy::too_many_arguments)]
+fn validate_ruleset_value_expression(
+    expression: &RulesetValueExpression,
+    ruleset: &Ruleset,
+    contracts: &BTreeMap<RulesetValueKey, &rpg_ir::RulesetValueContract>,
+    path: &str,
+    depth: usize,
+    node_count: &mut usize,
+    reads: &mut BTreeSet<RulesetValueKey>,
+    diagnostics: &mut Vec<RpgDiagnostic>,
+) {
+    *node_count += 1;
+    if depth > MAX_RULESET_VALUE_FORMULA_DEPTH {
+        diagnostics.push(RpgDiagnostic::error(
+            RpgDiagnosticStage::Semantics,
+            "RULESET_VALUE_FORMULA_TOO_DEEP",
+            path,
+            format!(
+                "a ruleset value formula may be nested at most {MAX_RULESET_VALUE_FORMULA_DEPTH} levels"
+            ),
+        ));
+        return;
+    }
+    match expression {
+        RulesetValueExpression::Constant { .. } => {}
+        RulesetValueExpression::ReadValue {
+            ruleset_id,
+            value_kind,
+            value_id,
+        } => {
+            if ruleset_id != &ruleset.identity.id {
+                diagnostics.push(RpgDiagnostic::error(
+                    RpgDiagnosticStage::References,
+                    "RULESET_VALUE_FORMULA_OWNER_MISMATCH",
+                    format!("{path}.rulesetId"),
+                    format!(
+                        "formula references ruleset {ruleset_id}, but the selected ruleset is {}",
+                        ruleset.identity.id
+                    ),
+                ));
+                return;
+            }
+            let key = RulesetValueKey {
+                kind: *value_kind,
+                id: value_id.clone(),
+            };
+            if !contracts.contains_key(&key) {
+                diagnostics.push(RpgDiagnostic::error(
+                    RpgDiagnosticStage::References,
+                    "RULESET_VALUE_FORMULA_REFERENCE_MISSING",
+                    path,
+                    format!("formula references undeclared ruleset value {value_id}"),
+                ));
+                return;
+            }
+            reads.insert(key);
+        }
+        RulesetValueExpression::Subtract {
+            minuend,
+            subtrahend,
+        } => {
+            validate_ruleset_value_expression(
+                minuend,
+                ruleset,
+                contracts,
+                &format!("{path}.minuend"),
+                depth + 1,
+                node_count,
+                reads,
+                diagnostics,
+            );
+            validate_ruleset_value_expression(
+                subtrahend,
+                ruleset,
+                contracts,
+                &format!("{path}.subtrahend"),
+                depth + 1,
+                node_count,
+                reads,
+                diagnostics,
+            );
+        }
+        RulesetValueExpression::FloorDivide { dividend, divisor } => {
+            validate_ruleset_value_expression(
+                dividend,
+                ruleset,
+                contracts,
+                &format!("{path}.dividend"),
+                depth + 1,
+                node_count,
+                reads,
+                diagnostics,
+            );
+            validate_ruleset_value_expression(
+                divisor,
+                ruleset,
+                contracts,
+                &format!("{path}.divisor"),
+                depth + 1,
+                node_count,
+                reads,
+                diagnostics,
+            );
+        }
+    }
+}
+
+fn evaluate_ruleset_value_expression(
+    expression: &RulesetValueExpression,
+    values: &BTreeMap<RulesetValueKey, i64>,
+) -> Result<i64, String> {
+    match expression {
+        RulesetValueExpression::Constant { value } => Ok(*value),
+        RulesetValueExpression::ReadValue {
+            value_kind,
+            value_id,
+            ..
+        } => values
+            .get(&RulesetValueKey {
+                kind: *value_kind,
+                id: value_id.clone(),
+            })
+            .copied()
+            .ok_or_else(|| format!("required input value {value_id} was not supplied")),
+        RulesetValueExpression::Subtract {
+            minuend,
+            subtrahend,
+        } => {
+            let minuend = evaluate_ruleset_value_expression(minuend, values)?;
+            let subtrahend = evaluate_ruleset_value_expression(subtrahend, values)?;
+            minuend
+                .checked_sub(subtrahend)
+                .ok_or_else(|| "integer subtraction overflowed".to_owned())
+        }
+        RulesetValueExpression::FloorDivide { dividend, divisor } => {
+            let dividend = evaluate_ruleset_value_expression(dividend, values)?;
+            let divisor = evaluate_ruleset_value_expression(divisor, values)?;
+            if divisor == 0 {
+                return Err("integer floor division used a zero divisor".to_owned());
+            }
+            let quotient = dividend
+                .checked_div(divisor)
+                .ok_or_else(|| "integer floor division overflowed".to_owned())?;
+            let remainder = dividend
+                .checked_rem(divisor)
+                .ok_or_else(|| "integer floor division overflowed".to_owned())?;
+            if remainder != 0 && ((remainder > 0) != (divisor > 0)) {
+                quotient
+                    .checked_sub(1)
+                    .ok_or_else(|| "integer floor division overflowed".to_owned())
+            } else {
+                Ok(quotient)
+            }
+        }
     }
 }
 

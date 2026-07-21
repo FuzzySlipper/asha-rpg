@@ -15,6 +15,7 @@ mod registry;
 pub use artifact::{
     compile_prepared_play_bundle, compile_prepared_play_bundle_json, load_compiled_play_bundle,
     load_compiled_play_bundle_json, materialized_definition_fingerprint, CompiledPlayBundle,
+    CompiledRulesetValuePlan, RulesetValueEvaluationFailure, RulesetValueKey,
 };
 pub use compile::{
     compile_normalized_rpg_ir, compile_normalized_rpg_json, CompiledRpgAction, CompiledRpgRules,

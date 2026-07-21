@@ -1,5 +1,5 @@
 import type { RpgDefenseId, RpgStatId } from '@asha-rpg/ir';
-import type { Ruleset, RulesetIdentity, RulesetValueKind } from './play-bundle-types.js';
+import type { Ruleset, RulesetIdentity, RulesetValueContract, RulesetValueExpression, RulesetValueKind, RulesetValueSource } from './play-bundle-types.js';
 declare const rulesetValueReferenceBrand: unique symbol;
 export interface AuthoredRulesetValueOwnership {
     readonly field: string;
@@ -14,7 +14,20 @@ export type RulesetValueReference<Kind extends RulesetValueKind, RulesetId exten
     readonly rulesetId: RulesetId;
     readonly [rulesetValueReferenceBrand]: true;
 }>;
-export declare function defineRuleset(input: Ruleset): Ruleset;
+type RulesetValueInput = Omit<RulesetValueContract, 'source'> & {
+    readonly source?: RulesetValueSource;
+};
+type RulesetInput = Omit<Ruleset, 'provides'> & {
+    readonly provides: Omit<Ruleset['provides'], 'values'> & {
+        readonly values: readonly RulesetValueInput[];
+    };
+};
+export declare function defineRuleset(input: RulesetInput): Ruleset;
+export declare function rulesetValueConstant(value: number): RulesetValueExpression;
+export declare function readRulesetValue(reference: RulesetValueReference<RulesetValueKind, string, string>): RulesetValueExpression;
+export declare function subtractRulesetValues(minuend: RulesetValueExpression, subtrahend: RulesetValueExpression): RulesetValueExpression;
+export declare function floorDivideRulesetValues(dividend: RulesetValueExpression, divisor: RulesetValueExpression): RulesetValueExpression;
+export declare function derivedRulesetValue(expression: RulesetValueExpression): RulesetValueSource;
 export declare function rulesetStat<const RulesetId extends string, const StatId extends string>(ruleset: Ruleset & {
     readonly identity: RulesetIdentity & {
         readonly id: RulesetId;
