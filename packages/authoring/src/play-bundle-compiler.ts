@@ -140,11 +140,23 @@ export function preparePlayBundle(options: {
   if (materialization === undefined) return failed(diagnostics);
   const graph = closeDefinitionGraph(context, rootKeys, materialization.records);
   if (diagnostics.length > 0 || graph === undefined) return failed(diagnostics);
+  validateParticipantProfiles(
+    graph.materialized,
+    graph.resolvedReferences,
+    options.bundle.ruleset,
+    diagnostics,
+  );
+  if (diagnostics.length > 0) return failed(diagnostics);
 
   const normalized = normalizeMaterializedActions(options.bundle, graph, diagnostics);
   if (normalized === undefined) return failed(diagnostics);
 
-  const requirements = collectRequirements(context, normalized);
+  const requirements = collectRequirements(
+    context,
+    normalized,
+    graph.materialized,
+    options.bundle.ruleset,
+  );
   validateCollectedRequirements(
     requirements,
     options.bundle.ruleset,
@@ -2106,6 +2118,15 @@ function authoredCatalogReferences(
     collectCatalogReferences(definition.action, '$.action', byIdentity);
   } else if (definition.kind === 'mixin') {
     collectCatalogReferences(definition.patch, '$.patch', byIdentity);
+  } else if (
+    definition.kind === 'support' &&
+    definition.semantic.catalog === 'participantProfile'
+  ) {
+    collectCatalogReferences(
+      definition.semantic.data,
+      '$.semantic.data',
+      byIdentity,
+    );
   } else {
     return [];
   }
@@ -2639,8 +2660,16 @@ function validateRulesetValueOwners(
   ruleset: Ruleset,
   diagnostics: PlayBundleCompilerDiagnostic[],
 ): void {
-  if (record.definition.kind !== 'action') return;
-  visitAuthoredValue(record.definition.action, '$.action', (ownership, path) => {
+  const authoredValue =
+    record.definition.kind === 'action'
+      ? record.definition.action
+      : record.definition.kind === 'support' &&
+          record.definition.semantic.catalog === 'participantProfile'
+        ? record.definition.semantic.data
+        : undefined;
+  if (authoredValue === undefined) return;
+  const rootPath = record.definition.kind === 'action' ? '$.action' : '$.semantic.data';
+  visitAuthoredValue(authoredValue, rootPath, (ownership, path) => {
     if (ownership.rulesetId === ruleset.identity.id) return;
     diagnostics.push(
       diagnostic(
@@ -2683,9 +2712,296 @@ function visitAuthoredValue(
   }
 }
 
+function validateParticipantProfiles(
+  materialized: readonly DefinitionRecord[],
+  resolvedReferences: ReadonlyMap<string, readonly string[]>,
+  ruleset: Ruleset,
+  diagnostics: PlayBundleCompilerDiagnostic[],
+): void {
+  const recordsByGlobalId = new Map(
+    materialized.map((record) => [globalDefinitionId(record), record]),
+  );
+  const rulesetValues = new Map(
+    ruleset.provides.values.map((value) => [`${value.kind}:${value.id}`, value]),
+  );
+  const numericDomains = new Map(
+    ruleset.provides.numericDomains.map((domain) => [domain.id, domain]),
+  );
+
+  for (const record of materialized) {
+    if (!isParticipantProfileDefinition(record.definition)) continue;
+    const path = `$.packages[${record.package.key}].definitions.${record.definition.id}.semantic.data`;
+    const profile = authoredParticipantProfile(record.definition);
+    if (profile === undefined) {
+      diagnostics.push(diagnostic(
+        'source',
+        'PARTICIPANT_PROFILE_SCHEMA_INVALID',
+        path,
+        'participant profiles require asha.rpg.participant-profile@1, a role, definition references, and typed base capabilities',
+        profileDiagnosticContext(record),
+      ));
+      continue;
+    }
+
+    const definitionIdentities = new Set<string>();
+    let hasAction = false;
+    const resolved = resolvedReferences.get(globalDefinitionId(record)) ?? [];
+    for (const [index, reference] of profile.definitionReferences.entries()) {
+      const identity = `${reference.importAs ?? ''}#${reference.definitionId}`;
+      if (definitionIdentities.has(identity)) {
+        diagnostics.push(diagnostic(
+          'source',
+          'PARTICIPANT_PROFILE_DEFINITION_DUPLICATE',
+          `${path}.definitionReferences[${index}]`,
+          `participant profile repeats definition ${reference.definitionId}`,
+          profileDiagnosticContext(record),
+        ));
+      }
+      definitionIdentities.add(identity);
+      const target = resolved
+        .map((globalId) => recordsByGlobalId.get(globalId))
+        .find((candidate) => candidate?.definition.id === reference.definitionId);
+      if (target === undefined) continue;
+      if (!target.exported || target.definition.visibility !== 'public') {
+        diagnostics.push(diagnostic(
+          'graph',
+          'PARTICIPANT_PROFILE_DEFINITION_NOT_EXPORTED',
+          `${path}.definitionReferences[${index}]`,
+          `profile definition ${reference.definitionId} is not exported for participant setup`,
+          profileDiagnosticContext(record),
+        ));
+      }
+      if (target.definition.kind === 'action') hasAction = true;
+    }
+    if (!hasAction) {
+      diagnostics.push(diagnostic(
+        'compatibility',
+        'PARTICIPANT_PROFILE_ACTION_REQUIRED',
+        `${path}.definitionReferences`,
+        'an exported participant profile must reference at least one action',
+        profileDiagnosticContext(record),
+      ));
+    }
+
+    let vitalityCount = 0;
+    const capabilityIdentities = new Set<string>();
+    for (const [index, capability] of profile.capabilities.entries()) {
+      const capabilityPath = `${path}.capabilities[${index}]`;
+      const identity = profileCapabilityIdentity(capability);
+      if (capabilityIdentities.has(identity)) {
+        diagnostics.push(diagnostic(
+          'source',
+          'PARTICIPANT_PROFILE_CAPABILITY_DUPLICATE',
+          capabilityPath,
+          `participant profile repeats capability fact ${identity}`,
+          profileDiagnosticContext(record),
+        ));
+      }
+      capabilityIdentities.add(identity);
+      if (capability.owner === 'vitality') {
+        vitalityCount += 1;
+        validateProfileBoundedValue(capability.value, capabilityPath, record, diagnostics);
+        continue;
+      }
+      if (capability.owner === 'stat' || capability.owner === 'defense') {
+        const ownership = rulesetValueOwnershipOf(capability).find(
+          (candidate) => candidate.field === 'id',
+        );
+        if (ownership === undefined) {
+          diagnostics.push(diagnostic(
+            'compatibility',
+            'PARTICIPANT_PROFILE_RULESET_VALUE_OWNER_MISSING',
+            `${capabilityPath}.id`,
+            `profile ${capability.owner} ${capability.id} must be authored from a nominal Ruleset reference`,
+            profileDiagnosticContext(record),
+          ));
+        }
+        const contract = rulesetValues.get(`${capability.owner}:${capability.id}`);
+        if (contract === undefined) continue;
+        if (contract.source.kind === 'derived') {
+          diagnostics.push(diagnostic(
+            'compatibility',
+            'PARTICIPANT_PROFILE_DERIVED_VALUE_FORBIDDEN',
+            capabilityPath,
+            `profile must not supply derived Ruleset value ${capability.id}`,
+            profileDiagnosticContext(record),
+          ));
+        }
+        const domain = numericDomains.get(contract.numericDomainId);
+        if (
+          domain !== undefined &&
+          (capability.value < domain.minimum || capability.value > domain.maximum)
+        ) {
+          diagnostics.push(diagnostic(
+            'compatibility',
+            'PARTICIPANT_PROFILE_VALUE_OUT_OF_DOMAIN',
+            `${capabilityPath}.value`,
+            `profile value must be within ${domain.minimum}..=${domain.maximum}`,
+            profileDiagnosticContext(record),
+          ));
+        }
+        continue;
+      }
+      const ownership = catalogOwnershipOf(capability).find(
+        (candidate) => candidate.field === 'id',
+      );
+      if (ownership === undefined || ownership.category !== capability.owner) {
+        diagnostics.push(diagnostic(
+          'compatibility',
+          'PARTICIPANT_PROFILE_CONTENT_VALUE_OWNER_MISSING',
+          `${capabilityPath}.id`,
+          `profile ${capability.owner} ${capability.id} must be authored from a nominal Content Pack catalog reference`,
+          profileDiagnosticContext(record),
+        ));
+      }
+      if (capability.owner === 'resource') {
+        validateProfileBoundedValue(capability.value, capabilityPath, record, diagnostics);
+      } else if (
+        capability.stackingGroup.trim().length === 0 ||
+        capability.id.trim().length === 0 ||
+        !Number.isInteger(capability.remainingTurns) ||
+        capability.remainingTurns < 1 ||
+        capability.remainingTurns > 1_000
+      ) {
+        diagnostics.push(diagnostic(
+          'source',
+          'PARTICIPANT_PROFILE_MODIFIER_INVALID',
+          capabilityPath,
+          'profile modifiers require identities and remainingTurns within 1..=1000',
+          profileDiagnosticContext(record),
+        ));
+      }
+    }
+    if (vitalityCount !== 1) {
+      diagnostics.push(diagnostic(
+        'compatibility',
+        'PARTICIPANT_PROFILE_VITALITY_REQUIRED',
+        `${path}.capabilities`,
+        'participant profiles require exactly one vitality base fact',
+        profileDiagnosticContext(record),
+      ));
+    }
+  }
+}
+
+function isParticipantProfileDefinition(
+  definition: ContentDefinition,
+): definition is Extract<ContentDefinition, { readonly kind: 'support' }> {
+  return definition.kind === 'support' && definition.semantic.catalog === 'participantProfile';
+}
+
+function authoredParticipantProfile(
+  definition: ContentDefinition,
+): import('./play-bundle-types.js').ContentParticipantProfileData | undefined {
+  if (!isParticipantProfileDefinition(definition)) return undefined;
+  const data = definition.semantic.data;
+  if (!isRecord(data) || !isRecord(data['schema'])) return undefined;
+  const schema = data['schema'];
+  if (
+    schema['identity'] !== 'asha.rpg.participant-profile' ||
+    schema['version'] !== 1 ||
+    (data['role'] !== 'player' && data['role'] !== 'creature') ||
+    !Array.isArray(data['definitionReferences']) ||
+    !data['definitionReferences'].every(isProfileDefinitionReference) ||
+    !Array.isArray(data['capabilities']) ||
+    !data['capabilities'].every(isProfileCapability)
+  ) {
+    return undefined;
+  }
+  return data as unknown as import('./play-bundle-types.js').ContentParticipantProfileData;
+}
+
+function isProfileDefinitionReference(value: unknown): boolean {
+  if (!isRecord(value) || typeof value['definitionId'] !== 'string') return false;
+  return value['importAs'] === undefined || typeof value['importAs'] === 'string';
+}
+
+function isProfileCapability(value: unknown): boolean {
+  if (!isRecord(value) || typeof value['owner'] !== 'string') return false;
+  if (value['owner'] === 'vitality') return isProfileBoundedValue(value['value']);
+  if (value['owner'] === 'stat' || value['owner'] === 'defense') {
+    return typeof value['id'] === 'string' && typeof value['value'] === 'number';
+  }
+  if (value['owner'] === 'resource') {
+    return typeof value['id'] === 'string' && isProfileBoundedValue(value['value']);
+  }
+  if (value['owner'] === 'modifier') {
+    return (
+      typeof value['stackingGroup'] === 'string' &&
+      typeof value['id'] === 'string' &&
+      typeof value['value'] === 'number' &&
+      typeof value['remainingTurns'] === 'number'
+    );
+  }
+  return false;
+}
+
+function isProfileBoundedValue(value: unknown): boolean {
+  return (
+    isRecord(value) &&
+    typeof value['current'] === 'number' &&
+    typeof value['max'] === 'number'
+  );
+}
+
+function profileCapabilityIdentity(
+  capability: import('./play-bundle-types.js').ScenarioInitialCapability,
+): string {
+  if (capability.owner === 'vitality') return 'vitality';
+  if (capability.owner === 'modifier') {
+    return `modifier:${capability.stackingGroup}`;
+  }
+  return `${capability.owner}:${capability.id}`;
+}
+
+function profileCapabilityRequirement(
+  owner: import('./play-bundle-types.js').ScenarioInitialCapability['owner'],
+): RpgCapabilityId | undefined {
+  switch (owner) {
+    case 'vitality': return 'capability.vitality';
+    case 'stat': return 'capability.stats';
+    case 'defense': return 'capability.defenses';
+    case 'resource': return 'capability.resources';
+    case 'modifier': return 'capability.modifiers';
+  }
+}
+
+function validateProfileBoundedValue(
+  value: import('./play-bundle-types.js').ScenarioBoundedValue,
+  path: string,
+  record: DefinitionRecord,
+  diagnostics: PlayBundleCompilerDiagnostic[],
+): void {
+  if (
+    !Number.isInteger(value.current) ||
+    !Number.isInteger(value.max) ||
+    value.current < 0 ||
+    value.max < 0 ||
+    value.current > value.max
+  ) {
+    diagnostics.push(diagnostic(
+      'source',
+      'PARTICIPANT_PROFILE_BOUNDED_VALUE_INVALID',
+      path,
+      'profile bounded values require integer 0 <= current <= max',
+      profileDiagnosticContext(record),
+    ));
+  }
+}
+
+function profileDiagnosticContext(record: DefinitionRecord) {
+  return {
+    packageId: record.package.source.manifest.identity.id,
+    definitionId: record.definition.id,
+    source: record.definition.source,
+  };
+}
+
 function collectRequirements(
   context: ResolutionContext,
   normalized: import('@asha-rpg/ir').NormalizedRpgIr,
+  materialized: readonly DefinitionRecord[],
+  ruleset: Ruleset,
 ): ContentPackRequirements | undefined {
   const operations = new Map<RpgOperationId, number>();
   const capabilities = new Map<RpgCapabilityId, number>();
@@ -2714,6 +3030,25 @@ function collectRequirements(
   }
   for (const statId of normalized.catalogs.stats) values.add(`stat:${statId}`);
   for (const defenseId of normalized.catalogs.defenses) values.add(`defense:${defenseId}`);
+  const rulesetValues = new Map(
+    ruleset.provides.values.map((value) => [`${value.kind}:${value.id}`, value]),
+  );
+  for (const record of materialized) {
+    const profile = authoredParticipantProfile(record.definition);
+    if (profile === undefined) continue;
+    for (const capability of profile.capabilities) {
+      const capabilityId = profileCapabilityRequirement(capability.owner);
+      if (capabilityId !== undefined) {
+        const version = RPG_CAPABILITY_VERSIONS[capabilityId];
+        if (version !== undefined) capabilities.set(capabilityId, version);
+      }
+      if (capability.owner !== 'stat' && capability.owner !== 'defense') continue;
+      const key = `${capability.owner}:${capability.id}`;
+      values.add(key);
+      const contract = rulesetValues.get(key);
+      if (contract !== undefined) numericDomains.add(contract.numericDomainId);
+    }
+  }
   if (context.diagnostics.length > 0) return undefined;
   return {
     operations: [...operations]
@@ -2792,6 +3127,24 @@ function validateCollectedRequirements(
   }
 }
 
+function materializedSupportSemantic(
+  definition: Extract<ContentDefinition, { readonly kind: 'support' }>,
+): unknown {
+  const profile = authoredParticipantProfile(definition);
+  if (profile === undefined) return definition.semantic;
+  return {
+    ...definition.semantic,
+    data: {
+      schema: profile.schema,
+      role: profile.role,
+      definitionIds: profile.definitionReferences
+        .map((reference) => reference.definitionId)
+        .sort(),
+      capabilities: profile.capabilities,
+    } satisfies import('./play-bundle-types.js').MaterializedParticipantProfileData,
+  };
+}
+
 function materializeDefinitions(
   records: readonly DefinitionRecord[],
   references: ReadonlyMap<string, readonly string[]>,
@@ -2813,7 +3166,7 @@ function materializeDefinitions(
       const semantic =
         definition.kind === 'action'
           ? normalizedActions.get(definition.id)
-          : definition.semantic;
+          : materializedSupportSemantic(definition);
       if (semantic === undefined) throw new Error(`materialization missing ${definition.id}`);
       const materialized = {
         id: definition.id,

@@ -1,4 +1,6 @@
-import type { ContentActionDefinition, PlayBundleManifest, ContentDefinition, ContentDefinitionReference, ContentParticipantProfileData, ContentDerivedDefinition, ContentPackDependency, ContentPackIdentity, ContentMixinApplication, ContentMixinDefinition, ContentPackManifest, ContentPatch, ContentPackRequest, ContentPackSource, ContentPolicyBinding, ContentReservedRelationship, ContentSupportDefinition, ContentTemplateDefinition } from './play-bundle-types.js';
+import type { ContentCatalogReference } from './catalogs.js';
+import type { RulesetValueReference } from './ruleset-builders.js';
+import type { ContentActionDefinition, PlayBundleManifest, ContentDefinition, ContentDefinitionReference, ContentParticipantProfileData, ContentParticipantProfileCapability, ContentDerivedDefinition, ContentPackDependency, ContentPackIdentity, ContentMixinApplication, ContentMixinDefinition, ContentPackManifest, ContentPatch, ContentPackRequest, ContentPackSource, ContentPolicyBinding, ContentReservedRelationship, ContentSupportDefinition, ContentTemplateDefinition, ScenarioBoundedValue } from './play-bundle-types.js';
 type OrdinaryDefinitionInput<Definition extends ContentDefinition> = Omit<Definition, 'kind' | 'lowLevelReferences'> & {
     readonly kind?: Definition['kind'];
 };
@@ -25,6 +27,16 @@ export declare function defineParticipantProfileDefinition(input: Omit<OrdinaryD
     readonly profileId: string;
     readonly profile: ContentParticipantProfileData;
 }): ContentSupportDefinition;
+export declare function defineParticipantProfileData(input: Omit<ContentParticipantProfileData, 'schema'>): ContentParticipantProfileData;
+export declare function participantProfileVitality(value: ScenarioBoundedValue): ContentParticipantProfileCapability;
+export declare function participantProfileStat(reference: RulesetValueReference<'stat', string, string>, value: number): ContentParticipantProfileCapability;
+export declare function participantProfileDefense(reference: RulesetValueReference<'defense', string, string>, value: number): ContentParticipantProfileCapability;
+export declare function participantProfileResource(reference: ContentCatalogReference<'resource', string>, value: ScenarioBoundedValue): ContentParticipantProfileCapability;
+export declare function participantProfileModifier(reference: ContentCatalogReference<'modifier', string>, input: {
+    readonly stackingGroup: string;
+    readonly value: number;
+    readonly remainingTurns: number;
+}): ContentParticipantProfileCapability;
 export declare function defineTemplateDefinition(input: OrdinaryDefinitionInput<ContentTemplateDefinition>): ContentTemplateDefinition;
 export declare function defineDerivedDefinition(input: OrdinaryDefinitionInput<ContentDerivedDefinition>): ContentDerivedDefinition;
 export declare function defineMixinDefinition(input: OrdinaryDefinitionInput<ContentMixinDefinition>): ContentMixinDefinition;

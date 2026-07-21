@@ -10,6 +10,7 @@ import {
   contentPackRequest,
   contentPackSource,
   defineContentPack,
+  defineParticipantProfileData,
   defineParticipantProfileDefinition,
   defineActionDefinition,
   defineRuleset,
@@ -19,6 +20,9 @@ import {
   heal,
   hostile,
   onCheck,
+  noRoll,
+  participantProfileVitality,
+  participantProfileStat,
   preparePlayBundle,
   readStat,
   rulesetDefense,
@@ -150,6 +154,32 @@ test("Content Pack requirements are checked directly against Ruleset provisions"
 });
 
 test("Content Packs may carry inert consumer setup data without extending Rust catalogs", () => {
+  const profileRuleset = defineRuleset({
+    ...semanticRuleset,
+    provides: {
+      ...semanticRuleset.provides,
+      operations: [{ id: "operation.heal", version: 1 }],
+      capabilities: [
+        { id: "capability.stats", version: 1 },
+        { id: "capability.vitality", version: 1 },
+      ],
+    },
+  });
+  const authoredAction = action({
+    id: actionId("action.profile-heal"),
+    name: "Profile heal",
+    sourcePath: "contract/profiles.ts#profileHeal",
+    targets: hostile({ range: 1 }),
+    check: noRoll(),
+    program: onCheck({ noRoll: heal({ amount: constant(1) }) }),
+  });
+  const actionDefinition = defineActionDefinition({
+    id: authoredAction.id,
+    visibility: "public",
+    extensionPolicy: "sealed",
+    source: { module: "contract/profiles.ts", declaration: "profileHeal" },
+    action: authoredAction,
+  });
   const profile = defineParticipantProfileDefinition({
     id: "profile.vanguard",
     visibility: "public",
@@ -157,21 +187,24 @@ test("Content Packs may carry inert consumer setup data without extending Rust c
     source: { module: "contract/profiles.ts", declaration: "vanguard" },
     presentation: { label: "Vanguard" },
     profileId: "vanguard",
-    profile: {
+    profile: defineParticipantProfileData({
       role: "player",
-      definitionIds: [],
-      capabilities: [],
-    },
+      definitionReferences: [{ definitionId: actionDefinition.id }],
+      capabilities: [
+        participantProfileVitality({ current: 10, max: 10 }),
+        participantProfileStat(rulesetStat(profileRuleset, "strength"), 16),
+      ],
+    }),
   });
   const contentPack = defineContentPack({
     identity: { id: "contract.profile-content", version: "1.0.0" },
     entry: { module: "contract/profiles.ts", declaration: "content" },
-    definitions: [profile],
+    definitions: [actionDefinition, profile],
   });
   const result = preparePlayBundle({
     bundle: composePlayBundle({
       identity: { id: "contract.profile-bundle", version: "1.0.0" },
-      ruleset: semanticRuleset,
+      ruleset: profileRuleset,
       base: contentPackRequest({
         id: contentPack.identity.id,
         version: "1.0.0",
@@ -185,10 +218,64 @@ test("Content Packs may carry inert consumer setup data without extending Rust c
 
   assert.equal(result.ok, true);
   if (!result.ok) return;
-  assert.deepEqual(
-    result.prepared.materializedDefinitions[0]?.semantic,
-    profile.semantic,
+  const materializedProfile = result.prepared.materializedDefinitions.find(
+    (definition) => definition.id === profile.id,
   );
+  const materializedSemantic = materializedProfile?.semantic as
+    | { readonly data: unknown }
+    | undefined;
+  assert.deepEqual(materializedSemantic?.data, {
+    schema: { identity: "asha.rpg.participant-profile", version: 1 },
+    role: "player",
+    definitionIds: [actionDefinition.id],
+    capabilities: [
+      { owner: "vitality", value: { current: 10, max: 10 } },
+      { owner: "stat", id: "strength", value: 16 },
+    ],
+  });
+  assert.deepEqual(result.prepared.contentRequirements.values, [
+    { kind: "stat", id: "strength" },
+  ]);
+  assert.deepEqual(result.prepared.contentRequirements.numericDomains, ["score"]);
+
+  const foreignRuleset = defineRuleset({
+    ...profileRuleset,
+    identity: { id: "contract.foreign-profile", version: "1.0.0" },
+  });
+  const foreignProfile = defineParticipantProfileDefinition({
+    ...profile,
+    profileId: "foreign-vanguard",
+    profile: defineParticipantProfileData({
+      role: "player",
+      definitionReferences: [{ definitionId: actionDefinition.id }],
+      capabilities: [
+        participantProfileVitality({ current: 10, max: 10 }),
+        participantProfileStat(rulesetStat(foreignRuleset, "strength"), 16),
+      ],
+    }),
+  });
+  const foreignContent = defineContentPack({
+    ...contentPack,
+    identity: { id: "contract.foreign-profile-content", version: "1.0.0" },
+    definitions: [actionDefinition, foreignProfile],
+  });
+  const foreignResult = preparePlayBundle({
+    bundle: composePlayBundle({
+      identity: { id: "contract.foreign-profile-bundle", version: "1.0.0" },
+      ruleset: profileRuleset,
+      base: contentPackRequest({ id: foreignContent.identity.id, version: "1.0.0" }),
+      add: [],
+      overlays: [],
+      configure: {},
+    }),
+    contentPacks: [contentPackSource(foreignContent)],
+  });
+  assert.equal(foreignResult.ok, false);
+  if (!foreignResult.ok) {
+    assert.ok(foreignResult.diagnostics.some(
+      (diagnostic) => diagnostic.code === "RULESET_VALUE_REFERENCE_OWNER_MISMATCH",
+    ));
+  }
 });
 
 test("Scenario builder emits setup-only immutable data", () => {

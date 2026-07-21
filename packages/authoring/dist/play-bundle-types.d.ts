@@ -227,8 +227,27 @@ export interface ContentSupportDefinition extends ContentDefinitionBase {
         readonly data?: unknown;
     };
 }
+declare const participantProfileCapabilityBrand: unique symbol;
+/** A typed base fact accepted by the participant-profile authoring builders. */
+export type ContentParticipantProfileCapability = ScenarioInitialCapability & {
+    readonly [participantProfileCapabilityBrand]: true;
+};
 /** Inert, portable defaults that a host may use to construct Scenario participants. */
 export interface ContentParticipantProfileData {
+    readonly schema: {
+        readonly identity: "asha.rpg.participant-profile";
+        readonly version: 1;
+    };
+    readonly role: "player" | "creature";
+    readonly definitionReferences: readonly ContentDefinitionReference[];
+    readonly capabilities: readonly ContentParticipantProfileCapability[];
+}
+/** Rust-validated profile payload retained in a materialized support definition. */
+export interface MaterializedParticipantProfileData {
+    readonly schema: {
+        readonly identity: "asha.rpg.participant-profile";
+        readonly version: 1;
+    };
     readonly role: "player" | "creature";
     readonly definitionIds: readonly string[];
     readonly capabilities: readonly ScenarioInitialCapability[];

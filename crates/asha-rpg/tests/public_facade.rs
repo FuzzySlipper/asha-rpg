@@ -211,6 +211,101 @@ fn rust_rejects_supplied_unknown_and_cyclic_derived_values_before_session_state(
         .any(|diagnostic| diagnostic.code == "RULESET_VALUE_DERIVATION_CYCLE"));
 }
 
+#[test]
+fn rust_validates_and_exposes_typed_participant_profiles() {
+    let prepared = participant_profile_prepared();
+    let bundle = compile_prepared_play_bundle(prepared.clone()).unwrap();
+    let profiles = bundle.participant_profiles();
+    assert_eq!(profiles.len(), 1);
+    assert_eq!(profiles[0].definition_id, "profile.healer");
+    assert_eq!(profiles[0].profile_id, "healer");
+    assert_eq!(profiles[0].definition_ids, ["action.heal"]);
+
+    let scenario = RpgScenario {
+        schema: RpgScenario::schema(),
+        play_bundle_id: bundle.artifact().artifact_id.clone(),
+        board: RpgBoardSetup {
+            width: 1,
+            height: 1,
+            cells: Vec::new(),
+        },
+        participants: vec![participant("healer", "Healer", RpgTeamId::ally(), 0, 10)],
+        turn: RpgTurnInitialization {
+            initiative_order: vec!["healer".to_owned()],
+            current_actor_id: "healer".to_owned(),
+            round: 1,
+            turn: 1,
+        },
+        random_source: RpgRandomSourceBinding {
+            policy_id: "consumer.recorded-evidence".to_owned(),
+            policy_version: 1,
+            source_id: "consumer.roll-tape".to_owned(),
+            source_version: 1,
+        },
+    };
+    RpgAuthoritySession::from_scenario(bundle, scenario).unwrap();
+
+    let mut malformed = prepared;
+    malformed.materialized_definitions[1].semantic["data"]["commands"] = json!([]);
+    malformed.materialized_definitions[1].fingerprint =
+        materialized_definition_fingerprint(&malformed.materialized_definitions[1]).unwrap();
+    let failure = compile_prepared_play_bundle(malformed).unwrap_err();
+    assert!(failure
+        .diagnostics
+        .iter()
+        .any(|diagnostic| diagnostic.code == "PARTICIPANT_PROFILE_DATA_INVALID"));
+}
+
+fn participant_profile_prepared() -> PreparedPlayBundle {
+    let mut prepared = healing_prepared();
+    let provenance = ContentDefinitionProvenance {
+        definition_id: "profile.healer".to_owned(),
+        package_id: "consumer.package".to_owned(),
+        package_version: "1.0.0".to_owned(),
+        source: ContentSourceLocation {
+            module: "profiles/healer.ts".to_owned(),
+            declaration: "healer".to_owned(),
+        },
+    };
+    let mut profile = MaterializedContentDefinition {
+        id: "profile.healer".to_owned(),
+        kind: MaterializedContentDefinitionKind::Support,
+        visibility: MaterializedContentVisibility::Exported,
+        extension_policy: ContentExtensionPolicy::Sealed,
+        semantic: json!({
+            "catalog": "participantProfile",
+            "id": "healer",
+            "data": {
+                "schema": {
+                    "identity": "asha.rpg.participant-profile",
+                    "version": 1
+                },
+                "role": "player",
+                "definitionIds": ["action.heal"],
+                "capabilities": [{
+                    "owner": "vitality",
+                    "value": {"current": 10, "max": 10}
+                }]
+            }
+        }),
+        presentation: json!({"label": "Healer", "description": "A typed setup profile."}),
+        references: vec!["action.heal".to_owned()],
+        provenance: provenance.clone(),
+        fingerprint: String::new(),
+    };
+    profile.fingerprint = materialized_definition_fingerprint(&profile).unwrap();
+    prepared.materialized_definitions.push(profile);
+    prepared.exported_roots.push("profile.healer".to_owned());
+    prepared.definition_provenance.push(provenance);
+    prepared.relationships.push(ContentRelationshipProvenance {
+        kind: ContentRelationshipKind::Exports,
+        source: "consumer.package@1.0.0".to_owned(),
+        target: "profile.healer".to_owned(),
+        order: 1,
+    });
+    prepared
+}
+
 fn derived_value_prepared(divisor: i64) -> PreparedPlayBundle {
     let mut prepared = healing_prepared();
     prepared.ruleset.provides.capabilities.insert(

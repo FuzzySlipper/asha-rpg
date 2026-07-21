@@ -1,4 +1,7 @@
 import { immutable, stableFingerprint } from './canonical.js';
+import { retainCatalogOwnership } from './catalogs.js';
+import { retainRulesetValueOwnership, rulesetValueId } from './ruleset-builders.js';
+const participantProfileCapabilityBrand = Symbol('asha-rpg.participant-profile-capability-builder');
 export function contentPackDependency(input) {
     return immutable({ ...input, relationship: 'dependsOn' });
 }
@@ -19,15 +22,54 @@ export function defineParticipantProfileDefinition(input) {
     return immutable({
         ...definition,
         kind: 'support',
-        lowLevelReferences: profile.definitionIds.map((definitionId) => ({
-            definitionId,
-        })),
+        lowLevelReferences: [...profile.definitionReferences],
         semantic: {
             catalog: 'participantProfile',
             id: profileId,
             data: profile,
         },
     });
+}
+export function defineParticipantProfileData(input) {
+    return immutable({
+        ...input,
+        schema: {
+            identity: 'asha.rpg.participant-profile',
+            version: 1,
+        },
+        definitionReferences: [...input.definitionReferences],
+        capabilities: [...input.capabilities],
+    });
+}
+export function participantProfileVitality(value) {
+    return profileCapability({ owner: 'vitality', value });
+}
+export function participantProfileStat(reference, value) {
+    return profileCapability(retainRulesetValueOwnership({ owner: 'stat', id: rulesetValueId(reference), value }, [{ field: 'id', reference }]));
+}
+export function participantProfileDefense(reference, value) {
+    return profileCapability(retainRulesetValueOwnership({ owner: 'defense', id: rulesetValueId(reference), value }, [{ field: 'id', reference }]));
+}
+export function participantProfileResource(reference, value) {
+    return profileCapability(retainCatalogOwnership({ owner: 'resource', id: reference.definitionId, value }, [{ field: 'id', reference }]));
+}
+export function participantProfileModifier(reference, input) {
+    return profileCapability(retainCatalogOwnership({
+        owner: 'modifier',
+        stackingGroup: input.stackingGroup,
+        id: reference.definitionId,
+        value: input.value,
+        remainingTurns: input.remainingTurns,
+    }, [{ field: 'id', reference }]));
+}
+function profileCapability(capability) {
+    Object.defineProperty(capability, participantProfileCapabilityBrand, {
+        value: true,
+        enumerable: false,
+        configurable: false,
+        writable: false,
+    });
+    return immutable(capability);
 }
 export function defineTemplateDefinition(input) {
     return immutable({ ...input, kind: 'template' });

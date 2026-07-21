@@ -1,10 +1,15 @@
 import { immutable, stableFingerprint } from './canonical.js';
+import { retainCatalogOwnership } from './catalogs.js';
+import type { ContentCatalogReference } from './catalogs.js';
+import { retainRulesetValueOwnership, rulesetValueId } from './ruleset-builders.js';
+import type { RulesetValueReference } from './ruleset-builders.js';
 import type {
   ContentActionDefinition,
   PlayBundleManifest,
   ContentDefinition,
   ContentDefinitionReference,
   ContentParticipantProfileData,
+  ContentParticipantProfileCapability,
   ContentDerivedDefinition,
   ContentPackDependency,
   ContentPackIdentity,
@@ -18,7 +23,12 @@ import type {
   ContentReservedRelationship,
   ContentSupportDefinition,
   ContentTemplateDefinition,
+  ScenarioBoundedValue,
 } from './play-bundle-types.js';
+
+const participantProfileCapabilityBrand: unique symbol = Symbol(
+  'asha-rpg.participant-profile-capability-builder',
+);
 
 type OrdinaryDefinitionInput<Definition extends ContentDefinition> = Omit<
   Definition,
@@ -95,15 +105,104 @@ export function defineParticipantProfileDefinition(
   return immutable({
     ...definition,
     kind: 'support' as const,
-    lowLevelReferences: profile.definitionIds.map((definitionId) => ({
-      definitionId,
-    })),
+    lowLevelReferences: [...profile.definitionReferences],
     semantic: {
       catalog: 'participantProfile',
       id: profileId,
       data: profile,
     },
   });
+}
+
+export function defineParticipantProfileData(input: Omit<
+  ContentParticipantProfileData,
+  'schema'
+>): ContentParticipantProfileData {
+  return immutable({
+    ...input,
+    schema: {
+      identity: 'asha.rpg.participant-profile' as const,
+      version: 1 as const,
+    },
+    definitionReferences: [...input.definitionReferences],
+    capabilities: [...input.capabilities],
+  });
+}
+
+export function participantProfileVitality(
+  value: ScenarioBoundedValue,
+): ContentParticipantProfileCapability {
+  return profileCapability({ owner: 'vitality' as const, value });
+}
+
+export function participantProfileStat(
+  reference: RulesetValueReference<'stat', string, string>,
+  value: number,
+): ContentParticipantProfileCapability {
+  return profileCapability(
+    retainRulesetValueOwnership(
+      { owner: 'stat' as const, id: rulesetValueId(reference), value },
+      [{ field: 'id', reference }],
+    ),
+  );
+}
+
+export function participantProfileDefense(
+  reference: RulesetValueReference<'defense', string, string>,
+  value: number,
+): ContentParticipantProfileCapability {
+  return profileCapability(
+    retainRulesetValueOwnership(
+      { owner: 'defense' as const, id: rulesetValueId(reference), value },
+      [{ field: 'id', reference }],
+    ),
+  );
+}
+
+export function participantProfileResource(
+  reference: ContentCatalogReference<'resource', string>,
+  value: ScenarioBoundedValue,
+): ContentParticipantProfileCapability {
+  return profileCapability(
+    retainCatalogOwnership(
+      { owner: 'resource' as const, id: reference.definitionId, value },
+      [{ field: 'id', reference }],
+    ),
+  );
+}
+
+export function participantProfileModifier(
+  reference: ContentCatalogReference<'modifier', string>,
+  input: {
+    readonly stackingGroup: string;
+    readonly value: number;
+    readonly remainingTurns: number;
+  },
+): ContentParticipantProfileCapability {
+  return profileCapability(
+    retainCatalogOwnership(
+      {
+        owner: 'modifier' as const,
+        stackingGroup: input.stackingGroup,
+        id: reference.definitionId,
+        value: input.value,
+        remainingTurns: input.remainingTurns,
+      },
+      [{ field: 'id', reference }],
+    ),
+  );
+}
+
+function profileCapability(
+  capability: import('./play-bundle-types.js').ScenarioInitialCapability,
+): ContentParticipantProfileCapability {
+  Object.defineProperty(capability, participantProfileCapabilityBrand, {
+    value: true,
+    enumerable: false,
+    configurable: false,
+    writable: false,
+  });
+  return immutable(capability) as ContentParticipantProfileCapability;
 }
 
 export function defineTemplateDefinition(

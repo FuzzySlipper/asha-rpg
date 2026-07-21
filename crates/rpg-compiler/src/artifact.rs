@@ -1,17 +1,19 @@
 use std::collections::{BTreeMap, BTreeSet};
 
 use rpg_ir::{
-    CompiledPlayBundleArtifact, ContentDefinitionCommitment, ContentImpactPlane,
-    ContentMaterializationStage, ContentMaterializationValue, ContentMixinParameterCommitment,
-    ContentMixinParameterType, ContentPatch, ContentPatchChangeProvenance, ContentPatchMemberKey,
-    ContentPatchMemberSelector, ContentPatchOperation, ContentPatchPathSegment,
-    ContentPatchPosition, ContentRelationshipKind, MaterializedContentDefinition,
-    MaterializedContentDefinitionKind, MaterializedContentVisibility, NormalizedRpgIr,
-    PlayBundleArtifactSchema, PlayBundleFingerprints, PreparedPlayBundle, RpgIrAction,
-    RpgIrCatalogs, RpgIrCheck, RpgIrFormula, RpgIrOperation, RpgIrPackage, RpgIrPredicate,
-    RpgIrProgram, RpgIrRequirement, RpgIrRequirementKind, RpgIrSchema, Ruleset,
-    RulesetValueExpression, RulesetValueKind, RulesetValueSource, VersionedRpgRequirement,
-    COMPILED_PLAY_BUNDLE_IDENTITY, PLAY_BUNDLE_ARTIFACT_MAJOR, PREPARED_PLAY_BUNDLE_IDENTITY,
+    CompiledParticipantProfile, CompiledPlayBundleArtifact, ContentDefinitionCommitment,
+    ContentImpactPlane, ContentMaterializationStage, ContentMaterializationValue,
+    ContentMixinParameterCommitment, ContentMixinParameterType, ContentPatch,
+    ContentPatchChangeProvenance, ContentPatchMemberKey, ContentPatchMemberSelector,
+    ContentPatchOperation, ContentPatchPathSegment, ContentPatchPosition, ContentRelationshipKind,
+    MaterializedContentDefinition, MaterializedContentDefinitionKind,
+    MaterializedContentVisibility, MaterializedParticipantProfileData, NormalizedRpgIr,
+    ParticipantProfileInitialCapability, PlayBundleArtifactSchema, PlayBundleFingerprints,
+    PreparedPlayBundle, RpgIrAction, RpgIrCatalogs, RpgIrCheck, RpgIrFormula, RpgIrOperation,
+    RpgIrPackage, RpgIrPredicate, RpgIrProgram, RpgIrRequirement, RpgIrRequirementKind,
+    RpgIrSchema, Ruleset, RulesetValueExpression, RulesetValueKind, RulesetValueSource,
+    VersionedRpgRequirement, COMPILED_PLAY_BUNDLE_IDENTITY, PARTICIPANT_PROFILE_IDENTITY,
+    PARTICIPANT_PROFILE_VERSION, PLAY_BUNDLE_ARTIFACT_MAJOR, PREPARED_PLAY_BUNDLE_IDENTITY,
     RPG_IR_IDENTITY, RPG_IR_MAJOR,
 };
 use serde::{Deserialize, Serialize};
@@ -27,6 +29,7 @@ pub struct CompiledPlayBundle {
     artifact: CompiledPlayBundleArtifact,
     rules: CompiledRpgRules,
     value_plan: CompiledRulesetValuePlan,
+    participant_profiles: Vec<CompiledParticipantProfile>,
 }
 
 impl CompiledPlayBundle {
@@ -40,6 +43,10 @@ impl CompiledPlayBundle {
 
     pub fn value_plan(&self) -> &CompiledRulesetValuePlan {
         &self.value_plan
+    }
+
+    pub fn participant_profiles(&self) -> &[CompiledParticipantProfile] {
+        &self.participant_profiles
     }
 
     pub fn into_artifact(self) -> CompiledPlayBundleArtifact {
@@ -155,6 +162,7 @@ pub fn compile_prepared_play_bundle(
     let normalized_ir = normalized_ir_from_materialized(&prepared)?;
     let rules = compile_normalized_rpg_ir(normalized_ir)?;
     let value_plan = compile_ruleset_value_plan(&prepared.ruleset)?;
+    let participant_profiles = compile_participant_profiles(&prepared)?;
     let fingerprints = fingerprints(&prepared)?;
     let artifact_schema = PlayBundleArtifactSchema {
         identity: COMPILED_PLAY_BUNDLE_IDENTITY.to_owned(),
@@ -202,6 +210,7 @@ pub fn compile_prepared_play_bundle(
         artifact,
         rules,
         value_plan,
+        participant_profiles,
     })
 }
 
@@ -969,6 +978,422 @@ fn evaluate_ruleset_value_expression(
                 Ok(quotient)
             }
         }
+    }
+}
+
+fn compile_participant_profiles(
+    prepared: &PreparedPlayBundle,
+) -> Result<Vec<CompiledParticipantProfile>, RpgCompileFailure> {
+    let definitions = prepared
+        .materialized_definitions
+        .iter()
+        .map(|definition| (definition.id.as_str(), definition))
+        .collect::<BTreeMap<_, _>>();
+    let values = prepared
+        .ruleset
+        .provides
+        .values
+        .iter()
+        .map(|value| {
+            (
+                RulesetValueKey {
+                    kind: value.kind,
+                    id: value.id.clone(),
+                },
+                value,
+            )
+        })
+        .collect::<BTreeMap<_, _>>();
+    let domains = prepared
+        .ruleset
+        .provides
+        .numeric_domains
+        .iter()
+        .map(|domain| (domain.id.as_str(), domain))
+        .collect::<BTreeMap<_, _>>();
+    let required_capabilities = prepared
+        .content_requirements
+        .capabilities
+        .iter()
+        .map(|requirement| (requirement.id.as_str(), requirement.version))
+        .collect::<BTreeMap<_, _>>();
+    let required_values = prepared
+        .content_requirements
+        .values
+        .iter()
+        .map(|requirement| RulesetValueKey {
+            kind: requirement.kind,
+            id: requirement.id.clone(),
+        })
+        .collect::<BTreeSet<_>>();
+    let required_domains = prepared
+        .content_requirements
+        .numeric_domains
+        .iter()
+        .map(String::as_str)
+        .collect::<BTreeSet<_>>();
+    let mut diagnostics = Vec::new();
+    let mut profiles = Vec::new();
+    let mut profile_ids = BTreeSet::new();
+
+    for (definition_index, definition) in prepared.materialized_definitions.iter().enumerate() {
+        if definition.kind != MaterializedContentDefinitionKind::Support
+            || definition.semantic.get("catalog").and_then(Value::as_str)
+                != Some("participantProfile")
+        {
+            continue;
+        }
+        let path = format!("$.materializedDefinitions[{definition_index}].semantic");
+        let Some(profile_id) = definition.semantic.get("id").and_then(Value::as_str) else {
+            diagnostics.push(RpgDiagnostic::error(
+                RpgDiagnosticStage::Semantics,
+                "PARTICIPANT_PROFILE_ID_MISSING",
+                format!("{path}.id"),
+                "participant profile semantic identity is required",
+            ));
+            continue;
+        };
+        if !valid_identifier(profile_id) || !profile_ids.insert(profile_id.to_owned()) {
+            diagnostics.push(RpgDiagnostic::error(
+                RpgDiagnosticStage::Semantics,
+                "PARTICIPANT_PROFILE_ID_INVALID",
+                format!("{path}.id"),
+                "participant profile identities must be unique portable identifiers",
+            ));
+        }
+        let Some(data_value) = definition.semantic.get("data") else {
+            diagnostics.push(RpgDiagnostic::error(
+                RpgDiagnosticStage::Semantics,
+                "PARTICIPANT_PROFILE_DATA_MISSING",
+                format!("{path}.data"),
+                "participant profile data is required",
+            ));
+            continue;
+        };
+        let data = match serde_json::from_value::<MaterializedParticipantProfileData>(
+            data_value.clone(),
+        ) {
+            Ok(data) => data,
+            Err(error) => {
+                diagnostics.push(RpgDiagnostic::error(
+                    RpgDiagnosticStage::Semantics,
+                    "PARTICIPANT_PROFILE_DATA_INVALID",
+                    format!("{path}.data"),
+                    error.to_string(),
+                ));
+                continue;
+            }
+        };
+        if data.schema.identity != PARTICIPANT_PROFILE_IDENTITY
+            || data.schema.version != PARTICIPANT_PROFILE_VERSION
+        {
+            diagnostics.push(RpgDiagnostic::error(
+                RpgDiagnosticStage::Compatibility,
+                "PARTICIPANT_PROFILE_SCHEMA_UNSUPPORTED",
+                format!("{path}.data.schema"),
+                format!("expected {PARTICIPANT_PROFILE_IDENTITY}@{PARTICIPANT_PROFILE_VERSION}"),
+            ));
+        }
+
+        let mut previous_definition = None::<&str>;
+        let mut has_action = false;
+        for (reference_index, definition_id) in data.definition_ids.iter().enumerate() {
+            if previous_definition.is_some_and(|previous| previous >= definition_id.as_str()) {
+                diagnostics.push(RpgDiagnostic::error(
+                    RpgDiagnosticStage::Artifact,
+                    "PARTICIPANT_PROFILE_DEFINITIONS_NOT_CANONICAL",
+                    format!("{path}.data.definitionIds[{reference_index}]"),
+                    "participant profile definition identities must be unique and sorted",
+                ));
+            }
+            previous_definition = Some(definition_id);
+            let Some(target) = definitions.get(definition_id.as_str()) else {
+                diagnostics.push(RpgDiagnostic::error(
+                    RpgDiagnosticStage::References,
+                    "PARTICIPANT_PROFILE_DEFINITION_MISSING",
+                    format!("{path}.data.definitionIds[{reference_index}]"),
+                    format!("profile definition {definition_id} is not materialized"),
+                ));
+                continue;
+            };
+            if target.visibility != MaterializedContentVisibility::Exported
+                || !definition.references.contains(definition_id)
+            {
+                diagnostics.push(RpgDiagnostic::error(
+                    RpgDiagnosticStage::References,
+                    "PARTICIPANT_PROFILE_DEFINITION_NOT_EXPORTED",
+                    format!("{path}.data.definitionIds[{reference_index}]"),
+                    format!("profile definition {definition_id} is not an exported graph edge"),
+                ));
+            }
+            has_action |= target.kind == MaterializedContentDefinitionKind::Action;
+        }
+        if !has_action {
+            diagnostics.push(RpgDiagnostic::error(
+                RpgDiagnosticStage::Requirements,
+                "PARTICIPANT_PROFILE_ACTION_REQUIRED",
+                format!("{path}.data.definitionIds"),
+                "participant profiles require at least one exported action",
+            ));
+        }
+
+        let mut vitality_count = 0;
+        let mut capability_identities = BTreeSet::new();
+        for (capability_index, capability) in data.capabilities.iter().enumerate() {
+            let capability_path = format!("{path}.data.capabilities[{capability_index}]");
+            let (identity, capability_requirement) = match capability {
+                ParticipantProfileInitialCapability::Vitality { value } => {
+                    vitality_count += 1;
+                    validate_profile_bounded_value(
+                        value.current,
+                        value.max,
+                        &capability_path,
+                        &mut diagnostics,
+                    );
+                    ("vitality".to_owned(), "capability.vitality")
+                }
+                ParticipantProfileInitialCapability::Stat { id, value } => {
+                    validate_profile_ruleset_value(
+                        RulesetValueKind::Stat,
+                        id,
+                        *value,
+                        &capability_path,
+                        &values,
+                        &domains,
+                        &required_values,
+                        &required_domains,
+                        &mut diagnostics,
+                    );
+                    (format!("stat:{id}"), "capability.stats")
+                }
+                ParticipantProfileInitialCapability::Defense { id, value } => {
+                    validate_profile_ruleset_value(
+                        RulesetValueKind::Defense,
+                        id,
+                        *value,
+                        &capability_path,
+                        &values,
+                        &domains,
+                        &required_values,
+                        &required_domains,
+                        &mut diagnostics,
+                    );
+                    (format!("defense:{id}"), "capability.defenses")
+                }
+                ParticipantProfileInitialCapability::Resource { id, value } => {
+                    validate_profile_content_value(
+                        "resource",
+                        id,
+                        &capability_path,
+                        definition,
+                        &definitions,
+                        &mut diagnostics,
+                    );
+                    validate_profile_bounded_value(
+                        value.current,
+                        value.max,
+                        &capability_path,
+                        &mut diagnostics,
+                    );
+                    (format!("resource:{id}"), "capability.resources")
+                }
+                ParticipantProfileInitialCapability::Modifier {
+                    stacking_group,
+                    id,
+                    remaining_turns,
+                    ..
+                } => {
+                    validate_profile_content_value(
+                        "modifier",
+                        id,
+                        &capability_path,
+                        definition,
+                        &definitions,
+                        &mut diagnostics,
+                    );
+                    if stacking_group.is_empty() || !(1..=1_000).contains(remaining_turns) {
+                        diagnostics.push(RpgDiagnostic::error(
+                            RpgDiagnosticStage::Semantics,
+                            "PARTICIPANT_PROFILE_MODIFIER_INVALID",
+                            &capability_path,
+                            "profile modifiers require a stacking group and remainingTurns within 1..=1000",
+                        ));
+                    }
+                    (format!("modifier:{stacking_group}"), "capability.modifiers")
+                }
+            };
+            if !capability_identities.insert(identity.clone()) {
+                diagnostics.push(RpgDiagnostic::error(
+                    RpgDiagnosticStage::Semantics,
+                    "PARTICIPANT_PROFILE_CAPABILITY_DUPLICATE",
+                    &capability_path,
+                    format!("participant profile repeats capability fact {identity}"),
+                ));
+            }
+            if required_capabilities.get(capability_requirement).copied() != Some(1) {
+                diagnostics.push(RpgDiagnostic::error(
+                    RpgDiagnosticStage::Requirements,
+                    "PARTICIPANT_PROFILE_CAPABILITY_REQUIREMENT_MISSING",
+                    &capability_path,
+                    format!("profile capability owner requires {capability_requirement}@1"),
+                ));
+            }
+        }
+        if vitality_count != 1 {
+            diagnostics.push(RpgDiagnostic::error(
+                RpgDiagnosticStage::Requirements,
+                "PARTICIPANT_PROFILE_VITALITY_REQUIRED",
+                format!("{path}.data.capabilities"),
+                "participant profiles require exactly one vitality base fact",
+            ));
+        }
+
+        let label = definition
+            .presentation
+            .get("label")
+            .and_then(Value::as_str)
+            .filter(|label| !label.trim().is_empty());
+        let Some(label) = label else {
+            diagnostics.push(RpgDiagnostic::error(
+                RpgDiagnosticStage::Semantics,
+                "PARTICIPANT_PROFILE_LABEL_REQUIRED",
+                format!("$.materializedDefinitions[{definition_index}].presentation.label"),
+                "exported participant profiles require a presentation label",
+            ));
+            continue;
+        };
+        let description = definition
+            .presentation
+            .get("description")
+            .and_then(Value::as_str)
+            .map(str::to_owned);
+        if definition.visibility == MaterializedContentVisibility::Exported {
+            profiles.push(CompiledParticipantProfile {
+                definition_id: definition.id.clone(),
+                profile_id: profile_id.to_owned(),
+                label: label.to_owned(),
+                description,
+                role: data.role,
+                definition_ids: data.definition_ids,
+                capabilities: data.capabilities,
+            });
+        }
+    }
+
+    if diagnostics.is_empty() {
+        profiles.sort_by(|left, right| left.definition_id.cmp(&right.definition_id));
+        Ok(profiles)
+    } else {
+        Err(RpgCompileFailure { diagnostics })
+    }
+}
+
+#[allow(clippy::too_many_arguments)]
+fn validate_profile_ruleset_value(
+    kind: RulesetValueKind,
+    id: &str,
+    value: i32,
+    path: &str,
+    values: &BTreeMap<RulesetValueKey, &rpg_ir::RulesetValueContract>,
+    domains: &BTreeMap<&str, &rpg_ir::RulesetNumericDomain>,
+    required_values: &BTreeSet<RulesetValueKey>,
+    required_domains: &BTreeSet<&str>,
+    diagnostics: &mut Vec<RpgDiagnostic>,
+) {
+    let key = RulesetValueKey {
+        kind,
+        id: id.to_owned(),
+    };
+    let Some(contract) = values.get(&key) else {
+        diagnostics.push(RpgDiagnostic::error(
+            RpgDiagnosticStage::References,
+            "PARTICIPANT_PROFILE_RULESET_VALUE_MISSING",
+            format!("{path}.id"),
+            format!("profile references undeclared Ruleset value {id}"),
+        ));
+        return;
+    };
+    if matches!(contract.source, RulesetValueSource::Derived { .. }) {
+        diagnostics.push(RpgDiagnostic::error(
+            RpgDiagnosticStage::Semantics,
+            "PARTICIPANT_PROFILE_DERIVED_VALUE_FORBIDDEN",
+            path,
+            format!("profile must not supply derived Ruleset value {id}"),
+        ));
+    }
+    if !required_values.contains(&key)
+        || !required_domains.contains(contract.numeric_domain_id.as_str())
+    {
+        diagnostics.push(RpgDiagnostic::error(
+            RpgDiagnosticStage::Requirements,
+            "PARTICIPANT_PROFILE_VALUE_REQUIREMENT_MISSING",
+            path,
+            format!("profile value {id} and its numeric domain must be declared requirements"),
+        ));
+    }
+    if let Some(domain) = domains.get(contract.numeric_domain_id.as_str()) {
+        let value = i64::from(value);
+        if value < domain.minimum || value > domain.maximum {
+            diagnostics.push(RpgDiagnostic::error(
+                RpgDiagnosticStage::Semantics,
+                "PARTICIPANT_PROFILE_VALUE_OUT_OF_DOMAIN",
+                format!("{path}.value"),
+                format!(
+                    "profile value must be within {}..={}",
+                    domain.minimum, domain.maximum
+                ),
+            ));
+        }
+    }
+}
+
+fn validate_profile_content_value(
+    catalog: &str,
+    id: &str,
+    path: &str,
+    profile_definition: &MaterializedContentDefinition,
+    definitions: &BTreeMap<&str, &MaterializedContentDefinition>,
+    diagnostics: &mut Vec<RpgDiagnostic>,
+) {
+    let target = definitions.values().find(|definition| {
+        definition.kind == MaterializedContentDefinitionKind::Support
+            && definition.semantic.get("catalog").and_then(Value::as_str) == Some(catalog)
+            && definition.semantic.get("id").and_then(Value::as_str) == Some(id)
+    });
+    let Some(target) = target else {
+        diagnostics.push(RpgDiagnostic::error(
+            RpgDiagnosticStage::References,
+            "PARTICIPANT_PROFILE_CONTENT_VALUE_MISSING",
+            format!("{path}.id"),
+            format!("profile references missing {catalog} {id}"),
+        ));
+        return;
+    };
+    if target.visibility != MaterializedContentVisibility::Exported
+        || !profile_definition.references.contains(&target.id)
+    {
+        diagnostics.push(RpgDiagnostic::error(
+            RpgDiagnosticStage::References,
+            "PARTICIPANT_PROFILE_CONTENT_VALUE_NOT_EXPORTED",
+            format!("{path}.id"),
+            format!("profile {catalog} {id} is not an exported graph edge"),
+        ));
+    }
+}
+
+fn validate_profile_bounded_value(
+    current: i32,
+    max: i32,
+    path: &str,
+    diagnostics: &mut Vec<RpgDiagnostic>,
+) {
+    if current < 0 || max < 0 || current > max {
+        diagnostics.push(RpgDiagnostic::error(
+            RpgDiagnosticStage::Semantics,
+            "PARTICIPANT_PROFILE_BOUNDED_VALUE_INVALID",
+            path,
+            "profile bounded values require 0 <= current <= max",
+        ));
     }
 }
 

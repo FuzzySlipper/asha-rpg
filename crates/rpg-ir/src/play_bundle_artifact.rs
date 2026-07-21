@@ -233,6 +233,82 @@ pub struct MaterializedContentDefinition {
     pub fingerprint: String,
 }
 
+pub const PARTICIPANT_PROFILE_IDENTITY: &str = "asha.rpg.participant-profile";
+pub const PARTICIPANT_PROFILE_VERSION: u32 = 1;
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase", deny_unknown_fields)]
+pub struct ParticipantProfileSchema {
+    pub identity: String,
+    pub version: u32,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub enum ParticipantProfileRole {
+    Player,
+    Creature,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase", deny_unknown_fields)]
+pub struct ParticipantProfileBoundedValue {
+    pub current: i32,
+    pub max: i32,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(
+    tag = "owner",
+    rename_all = "camelCase",
+    rename_all_fields = "camelCase",
+    deny_unknown_fields
+)]
+pub enum ParticipantProfileInitialCapability {
+    Vitality {
+        value: ParticipantProfileBoundedValue,
+    },
+    Stat {
+        id: String,
+        value: i32,
+    },
+    Defense {
+        id: String,
+        value: i32,
+    },
+    Resource {
+        id: String,
+        value: ParticipantProfileBoundedValue,
+    },
+    Modifier {
+        stacking_group: String,
+        id: String,
+        value: i32,
+        remaining_turns: u32,
+    },
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase", deny_unknown_fields)]
+pub struct MaterializedParticipantProfileData {
+    pub schema: ParticipantProfileSchema,
+    pub role: ParticipantProfileRole,
+    pub definition_ids: Vec<String>,
+    pub capabilities: Vec<ParticipantProfileInitialCapability>,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase", deny_unknown_fields)]
+pub struct CompiledParticipantProfile {
+    pub definition_id: String,
+    pub profile_id: String,
+    pub label: String,
+    pub description: Option<String>,
+    pub role: ParticipantProfileRole,
+    pub definition_ids: Vec<String>,
+    pub capabilities: Vec<ParticipantProfileInitialCapability>,
+}
+
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
 pub enum ContentImpactPlane {
