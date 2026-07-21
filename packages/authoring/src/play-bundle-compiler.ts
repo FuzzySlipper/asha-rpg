@@ -68,6 +68,7 @@ interface PatchResult extends PatchedValue {
 
 interface ResolutionContext {
   readonly diagnostics: PlayBundleCompilerDiagnostic[];
+  readonly ruleset: Ruleset;
   readonly availableById: Map<string, ContentPackSource[]>;
   readonly selected: Map<string, SelectedPackage>;
   readonly lock: ContentPackDependencyLockEntry[];
@@ -110,6 +111,7 @@ export function preparePlayBundle(options: {
 
   const context: ResolutionContext = {
     diagnostics,
+    ruleset: options.bundle.ruleset,
     availableById: indexAvailablePackages(options.contentPacks, diagnostics),
     selected: new Map(),
     lock: [],
@@ -688,6 +690,18 @@ function validateSelectedPackages(context: ResolutionContext, ruleset: Ruleset):
       );
     }
     validateRequirements(entry, ruleset, context.diagnostics);
+    const exported = new Set(manifest.exports);
+    for (const definition of manifest.definitions) {
+      validateRulesetValueOwners(
+        {
+          package: entry,
+          definition,
+          exported: exported.has(definition.id),
+        },
+        ruleset,
+        context.diagnostics,
+      );
+    }
   }
 }
 
@@ -2125,6 +2139,7 @@ function collectCatalogReferences(
 function definitionReferences(
   record: DefinitionRecord,
   diagnostics: PlayBundleCompilerDiagnostic[],
+  ruleset?: Ruleset,
 ): readonly ContentDefinitionReference[] {
   const references = [...(record.definition.lowLevelReferences ?? [])];
   const inheritedLocalIds = new Set(
@@ -2133,6 +2148,17 @@ function definitionReferences(
   for (const catalogReference of authoredCatalogReferences(record.definition)) {
     const definitionId = catalogReference.definitionId;
     if (inheritedLocalIds.has(definitionId)) continue;
+    if (
+      catalogReference.packageId === undefined &&
+      (catalogReference.category === 'stat' || catalogReference.category === 'defense') &&
+      ruleset?.provides.values.some(
+        (value) =>
+          value.kind === catalogReference.category &&
+          value.id === definitionId,
+      )
+    ) {
+      continue;
+    }
     if (catalogReference.packageId !== undefined) {
       const ownerPackageId = catalogReference.packageId;
       if (record.package.source.manifest.identity.id === ownerPackageId) {
@@ -2298,6 +2324,7 @@ function closeDefinitionGraph(
     for (const [index, reference] of definitionReferences(
       record,
       context.diagnostics,
+      context.ruleset,
     ).entries()) {
       const target = resolveDefinitionReference(
         record,
@@ -2540,7 +2567,6 @@ function normalizeMaterializedActions(
     .filter((record) => record.definition.kind === 'action')
     .map((record) => {
       if (record.definition.kind !== 'action') throw new Error('unreachable narrowing failure');
-      validateRulesetValueOwners(record, bundle.ruleset, diagnostics);
       if (record.definition.action.id !== record.definition.id) {
         diagnostics.push(
           diagnostic(

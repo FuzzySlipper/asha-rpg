@@ -25,6 +25,7 @@ export function preparePlayBundle(options) {
     validateUniquePackageSources(options.contentPacks, diagnostics);
     const context = {
         diagnostics,
+        ruleset: options.bundle.ruleset,
         availableById: indexAvailablePackages(options.contentPacks, diagnostics),
         selected: new Map(),
         lock: [],
@@ -401,6 +402,14 @@ function validateSelectedPackages(context, ruleset) {
             }));
         }
         validateRequirements(entry, ruleset, context.diagnostics);
+        const exported = new Set(manifest.exports);
+        for (const definition of manifest.definitions) {
+            validateRulesetValueOwners({
+                package: entry,
+                definition,
+                exported: exported.has(definition.id),
+            }, ruleset, context.diagnostics);
+        }
     }
 }
 function validateRequirements(entry, ruleset, diagnostics) {
@@ -1296,13 +1305,19 @@ function collectCatalogReferences(value, path, references) {
         collectCatalogReferences(child, childPath, references);
     }
 }
-function definitionReferences(record, diagnostics) {
+function definitionReferences(record, diagnostics, ruleset) {
     const references = [...(record.definition.lowLevelReferences ?? [])];
     const inheritedLocalIds = new Set((record.inheritedReferenceIds ?? []).map(localDefinitionId));
     for (const catalogReference of authoredCatalogReferences(record.definition)) {
         const definitionId = catalogReference.definitionId;
         if (inheritedLocalIds.has(definitionId))
             continue;
+        if (catalogReference.packageId === undefined &&
+            (catalogReference.category === 'stat' || catalogReference.category === 'defense') &&
+            ruleset?.provides.values.some((value) => value.kind === catalogReference.category &&
+                value.id === definitionId)) {
+            continue;
+        }
         if (catalogReference.packageId !== undefined) {
             const ownerPackageId = catalogReference.packageId;
             if (record.package.source.manifest.identity.id === ownerPackageId) {
@@ -1405,7 +1420,7 @@ function closeDefinitionGraph(context, rootKeys, sourceRecords) {
             return;
         visiting.push(globalId);
         const references = new Set();
-        for (const [index, reference] of definitionReferences(record, context.diagnostics).entries()) {
+        for (const [index, reference] of definitionReferences(record, context.diagnostics, context.ruleset).entries()) {
             const target = resolveDefinitionReference(record, reference, index, definitionsByPackage, context.diagnostics);
             if (target !== undefined) {
                 references.add(globalDefinitionId(target));
@@ -1541,7 +1556,6 @@ function normalizeMaterializedActions(bundle, graph, diagnostics) {
         .map((record) => {
         if (record.definition.kind !== 'action')
             throw new Error('unreachable narrowing failure');
-        validateRulesetValueOwners(record, bundle.ruleset, diagnostics);
         if (record.definition.action.id !== record.definition.id) {
             diagnostics.push(diagnostic('materialization', 'CONTENT_PACK_ACTION_ID_MISMATCH', `$.definitions.${record.definition.id}.action.id`, 'definition identity must match the normalized action identity', { definitionId: record.definition.id, source: record.definition.source }));
         }
