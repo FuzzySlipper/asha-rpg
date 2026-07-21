@@ -9,6 +9,9 @@ Immutable builders for four explicit contracts:
 - `composePlayBundle` plus `preparePlayBundle` resolve one Ruleset and selected
   compatible Content Packs;
 - `defineScenario` creates setup-only data for one compiled PlayBundle.
+- `defineScenarioTemplate` publishes artifact-independent setup examples;
+  `instantiateScenarioTemplate` binds one to an explicitly chosen compiled
+  PlayBundle artifact.
 
 Use `defineContentCatalog` for Content Pack-owned resources, modifiers, damage
 types, and presentation aliases. Action AST references close the package graph
