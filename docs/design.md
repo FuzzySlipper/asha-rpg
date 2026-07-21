@@ -60,6 +60,41 @@ Content presentation may display an alias such as Might for a Strength stat,
 but it does not change the Ruleset identity. Content-defined resources,
 modifiers, and damage types remain owned by Content Packs.
 
+### Named-value derivation versus action formulas
+
+`RulesetValueExpression` and `RpgIrFormula` are deliberately separate bounded
+contracts because they run at different authority phases and have different
+inputs:
+
+- A `RulesetValueExpression` is a deterministic compile-time dependency graph
+  over named Ruleset values. Rust validates its nominal Ruleset/value
+  references, node/depth bounds, checked integer arithmetic, mathematical floor
+  division, output numeric domain, and acyclic topological order before mutable
+  Session state exists. Scenario setup supplies only input facts; Rust
+  materializes derived values and revalidates them when restoring checkpoints
+  or replay state. The expression has no actor, target, action phase, or random
+  source.
+- An `RpgIrFormula` is a Session-time action expression evaluated inside a
+  command or reaction. It may read an actor or target stat and consume declared
+  dice evidence. Its `Add` and `Half` nodes serve action/check evaluation; it is
+  not a graph that declares persistent named outputs or dependencies between
+  Ruleset contracts.
+
+Reusing `RpgIrFormula` for named values would admit subject bindings and
+randomness into setup materialization, while still lacking nominal cross-value
+references, dependency ordering, and the declared floor-division semantics.
+Conversely, extending `RulesetValueExpression` with action subjects or dice
+would turn setup derivation into a second Session expression engine. The two
+contracts may share implementation primitives without sharing a public AST.
+
+The reusable upstream candidates are the noun-free pieces: bounded expression
+tree validation, checked integer subtraction, mathematical floor division,
+named-key dependency collection, cycle detection, and deterministic
+topological planning. Promotion requires a second non-RPG consumer and a
+governed public contract. The current schema identity, `RulesetValueKind`,
+nominal Ruleset ownership, numeric-domain lookup, Scenario materialization, and
+checkpoint/replay enforcement remain RPG-owned and are not upstream claims.
+
 Support definitions may use consumer-owned catalog names and inert `data` for
 setup profiles, items, conditions, or other product presentation. Rust keeps
 that data inside the artifact identity and definition graph but interprets only
