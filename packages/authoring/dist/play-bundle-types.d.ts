@@ -196,6 +196,12 @@ export interface ContentSupportDefinition extends ContentDefinitionBase {
         readonly data?: unknown;
     };
 }
+/** Inert, portable defaults that a host may use to construct Scenario participants. */
+export interface ContentParticipantProfileData {
+    readonly role: 'player' | 'creature';
+    readonly definitionIds: readonly string[];
+    readonly capabilities: readonly ScenarioInitialCapability[];
+}
 export interface ContentTemplateDefinition extends ContentDefinitionBase {
     readonly kind: 'template';
 }

@@ -1,4 +1,4 @@
-import type { ContentActionDefinition, PlayBundleManifest, ContentDefinition, ContentDefinitionReference, ContentDerivedDefinition, ContentPackDependency, ContentPackIdentity, ContentMixinApplication, ContentMixinDefinition, ContentPackManifest, ContentPatch, ContentPackRequest, ContentPackSource, ContentPolicyBinding, ContentReservedRelationship, ContentSupportDefinition, ContentTemplateDefinition } from './play-bundle-types.js';
+import type { ContentActionDefinition, PlayBundleManifest, ContentDefinition, ContentDefinitionReference, ContentParticipantProfileData, ContentDerivedDefinition, ContentPackDependency, ContentPackIdentity, ContentMixinApplication, ContentMixinDefinition, ContentPackManifest, ContentPatch, ContentPackRequest, ContentPackSource, ContentPolicyBinding, ContentReservedRelationship, ContentSupportDefinition, ContentTemplateDefinition } from './play-bundle-types.js';
 type OrdinaryDefinitionInput<Definition extends ContentDefinition> = Omit<Definition, 'kind' | 'lowLevelReferences'> & {
     readonly kind?: Definition['kind'];
 };
@@ -21,6 +21,10 @@ export declare function contentPackRequest(input: ContentPackRequest): ContentPa
 export declare function definitionReference(input: ContentDefinitionReference): ContentDefinitionReference;
 export declare function defineActionDefinition(input: OrdinaryDefinitionInput<ContentActionDefinition>): ContentActionDefinition;
 export declare function defineSupportDefinition(input: OrdinaryDefinitionInput<ContentSupportDefinition>): ContentSupportDefinition;
+export declare function defineParticipantProfileDefinition(input: Omit<OrdinaryDefinitionInput<ContentSupportDefinition>, 'semantic'> & {
+    readonly profileId: string;
+    readonly profile: ContentParticipantProfileData;
+}): ContentSupportDefinition;
 export declare function defineTemplateDefinition(input: OrdinaryDefinitionInput<ContentTemplateDefinition>): ContentTemplateDefinition;
 export declare function defineDerivedDefinition(input: OrdinaryDefinitionInput<ContentDerivedDefinition>): ContentDerivedDefinition;
 export declare function defineMixinDefinition(input: OrdinaryDefinitionInput<ContentMixinDefinition>): ContentMixinDefinition;

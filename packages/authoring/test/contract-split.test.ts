@@ -6,9 +6,9 @@ import {
   contentPackRequest,
   contentPackSource,
   defineContentPack,
+  defineParticipantProfileDefinition,
   defineRuleset,
   defineScenario,
-  defineSupportDefinition,
   preparePlayBundle,
   rulesetDefense,
   rulesetStat,
@@ -78,19 +78,17 @@ test('Content Pack requirements are checked directly against Ruleset provisions'
 });
 
 test('Content Packs may carry inert consumer setup data without extending Rust catalogs', () => {
-  const profile = defineSupportDefinition({
+  const profile = defineParticipantProfileDefinition({
     id: 'profile.vanguard',
     visibility: 'public',
     extensionPolicy: 'sealed',
     source: { module: 'contract/profiles.ts', declaration: 'vanguard' },
     presentation: { label: 'Vanguard' },
-    semantic: {
-      catalog: 'participantProfile',
-      id: 'vanguard',
-      data: {
-        role: 'player',
-        definitionIds: ['action.long-sword'],
-      },
+    profileId: 'vanguard',
+    profile: {
+      role: 'player',
+      definitionIds: [],
+      capabilities: [],
     },
   });
   const contentPack = defineContentPack({

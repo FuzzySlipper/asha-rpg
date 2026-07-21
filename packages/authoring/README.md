@@ -22,4 +22,9 @@ similar product data that must survive PlayBundle compilation. It is never an
 executable callback surface; Rust only interprets the registered action
 catalogs and operations.
 
+Use `defineParticipantProfileDefinition` for portable participant defaults. It
+stores capabilities as Scenario DTOs and closes the definition graph over the
+profile's selected action/content ids, so consumers do not maintain a second
+reference ledger.
+
 The package emits data only. Rust remains semantic and state authority.

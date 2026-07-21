@@ -14,6 +14,21 @@ export function defineActionDefinition(input) {
 export function defineSupportDefinition(input) {
     return immutable({ ...input, kind: 'support' });
 }
+export function defineParticipantProfileDefinition(input) {
+    const { profileId, profile, ...definition } = input;
+    return immutable({
+        ...definition,
+        kind: 'support',
+        lowLevelReferences: profile.definitionIds.map((definitionId) => ({
+            definitionId,
+        })),
+        semantic: {
+            catalog: 'participantProfile',
+            id: profileId,
+            data: profile,
+        },
+    });
+}
 export function defineTemplateDefinition(input) {
     return immutable({ ...input, kind: 'template' });
 }

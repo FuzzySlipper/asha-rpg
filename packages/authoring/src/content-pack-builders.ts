@@ -4,6 +4,7 @@ import type {
   PlayBundleManifest,
   ContentDefinition,
   ContentDefinitionReference,
+  ContentParticipantProfileData,
   ContentDerivedDefinition,
   ContentPackDependency,
   ContentPackIdentity,
@@ -79,6 +80,30 @@ export function defineSupportDefinition(
   input: OrdinaryDefinitionInput<ContentSupportDefinition>,
 ): ContentSupportDefinition {
   return immutable({ ...input, kind: 'support' as const });
+}
+
+export function defineParticipantProfileDefinition(
+  input: Omit<
+    OrdinaryDefinitionInput<ContentSupportDefinition>,
+    'semantic'
+  > & {
+    readonly profileId: string;
+    readonly profile: ContentParticipantProfileData;
+  },
+): ContentSupportDefinition {
+  const { profileId, profile, ...definition } = input;
+  return immutable({
+    ...definition,
+    kind: 'support' as const,
+    lowLevelReferences: profile.definitionIds.map((definitionId) => ({
+      definitionId,
+    })),
+    semantic: {
+      catalog: 'participantProfile',
+      id: profileId,
+      data: profile,
+    },
+  });
 }
 
 export function defineTemplateDefinition(
