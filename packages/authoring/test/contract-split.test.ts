@@ -8,6 +8,7 @@ import {
   defineContentPack,
   defineRuleset,
   defineScenario,
+  defineSupportDefinition,
   preparePlayBundle,
   rulesetDefense,
   rulesetStat,
@@ -21,6 +22,7 @@ const semanticRuleset = defineRuleset({
   models: {
     checks: { id: 'check.d20-roll-over', version: 1 },
     turns: { id: 'turn.ordered-one-action', version: 1 },
+    initiative: { id: 'initiative.scenario-ordered', version: 1 },
     reactions: { id: 'reaction.before-damage-choice', version: 1 },
     actionEconomy: { id: 'action-economy.one-action-plus-reaction', version: 1 },
   },
@@ -73,6 +75,44 @@ test('Content Pack requirements are checked directly against Ruleset provisions'
     result.diagnostics.map((diagnostic) => diagnostic.code),
     ['CONTENT_PACK_VALUE_REQUIREMENT_MISSING'],
   );
+});
+
+test('Content Packs may carry inert consumer setup data without extending Rust catalogs', () => {
+  const profile = defineSupportDefinition({
+    id: 'profile.vanguard',
+    visibility: 'public',
+    extensionPolicy: 'sealed',
+    source: { module: 'contract/profiles.ts', declaration: 'vanguard' },
+    presentation: { label: 'Vanguard' },
+    semantic: {
+      catalog: 'participantProfile',
+      id: 'vanguard',
+      data: {
+        role: 'player',
+        definitionIds: ['action.long-sword'],
+      },
+    },
+  });
+  const contentPack = defineContentPack({
+    identity: { id: 'contract.profile-content', version: '1.0.0' },
+    entry: { module: 'contract/profiles.ts', declaration: 'content' },
+    definitions: [profile],
+  });
+  const result = preparePlayBundle({
+    bundle: composePlayBundle({
+      identity: { id: 'contract.profile-bundle', version: '1.0.0' },
+      ruleset: semanticRuleset,
+      base: contentPackRequest({ id: contentPack.identity.id, version: '1.0.0' }),
+      add: [],
+      overlays: [],
+      configure: {},
+    }),
+    contentPacks: [contentPackSource(contentPack)],
+  });
+
+  assert.equal(result.ok, true);
+  if (!result.ok) return;
+  assert.deepEqual(result.prepared.materializedDefinitions[0]?.semantic, profile.semantic);
 });
 
 test('Scenario builder emits setup-only immutable data', () => {

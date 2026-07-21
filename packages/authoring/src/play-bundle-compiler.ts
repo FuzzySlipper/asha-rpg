@@ -90,6 +90,7 @@ export const ASHA_RPG_PLAY_BUNDLE_TARGET: PlayBundleCompilerTarget = immutable({
   models: {
     checks: { 'check.d20-roll-over': 1 },
     turns: { 'turn.ordered-one-action': 1 },
+    initiative: { 'initiative.scenario-ordered': 1 },
     reactions: { 'reaction.before-damage-choice': 1 },
     actionEconomy: { 'action-economy.one-action-plus-reaction': 1 },
   },
@@ -247,7 +248,13 @@ function validateRuleset(
       ),
     );
   }
-  for (const model of ['checks', 'turns', 'reactions', 'actionEconomy'] as const) {
+  for (const model of [
+    'checks',
+    'turns',
+    'initiative',
+    'reactions',
+    'actionEconomy',
+  ] as const) {
     const binding = ruleset.models[model];
     if (target.models[model][binding.id] === binding.version) continue;
     diagnostics.push(

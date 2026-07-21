@@ -38,6 +38,11 @@ provided operation versions, capability versions, named values, and numeric
 domains. Rust also verifies every Ruleset operation/capability provision has a
 registered authority binding. There is no compatibility matrix or registry.
 
+The initial model registry binds d20 roll-over checks, ordered one-action turns,
+scenario-supplied initiative order, before-damage reaction choices, and the
+one-action-plus-reaction economy. A consumer cannot introduce a new executable
+model by naming it in TypeScript.
+
 Content dependencies and definition ownership use exact existing package
 resolution. Artifact identity and source/semantic/presentation fingerprints
 cover the Ruleset contract as well as the materialized content, so changing
@@ -54,6 +59,13 @@ numbers; it does not enumerate game-specific names.
 Content presentation may display an alias such as Might for a Strength stat,
 but it does not change the Ruleset identity. Content-defined resources,
 modifiers, and damage types remain owned by Content Packs.
+
+Support definitions may use consumer-owned catalog names and inert `data` for
+setup profiles, items, conditions, or other product presentation. Rust keeps
+that data inside the artifact identity and definition graph but interprets only
+the closed action catalogs and operation vocabulary. This is how an independent
+rules repository can describe setup ergonomics without creating a second rules
+engine or a d20-specific Rust enum.
 
 ## Rust semantic profile
 

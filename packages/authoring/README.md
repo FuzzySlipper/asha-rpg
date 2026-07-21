@@ -16,4 +16,10 @@ without a second ledger. Use `actionPatch`, `deriveAction`, and
 `defineContentOverlay` for materialization; raw patches and explicit graph edges
 are low-level compiler-fixture escape hatches.
 
+Ordinary support definitions may also carry a consumer-owned catalog name and
+inert `semantic.data`. This is intended for setup profiles, item grants, and
+similar product data that must survive PlayBundle compilation. It is never an
+executable callback surface; Rust only interprets the registered action
+catalogs and operations.
+
 The package emits data only. Rust remains semantic and state authority.

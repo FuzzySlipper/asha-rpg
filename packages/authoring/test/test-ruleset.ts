@@ -14,6 +14,7 @@ export const contractTestRuleset: Ruleset = defineRuleset({
   models: {
     checks: { id: 'check.d20-roll-over', version: 1 },
     turns: { id: 'turn.ordered-one-action', version: 1 },
+    initiative: { id: 'initiative.scenario-ordered', version: 1 },
     reactions: { id: 'reaction.before-damage-choice', version: 1 },
     actionEconomy: { id: 'action-economy.one-action-plus-reaction', version: 1 },
   },

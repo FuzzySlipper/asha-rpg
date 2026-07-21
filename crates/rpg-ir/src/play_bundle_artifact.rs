@@ -66,6 +66,7 @@ pub struct RulesetProvisions {
 pub struct RulesetModels {
     pub checks: VersionedRpgRequirement,
     pub turns: VersionedRpgRequirement,
+    pub initiative: VersionedRpgRequirement,
     pub reactions: VersionedRpgRequirement,
     pub action_economy: VersionedRpgRequirement,
 }

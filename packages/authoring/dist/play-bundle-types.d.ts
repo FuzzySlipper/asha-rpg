@@ -39,6 +39,7 @@ export interface RulesetProvisions {
 export interface RulesetModels {
     readonly checks: VersionedRpgRequirement;
     readonly turns: VersionedRpgRequirement;
+    readonly initiative: VersionedRpgRequirement;
     readonly reactions: VersionedRpgRequirement;
     readonly actionEconomy: VersionedRpgRequirement;
 }
@@ -185,8 +186,14 @@ export interface ContentActionDefinition extends ContentDefinitionBase {
 export interface ContentSupportDefinition extends ContentDefinitionBase {
     readonly kind: 'support';
     readonly semantic: {
-        readonly catalog: 'stat' | 'defense' | 'resource' | 'modifier' | 'damageType';
+        /**
+         * Rust-owned action catalogs use the well-known stat, defense, resource,
+         * modifier, and damageType names. Consumer repositories may add inert
+         * support catalogs for setup and presentation without extending Rust.
+         */
+        readonly catalog: string;
         readonly id: string;
+        readonly data?: unknown;
     };
 }
 export interface ContentTemplateDefinition extends ContentDefinitionBase {
@@ -267,6 +274,7 @@ export interface PlayBundleCompilerTarget {
     readonly models: {
         readonly checks: Readonly<Record<string, number>>;
         readonly turns: Readonly<Record<string, number>>;
+        readonly initiative: Readonly<Record<string, number>>;
         readonly reactions: Readonly<Record<string, number>>;
         readonly actionEconomy: Readonly<Record<string, number>>;
     };

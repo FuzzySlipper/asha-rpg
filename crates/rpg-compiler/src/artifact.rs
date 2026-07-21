@@ -442,6 +442,11 @@ fn validate_ruleset(prepared: &PreparedPlayBundle, diagnostics: &mut Vec<RpgDiag
             "turn.ordered-one-action",
         ),
         (
+            "$.ruleset.models.initiative",
+            &ruleset.models.initiative,
+            "initiative.scenario-ordered",
+        ),
+        (
             "$.ruleset.models.reactions",
             &ruleset.models.reactions,
             "reaction.before-damage-choice",

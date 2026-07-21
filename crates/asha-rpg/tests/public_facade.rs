@@ -174,6 +174,10 @@ fn healing_bundle() -> asha_rpg::CompiledPlayBundle {
                     id: "turn.ordered-one-action".to_owned(),
                     version: 1,
                 },
+                initiative: VersionedRpgRequirement {
+                    id: "initiative.scenario-ordered".to_owned(),
+                    version: 1,
+                },
                 reactions: VersionedRpgRequirement {
                     id: "reaction.before-damage-choice".to_owned(),
                     version: 1,

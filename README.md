@@ -51,6 +51,12 @@ support bounded sequence, predicate branch, repeat, per-target branch, check
 outcome branch, and one atomic root. Unavailable semantics fail compilation;
 they are never delegated to consumer callbacks.
 
+Rulesets explicitly bind checks, ordered turns, scenario-supplied initiative,
+reactions, and action economy to Rust-supported model versions. Content Packs
+may also carry inert support records for consumer-owned setup profiles, items,
+and similar presentation/configuration data. Those records remain closed data
+in the compiled artifact and cannot add executable Rust semantics.
+
 `@asha-rpg/ir` publishes the strict normalized data contract and a checked
 vocabulary generated from the Rust registry. `@asha-rpg/authoring` publishes
 immutable catalog-bound ids, selectors, checks, formulas, predicates, costs,

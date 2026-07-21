@@ -11,6 +11,7 @@ export const ASHA_RPG_PLAY_BUNDLE_TARGET = immutable({
     models: {
         checks: { 'check.d20-roll-over': 1 },
         turns: { 'turn.ordered-one-action': 1 },
+        initiative: { 'initiative.scenario-ordered': 1 },
         reactions: { 'reaction.before-damage-choice': 1 },
         actionEconomy: { 'action-economy.one-action-plus-reaction': 1 },
     },
@@ -114,7 +115,13 @@ function validateRuleset(ruleset, target, diagnostics) {
         ruleset.schema.major !== 1) {
         diagnostics.push(diagnostic('compatibility', 'RULESET_SCHEMA_UNSUPPORTED', '$.bundle.ruleset.schema', 'the ruleset schema must be asha.rpg.ruleset@1'));
     }
-    for (const model of ['checks', 'turns', 'reactions', 'actionEconomy']) {
+    for (const model of [
+        'checks',
+        'turns',
+        'initiative',
+        'reactions',
+        'actionEconomy',
+    ]) {
         const binding = ruleset.models[model];
         if (target.models[model][binding.id] === binding.version)
             continue;
