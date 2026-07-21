@@ -1,5 +1,5 @@
-import type { RpgCapabilityId, RpgOperationId } from '@asha-rpg/ir';
-import type { AuthoredAction } from './types.js';
+import type { RpgCapabilityId, RpgOperationId } from "@asha-rpg/ir";
+import type { AuthoredAction } from "./types.js";
 export interface RpgVersionedIdentity {
     readonly id: string;
     readonly version: string;
@@ -11,10 +11,10 @@ export interface ContentPackIdentity extends RpgVersionedIdentity {
 export interface PlayBundleIdentity extends RpgVersionedIdentity {
 }
 export interface RpgLanguageCompatibility {
-    readonly id: 'asha-rpg';
+    readonly id: "asha-rpg";
     readonly version: string;
 }
-export type RulesetValueKind = 'stat' | 'defense';
+export type RulesetValueKind = "stat" | "defense";
 export interface RulesetValueContract {
     readonly kind: RulesetValueKind;
     readonly id: string;
@@ -46,7 +46,7 @@ export interface RulesetModels {
 /** Rust-executed semantic vocabulary. This contract never contains content definitions. */
 export interface Ruleset {
     readonly schema: {
-        readonly identity: 'asha.rpg.ruleset';
+        readonly identity: "asha.rpg.ruleset";
         readonly major: 1;
     };
     readonly identity: RulesetIdentity;
@@ -54,14 +54,14 @@ export interface Ruleset {
     readonly models: RulesetModels;
     readonly provides: RulesetProvisions;
 }
-export type ContentRelationshipKind = 'dependsOn' | 'contributes' | 'derivesFrom' | 'patches' | 'configures' | 'exports';
+export type ContentRelationshipKind = "dependsOn" | "contributes" | "derivesFrom" | "patches" | "configures" | "exports";
 export interface ContentPackRequest {
     readonly id: string;
     readonly version: string;
 }
 export interface ContentPackDependency extends ContentPackRequest {
     readonly importAs: string;
-    readonly relationship: 'dependsOn';
+    readonly relationship: "dependsOn";
 }
 export interface ContentPackRequirements {
     readonly operations: readonly {
@@ -86,67 +86,67 @@ export interface ContentDefinitionReference {
     readonly definitionId: string;
     readonly importAs?: string;
 }
-export type ContentDefinitionVisibility = 'public' | 'private';
-export type ContentExtensionPolicy = 'sealed' | 'derivable' | 'patchable' | 'configurable';
+export type ContentDefinitionVisibility = "public" | "private";
+export type ContentExtensionPolicy = "sealed" | "derivable" | "patchable" | "configurable";
 export type ContentPatchScalar = string | number | boolean | null;
 export type ContentPatchPathSegment = {
-    readonly kind: 'field';
+    readonly kind: "field";
     readonly name: string;
 } | {
-    readonly kind: 'member';
-    readonly key: 'id' | 'resourceId' | 'statId' | 'defenseId' | 'modifierId' | 'damageType' | 'kind';
+    readonly kind: "member";
+    readonly key: "id" | "resourceId" | "statId" | "defenseId" | "modifierId" | "damageType" | "kind";
     readonly value: string;
 };
 export type ContentPatchNumber = number | {
     readonly parameter: string;
 };
 export type ContentPatchOperation = {
-    readonly kind: 'setScalar';
-    readonly plane: 'semantic' | 'presentation';
+    readonly kind: "setScalar";
+    readonly plane: "semantic" | "presentation";
     readonly path: readonly ContentPatchPathSegment[];
     readonly value: ContentPatchScalar | {
         readonly parameter: string;
     };
 } | {
-    readonly kind: 'upsertScalar';
-    readonly plane: 'semantic' | 'presentation';
+    readonly kind: "upsertScalar";
+    readonly plane: "semantic" | "presentation";
     readonly path: readonly ContentPatchPathSegment[];
     readonly value: ContentPatchScalar | {
         readonly parameter: string;
     };
 } | {
-    readonly kind: 'adjustNumber';
-    readonly plane: 'semantic' | 'presentation';
+    readonly kind: "adjustNumber";
+    readonly plane: "semantic" | "presentation";
     readonly path: readonly ContentPatchPathSegment[];
     readonly multiply: ContentPatchNumber;
     readonly add: ContentPatchNumber;
 } | {
-    readonly kind: 'appendMember';
-    readonly plane: 'semantic' | 'presentation';
+    readonly kind: "appendMember";
+    readonly plane: "semantic" | "presentation";
     readonly path: readonly ContentPatchPathSegment[];
     readonly identity: {
         readonly key: Exclude<Extract<ContentPatchPathSegment, {
-            readonly kind: 'member';
-        }>['key'], 'kind'>;
+            readonly kind: "member";
+        }>["key"], "kind">;
         readonly value: string;
     };
     readonly value: Readonly<Record<string, ContentPatchScalar>>;
     readonly position: {
-        readonly kind: 'start';
+        readonly kind: "start";
     } | {
-        readonly kind: 'end';
+        readonly kind: "end";
     } | {
-        readonly kind: 'before' | 'after';
+        readonly kind: "before" | "after";
         readonly anchor: Extract<ContentPatchPathSegment, {
-            readonly kind: 'member';
+            readonly kind: "member";
         }>;
     };
 } | {
-    readonly kind: 'removeMember';
-    readonly plane: 'semantic' | 'presentation';
+    readonly kind: "removeMember";
+    readonly plane: "semantic" | "presentation";
     readonly path: readonly ContentPatchPathSegment[];
     readonly identity: Extract<ContentPatchPathSegment, {
-        readonly kind: 'member';
+        readonly kind: "member";
     }>;
 };
 export interface ContentPatch {
@@ -155,7 +155,7 @@ export interface ContentPatch {
 }
 export interface ContentMixinParameter {
     readonly id: string;
-    readonly type: 'string' | 'number' | 'boolean';
+    readonly type: "string" | "number" | "boolean";
     readonly default?: string | number | boolean;
 }
 export interface ContentMixinApplication {
@@ -180,11 +180,11 @@ interface ContentDefinitionBase {
     readonly presentation?: ContentPresentation;
 }
 export interface ContentActionDefinition extends ContentDefinitionBase {
-    readonly kind: 'action';
+    readonly kind: "action";
     readonly action: AuthoredAction;
 }
 export interface ContentSupportDefinition extends ContentDefinitionBase {
-    readonly kind: 'support';
+    readonly kind: "support";
     readonly semantic: {
         /**
          * Rust-owned action catalogs use the well-known stat, defense, resource,
@@ -198,19 +198,19 @@ export interface ContentSupportDefinition extends ContentDefinitionBase {
 }
 /** Inert, portable defaults that a host may use to construct Scenario participants. */
 export interface ContentParticipantProfileData {
-    readonly role: 'player' | 'creature';
+    readonly role: "player" | "creature";
     readonly definitionIds: readonly string[];
     readonly capabilities: readonly ScenarioInitialCapability[];
 }
 export interface ContentTemplateDefinition extends ContentDefinitionBase {
-    readonly kind: 'template';
+    readonly kind: "template";
 }
 export interface ContentDerivedDefinition extends ContentDefinitionBase {
-    readonly kind: 'derived';
-    readonly materializesAs: 'action' | 'support';
+    readonly kind: "derived";
+    readonly materializesAs: "action" | "support";
 }
 export interface ContentMixinDefinition extends ContentDefinitionBase {
-    readonly kind: 'mixin';
+    readonly kind: "mixin";
     readonly parameters: readonly ContentMixinParameter[];
     readonly patch: ContentPatch;
 }
@@ -226,24 +226,24 @@ export interface ContentPolicyBinding {
     readonly label: string;
 }
 export type ContentReservedRelationship = {
-    readonly kind: 'derivesFrom';
+    readonly kind: "derivesFrom";
     readonly definitionId: string;
     readonly target: ContentDefinitionReference;
     readonly mixins: readonly ContentMixinApplication[];
     readonly localPatch: ContentPatch;
     readonly version: 1;
 } | {
-    readonly kind: 'patches';
+    readonly kind: "patches";
     readonly definitionId: string;
     readonly target: ContentDefinitionReference;
     readonly targetPackage: ContentPackIdentity;
     readonly expectedFingerprint: string;
     readonly patch: ContentPatch;
-    readonly plane: 'semantic' | 'presentation' | 'both';
-    readonly conflictPolicy: 'reject' | 'replace';
+    readonly plane: "semantic" | "presentation" | "both";
+    readonly conflictPolicy: "reject" | "replace";
     readonly version: 1;
 } | {
-    readonly kind: 'configures';
+    readonly kind: "configures";
     readonly optionId: string;
     readonly target: ContentDefinitionReference;
     readonly value: string | number | boolean;
@@ -285,10 +285,10 @@ export interface PlayBundleCompilerTarget {
         readonly actionEconomy: Readonly<Record<string, number>>;
     };
 }
-export type PlayBundleCompilerStage = 'source' | 'resolution' | 'compatibility' | 'graph' | 'materialization' | 'normalization';
+export type PlayBundleCompilerStage = "source" | "resolution" | "compatibility" | "graph" | "materialization" | "normalization";
 export interface PlayBundleCompilerDiagnostic {
     readonly stage: PlayBundleCompilerStage;
-    readonly severity: 'error';
+    readonly severity: "error";
     readonly code: string;
     readonly path: string;
     readonly message: string;
@@ -311,7 +311,7 @@ export interface ContentPackDependencyLockEntry {
     readonly resolvedVersion: string;
     readonly sourceFingerprint: string;
     readonly importAs: string;
-    readonly relationship: 'dependsOn' | 'contributes' | 'patches';
+    readonly relationship: "dependsOn" | "contributes" | "patches";
 }
 export interface ContentRelationshipProvenance {
     readonly kind: ContentRelationshipKind;
@@ -326,7 +326,7 @@ export interface ContentDefinitionProvenance {
     readonly source: ContentSourceLocation;
 }
 export interface ContentPatchChangeProvenance {
-    readonly plane: 'semantic' | 'presentation';
+    readonly plane: "semantic" | "presentation";
     readonly path: string;
     readonly pathSegments: readonly ContentPatchPathSegment[];
     readonly before: unknown;
@@ -335,7 +335,7 @@ export interface ContentPatchChangeProvenance {
 }
 export interface ContentMaterializationStage {
     readonly id: string;
-    readonly kind: 'action' | 'support';
+    readonly kind: "action" | "support";
     readonly extensionPolicy: ContentExtensionPolicy;
     readonly value: {
         readonly semantic: unknown;
@@ -344,7 +344,7 @@ export interface ContentMaterializationStage {
     readonly references: readonly string[];
 }
 export type ContentDefinitionCommitment = {
-    readonly kind: 'concrete';
+    readonly kind: "concrete";
     readonly packageId: string;
     readonly packageVersion: string;
     readonly packageSourceFingerprint: string;
@@ -352,7 +352,7 @@ export type ContentDefinitionCommitment = {
     readonly fingerprint: string;
     readonly stage: ContentMaterializationStage;
 } | {
-    readonly kind: 'mixin';
+    readonly kind: "mixin";
     readonly packageId: string;
     readonly packageVersion: string;
     readonly packageSourceFingerprint: string;
@@ -397,8 +397,8 @@ export interface ContentOverlayProvenance {
     readonly expectedFingerprint: string;
     readonly beforeFingerprint: string;
     readonly afterFingerprint: string;
-    readonly plane: 'semantic' | 'presentation' | 'both';
-    readonly conflictPolicy: 'reject' | 'replace';
+    readonly plane: "semantic" | "presentation" | "both";
+    readonly conflictPolicy: "reject" | "replace";
     readonly patchFingerprint: string;
     readonly patch: ContentPatch;
     readonly before: ContentMaterializationStage;
@@ -407,8 +407,8 @@ export interface ContentOverlayProvenance {
 }
 export interface MaterializedContentDefinition {
     readonly id: string;
-    readonly kind: 'action' | 'support';
-    readonly visibility: 'exported' | 'support';
+    readonly kind: "action" | "support";
+    readonly visibility: "exported" | "support";
     readonly extensionPolicy: ContentExtensionPolicy;
     readonly semantic: unknown;
     readonly presentation: ContentPresentation | null;
@@ -418,7 +418,7 @@ export interface MaterializedContentDefinition {
 }
 export interface PreparedPlayBundle {
     readonly schema: {
-        readonly identity: 'asha.rpg.play-bundle.prepared';
+        readonly identity: "asha.rpg.play-bundle.prepared";
         readonly major: 1;
     };
     readonly playBundleIdentity: PlayBundleIdentity;
@@ -452,44 +452,44 @@ export interface ScenarioBoundedValue {
     readonly max: number;
 }
 export type ScenarioInitialCapability = {
-    readonly owner: 'vitality';
+    readonly owner: "vitality";
     readonly value: ScenarioBoundedValue;
 } | {
-    readonly owner: 'stat';
+    readonly owner: "stat";
     readonly id: string;
     readonly value: number;
 } | {
-    readonly owner: 'defense';
+    readonly owner: "defense";
     readonly id: string;
     readonly value: number;
 } | {
-    readonly owner: 'resource';
+    readonly owner: "resource";
     readonly id: string;
     readonly value: ScenarioBoundedValue;
 } | {
-    readonly owner: 'modifier';
+    readonly owner: "modifier";
     readonly stackingGroup: string;
     readonly id: string;
     readonly value: number;
     readonly remainingTurns: number;
 };
 export type ScenarioCellCapabilityValue = {
-    readonly kind: 'traversal';
+    readonly kind: "traversal";
     readonly passable: boolean;
     readonly movementCost: number;
 } | {
-    readonly kind: 'flag';
+    readonly kind: "flag";
     readonly value: boolean;
 } | {
-    readonly kind: 'integer';
+    readonly kind: "integer";
     readonly value: number;
 } | {
-    readonly kind: 'identifier';
+    readonly kind: "identifier";
     readonly valueId: string;
 };
 export interface Scenario {
     readonly schema: {
-        readonly id: 'asha.rpg.scenario';
+        readonly id: "asha.rpg.scenario";
         readonly version: 1;
     };
     readonly playBundleId: string;
@@ -527,6 +527,33 @@ export interface Scenario {
         readonly sourceId: string;
         readonly sourceVersion: number;
     };
+}
+/**
+ * Immutable, artifact-independent setup data published by a content owner.
+ * Hosts bind a template to the exact compiled PlayBundle artifact only when a
+ * user chooses to instantiate it.
+ */
+export interface ScenarioTemplate {
+    readonly schema: {
+        readonly id: "asha.rpg.scenario-template";
+        readonly version: 1;
+    };
+    readonly identity: {
+        readonly id: string;
+        readonly version: string;
+    };
+    readonly playBundle: {
+        readonly id: string;
+        readonly version: string;
+    };
+    readonly presentation: {
+        readonly label: string;
+        readonly description?: string;
+    };
+    readonly board: Scenario["board"];
+    readonly participants: Scenario["participants"];
+    readonly turn: Scenario["turn"];
+    readonly randomSource: Scenario["randomSource"];
 }
 export {};
 //# sourceMappingURL=play-bundle-types.d.ts.map
