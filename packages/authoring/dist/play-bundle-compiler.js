@@ -509,7 +509,7 @@ function materializeSelectedDefinitions(context, bundle, overlayPackages) {
                 return undefined;
             }
             records.set(key, record);
-            definitionCommitments.set(key, concreteDefinitionCommitment(record));
+            definitionCommitments.set(key, concreteDefinitionCommitment(record, bundle.ruleset));
             return record;
         }
         if (record.definition.kind === 'mixin' || record.definition.kind === 'template') {
@@ -610,7 +610,7 @@ function materializeSelectedDefinitions(context, bundle, overlayPackages) {
         if (concrete === undefined)
             return undefined;
         records.set(key, concrete);
-        definitionCommitments.set(key, concreteDefinitionCommitment(concrete));
+        definitionCommitments.set(key, concreteDefinitionCommitment(concrete, bundle.ruleset));
         const baseIdentity = base.package.source.manifest.identity;
         const identity = record.package.source.manifest.identity;
         derivationProvenance.push({
@@ -620,13 +620,13 @@ function materializeSelectedDefinitions(context, bundle, overlayPackages) {
             baseDefinitionId: base.definition.id,
             basePackageId: baseIdentity.id,
             basePackageVersion: baseIdentity.version,
-            baseFingerprint: definitionMaterializationFingerprint(base),
-            base: definitionMaterializationStage(base),
+            baseFingerprint: definitionMaterializationFingerprint(base, bundle.ruleset),
+            base: definitionMaterializationStage(base, bundle.ruleset),
             mixins: mixinProvenance,
             localPatchFingerprint: stableFingerprint(derivation.localPatch),
             localPatch: derivation.localPatch,
-            materializedFingerprint: definitionMaterializationFingerprint(concrete),
-            materialized: definitionMaterializationStage(concrete),
+            materializedFingerprint: definitionMaterializationFingerprint(concrete, bundle.ruleset),
+            materialized: definitionMaterializationStage(concrete, bundle.ruleset),
             changes,
         });
         relationshipProvenance.push({
@@ -685,7 +685,7 @@ function materializeSelectedDefinitions(context, bundle, overlayPackages) {
                 context.diagnostics.push(diagnostic('materialization', 'CONTENT_PACK_OVERLAY_TARGET_FORBIDDEN', `$.packages[${entry.key}].relationships[${relationshipOrder}].target`, `definition ${target.definition.id} is ${target.definition.extensionPolicy}, not patchable`, { definitionId: target.definition.id, source: entry.source.manifest.entry }));
                 continue;
             }
-            const before = definitionMaterializationStage(target);
+            const before = definitionMaterializationStage(target, bundle.ruleset);
             const beforeFingerprint = stableFingerprint(before);
             if (beforeFingerprint !== relationship.expectedFingerprint) {
                 context.diagnostics.push(diagnostic('materialization', 'CONTENT_PACK_OVERLAY_EXPECTED_FINGERPRINT_MISMATCH', `$.packages[${entry.key}].relationships[${relationshipOrder}].expectedFingerprint`, `overlay expected ${relationship.expectedFingerprint}, materialized target is ${beforeFingerprint}`, { definitionId: target.definition.id, expected: relationship.expectedFingerprint, actual: beforeFingerprint }));
@@ -713,7 +713,7 @@ function materializeSelectedDefinitions(context, bundle, overlayPackages) {
             if (patched === undefined)
                 continue;
             records.set(globalDefinitionId(target), patched);
-            const afterFingerprint = definitionMaterializationFingerprint(patched);
+            const afterFingerprint = definitionMaterializationFingerprint(patched, bundle.ruleset);
             overlayProvenance.push({
                 overlayPackageId: entry.source.manifest.identity.id,
                 overlayPackageVersion: entry.source.manifest.identity.version,
@@ -1138,10 +1138,10 @@ function patchSegment(segment) {
 function memberMatches(value, selector) {
     return isRecord(value) && value[selector.key] === selector.value;
 }
-function definitionMaterializationFingerprint(record) {
-    return stableFingerprint(definitionMaterializationStage(record));
+function definitionMaterializationFingerprint(record, ruleset) {
+    return stableFingerprint(definitionMaterializationStage(record, ruleset));
 }
-function definitionMaterializationStage(record) {
+function definitionMaterializationStage(record, ruleset) {
     if (record.definition.kind !== 'action' && record.definition.kind !== 'support') {
         throw new Error(`definition ${record.definition.id} is not concrete`);
     }
@@ -1150,11 +1150,11 @@ function definitionMaterializationStage(record) {
         kind: record.definition.kind,
         extensionPolicy: record.definition.extensionPolicy,
         value: normalizedDefinitionValue(record),
-        references: materializationReferenceIds(record),
+        references: materializationReferenceIds(record, ruleset),
     };
 }
-function concreteDefinitionCommitment(record) {
-    const stage = definitionMaterializationStage(record);
+function concreteDefinitionCommitment(record, ruleset) {
+    const stage = definitionMaterializationStage(record, ruleset);
     const identity = record.package.source.manifest.identity;
     return immutable({
         kind: 'concrete',
@@ -1233,10 +1233,17 @@ function normalizedDefinitionValue(record) {
     }
     throw new Error(`definition ${record.definition.id} is not concrete`);
 }
-function materializationReferenceIds(record) {
+function materializationReferenceIds(record, ruleset) {
+    const authoredReferences = authoredCatalogReferences(record.definition)
+        .filter((reference) => !(reference.packageId === undefined &&
+        (reference.category === 'stat' || reference.category === 'defense') &&
+        ruleset?.provides.values.some((value) => value.kind === reference.category &&
+            value.id === reference.definitionId)))
+        .map((reference) => reference.definitionId);
     return [
         ...new Set([
-            ...authoredDefinitionReferenceIds(record.definition),
+            ...(record.definition.lowLevelReferences ?? []).map((reference) => reference.definitionId),
+            ...authoredReferences,
             ...(record.inheritedReferenceIds ?? []).map(localDefinitionId),
         ]),
     ].sort();

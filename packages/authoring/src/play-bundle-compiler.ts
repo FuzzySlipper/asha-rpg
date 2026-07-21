@@ -898,7 +898,7 @@ function materializeSelectedDefinitions(
         return undefined;
       }
       records.set(key, record);
-      definitionCommitments.set(key, concreteDefinitionCommitment(record));
+      definitionCommitments.set(key, concreteDefinitionCommitment(record, bundle.ruleset));
       return record;
     }
     if (record.definition.kind === 'mixin' || record.definition.kind === 'template') {
@@ -1085,7 +1085,7 @@ function materializeSelectedDefinitions(
     visiting.pop();
     if (concrete === undefined) return undefined;
     records.set(key, concrete);
-    definitionCommitments.set(key, concreteDefinitionCommitment(concrete));
+    definitionCommitments.set(key, concreteDefinitionCommitment(concrete, bundle.ruleset));
     const baseIdentity = base.package.source.manifest.identity;
     const identity = record.package.source.manifest.identity;
     derivationProvenance.push({
@@ -1095,13 +1095,13 @@ function materializeSelectedDefinitions(
       baseDefinitionId: base.definition.id,
       basePackageId: baseIdentity.id,
       basePackageVersion: baseIdentity.version,
-      baseFingerprint: definitionMaterializationFingerprint(base),
-      base: definitionMaterializationStage(base),
+      baseFingerprint: definitionMaterializationFingerprint(base, bundle.ruleset),
+      base: definitionMaterializationStage(base, bundle.ruleset),
       mixins: mixinProvenance,
       localPatchFingerprint: stableFingerprint(derivation.localPatch),
       localPatch: derivation.localPatch,
-      materializedFingerprint: definitionMaterializationFingerprint(concrete),
-      materialized: definitionMaterializationStage(concrete),
+      materializedFingerprint: definitionMaterializationFingerprint(concrete, bundle.ruleset),
+      materialized: definitionMaterializationStage(concrete, bundle.ruleset),
       changes,
     });
     relationshipProvenance.push({
@@ -1216,7 +1216,7 @@ function materializeSelectedDefinitions(
         );
         continue;
       }
-      const before = definitionMaterializationStage(target);
+      const before = definitionMaterializationStage(target, bundle.ruleset);
       const beforeFingerprint = stableFingerprint(before);
       if (beforeFingerprint !== relationship.expectedFingerprint) {
         context.diagnostics.push(
@@ -1271,7 +1271,7 @@ function materializeSelectedDefinitions(
       const patched = replaceConcreteRecordValue(target, applied, context.diagnostics);
       if (patched === undefined) continue;
       records.set(globalDefinitionId(target), patched);
-      const afterFingerprint = definitionMaterializationFingerprint(patched);
+      const afterFingerprint = definitionMaterializationFingerprint(patched, bundle.ruleset);
       overlayProvenance.push({
         overlayPackageId: entry.source.manifest.identity.id,
         overlayPackageVersion: entry.source.manifest.identity.version,
@@ -1863,11 +1863,17 @@ function memberMatches(value: unknown, selector: Extract<ContentPatchPathSegment
   return isRecord(value) && value[selector.key] === selector.value;
 }
 
-function definitionMaterializationFingerprint(record: DefinitionRecord): string {
-  return stableFingerprint(definitionMaterializationStage(record));
+function definitionMaterializationFingerprint(
+  record: DefinitionRecord,
+  ruleset?: Ruleset,
+): string {
+  return stableFingerprint(definitionMaterializationStage(record, ruleset));
 }
 
-function definitionMaterializationStage(record: DefinitionRecord): ContentMaterializationStage {
+function definitionMaterializationStage(
+  record: DefinitionRecord,
+  ruleset?: Ruleset,
+): ContentMaterializationStage {
   if (record.definition.kind !== 'action' && record.definition.kind !== 'support') {
     throw new Error(`definition ${record.definition.id} is not concrete`);
   }
@@ -1876,14 +1882,15 @@ function definitionMaterializationStage(record: DefinitionRecord): ContentMateri
     kind: record.definition.kind,
     extensionPolicy: record.definition.extensionPolicy,
     value: normalizedDefinitionValue(record),
-    references: materializationReferenceIds(record),
+    references: materializationReferenceIds(record, ruleset),
   };
 }
 
 function concreteDefinitionCommitment(
   record: DefinitionRecord,
+  ruleset?: Ruleset,
 ): ContentDefinitionCommitment {
-  const stage = definitionMaterializationStage(record);
+  const stage = definitionMaterializationStage(record, ruleset);
   const identity = record.package.source.manifest.identity;
   return immutable({
     kind: 'concrete',
@@ -2030,10 +2037,30 @@ function normalizedDefinitionValue(record: DefinitionRecord): PatchedValue {
   throw new Error(`definition ${record.definition.id} is not concrete`);
 }
 
-function materializationReferenceIds(record: DefinitionRecord): readonly string[] {
+function materializationReferenceIds(
+  record: DefinitionRecord,
+  ruleset?: Ruleset,
+): readonly string[] {
+  const authoredReferences = authoredCatalogReferences(record.definition)
+    .filter(
+      (reference) =>
+        !(
+          reference.packageId === undefined &&
+          (reference.category === 'stat' || reference.category === 'defense') &&
+          ruleset?.provides.values.some(
+            (value) =>
+              value.kind === reference.category &&
+              value.id === reference.definitionId,
+          )
+        ),
+    )
+    .map((reference) => reference.definitionId);
   return [
     ...new Set([
-      ...authoredDefinitionReferenceIds(record.definition),
+      ...(record.definition.lowLevelReferences ?? []).map(
+        (reference) => reference.definitionId,
+      ),
+      ...authoredReferences,
       ...(record.inheritedReferenceIds ?? []).map(localDefinitionId),
     ]),
   ].sort();
