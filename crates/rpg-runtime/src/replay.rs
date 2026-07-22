@@ -2461,7 +2461,7 @@ mod tests {
                     id: "guardian".to_owned(),
                     label: "Guardian".to_owned(),
                     team_id: Team::enemy(),
-                    position: GridPosition { x: 1, y: 0 },
+                    position: GridPosition { x: 1, y: 1 },
                     definition_ids: vec!["action.reactive".to_owned(), "action.move".to_owned()],
                     capabilities: vec![
                         crate::RpgInitialCapability::Vitality {

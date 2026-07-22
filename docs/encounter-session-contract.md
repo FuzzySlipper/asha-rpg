@@ -43,11 +43,20 @@ state, log, turn, reaction, and accepted-random position.
 `RpgAuthoritySession::encounter_view` exposes board/cells, participant state,
 current actor and initiative, selected and legal actions plus participant or
 cell options, available turn controls, pending reaction options, accepted
-events, and encounter outcome. For a cell-target movement action, Rust binds
-each submitted cell id to the Scenario position, applies the authored range
-and movement bound, and exposes only destinations whose staged result remains
-inside the board, passable, and unoccupied. It is descriptive output; only
-Rust mutates authority state.
+events, and encounter outcome. A cell movement option is an authority path:
+the destination cell id, the ordered traversed cell ids excluding the origin
+and including the destination, and the total movement cost. Rust finds a
+deterministic least-cost route over orthogonally adjacent authored cells.
+Entering a cell consumes its traversal `movementCost`; a cell without a
+traversal capability is passable at cost one. Impassable and occupied cells
+cannot be entered or crossed. Equal-cost routes use a stable row-major path
+ordering.
+
+Commands still submit only a destination. Rust binds that id to the Scenario,
+recomputes the path against current occupancy and traversal state, applies the
+authored range and total-cost movement bound, and rejects a stale or
+unreachable destination without mutation. The path is descriptive output;
+only Rust mutates authority state.
 
 ## Random evidence
 
@@ -63,6 +72,7 @@ randomness, or reapplies events.
 
 ## Non-claims
 
-The initial board authority does not claim pathfinding, area-target semantics,
-multi-cell movement-cost budgeting, campaign persistence, scripted runners,
-AI control, Tester configuration, or Rulebench product protocols.
+The initial board authority does not claim diagonal or hex topology,
+jumping/flying/teleport movement, opportunity attacks, per-step effects,
+area-target semantics, campaign persistence, scripted runners, AI control,
+Tester configuration, or Rulebench product protocols.

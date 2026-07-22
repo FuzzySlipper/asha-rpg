@@ -79,17 +79,12 @@ pub enum RpgIrTeamConstraint {
     Any,
 }
 
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
 pub enum RpgIrTargetKind {
+    #[default]
     Participant,
     Cell,
-}
-
-impl Default for RpgIrTargetKind {
-    fn default() -> Self {
-        Self::Participant
-    }
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]

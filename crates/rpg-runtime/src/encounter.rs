@@ -15,7 +15,7 @@ use serde::{Deserialize, Serialize};
 pub const RPG_SCENARIO_SCHEMA_ID: &str = "asha.rpg.scenario";
 pub const RPG_SCENARIO_SCHEMA_VERSION: u32 = 1;
 pub const RPG_ENCOUNTER_VIEW_SCHEMA_ID: &str = "asha.rpg.encounter.view";
-pub const RPG_ENCOUNTER_VIEW_SCHEMA_VERSION: u32 = 2;
+pub const RPG_ENCOUNTER_VIEW_SCHEMA_VERSION: u32 = 3;
 pub const RPG_END_TURN_CONTROL_ID: &str = "control.end-turn";
 
 const MAXIMUM_BOARD_EXTENT: u32 = 1_024;
@@ -246,8 +246,16 @@ pub struct RpgParticipantView {
 #[serde(rename_all = "camelCase", deny_unknown_fields)]
 pub struct RpgActionOptionsView {
     pub participant_ids: Vec<String>,
-    pub cell_ids: Vec<String>,
+    pub cell_paths: Vec<RpgCellPathView>,
     pub area_ids: Vec<String>,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase", deny_unknown_fields)]
+pub struct RpgCellPathView {
+    pub destination_cell_id: String,
+    pub cell_ids: Vec<String>,
+    pub movement_cost: u32,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
@@ -1359,6 +1367,143 @@ pub(crate) fn cell_blocks_position(board: &RpgBoardSetup, position: GridPosition
         .unwrap_or(false)
 }
 
+#[derive(Debug, Clone, PartialEq, Eq, PartialOrd, Ord)]
+struct RouteCandidate {
+    movement_cost: u32,
+    position_order: Vec<(u32, u32, String)>,
+    position: (u32, u32),
+    cell_ids: Vec<String>,
+}
+
+pub(crate) fn movement_paths(
+    board: &RpgBoardSetup,
+    state: &RpgCapabilityState,
+    actor_id: &str,
+    maximum_distance: u32,
+) -> Vec<RpgCellPathView> {
+    let Some(actor) = state.entity(actor_id) else {
+        return Vec::new();
+    };
+    let origin = (actor.position().x, actor.position().y);
+    let cells_by_position = board
+        .cells
+        .iter()
+        .map(|cell| ((cell.position.x, cell.position.y), cell))
+        .collect::<BTreeMap<_, _>>();
+    let occupied = state
+        .entities()
+        .filter(|entity| entity.id() != actor_id)
+        .map(|entity| (entity.position().x, entity.position().y))
+        .collect::<BTreeSet<_>>();
+
+    let origin_candidate = RouteCandidate {
+        movement_cost: 0,
+        position_order: Vec::new(),
+        position: origin,
+        cell_ids: Vec::new(),
+    };
+    let mut frontier = BTreeSet::from([origin_candidate.clone()]);
+    let mut best = BTreeMap::from([(
+        origin,
+        (
+            0_u32,
+            Vec::<(u32, u32, String)>::new(),
+            Vec::<String>::new(),
+        ),
+    )]);
+
+    while let Some(candidate) = frontier.pop_first() {
+        let Some((known_cost, known_order, _)) = best.get(&candidate.position) else {
+            continue;
+        };
+        if (*known_cost, known_order) < (candidate.movement_cost, &candidate.position_order) {
+            continue;
+        }
+
+        let (x, y) = candidate.position;
+        let mut neighbours = Vec::with_capacity(4);
+        if y > 0 {
+            neighbours.push((x, y - 1));
+        }
+        if x > 0 {
+            neighbours.push((x - 1, y));
+        }
+        if x + 1 < board.width {
+            neighbours.push((x + 1, y));
+        }
+        if y + 1 < board.height {
+            neighbours.push((x, y + 1));
+        }
+        neighbours.sort_by_key(|(neighbour_x, neighbour_y)| (*neighbour_y, *neighbour_x));
+
+        for neighbour in neighbours {
+            if occupied.contains(&neighbour) {
+                continue;
+            }
+            let Some(cell) = cells_by_position.get(&neighbour) else {
+                continue;
+            };
+            let (passable, movement_cost) = cell
+                .capabilities
+                .iter()
+                .find_map(|capability| match capability.value {
+                    RpgCellCapabilityValue::Traversal {
+                        passable,
+                        movement_cost,
+                    } => Some((passable, movement_cost)),
+                    _ => None,
+                })
+                .unwrap_or((true, 1));
+            if !passable || movement_cost == 0 {
+                continue;
+            }
+            let next_cost = candidate.movement_cost.saturating_add(movement_cost);
+            if next_cost > maximum_distance {
+                continue;
+            }
+            let mut next_order = candidate.position_order.clone();
+            next_order.push((cell.position.y, cell.position.x, cell.id.clone()));
+            let mut next_cell_ids = candidate.cell_ids.clone();
+            next_cell_ids.push(cell.id.clone());
+            let next_rank = (next_cost, next_order.clone());
+            if best
+                .get(&neighbour)
+                .map(|(known_cost, known_order, _)| (*known_cost, known_order.clone()) <= next_rank)
+                .unwrap_or(false)
+            {
+                continue;
+            }
+            best.insert(
+                neighbour,
+                (next_cost, next_order.clone(), next_cell_ids.clone()),
+            );
+            frontier.insert(RouteCandidate {
+                movement_cost: next_cost,
+                position_order: next_order,
+                position: neighbour,
+                cell_ids: next_cell_ids,
+            });
+        }
+    }
+
+    board
+        .cells
+        .iter()
+        .filter_map(|cell| {
+            let position = (cell.position.x, cell.position.y);
+            if position == origin {
+                return None;
+            }
+            best.get(&position)
+                .map(|(movement_cost, _, cell_ids)| RpgCellPathView {
+                    destination_cell_id: cell.id.clone(),
+                    cell_ids: cell_ids.clone(),
+                    movement_cost: *movement_cost,
+                })
+        })
+        .collect()
+}
+
 pub(crate) fn runtime_board_rejection(
     board: &RpgBoardSetup,
     state: &RpgCapabilityState,
@@ -1517,7 +1662,7 @@ pub(crate) fn action_view(
     unavailable: Option<RpgResolutionRejection>,
 ) -> RpgActionView {
     let has_options = !options.participant_ids.is_empty()
-        || !options.cell_ids.is_empty()
+        || !options.cell_paths.is_empty()
         || !options.area_ids.is_empty();
     RpgActionView {
         definition_id: action.id,

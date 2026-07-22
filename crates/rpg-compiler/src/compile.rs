@@ -99,7 +99,16 @@ impl CompiledRpgRules {
             roll_scope: action.roll_scope,
             costs: action.costs.clone(),
             random_plan: action.random_plan.clone(),
+            selected_destination_maximum_distance: selected_destination_maximum_distance(
+                &action.program,
+            ),
         })
+    }
+
+    pub fn selected_destination_maximum_distance(&self, action_id: &str) -> Option<u32> {
+        self.actions
+            .get(action_id)
+            .and_then(|action| selected_destination_maximum_distance(&action.program))
     }
 
     pub fn required_capabilities(&self) -> impl Iterator<Item = (&str, u32)> {
@@ -123,6 +132,32 @@ pub struct CompiledRpgAction {
     pub roll_scope: RpgIrRollScope,
     pub costs: Vec<RpgIrResourceCost>,
     pub random_plan: Vec<RpgRandomPlanEntry>,
+    pub selected_destination_maximum_distance: Option<u32>,
+}
+
+fn selected_destination_maximum_distance(program: &CompiledProgram) -> Option<u32> {
+    let CompiledProgram::Atomic(body) = program else {
+        return None;
+    };
+    let CompiledProgram::OnCheck {
+        hit: None,
+        miss: None,
+        saved: None,
+        failed: None,
+        no_roll: Some(no_roll),
+    } = body.as_ref()
+    else {
+        return None;
+    };
+    let CompiledProgram::Operation(operation) = no_roll.as_ref() else {
+        return None;
+    };
+    match operation.declaration {
+        RpgIrOperation::MoveToCell {
+            maximum_distance, ..
+        } => Some(maximum_distance),
+        _ => None,
+    }
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]

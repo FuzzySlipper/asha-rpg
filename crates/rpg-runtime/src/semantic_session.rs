@@ -10,10 +10,10 @@ use rpg_ir::{CompiledPlayBundleArtifact, RpgIrTargetKind};
 use serde::{Deserialize, Serialize};
 
 use crate::encounter::{
-    action_view, build_encounter, encounter_outcome, living_intent_rejection, participant_view,
-    random_failure, runtime_board_rejection, RpgActionOptionsView, RpgActionProposal,
-    RpgEncounterAuthority, RpgEncounterOutcomeView, RpgEncounterView, RpgRandomSource,
-    RpgRandomSourceFailure, RpgReactionProposal, RpgScenario, RpgScenarioFailure,
+    action_view, build_encounter, encounter_outcome, living_intent_rejection, movement_paths,
+    participant_view, random_failure, runtime_board_rejection, RpgActionOptionsView,
+    RpgActionProposal, RpgEncounterAuthority, RpgEncounterOutcomeView, RpgEncounterView,
+    RpgRandomSource, RpgRandomSourceFailure, RpgReactionProposal, RpgScenario, RpgScenarioFailure,
     RpgSchemaIdentity, RpgTurnControl, RpgTurnControlProposal, RpgTurnControlView,
     RPG_ENCOUNTER_VIEW_SCHEMA_ID, RPG_ENCOUNTER_VIEW_SCHEMA_VERSION,
 };
@@ -217,18 +217,34 @@ impl RpgAuthoritySession {
                             .collect();
                         RpgActionOptionsView {
                             participant_ids: legal_candidates,
-                            cell_ids: Vec::new(),
+                            cell_paths: Vec::new(),
                             area_ids: Vec::new(),
                         }
                     }
                     RpgIrTargetKind::Cell => {
-                        let legal_cells = self
-                            .encounter
-                            .scenario
-                            .board
-                            .cells
-                            .iter()
-                            .filter(|cell| {
+                        let legal_paths = action
+                            .selected_destination_maximum_distance
+                            .map(|maximum_distance| {
+                                movement_paths(
+                                    &self.encounter.scenario.board,
+                                    &self.state,
+                                    actor_id,
+                                    maximum_distance,
+                                )
+                            })
+                            .unwrap_or_default()
+                            .into_iter()
+                            .filter(|path| {
+                                let Some(cell) = self
+                                    .encounter
+                                    .scenario
+                                    .board
+                                    .cells
+                                    .iter()
+                                    .find(|cell| cell.id == path.destination_cell_id)
+                                else {
+                                    return false;
+                                };
                                 let intent = cell_intent(&action.id, actor_id, cell);
                                 if let Err(rejection) = self.rules.preflight(&self.state, &intent) {
                                     if first_rejection.is_none() {
@@ -236,41 +252,18 @@ impl RpgAuthoritySession {
                                     }
                                     return false;
                                 }
-                                let mut staged_state = self.state.clone();
-                                let mut random = DeterministicRandomStream::new(Vec::new());
-                                match self.rules.resolve(&mut staged_state, &mut random, &intent) {
-                                    Ok(_) => {
-                                        if let Some(rejection) = runtime_board_rejection(
-                                            &self.encounter.scenario.board,
-                                            &staged_state,
-                                        ) {
-                                            if first_rejection.is_none() {
-                                                first_rejection = Some(rejection);
-                                            }
-                                            false
-                                        } else {
-                                            true
-                                        }
-                                    }
-                                    Err(rejection) => {
-                                        if first_rejection.is_none() {
-                                            first_rejection = Some(rejection);
-                                        }
-                                        false
-                                    }
-                                }
+                                true
                             })
-                            .map(|cell| cell.id.clone())
                             .collect();
                         RpgActionOptionsView {
                             participant_ids: Vec::new(),
-                            cell_ids: legal_cells,
+                            cell_paths: legal_paths,
                             area_ids: Vec::new(),
                         }
                     }
                 };
                 let has_options = !options.participant_ids.is_empty()
-                    || !options.cell_ids.is_empty()
+                    || !options.cell_paths.is_empty()
                     || !options.area_ids.is_empty();
                 let unavailable = (!has_options).then(|| {
                     first_rejection.unwrap_or_else(|| {
@@ -415,6 +408,12 @@ impl RpgAuthoritySession {
             ));
         }
         if let Some(rejection) = self.cell_binding_rejection(&command.intent) {
+            return RpgCommandOutcome::Rejected(rejection);
+        }
+        if let Err(rejection) = self.rules.preflight(&self.state, &command.intent) {
+            return RpgCommandOutcome::Rejected(rejection);
+        }
+        if let Some(rejection) = self.movement_path_rejection(&command.intent) {
             return RpgCommandOutcome::Rejected(rejection);
         }
 
@@ -756,6 +755,32 @@ impl RpgAuthoritySession {
         None
     }
 
+    fn movement_path_rejection(&self, intent: &RpgIntent) -> Option<RpgResolutionRejection> {
+        let maximum_distance = self
+            .rules
+            .selected_destination_maximum_distance(&intent.action_id)?;
+        let paths = movement_paths(
+            &self.encounter.scenario.board,
+            &self.state,
+            &intent.actor_id,
+            maximum_distance,
+        );
+        intent.target_ids.iter().enumerate().find_map(|(index, target_id)| {
+            (!paths
+                .iter()
+                .any(|path| path.destination_cell_id == *target_id))
+            .then(|| {
+                rejection(
+                    "RPG_MOVEMENT_PATH_UNAVAILABLE",
+                    format!("$.command.intent.targetIds[{index}]"),
+                    format!(
+                        "destination {target_id} has no traversable path within movement cost {maximum_distance}"
+                    ),
+                )
+            })
+        })
+    }
+
     fn require_random_source(
         &self,
         source: &dyn RpgRandomSource,
@@ -1055,10 +1080,10 @@ mod tests {
           ],
           "actions":[{
             "id":"action.move","name":"Move","sourcePath":"actions/move",
-            "targets":{"kind":"cell","team":"any","maximumRange":2,"maximumTargets":1},
+            "targets":{"kind":"cell","team":"any","maximumRange":4,"maximumTargets":1},
             "check":{"kind":"noRoll"},"rollScope":"none","costs":[],
             "program":{"kind":"atomic","body":{"kind":"onCheck","noRoll":{
-              "kind":"operation","operation":{"kind":"moveToCell","maximumDistance":2,"provokes":true}
+              "kind":"operation","operation":{"kind":"moveToCell","maximumDistance":4,"provokes":true}
             }}}
           }]
         }"#;
@@ -1066,29 +1091,34 @@ mod tests {
     }
 
     fn movement_session() -> RpgAuthoritySession {
-        let actor = RpgEntityState::new("hero", Team::ally(), GridPosition { x: 0, y: 0 }, 20);
+        let actor = RpgEntityState::new("hero", Team::ally(), GridPosition { x: 0, y: 1 }, 20);
         let target =
-            RpgEntityState::new("guardian", Team::enemy(), GridPosition { x: 1, y: 0 }, 20);
+            RpgEntityState::new("guardian", Team::enemy(), GridPosition { x: 3, y: 1 }, 20);
         let mut state = RpgCapabilityState::default();
         state.insert_entity(actor);
         state.insert_entity(target);
         let mut session = RpgAuthoritySession::for_test(movement_ruleset(), state);
         session.encounter.scenario.board = crate::RpgBoardSetup {
-            width: 4,
-            height: 2,
-            cells: vec![
-                movement_cell("cell-0-0", 0, 0, true),
-                movement_cell("cell-1-0", 1, 0, true),
-                movement_cell("cell-2-0", 2, 0, true),
-                movement_cell("cell-3-0", 3, 0, true),
-                movement_cell("cell-0-1", 0, 1, true),
-                movement_cell("cell-1-1", 1, 1, false),
-            ],
+            width: 5,
+            height: 3,
+            cells: (0..3)
+                .flat_map(|y| {
+                    (0..5).map(move |x| {
+                        movement_cell(&format!("cell-{x}-{y}"), x, y, (x, y) != (1, 1), 1)
+                    })
+                })
+                .collect(),
         };
         session
     }
 
-    fn movement_cell(id: &str, x: u32, y: u32, passable: bool) -> crate::RpgCellSetup {
+    fn movement_cell(
+        id: &str,
+        x: u32,
+        y: u32,
+        passable: bool,
+        movement_cost: u32,
+    ) -> crate::RpgCellSetup {
         crate::RpgCellSetup {
             id: id.to_owned(),
             position: GridPosition { x, y },
@@ -1098,7 +1128,7 @@ mod tests {
                 definition_id: None,
                 value: crate::RpgCellCapabilityValue::Traversal {
                     passable,
-                    movement_cost: 1,
+                    movement_cost,
                 },
             }],
         }
@@ -1179,16 +1209,39 @@ mod tests {
             .find(|action| action.definition_id == "action.move")
             .expect("movement action is projected");
         assert!(movement.available);
+        let detour = movement
+            .options
+            .cell_paths
+            .iter()
+            .find(|path| path.destination_cell_id == "cell-2-1")
+            .expect("detour destination is projected");
+        assert_eq!(detour.movement_cost, 4);
         assert_eq!(
-            movement.options.cell_ids,
-            vec!["cell-2-0".to_owned(), "cell-0-1".to_owned()]
+            detour.cell_ids,
+            vec!["cell-0-0", "cell-1-0", "cell-2-0", "cell-2-1"]
         );
+        assert!(!movement
+            .options
+            .cell_paths
+            .iter()
+            .any(|path| path.destination_cell_id == "cell-1-1"));
+        assert!(!movement
+            .options
+            .cell_paths
+            .iter()
+            .any(|path| path.destination_cell_id == "cell-3-1"));
         assert!(movement.options.participant_ids.is_empty());
 
-        for (cell_id, position) in [
-            ("cell-2-0", GridPosition { x: 2, y: 0 }),
-            ("cell-0-1", GridPosition { x: 0, y: 1 }),
-        ] {
+        for path in &movement.options.cell_paths {
+            let cell_id = path.destination_cell_id.as_str();
+            let position = session
+                .scenario()
+                .board
+                .cells
+                .iter()
+                .find(|cell| cell.id == cell_id)
+                .unwrap()
+                .position;
             let mut committable_session = movement_session();
             let outcome = committable_session.submit(movement_command(cell_id, position));
             let RpgCommandOutcome::Accepted(receipt) = outcome else {
@@ -1217,18 +1270,18 @@ mod tests {
                 "RPG_INTENT_CELL_UNKNOWN",
             ),
             (
-                "cell-1-0",
-                GridPosition { x: 1, y: 0 },
-                "RPG_BOARD_POSITION_OCCUPIED",
+                "cell-3-1",
+                GridPosition { x: 3, y: 1 },
+                "RPG_MOVEMENT_PATH_UNAVAILABLE",
             ),
             (
                 "cell-1-1",
                 GridPosition { x: 1, y: 1 },
-                "RPG_BOARD_POSITION_BLOCKED",
+                "RPG_MOVEMENT_PATH_UNAVAILABLE",
             ),
             (
-                "cell-3-0",
-                GridPosition { x: 3, y: 0 },
+                "cell-4-0",
+                GridPosition { x: 4, y: 0 },
                 "RPG_INTENT_TARGET_OUT_OF_RANGE",
             ),
         ] {
@@ -1242,28 +1295,114 @@ mod tests {
             assert_eq!(rejected_session.state().revision(), 0);
             assert_eq!(
                 rejected_session.state().entity("hero").unwrap().position(),
-                GridPosition { x: 0, y: 0 }
+                GridPosition { x: 0, y: 1 }
             );
         }
     }
 
     #[test]
+    fn movement_paths_cover_costs_obstacles_occupancy_bounds_and_ties() {
+        let session = movement_session();
+        let paths = movement_paths(&session.scenario().board, session.state(), "hero", 8);
+        let straight = paths
+            .iter()
+            .find(|path| path.destination_cell_id == "cell-0-0")
+            .unwrap();
+        assert_eq!(straight.cell_ids, vec!["cell-0-0"]);
+        assert_eq!(straight.movement_cost, 1);
+
+        let equal_cost_detour = paths
+            .iter()
+            .find(|path| path.destination_cell_id == "cell-2-1")
+            .unwrap();
+        assert_eq!(
+            equal_cost_detour.cell_ids,
+            vec!["cell-0-0", "cell-1-0", "cell-2-0", "cell-2-1"]
+        );
+        assert_eq!(equal_cost_detour.movement_cost, 4);
+
+        let around_occupied_cell = paths
+            .iter()
+            .find(|path| path.destination_cell_id == "cell-4-1")
+            .unwrap();
+        assert_eq!(
+            around_occupied_cell.cell_ids,
+            vec!["cell-0-0", "cell-1-0", "cell-2-0", "cell-3-0", "cell-4-0", "cell-4-1",]
+        );
+        assert!(!around_occupied_cell
+            .cell_ids
+            .contains(&"cell-3-1".to_owned()));
+
+        let bounded = movement_paths(&session.scenario().board, session.state(), "hero", 3);
+        assert!(!bounded
+            .iter()
+            .any(|path| path.destination_cell_id == "cell-2-1"));
+
+        let mut weighted_board = session.scenario().board.clone();
+        let top_exit = weighted_board
+            .cells
+            .iter_mut()
+            .find(|cell| cell.id == "cell-0-0")
+            .unwrap();
+        top_exit.capabilities[0].value = crate::RpgCellCapabilityValue::Traversal {
+            passable: true,
+            movement_cost: 2,
+        };
+        let weighted = movement_paths(&weighted_board, session.state(), "hero", 8);
+        let weighted_detour = weighted
+            .iter()
+            .find(|path| path.destination_cell_id == "cell-2-1")
+            .unwrap();
+        assert_eq!(
+            weighted_detour.cell_ids,
+            vec!["cell-0-2", "cell-1-2", "cell-2-2", "cell-2-1"]
+        );
+        assert_eq!(weighted_detour.movement_cost, 4);
+
+        let mut trapped_board = session.scenario().board.clone();
+        for cell_id in ["cell-0-0", "cell-0-2"] {
+            let cell = trapped_board
+                .cells
+                .iter_mut()
+                .find(|cell| cell.id == cell_id)
+                .unwrap();
+            cell.capabilities[0].value = crate::RpgCellCapabilityValue::Traversal {
+                passable: false,
+                movement_cost: 1,
+            };
+        }
+        assert!(movement_paths(&trapped_board, session.state(), "hero", 8).is_empty());
+
+        let mut default_traversal_board = session.scenario().board.clone();
+        default_traversal_board
+            .cells
+            .iter_mut()
+            .find(|cell| cell.id == "cell-0-0")
+            .unwrap()
+            .capabilities
+            .clear();
+        let default_paths = movement_paths(&default_traversal_board, session.state(), "hero", 1);
+        assert_eq!(default_paths[0].destination_cell_id, "cell-0-0");
+        assert_eq!(default_paths[0].movement_cost, 1);
+    }
+
+    #[test]
     fn accepted_movement_updates_position_log_and_turn_atomically() {
         let mut session = movement_session();
-        let outcome = session.submit(movement_command("cell-2-0", GridPosition { x: 2, y: 0 }));
+        let outcome = session.submit(movement_command("cell-2-1", GridPosition { x: 2, y: 1 }));
         let RpgCommandOutcome::Accepted(receipt) = outcome else {
             panic!("legal movement must commit: {outcome:?}");
         };
         assert_eq!(session.state().revision(), 1);
         assert_eq!(
             session.state().entity("hero").unwrap().position(),
-            GridPosition { x: 2, y: 0 }
+            GridPosition { x: 2, y: 1 }
         );
         assert_eq!(session.turn().current_actor_id, "guardian");
         assert!(matches!(
             receipt.events.as_slice(),
             [RpgDomainEvent::PositionChanged { current, .. }]
-                if *current == GridPosition { x: 2, y: 0 }
+                if *current == GridPosition { x: 2, y: 1 }
         ));
         let log = &session.encounter_view().log;
         assert_eq!(log.len(), 1);
