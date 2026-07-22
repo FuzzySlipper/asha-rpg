@@ -1185,6 +1185,26 @@ mod tests {
         );
         assert!(movement.options.participant_ids.is_empty());
 
+        for (cell_id, position) in [
+            ("cell-2-0", GridPosition { x: 2, y: 0 }),
+            ("cell-0-1", GridPosition { x: 0, y: 1 }),
+        ] {
+            let mut committable_session = movement_session();
+            let outcome = committable_session.submit(movement_command(cell_id, position));
+            let RpgCommandOutcome::Accepted(receipt) = outcome else {
+                panic!("projected destination {cell_id} must commit: {outcome:?}");
+            };
+            assert_eq!(receipt.random_consumed, 0);
+            assert_eq!(
+                committable_session
+                    .state()
+                    .entity("hero")
+                    .unwrap()
+                    .position(),
+                position
+            );
+        }
+
         for (cell_id, position, code) in [
             (
                 "cell-2-0",

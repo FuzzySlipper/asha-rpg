@@ -138,11 +138,12 @@ function validateAction(action, path, diagnostics) {
     if (action.targets.kind === 'cell' && action.check.kind !== 'noRoll') {
         diagnostics.push(diagnostic('normalization.cellCheckInvalid', `${path}.check`, 'cell-target actions require a no-roll check', action.sourcePath));
     }
-    const moveToCellCount = countOperations(action.program, 'moveToCell');
-    if (action.targets.kind === 'cell' && moveToCellCount !== 1) {
-        diagnostics.push(diagnostic('normalization.cellMovementRequired', `${path}.program`, 'a cell-target action requires exactly one moveToCell operation', action.sourcePath));
+    if (action.targets.kind === 'cell' &&
+        !isSelectedDestinationMovementProgram(action.program)) {
+        diagnostics.push(diagnostic('normalization.cellProgramInvalid', `${path}.program`, 'a cell-target action requires an unconditional no-roll branch containing only one moveToCell operation', action.sourcePath));
     }
-    if (action.targets.kind !== 'cell' && moveToCellCount > 0) {
+    if (action.targets.kind !== 'cell' &&
+        countOperations(action.program, 'moveToCell') > 0) {
         diagnostics.push(diagnostic('normalization.moveToCellTargetInvalid', `${path}.program`, 'moveToCell requires a cell-target action', action.sourcePath));
     }
     for (const [index, cost] of action.costs.entries()) {
@@ -151,6 +152,19 @@ function validateAction(action, path, diagnostics) {
         }
     }
     validateProgram(action.program, `${path}.program`, 1, action.check.kind, diagnostics, action.sourcePath);
+}
+function isSelectedDestinationMovementProgram(program) {
+    if (program.kind !== 'onCheck')
+        return false;
+    if (program.hit !== undefined ||
+        program.miss !== undefined ||
+        program.saved !== undefined ||
+        program.failed !== undefined ||
+        program.noRoll === undefined) {
+        return false;
+    }
+    return (program.noRoll.kind === 'operation' &&
+        program.noRoll.operation.kind === 'moveToCell');
 }
 function countOperations(program, kind) {
     switch (program.kind) {

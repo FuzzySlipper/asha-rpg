@@ -138,7 +138,7 @@ fn movement_uses_the_position_owner_and_emits_a_replayable_event() {
 }
 
 #[test]
-fn cell_target_actions_require_exactly_one_selected_destination_move() {
+fn cell_target_actions_require_the_selected_destination_program_shape() {
     let failure = compile_normalized_rpg_json(invalid_cell_target_source().as_bytes())
         .expect_err("invalid cell action shapes must fail");
     let codes = failure
@@ -146,8 +146,31 @@ fn cell_target_actions_require_exactly_one_selected_destination_move() {
         .iter()
         .map(|diagnostic| diagnostic.code.as_str())
         .collect::<std::collections::BTreeSet<_>>();
-    assert!(codes.contains("RPG_IR_CELL_MOVEMENT_REQUIRED"));
+    assert!(codes.contains("RPG_IR_CELL_PROGRAM_INVALID"));
     assert!(codes.contains("RPG_IR_MOVE_TO_CELL_TARGET_INVALID"));
+}
+
+#[test]
+fn cell_target_program_rejects_repeat_conditional_and_random_composition() {
+    let failure = compile_normalized_rpg_json(invalid_cell_program_source().as_bytes())
+        .expect_err("unsupported cell program composition must fail");
+    let shape_diagnostics = failure
+        .diagnostics
+        .iter()
+        .filter(|diagnostic| diagnostic.code == "RPG_IR_CELL_PROGRAM_INVALID")
+        .collect::<Vec<_>>();
+    assert_eq!(shape_diagnostics.len(), 3);
+    assert_eq!(
+        shape_diagnostics
+            .iter()
+            .map(|diagnostic| diagnostic.path.as_str())
+            .collect::<Vec<_>>(),
+        vec![
+            "$.actions[0].program",
+            "$.actions[1].program",
+            "$.actions[2].program",
+        ]
+    );
 }
 
 #[test]
@@ -533,6 +556,50 @@ fn invalid_cell_target_source() -> String {
           "program":{"kind":"atomic","body":{"kind":"onCheck","noRoll":
             {"kind":"operation","operation":{"kind":"moveToCell","maximumDistance":2,"provokes":true}}
           }}
+        }
+      ]
+    }"#
+    .to_owned()
+}
+
+fn invalid_cell_program_source() -> String {
+    r#"{
+      "schema":{"identity":"asha.rpg.ir","major":1},
+      "package":{"id":"consumer.package","version":"1.0.0"},
+      "catalogs":{"capabilities":["capability.position","capability.random","capability.vitality"]},
+      "requirements":[
+        {"kind":"operation","id":"operation.heal","version":1},
+        {"kind":"operation","id":"operation.moveToCell","version":1},
+        {"kind":"capability","id":"capability.position","version":1},
+        {"kind":"capability","id":"capability.random","version":1},
+        {"kind":"capability","id":"capability.vitality","version":1}
+      ],
+      "actions":[
+        {
+          "id":"action.repeated-cell-move","name":"Repeated move","sourcePath":"actions/repeated-move",
+          "targets":{"kind":"cell","team":"any","maximumRange":2,"maximumTargets":1},
+          "check":{"kind":"noRoll"},"rollScope":"none","costs":[],
+          "program":{"kind":"atomic","body":{"kind":"onCheck","noRoll":{
+            "kind":"repeat","count":2,"body":{"kind":"operation","operation":{"kind":"moveToCell","maximumDistance":2,"provokes":true}}
+          }}}
+        },
+        {
+          "id":"action.conditional-cell-move","name":"Conditional move","sourcePath":"actions/conditional-move",
+          "targets":{"kind":"cell","team":"any","maximumRange":2,"maximumTargets":1},
+          "check":{"kind":"noRoll"},"rollScope":"none","costs":[],
+          "program":{"kind":"atomic","body":{"kind":"onCheck","noRoll":{
+            "kind":"when","predicate":{"kind":"not","predicate":{"kind":"always"}},
+            "then":{"kind":"operation","operation":{"kind":"moveToCell","maximumDistance":2,"provokes":true}}
+          }}}
+        },
+        {
+          "id":"action.random-composed-cell-move","name":"Random composed move","sourcePath":"actions/random-move",
+          "targets":{"kind":"cell","team":"any","maximumRange":2,"maximumTargets":1},
+          "check":{"kind":"noRoll"},"rollScope":"none","costs":[],
+          "program":{"kind":"atomic","body":{"kind":"onCheck","noRoll":{"kind":"sequence","steps":[
+            {"kind":"operation","operation":{"kind":"moveToCell","maximumDistance":2,"provokes":true}},
+            {"kind":"operation","operation":{"kind":"heal","amount":{"kind":"dice","count":1,"sides":4,"bonus":0}}}
+          ]}}}
         }
       ]
     }"#

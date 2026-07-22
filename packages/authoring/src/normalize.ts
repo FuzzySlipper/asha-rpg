@@ -231,18 +231,23 @@ function validateAction(
       ),
     );
   }
-  const moveToCellCount = countOperations(action.program, 'moveToCell');
-  if (action.targets.kind === 'cell' && moveToCellCount !== 1) {
+  if (
+    action.targets.kind === 'cell' &&
+    !isSelectedDestinationMovementProgram(action.program)
+  ) {
     diagnostics.push(
       diagnostic(
-        'normalization.cellMovementRequired',
+        'normalization.cellProgramInvalid',
         `${path}.program`,
-        'a cell-target action requires exactly one moveToCell operation',
+        'a cell-target action requires an unconditional no-roll branch containing only one moveToCell operation',
         action.sourcePath,
       ),
     );
   }
-  if (action.targets.kind !== 'cell' && moveToCellCount > 0) {
+  if (
+    action.targets.kind !== 'cell' &&
+    countOperations(action.program, 'moveToCell') > 0
+  ) {
     diagnostics.push(
       diagnostic(
         'normalization.moveToCellTargetInvalid',
@@ -271,6 +276,25 @@ function validateAction(
     action.check.kind,
     diagnostics,
     action.sourcePath,
+  );
+}
+
+function isSelectedDestinationMovementProgram(
+  program: AuthoringProgram,
+): boolean {
+  if (program.kind !== 'onCheck') return false;
+  if (
+    program.hit !== undefined ||
+    program.miss !== undefined ||
+    program.saved !== undefined ||
+    program.failed !== undefined ||
+    program.noRoll === undefined
+  ) {
+    return false;
+  }
+  return (
+    program.noRoll.kind === 'operation' &&
+    program.noRoll.operation.kind === 'moveToCell'
   );
 }
 

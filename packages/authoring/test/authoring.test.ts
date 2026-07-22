@@ -7,14 +7,21 @@ import { join } from 'node:path';
 import {
   action,
   actionId,
+  always,
   canonicalRpgJson,
   cells,
   definePackage,
+  dice,
+  heal,
   moveToCell,
   noRoll,
+  not,
   normalizePackage,
   onCheck,
+  repeat,
+  sequence,
   targets,
+  when,
 } from '@asha-rpg/authoring';
 import {
   bindingStrike,
@@ -163,7 +170,7 @@ test('check-specific branch mistakes receive a local structural diagnostic', () 
   );
 });
 
-test('cell movement shape is normalized only for one selected-destination operation', () => {
+test('cell movement shape is one unconditional evidence-free destination operation', () => {
   const movement = action({
     id: actionId('example.move'),
     name: 'Move',
@@ -209,10 +216,64 @@ test('cell movement shape is normalized only for one selected-destination operat
   assert.deepEqual(
     invalid.diagnostics.map((diagnostic) => diagnostic.code),
     [
-      'normalization.cellMovementRequired',
+      'normalization.cellProgramInvalid',
       'normalization.checkBranchIncompatible',
       'normalization.moveToCellTargetInvalid',
       'normalization.duplicateActionId',
+    ],
+  );
+
+  const repeated = {
+    ...movement,
+    id: actionId('example.move.repeated'),
+    program: onCheck({
+      noRoll: repeat(
+        2,
+        moveToCell({ maximumDistance: 6, provokes: true }),
+      ),
+    }),
+  };
+  const conditional = {
+    ...movement,
+    id: actionId('example.move.conditional'),
+    program: onCheck({
+      noRoll: when(
+        not(always()),
+        moveToCell({ maximumDistance: 6, provokes: true }),
+      ),
+    }),
+  };
+  const randomComposed = {
+    ...movement,
+    id: actionId('example.move.random-composed'),
+    program: onCheck({
+      noRoll: sequence(
+        moveToCell({ maximumDistance: 6, provokes: true }),
+        heal({ amount: dice({ count: 1, sides: 4 }) }),
+      ),
+    }),
+  };
+  const unsupportedShapes = normalizePackage(
+    definePackage({
+      id: 'unsupported.movement-shapes.package',
+      version: '1.0.0',
+      sources: [
+        {
+          kind: 'actions',
+          id: 'unsupported-movement-shapes',
+          actions: [repeated, conditional, randomComposed],
+        },
+      ],
+    }),
+  );
+  assert.equal(unsupportedShapes.ok, false);
+  if (unsupportedShapes.ok) return;
+  assert.deepEqual(
+    unsupportedShapes.diagnostics.map((diagnostic) => diagnostic.code),
+    [
+      'normalization.cellProgramInvalid',
+      'normalization.cellProgramInvalid',
+      'normalization.cellProgramInvalid',
     ],
   );
 });

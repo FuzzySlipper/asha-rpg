@@ -33,8 +33,32 @@ struct ProgramValidationState {
     expanded_node_count: u64,
     action_target_maximum: u32,
     action_target_kind: RpgIrTargetKind,
-    move_to_cell_count: u32,
     check_kind: CheckKind,
+}
+
+fn is_selected_destination_movement_program(program: &RpgIrProgram) -> bool {
+    let RpgIrProgram::Atomic { body } = program else {
+        return false;
+    };
+    let RpgIrProgram::OnCheck {
+        hit,
+        miss,
+        saved,
+        failed,
+        no_roll,
+    } = body.as_ref()
+    else {
+        return false;
+    };
+    if hit.is_some() || miss.is_some() || saved.is_some() || failed.is_some() {
+        return false;
+    }
+    matches!(
+        no_roll.as_deref(),
+        Some(RpgIrProgram::Operation {
+            operation: RpgIrOperation::MoveToCell { .. }
+        })
+    )
 }
 
 #[derive(Debug, Clone, Copy)]
@@ -742,7 +766,6 @@ impl<'a> Validator<'a> {
                 expanded_node_count: 0,
                 action_target_maximum: action.targets.maximum_targets,
                 action_target_kind: action.targets.kind,
-                move_to_cell_count: 0,
                 check_kind: match &action.check {
                     RpgIrCheck::NoRoll => CheckKind::NoRoll,
                     RpgIrCheck::Attack { .. } => CheckKind::Attack,
@@ -757,13 +780,14 @@ impl<'a> Validator<'a> {
                 false,
                 &mut program_state,
             );
-            if action.targets.kind == RpgIrTargetKind::Cell && program_state.move_to_cell_count != 1
+            if action.targets.kind == RpgIrTargetKind::Cell
+                && !is_selected_destination_movement_program(&action.program)
             {
                 self.error(
                     RpgDiagnosticStage::Semantics,
-                    "RPG_IR_CELL_MOVEMENT_REQUIRED",
+                    "RPG_IR_CELL_PROGRAM_INVALID",
                     format!("{path}.program"),
-                    "a cell-target action requires exactly one moveToCell operation",
+                    "a cell-target action requires an unconditional no-roll branch containing only one moveToCell operation",
                 );
             }
             if !matches!(action.program, RpgIrProgram::Atomic { .. }) {
@@ -1129,7 +1153,6 @@ impl<'a> Validator<'a> {
                 maximum_distance,
                 provokes: _,
             } => {
-                state.move_to_cell_count = state.move_to_cell_count.saturating_add(1);
                 if state.action_target_kind != RpgIrTargetKind::Cell {
                     self.error(
                         RpgDiagnosticStage::Semantics,

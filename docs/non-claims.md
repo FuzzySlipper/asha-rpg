@@ -22,10 +22,12 @@ implementation claim.
 
 Scenario is setup-only data, not a gameplay runner, campaign save, AI plan, or
 product protocol. Version 1 claims entity target candidates and one
-artifact-authored cell-target shape for selected-destination movement. Rust
-binds those cell ids to board positions and enforces range, board bounds,
-unique occupancy, and impassable destinations. Area options and general
-cell-target semantics remain non-claims.
+artifact-authored cell-target shape for selected-destination movement: an
+unconditional no-roll branch containing only one `moveToCell` operation. This
+evidence-free shape makes every projected destination directly committable.
+Rust binds those cell ids to board positions and enforces range, board bounds,
+unique occupancy, and impassable destinations. Conditional, repeated,
+random-composed, area, and general cell-target semantics remain non-claims.
 
 The TypeScript packages do not provide semantic preview, target evaluation,
 dice execution, predicate evaluation, state access, effect execution, or a
