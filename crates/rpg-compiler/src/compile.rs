@@ -4,7 +4,7 @@ use rpg_core::{RpgRandomRequest, RpgRandomRequestKind, MAXIMUM_RPG_MODIFIER_TURN
 use rpg_ir::{
     NormalizedRpgIr, RpgIrAction, RpgIrCheck, RpgIrFormula, RpgIrOperation, RpgIrPredicate,
     RpgIrProgram, RpgIrRequirementKind, RpgIrResourceCost, RpgIrRollScope, RpgIrSubject,
-    RpgIrTargetSelector, RPG_IR_IDENTITY, RPG_IR_MAJOR,
+    RpgIrTargetKind, RpgIrTargetSelector, RpgIrTeamConstraint, RPG_IR_IDENTITY, RPG_IR_MAJOR,
 };
 
 use crate::diagnostic::{RpgCompileFailure, RpgDiagnostic, RpgDiagnosticStage};
@@ -32,6 +32,8 @@ struct ProgramValidationState {
     node_count: usize,
     expanded_node_count: u64,
     action_target_maximum: u32,
+    action_target_kind: RpgIrTargetKind,
+    move_to_cell_count: u32,
     check_kind: CheckKind,
 }
 
@@ -283,6 +285,7 @@ fn collect_program_random_plan(
                 collect_formula_random_plan(delta_x, &format!("{path}.deltaX"), conditions, plan);
                 collect_formula_random_plan(delta_y, &format!("{path}.deltaY"), conditions, plan);
             }
+            RpgIrOperation::MoveToCell { .. } => {}
             RpgIrOperation::OpenReaction { .. } => {}
         },
         RpgIrProgram::Sequence { steps } => {
@@ -695,6 +698,26 @@ impl<'a> Validator<'a> {
                     format!("target maximum must be between 1 and {MAX_TARGET_COUNT}"),
                 );
             }
+            if action.targets.kind == RpgIrTargetKind::Cell {
+                if action.targets.team != RpgIrTeamConstraint::Any
+                    || action.targets.maximum_targets != 1
+                {
+                    self.error(
+                        RpgDiagnosticStage::Semantics,
+                        "RPG_IR_CELL_TARGET_INVALID",
+                        format!("{path}.targets"),
+                        "cell targets require team any and exactly one destination",
+                    );
+                }
+                if !matches!(action.check, RpgIrCheck::NoRoll) {
+                    self.error(
+                        RpgDiagnosticStage::Semantics,
+                        "RPG_IR_CELL_CHECK_INVALID",
+                        format!("{path}.check"),
+                        "cell-target actions require a no-roll check",
+                    );
+                }
+            }
             self.validate_check(action, &path);
             for (cost_index, cost) in action.costs.iter().enumerate() {
                 let cost_path = format!("{path}.costs[{cost_index}]");
@@ -718,6 +741,8 @@ impl<'a> Validator<'a> {
                 node_count: 0,
                 expanded_node_count: 0,
                 action_target_maximum: action.targets.maximum_targets,
+                action_target_kind: action.targets.kind,
+                move_to_cell_count: 0,
                 check_kind: match &action.check {
                     RpgIrCheck::NoRoll => CheckKind::NoRoll,
                     RpgIrCheck::Attack { .. } => CheckKind::Attack,
@@ -732,6 +757,15 @@ impl<'a> Validator<'a> {
                 false,
                 &mut program_state,
             );
+            if action.targets.kind == RpgIrTargetKind::Cell && program_state.move_to_cell_count != 1
+            {
+                self.error(
+                    RpgDiagnosticStage::Semantics,
+                    "RPG_IR_CELL_MOVEMENT_REQUIRED",
+                    format!("{path}.program"),
+                    "a cell-target action requires exactly one moveToCell operation",
+                );
+            }
             if !matches!(action.program, RpgIrProgram::Atomic { .. }) {
                 self.error(
                     RpgDiagnosticStage::Semantics,
@@ -827,7 +861,7 @@ impl<'a> Validator<'a> {
 
         match program {
             RpgIrProgram::Operation { operation } => {
-                self.validate_operation(operation, path, target_bound, state.action_target_maximum);
+                self.validate_operation(operation, path, target_bound, state);
             }
             RpgIrProgram::Sequence { steps } => {
                 if steps.is_empty() {
@@ -995,8 +1029,9 @@ impl<'a> Validator<'a> {
         operation: &RpgIrOperation,
         path: &str,
         target_bound: bool,
-        action_target_maximum: u32,
+        state: &mut ProgramValidationState,
     ) {
+        let action_target_maximum = state.action_target_maximum;
         let has_target_binding = target_bound || action_target_maximum == 1;
         let id = operation.registration_id();
         if !self.operation_ids.contains(id) {
@@ -1089,6 +1124,28 @@ impl<'a> Validator<'a> {
                 }
                 self.validate_formula_at(delta_x, &format!("{path}.deltaX"), has_target_binding);
                 self.validate_formula_at(delta_y, &format!("{path}.deltaY"), has_target_binding);
+            }
+            RpgIrOperation::MoveToCell {
+                maximum_distance,
+                provokes: _,
+            } => {
+                state.move_to_cell_count = state.move_to_cell_count.saturating_add(1);
+                if state.action_target_kind != RpgIrTargetKind::Cell {
+                    self.error(
+                        RpgDiagnosticStage::Semantics,
+                        "RPG_IR_MOVE_TO_CELL_TARGET_INVALID",
+                        path,
+                        "moveToCell requires a cell-target action",
+                    );
+                }
+                if *maximum_distance == 0 || *maximum_distance > 64 {
+                    self.error(
+                        RpgDiagnosticStage::Semantics,
+                        "RPG_IR_MOVEMENT_BOUND_INVALID",
+                        format!("{path}.maximumDistance"),
+                        "movement maximum distance must be between 1 and 64",
+                    );
+                }
             }
             RpgIrOperation::OpenReaction {
                 reaction_id,

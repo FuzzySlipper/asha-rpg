@@ -2336,6 +2336,7 @@ fn resolve_operation_catalogs(
                 diagnostics,
             );
         }
+        RpgIrOperation::MoveToCell { .. } => {}
         RpgIrOperation::OpenReaction { .. } => {}
     }
 }
@@ -2626,6 +2627,7 @@ fn collect_operation_catalogs(operation: &RpgIrOperation, catalogs: &mut Derived
             collect_formula_catalogs(delta_x, catalogs);
             collect_formula_catalogs(delta_y, catalogs);
         }
+        RpgIrOperation::MoveToCell { .. } => {}
         RpgIrOperation::OpenReaction { .. } => {}
     }
 }

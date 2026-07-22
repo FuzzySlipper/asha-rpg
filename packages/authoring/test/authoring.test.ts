@@ -5,9 +5,16 @@ import { fileURLToPath } from 'node:url';
 import { join } from 'node:path';
 
 import {
+  action,
+  actionId,
   canonicalRpgJson,
+  cells,
   definePackage,
+  moveToCell,
+  noRoll,
   normalizePackage,
+  onCheck,
+  targets,
 } from '@asha-rpg/authoring';
 import {
   bindingStrike,
@@ -153,6 +160,60 @@ test('check-specific branch mistakes receive a local structural diagnostic', () 
   assert.deepEqual(
     result.diagnostics.map((diagnostic) => diagnostic.code),
     ['normalization.checkBranchIncompatible'],
+  );
+});
+
+test('cell movement shape is normalized only for one selected-destination operation', () => {
+  const movement = action({
+    id: actionId('example.move'),
+    name: 'Move',
+    sourcePath: 'examples/actions/move',
+    targets: cells({ range: 6 }),
+    check: noRoll(),
+    program: onCheck({
+      noRoll: moveToCell({ maximumDistance: 6, provokes: true }),
+    }),
+  });
+  const valid = normalizePackage(
+    definePackage({
+      id: 'movement.package',
+      version: '1.0.0',
+      sources: [{ kind: 'actions', id: 'movement', actions: [movement] }],
+    }),
+  );
+  assert.equal(valid.ok, true);
+
+  const missingMovement = {
+    ...movement,
+    program: bindingStrike.program,
+  };
+  const participantMovement = {
+    ...movement,
+    targets: targets({ team: 'ally', maximumRange: 6 }),
+  };
+  const invalid = normalizePackage(
+    definePackage({
+      id: 'invalid.movement.package',
+      version: '1.0.0',
+      sources: [
+        {
+          kind: 'actions',
+          id: 'invalid-movement',
+          actions: [missingMovement, participantMovement],
+        },
+      ],
+    }),
+  );
+  assert.equal(invalid.ok, false);
+  if (invalid.ok) return;
+  assert.deepEqual(
+    invalid.diagnostics.map((diagnostic) => diagnostic.code),
+    [
+      'normalization.cellMovementRequired',
+      'normalization.checkBranchIncompatible',
+      'normalization.moveToCellTargetInvalid',
+      'normalization.duplicateActionId',
+    ],
   );
 });
 

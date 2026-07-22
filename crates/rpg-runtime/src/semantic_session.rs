@@ -2,20 +2,20 @@ use std::{collections::BTreeSet, fmt};
 
 use rpg_compiler::{CompiledPlayBundle, CompiledRpgRules};
 use rpg_core::{
-    DeterministicRandomStream, RpgCapabilityState, RpgIntent, RpgModifierTurnChange,
-    RpgRandomEvidence, RpgReactionDecision, RpgReactionRequest, RpgResolutionReceipt,
-    RpgResolutionRejection, RpgTraceStep,
+    DeterministicRandomStream, RpgCapabilityState, RpgIntent, RpgIntentCellTarget,
+    RpgModifierTurnChange, RpgRandomEvidence, RpgReactionDecision, RpgReactionRequest,
+    RpgResolutionReceipt, RpgResolutionRejection, RpgTraceStep,
 };
-use rpg_ir::CompiledPlayBundleArtifact;
+use rpg_ir::{CompiledPlayBundleArtifact, RpgIrTargetKind};
 use serde::{Deserialize, Serialize};
 
 use crate::encounter::{
     action_view, build_encounter, encounter_outcome, living_intent_rejection, participant_view,
-    random_failure, runtime_board_rejection, RpgActionProposal, RpgEncounterAuthority,
-    RpgEncounterOutcomeView, RpgEncounterView, RpgRandomSource, RpgRandomSourceFailure,
-    RpgReactionProposal, RpgScenario, RpgScenarioFailure, RpgSchemaIdentity, RpgTurnControl,
-    RpgTurnControlProposal, RpgTurnControlView, RPG_ENCOUNTER_VIEW_SCHEMA_ID,
-    RPG_ENCOUNTER_VIEW_SCHEMA_VERSION,
+    random_failure, runtime_board_rejection, RpgActionOptionsView, RpgActionProposal,
+    RpgEncounterAuthority, RpgEncounterOutcomeView, RpgEncounterView, RpgRandomSource,
+    RpgRandomSourceFailure, RpgReactionProposal, RpgScenario, RpgScenarioFailure,
+    RpgSchemaIdentity, RpgTurnControl, RpgTurnControlProposal, RpgTurnControlView,
+    RPG_ENCOUNTER_VIEW_SCHEMA_ID, RPG_ENCOUNTER_VIEW_SCHEMA_VERSION,
 };
 use crate::{RpgReplayEntry, RpgReplayFailure};
 
@@ -175,43 +175,113 @@ impl RpgAuthoritySession {
                     action_id: action.id.clone(),
                     actor_id: actor_id.to_owned(),
                     target_ids: Vec::new(),
+                    cell_targets: Vec::new(),
                 };
-                let actor_rejection = living_intent_rejection(&self.state, &actor_intent);
-                let candidates = self
+                let mut first_rejection = living_intent_rejection(&self.state, &actor_intent);
+                let target_kind = self
                     .rules
-                    .candidate_ids(&self.state, actor_id, &action.id)
-                    .unwrap_or_default()
-                    .into_iter();
-                let mut first_rejection = actor_rejection;
-                let legal_candidates = candidates
-                    .filter(|target_id| {
-                        let intent = RpgIntent {
-                            action_id: action.id.clone(),
-                            actor_id: actor_id.to_owned(),
-                            target_ids: vec![target_id.clone()],
-                        };
-                        if let Some(rejection) = living_intent_rejection(&self.state, &intent) {
-                            if first_rejection.is_none() {
-                                first_rejection = Some(rejection);
-                            }
-                            return false;
-                        }
-                        match self.rules.preflight(&self.state, &intent) {
-                            Ok(()) => true,
-                            Err(rejection) => {
-                                if first_rejection.is_none() {
-                                    first_rejection = Some(rejection);
+                    .target_kind(&action.id)
+                    .unwrap_or(RpgIrTargetKind::Participant);
+                let options = match target_kind {
+                    RpgIrTargetKind::Participant => {
+                        let legal_candidates = self
+                            .rules
+                            .candidate_ids(&self.state, actor_id, &action.id)
+                            .unwrap_or_default()
+                            .into_iter()
+                            .filter(|target_id| {
+                                let intent = RpgIntent {
+                                    action_id: action.id.clone(),
+                                    actor_id: actor_id.to_owned(),
+                                    target_ids: vec![target_id.clone()],
+                                    cell_targets: Vec::new(),
+                                };
+                                if let Some(rejection) =
+                                    living_intent_rejection(&self.state, &intent)
+                                {
+                                    if first_rejection.is_none() {
+                                        first_rejection = Some(rejection);
+                                    }
+                                    return false;
                                 }
-                                false
-                            }
+                                match self.rules.preflight(&self.state, &intent) {
+                                    Ok(()) => true,
+                                    Err(rejection) => {
+                                        if first_rejection.is_none() {
+                                            first_rejection = Some(rejection);
+                                        }
+                                        false
+                                    }
+                                }
+                            })
+                            .collect();
+                        RpgActionOptionsView {
+                            participant_ids: legal_candidates,
+                            cell_ids: Vec::new(),
+                            area_ids: Vec::new(),
                         }
+                    }
+                    RpgIrTargetKind::Cell => {
+                        let legal_cells = self
+                            .encounter
+                            .scenario
+                            .board
+                            .cells
+                            .iter()
+                            .filter(|cell| {
+                                let intent = cell_intent(&action.id, actor_id, cell);
+                                if let Err(rejection) = self.rules.preflight(&self.state, &intent) {
+                                    if first_rejection.is_none() {
+                                        first_rejection = Some(rejection);
+                                    }
+                                    return false;
+                                }
+                                let mut staged_state = self.state.clone();
+                                let mut random = DeterministicRandomStream::new(Vec::new());
+                                match self.rules.resolve(&mut staged_state, &mut random, &intent) {
+                                    Ok(_) => {
+                                        if let Some(rejection) = runtime_board_rejection(
+                                            &self.encounter.scenario.board,
+                                            &staged_state,
+                                        ) {
+                                            if first_rejection.is_none() {
+                                                first_rejection = Some(rejection);
+                                            }
+                                            false
+                                        } else {
+                                            true
+                                        }
+                                    }
+                                    Err(rejection) => {
+                                        if first_rejection.is_none() {
+                                            first_rejection = Some(rejection);
+                                        }
+                                        false
+                                    }
+                                }
+                            })
+                            .map(|cell| cell.id.clone())
+                            .collect();
+                        RpgActionOptionsView {
+                            participant_ids: Vec::new(),
+                            cell_ids: legal_cells,
+                            area_ids: Vec::new(),
+                        }
+                    }
+                };
+                let has_options = !options.participant_ids.is_empty()
+                    || !options.cell_ids.is_empty()
+                    || !options.area_ids.is_empty();
+                let unavailable = (!has_options).then(|| {
+                    first_rejection.unwrap_or_else(|| {
+                        rejection(
+                            "RPG_ACTION_NO_LEGAL_OPTIONS",
+                            "$.action.options",
+                            "the action has no legal authority options in the current state",
+                        )
                     })
-                    .collect::<Vec<_>>();
-                let unavailable = legal_candidates
-                    .is_empty()
-                    .then_some(first_rejection)
-                    .flatten();
-                action_view(action, legal_candidates, unavailable)
+                });
+                action_view(action, options, unavailable)
             })
             .collect();
         let participants = self
@@ -343,6 +413,9 @@ impl RpgAuthoritySession {
                     command.intent.actor_id, command.intent.action_id
                 ),
             ));
+        }
+        if let Some(rejection) = self.cell_binding_rejection(&command.intent) {
+            return RpgCommandOutcome::Rejected(rejection);
         }
 
         let mut staged_state = self.state.clone();
@@ -550,6 +623,7 @@ impl RpgAuthoritySession {
                     action_id: proposal.action_id.clone(),
                     actor_id: proposal.actor_id.clone(),
                     target_ids: proposal.target_ids.clone(),
+                    cell_targets: self.proposal_cell_targets(&proposal),
                 },
                 random_values: random_values.clone(),
             };
@@ -608,6 +682,78 @@ impl RpgAuthoritySession {
             actor_id: proposal.actor_id,
             control: proposal.control,
         })
+    }
+
+    fn proposal_cell_targets(&self, proposal: &RpgActionProposal) -> Vec<RpgIntentCellTarget> {
+        if self.rules.target_kind(&proposal.action_id) != Ok(RpgIrTargetKind::Cell) {
+            return Vec::new();
+        }
+        proposal
+            .target_ids
+            .iter()
+            .filter_map(|target_id| {
+                self.encounter
+                    .scenario
+                    .board
+                    .cells
+                    .iter()
+                    .find(|cell| cell.id == *target_id)
+                    .map(|cell| RpgIntentCellTarget {
+                        id: cell.id.clone(),
+                        position: cell.position,
+                    })
+            })
+            .collect()
+    }
+
+    fn cell_binding_rejection(&self, intent: &RpgIntent) -> Option<RpgResolutionRejection> {
+        let Ok(target_kind) = self.rules.target_kind(&intent.action_id) else {
+            return None;
+        };
+        if target_kind != RpgIrTargetKind::Cell {
+            return (!intent.cell_targets.is_empty()).then(|| {
+                rejection(
+                    "RPG_INTENT_CELL_BINDING_UNEXPECTED",
+                    "$.command.intent.cellTargets",
+                    "participant-target actions cannot include cell bindings",
+                )
+            });
+        }
+        for (index, target_id) in intent.target_ids.iter().enumerate() {
+            let Some(cell) = self
+                .encounter
+                .scenario
+                .board
+                .cells
+                .iter()
+                .find(|cell| cell.id == *target_id)
+            else {
+                return Some(rejection(
+                    "RPG_INTENT_CELL_UNKNOWN",
+                    format!("$.command.intent.targetIds[{index}]"),
+                    format!("unknown encounter cell {target_id}"),
+                ));
+            };
+            let Some(binding) = intent
+                .cell_targets
+                .iter()
+                .find(|binding| binding.id == *target_id)
+            else {
+                return Some(rejection(
+                    "RPG_INTENT_CELL_BINDING_MISSING",
+                    format!("$.command.intent.cellTargets[{index}]"),
+                    format!("selected cell {target_id} has no position binding"),
+                ));
+            };
+            if binding.position != cell.position {
+                return Some(rejection(
+                    "RPG_INTENT_CELL_BINDING_MISMATCH",
+                    format!("$.command.intent.cellTargets[{index}].position"),
+                    format!("selected cell {target_id} does not match the encounter board"),
+                ));
+            }
+        }
+        None
     }
 
     fn require_random_source(
@@ -700,6 +846,18 @@ impl RpgAuthoritySession {
                 log: Vec::new(),
             },
         }
+    }
+}
+
+fn cell_intent(action_id: &str, actor_id: &str, cell: &crate::RpgCellSetup) -> RpgIntent {
+    RpgIntent {
+        action_id: action_id.to_owned(),
+        actor_id: actor_id.to_owned(),
+        target_ids: vec![cell.id.clone()],
+        cell_targets: vec![RpgIntentCellTarget {
+            id: cell.id.clone(),
+            position: cell.position,
+        }],
     }
 }
 
@@ -885,6 +1043,83 @@ mod tests {
         compile_normalized_rpg_json(source).expect("reaction rules compiles")
     }
 
+    fn movement_ruleset() -> CompiledRpgRules {
+        let source = br#"{
+          "schema":{"identity":"asha.rpg.ir","major":1},
+          "package":{"id":"movement.test","version":"1.0.0"},
+          "catalogs":{"capabilities":["capability.position","capability.vitality"]},
+          "requirements":[
+            {"kind":"operation","id":"operation.moveToCell","version":1},
+            {"kind":"capability","id":"capability.position","version":1},
+            {"kind":"capability","id":"capability.vitality","version":1}
+          ],
+          "actions":[{
+            "id":"action.move","name":"Move","sourcePath":"actions/move",
+            "targets":{"kind":"cell","team":"any","maximumRange":2,"maximumTargets":1},
+            "check":{"kind":"noRoll"},"rollScope":"none","costs":[],
+            "program":{"kind":"atomic","body":{"kind":"onCheck","noRoll":{
+              "kind":"operation","operation":{"kind":"moveToCell","maximumDistance":2,"provokes":true}
+            }}}
+          }]
+        }"#;
+        compile_normalized_rpg_json(source).expect("movement rules compile")
+    }
+
+    fn movement_session() -> RpgAuthoritySession {
+        let actor = RpgEntityState::new("hero", Team::ally(), GridPosition { x: 0, y: 0 }, 20);
+        let target =
+            RpgEntityState::new("guardian", Team::enemy(), GridPosition { x: 1, y: 0 }, 20);
+        let mut state = RpgCapabilityState::default();
+        state.insert_entity(actor);
+        state.insert_entity(target);
+        let mut session = RpgAuthoritySession::for_test(movement_ruleset(), state);
+        session.encounter.scenario.board = crate::RpgBoardSetup {
+            width: 4,
+            height: 2,
+            cells: vec![
+                movement_cell("cell-0-0", 0, 0, true),
+                movement_cell("cell-1-0", 1, 0, true),
+                movement_cell("cell-2-0", 2, 0, true),
+                movement_cell("cell-3-0", 3, 0, true),
+                movement_cell("cell-0-1", 0, 1, true),
+                movement_cell("cell-1-1", 1, 1, false),
+            ],
+        };
+        session
+    }
+
+    fn movement_cell(id: &str, x: u32, y: u32, passable: bool) -> crate::RpgCellSetup {
+        crate::RpgCellSetup {
+            id: id.to_owned(),
+            position: GridPosition { x, y },
+            capabilities: vec![crate::RpgCellCapabilitySetup {
+                id: "capability.traversal".to_owned(),
+                version: 1,
+                definition_id: None,
+                value: crate::RpgCellCapabilityValue::Traversal {
+                    passable,
+                    movement_cost: 1,
+                },
+            }],
+        }
+    }
+
+    fn movement_command(cell_id: &str, position: GridPosition) -> RpgAuthorityCommand {
+        RpgAuthorityCommand {
+            expected_revision: 0,
+            intent: RpgIntent {
+                action_id: "action.move".to_owned(),
+                actor_id: "hero".to_owned(),
+                target_ids: vec![cell_id.to_owned()],
+                cell_targets: vec![RpgIntentCellTarget {
+                    id: cell_id.to_owned(),
+                    position,
+                }],
+            },
+            random_values: Vec::new(),
+        }
+    }
+
     fn reaction_session() -> RpgAuthoritySession {
         let rules = reaction_ruleset();
         let actor = RpgEntityState::new("hero", Team::ally(), GridPosition { x: 0, y: 0 }, 20)
@@ -928,9 +1163,91 @@ mod tests {
                 action_id: "action.reactive".to_owned(),
                 actor_id: "hero".to_owned(),
                 target_ids: vec!["guardian".to_owned()],
+                cell_targets: Vec::new(),
             },
             random_values: Vec::new(),
         }
+    }
+
+    #[test]
+    fn movement_projects_only_committable_cells_and_rejects_forged_board_bindings() {
+        let session = movement_session();
+        let view = session.encounter_view();
+        let movement = view
+            .actions
+            .iter()
+            .find(|action| action.definition_id == "action.move")
+            .expect("movement action is projected");
+        assert!(movement.available);
+        assert_eq!(
+            movement.options.cell_ids,
+            vec!["cell-2-0".to_owned(), "cell-0-1".to_owned()]
+        );
+        assert!(movement.options.participant_ids.is_empty());
+
+        for (cell_id, position, code) in [
+            (
+                "cell-2-0",
+                GridPosition { x: 3, y: 0 },
+                "RPG_INTENT_CELL_BINDING_MISMATCH",
+            ),
+            (
+                "missing",
+                GridPosition { x: 2, y: 0 },
+                "RPG_INTENT_CELL_UNKNOWN",
+            ),
+            (
+                "cell-1-0",
+                GridPosition { x: 1, y: 0 },
+                "RPG_BOARD_POSITION_OCCUPIED",
+            ),
+            (
+                "cell-1-1",
+                GridPosition { x: 1, y: 1 },
+                "RPG_BOARD_POSITION_BLOCKED",
+            ),
+            (
+                "cell-3-0",
+                GridPosition { x: 3, y: 0 },
+                "RPG_INTENT_TARGET_OUT_OF_RANGE",
+            ),
+        ] {
+            let mut rejected_session = movement_session();
+            let RpgCommandOutcome::Rejected(rejected) =
+                rejected_session.submit(movement_command(cell_id, position))
+            else {
+                panic!("{cell_id} must be rejected");
+            };
+            assert_eq!(rejected.code, code);
+            assert_eq!(rejected_session.state().revision(), 0);
+            assert_eq!(
+                rejected_session.state().entity("hero").unwrap().position(),
+                GridPosition { x: 0, y: 0 }
+            );
+        }
+    }
+
+    #[test]
+    fn accepted_movement_updates_position_log_and_turn_atomically() {
+        let mut session = movement_session();
+        let outcome = session.submit(movement_command("cell-2-0", GridPosition { x: 2, y: 0 }));
+        let RpgCommandOutcome::Accepted(receipt) = outcome else {
+            panic!("legal movement must commit: {outcome:?}");
+        };
+        assert_eq!(session.state().revision(), 1);
+        assert_eq!(
+            session.state().entity("hero").unwrap().position(),
+            GridPosition { x: 2, y: 0 }
+        );
+        assert_eq!(session.turn().current_actor_id, "guardian");
+        assert!(matches!(
+            receipt.events.as_slice(),
+            [RpgDomainEvent::PositionChanged { current, .. }]
+                if *current == GridPosition { x: 2, y: 0 }
+        ));
+        let log = &session.encounter_view().log;
+        assert_eq!(log.len(), 1);
+        assert_eq!(log[0].action_id, "action.move");
     }
 
     #[test]

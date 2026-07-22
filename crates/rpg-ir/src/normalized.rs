@@ -79,9 +79,24 @@ pub enum RpgIrTeamConstraint {
     Any,
 }
 
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub enum RpgIrTargetKind {
+    Participant,
+    Cell,
+}
+
+impl Default for RpgIrTargetKind {
+    fn default() -> Self {
+        Self::Participant
+    }
+}
+
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase", deny_unknown_fields)]
 pub struct RpgIrTargetSelector {
+    #[serde(default)]
+    pub kind: RpgIrTargetKind,
     pub team: RpgIrTeamConstraint,
     pub maximum_range: u32,
     pub maximum_targets: u32,
@@ -241,6 +256,10 @@ pub enum RpgIrOperation {
         maximum_distance: u32,
         provokes: bool,
     },
+    MoveToCell {
+        maximum_distance: u32,
+        provokes: bool,
+    },
     OpenReaction {
         reaction_id: String,
         options: Vec<RpgIrReactionOption>,
@@ -255,6 +274,7 @@ impl RpgIrOperation {
             Self::ChangeResource { .. } => "operation.changeResource",
             Self::ApplyModifier { .. } => "operation.applyModifier",
             Self::Move { .. } => "operation.move",
+            Self::MoveToCell { .. } => "operation.moveToCell",
             Self::OpenReaction { .. } => "operation.openReaction",
         }
     }

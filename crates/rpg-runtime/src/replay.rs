@@ -1259,7 +1259,7 @@ mod tests {
     use rpg_compiler::{
         compile_prepared_play_bundle, materialized_definition_fingerprint, CompiledPlayBundle,
     };
-    use rpg_core::{GridPosition, RpgDomainEvent, RpgIntent, Team};
+    use rpg_core::{GridPosition, RpgDomainEvent, RpgIntent, RpgIntentCellTarget, Team};
     use rpg_ir::{
         ContentDefinitionProvenance, ContentExtensionPolicy, ContentPackDependencyLockEntry,
         ContentPackDependencyRelationship, ContentPackRequirements, ContentRelationshipKind,
@@ -1336,6 +1336,48 @@ mod tests {
             .any(|event| matches!(event, RpgDomainEvent::DamageApplied { amount: 1, .. })));
         assert_eq!(reaction_entry.after.revision, 1);
         assert_eq!(reaction_entry.after.phase, RpgReplayPhase::Ready);
+    }
+
+    #[test]
+    fn selected_cell_movement_replays_with_the_exact_board_binding() {
+        let mut recorded = artifact_session();
+        let initial = recorded.checkpoint().expect("initial checkpoint");
+        let movement = RpgAuthorityCommand {
+            expected_revision: 0,
+            intent: RpgIntent {
+                action_id: "action.move".to_owned(),
+                actor_id: "hero".to_owned(),
+                target_ids: vec!["cell-2-0".to_owned()],
+                cell_targets: vec![RpgIntentCellTarget {
+                    id: "cell-2-0".to_owned(),
+                    position: GridPosition { x: 2, y: 0 },
+                }],
+            },
+            random_values: Vec::new(),
+        };
+        let (outcome, entry) = recorded
+            .submit_recorded(movement)
+            .expect("movement records");
+        assert!(matches!(outcome, RpgCommandOutcome::Accepted(_)));
+        assert_eq!(
+            recorded.state().entity("hero").unwrap().position(),
+            GridPosition { x: 2, y: 0 }
+        );
+
+        let replayed = RpgAuthoritySession::replay(initial.clone(), std::slice::from_ref(&entry))
+            .expect("movement replay matches");
+        assert_eq!(
+            replayed.state_hash().unwrap(),
+            recorded.state_hash().unwrap()
+        );
+
+        let mut tampered = entry;
+        let RpgReplayOperation::Submit { command } = &mut tampered.operation else {
+            panic!("movement submit expected");
+        };
+        command.intent.cell_targets[0].position = GridPosition { x: 3, y: 0 };
+        let failure = RpgAuthoritySession::replay(initial, &[tampered]).unwrap_err();
+        assert_eq!(failure.diagnostics[0].code, "RPG_REPLAY_PHASE_MISMATCH");
     }
 
     #[test]
@@ -1555,7 +1597,7 @@ mod tests {
         let second = RpgAuthoritySession::from_scenario(bundle, second_setup).unwrap();
         assert_eq!(first.encounter_view().participants.len(), 2);
         assert_eq!(second.encounter_view().participants.len(), 3);
-        assert_eq!(second.encounter_view().board.cells.len(), 1);
+        assert_eq!(second.encounter_view().board.cells.len(), 4);
         assert_eq!(
             first.artifact().unwrap().artifact_id,
             second.artifact().unwrap().artifact_id
@@ -1578,6 +1620,7 @@ mod tests {
                     action_id: "action.reactive".to_owned(),
                     actor_id: "guardian".to_owned(),
                     target_ids: vec!["hero".to_owned()],
+                    cell_targets: Vec::new(),
                 },
                 random_values: vec![12],
             }),
@@ -1646,6 +1689,7 @@ mod tests {
                 action_id: "action.reactive".to_owned(),
                 actor_id: "guardian".to_owned(),
                 target_ids: vec!["hero".to_owned()],
+                cell_targets: Vec::new(),
             },
             random_values: vec![12],
         };
@@ -1799,10 +1843,9 @@ mod tests {
         let mut invalid = standard_setup(&bundle);
         invalid.play_bundle_id = "different-artifact".to_owned();
         invalid.participants[0].definition_ids = vec!["action.missing".to_owned()];
-        invalid.board.cells.push(crate::RpgCellSetup {
-            id: "cell.blocked".to_owned(),
-            position: GridPosition { x: 0, y: 0 },
-            capabilities: vec![crate::RpgCellCapabilitySetup {
+        invalid.board.cells[0]
+            .capabilities
+            .push(crate::RpgCellCapabilitySetup {
                 id: "terrain.traversal".to_owned(),
                 version: 1,
                 definition_id: None,
@@ -1810,8 +1853,7 @@ mod tests {
                     passable: false,
                     movement_cost: 1,
                 },
-            }],
-        });
+            });
         invalid.participants[1].position = GridPosition { x: 99, y: 99 };
         invalid.participants[1]
             .capabilities
@@ -1872,6 +1914,7 @@ mod tests {
                 action_id: "action.reactive".to_owned(),
                 actor_id: "hero".to_owned(),
                 target_ids: vec!["guardian".to_owned()],
+                cell_targets: Vec::new(),
             },
             random_values: Vec::new(),
         }));
@@ -2077,6 +2120,39 @@ mod tests {
         };
         action.fingerprint = materialized_definition_fingerprint(&action).unwrap();
 
+        let movement_provenance = ContentDefinitionProvenance {
+            definition_id: "action.move".to_owned(),
+            package_id: "replay.test".to_owned(),
+            package_version: "1.0.0".to_owned(),
+            source: ContentSourceLocation {
+                module: "actions/replay.rs".to_owned(),
+                declaration: "moveAction".to_owned(),
+            },
+        };
+        let mut movement = MaterializedContentDefinition {
+            id: "action.move".to_owned(),
+            kind: MaterializedContentDefinitionKind::Action,
+            visibility: MaterializedContentVisibility::Exported,
+            extension_policy: ContentExtensionPolicy::Sealed,
+            semantic: json!({
+                "id": "action.move",
+                "name": "Move",
+                "sourcePath": "actions/replay.rs#moveAction",
+                "targets": {"kind": "cell", "team": "any", "maximumRange": 2, "maximumTargets": 1},
+                "check": {"kind": "noRoll"},
+                "rollScope": "none",
+                "costs": [],
+                "program": {"kind": "atomic", "body": {"kind": "onCheck", "noRoll": {
+                    "kind": "operation", "operation": {"kind": "moveToCell", "maximumDistance": 2, "provokes": true}
+                }}}
+            }),
+            presentation: json!({"label": "Move"}),
+            references: Vec::new(),
+            provenance: movement_provenance.clone(),
+            fingerprint: String::new(),
+        };
+        movement.fingerprint = materialized_definition_fingerprint(&movement).unwrap();
+
         let support_provenance = ContentDefinitionProvenance {
             definition_id: "catalog.damage.force".to_owned(),
             package_id: "replay.test".to_owned(),
@@ -2149,6 +2225,10 @@ mod tests {
                 version: 1,
             },
             VersionedRpgRequirement {
+                id: "operation.moveToCell".to_owned(),
+                version: 1,
+            },
+            VersionedRpgRequirement {
                 id: "operation.openReaction".to_owned(),
                 version: 1,
             },
@@ -2160,6 +2240,10 @@ mod tests {
             },
             VersionedRpgRequirement {
                 id: "capability.modifiers".to_owned(),
+                version: 1,
+            },
+            VersionedRpgRequirement {
+                id: "capability.position".to_owned(),
                 version: 1,
             },
             VersionedRpgRequirement {
@@ -2262,14 +2346,16 @@ mod tests {
                 numeric_domains: Vec::new(),
             },
             exported_roots: vec![
+                "action.move".to_owned(),
                 "action.reactive".to_owned(),
                 "catalog.damage.force".to_owned(),
                 "catalog.defense.guard".to_owned(),
                 "catalog.modifier.impeded".to_owned(),
             ],
-            materialized_definitions: vec![action, support, guard, modifier],
+            materialized_definitions: vec![movement, action, support, guard, modifier],
             compiled_policy_bindings: Vec::new(),
             definition_provenance: vec![
+                movement_provenance,
                 provenance,
                 support_provenance,
                 guard_provenance,
@@ -2280,26 +2366,32 @@ mod tests {
                 ContentRelationshipProvenance {
                     kind: ContentRelationshipKind::Exports,
                     source: package_identity.clone(),
-                    target: "action.reactive".to_owned(),
+                    target: "action.move".to_owned(),
                     order: 0,
                 },
                 ContentRelationshipProvenance {
                     kind: ContentRelationshipKind::Exports,
                     source: package_identity.clone(),
-                    target: "catalog.damage.force".to_owned(),
+                    target: "action.reactive".to_owned(),
                     order: 1,
                 },
                 ContentRelationshipProvenance {
                     kind: ContentRelationshipKind::Exports,
                     source: package_identity.clone(),
-                    target: "catalog.defense.guard".to_owned(),
+                    target: "catalog.damage.force".to_owned(),
                     order: 2,
+                },
+                ContentRelationshipProvenance {
+                    kind: ContentRelationshipKind::Exports,
+                    source: package_identity.clone(),
+                    target: "catalog.defense.guard".to_owned(),
+                    order: 3,
                 },
                 ContentRelationshipProvenance {
                     kind: ContentRelationshipKind::Exports,
                     source: package_identity,
                     target: "catalog.modifier.impeded".to_owned(),
-                    order: 3,
+                    order: 4,
                 },
             ],
             derivation_provenance: Vec::new(),
@@ -2321,7 +2413,23 @@ mod tests {
             board: crate::RpgBoardSetup {
                 width: 4,
                 height: 4,
-                cells: Vec::new(),
+                cells: vec![
+                    crate::RpgCellSetup {
+                        id: "cell-0-0".to_owned(),
+                        position: GridPosition { x: 0, y: 0 },
+                        capabilities: Vec::new(),
+                    },
+                    crate::RpgCellSetup {
+                        id: "cell-1-0".to_owned(),
+                        position: GridPosition { x: 1, y: 0 },
+                        capabilities: Vec::new(),
+                    },
+                    crate::RpgCellSetup {
+                        id: "cell-2-0".to_owned(),
+                        position: GridPosition { x: 2, y: 0 },
+                        capabilities: Vec::new(),
+                    },
+                ],
             },
             participants: vec![
                 crate::RpgParticipantSetup {
@@ -2329,7 +2437,7 @@ mod tests {
                     label: "Hero".to_owned(),
                     team_id: Team::ally(),
                     position: GridPosition { x: 0, y: 0 },
-                    definition_ids: vec!["action.reactive".to_owned()],
+                    definition_ids: vec!["action.reactive".to_owned(), "action.move".to_owned()],
                     capabilities: vec![
                         crate::RpgInitialCapability::Vitality {
                             value: BoundedValue {
@@ -2354,7 +2462,7 @@ mod tests {
                     label: "Guardian".to_owned(),
                     team_id: Team::enemy(),
                     position: GridPosition { x: 1, y: 0 },
-                    definition_ids: vec!["action.reactive".to_owned()],
+                    definition_ids: vec!["action.reactive".to_owned(), "action.move".to_owned()],
                     capabilities: vec![
                         crate::RpgInitialCapability::Vitality {
                             value: BoundedValue {
@@ -2391,6 +2499,7 @@ mod tests {
                 action_id: "action.reactive".to_owned(),
                 actor_id: "hero".to_owned(),
                 target_ids: vec!["guardian".to_owned()],
+                cell_targets: Vec::new(),
             },
             random_values: vec![12],
         }

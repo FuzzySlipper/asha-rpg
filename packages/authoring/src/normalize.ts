@@ -38,6 +38,7 @@ const OPERATION_IDS: Record<RpgIrOperation['kind'], RpgOperationId> = {
   changeResource: 'operation.changeResource',
   applyModifier: 'operation.applyModifier',
   move: 'operation.move',
+  moveToCell: 'operation.moveToCell',
   openReaction: 'operation.openReaction',
 };
 
@@ -207,6 +208,50 @@ function validateAction(
       ),
     );
   }
+  if (
+    action.targets.kind === 'cell' &&
+    (action.targets.team !== 'any' || action.targets.maximumTargets !== 1)
+  ) {
+    diagnostics.push(
+      diagnostic(
+        'normalization.cellTargetInvalid',
+        `${path}.targets`,
+        'cell targets require team any and exactly one destination',
+        action.sourcePath,
+      ),
+    );
+  }
+  if (action.targets.kind === 'cell' && action.check.kind !== 'noRoll') {
+    diagnostics.push(
+      diagnostic(
+        'normalization.cellCheckInvalid',
+        `${path}.check`,
+        'cell-target actions require a no-roll check',
+        action.sourcePath,
+      ),
+    );
+  }
+  const moveToCellCount = countOperations(action.program, 'moveToCell');
+  if (action.targets.kind === 'cell' && moveToCellCount !== 1) {
+    diagnostics.push(
+      diagnostic(
+        'normalization.cellMovementRequired',
+        `${path}.program`,
+        'a cell-target action requires exactly one moveToCell operation',
+        action.sourcePath,
+      ),
+    );
+  }
+  if (action.targets.kind !== 'cell' && moveToCellCount > 0) {
+    diagnostics.push(
+      diagnostic(
+        'normalization.moveToCellTargetInvalid',
+        `${path}.program`,
+        'moveToCell requires a cell-target action',
+        action.sourcePath,
+      ),
+    );
+  }
   for (const [index, cost] of action.costs.entries()) {
     if (!integerInRange(cost.amount, 1, Number.MAX_SAFE_INTEGER)) {
       diagnostics.push(
@@ -227,6 +272,43 @@ function validateAction(
     diagnostics,
     action.sourcePath,
   );
+}
+
+function countOperations(
+  program: AuthoringProgram,
+  kind: RpgIrOperation['kind'],
+): number {
+  switch (program.kind) {
+    case 'operation':
+      return program.operation.kind === kind ? 1 : 0;
+    case 'sequence':
+      return program.steps.reduce(
+        (count, step) => count + countOperations(step, kind),
+        0,
+      );
+    case 'when':
+      return (
+        countOperations(program.then, kind) +
+        (program.otherwise === undefined
+          ? 0
+          : countOperations(program.otherwise, kind))
+      );
+    case 'repeat':
+    case 'forEachTarget':
+      return countOperations(program.body, kind);
+    case 'onCheck':
+      return [
+        program.hit,
+        program.miss,
+        program.saved,
+        program.failed,
+        program.noRoll,
+      ].reduce<number>(
+        (count, branch) =>
+          count + (branch === undefined ? 0 : countOperations(branch, kind)),
+        0,
+      );
+  }
 }
 
 function validateProgram(
@@ -408,7 +490,7 @@ function validateOperation(
     );
   }
   if (
-    operation.kind === 'move' &&
+    (operation.kind === 'move' || operation.kind === 'moveToCell') &&
     !integerInRange(operation.maximumDistance, 1, 64)
   ) {
     diagnostics.push(
@@ -543,6 +625,9 @@ function collectOperation(operation: RpgIrOperation, collection: Collection): vo
       collection.capabilities.add('capability.position');
       collectFormula(operation.deltaX, collection);
       collectFormula(operation.deltaY, collection);
+      return;
+    case 'moveToCell':
+      collection.capabilities.add('capability.position');
       return;
     case 'openReaction':
       collection.capabilities.add('capability.reactions');

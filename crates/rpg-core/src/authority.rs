@@ -677,10 +677,19 @@ pub enum RpgCapabilityMutationError {
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase", deny_unknown_fields)]
+pub struct RpgIntentCellTarget {
+    pub id: String,
+    pub position: GridPosition,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase", deny_unknown_fields)]
 pub struct RpgIntent {
     pub action_id: String,
     pub actor_id: String,
     pub target_ids: Vec<String>,
+    #[serde(default)]
+    pub cell_targets: Vec<RpgIntentCellTarget>,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]

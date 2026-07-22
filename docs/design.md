@@ -105,7 +105,8 @@ engine or a d20-specific Rust enum.
 ## Rust semantic profile
 
 The initial closed operation vocabulary supports damage, healing, resource
-change, grid movement, turn-bounded modifiers, and a typed reaction window.
+change, fixed-delta and selected-cell grid movement, turn-bounded modifiers,
+and a typed reaction window.
 Checks support attack, saving throw, and no-roll flows. Programs support one
 atomic root containing bounded sequence, predicate branch, repeat, per-target,
 and check-outcome branches. Unknown operations, capabilities, references, or

@@ -12,6 +12,7 @@ fn attack_resolution_is_deterministic_and_owner_mutated() {
         action_id: "action.attack".to_owned(),
         actor_id: "actor".to_owned(),
         target_ids: vec!["target".to_owned()],
+        cell_targets: Vec::new(),
     };
 
     let mut first_state = initial_state.clone();
@@ -78,6 +79,7 @@ fn multi_target_saves_select_independent_bounded_branches() {
                 action_id: "action.save".to_owned(),
                 actor_id: "actor".to_owned(),
                 target_ids: vec!["target-b".to_owned(), "target-a".to_owned()],
+                cell_targets: Vec::new(),
             },
         )
         .unwrap();
@@ -115,6 +117,7 @@ fn movement_uses_the_position_owner_and_emits_a_replayable_event() {
                 action_id: "action.move".to_owned(),
                 actor_id: "actor".to_owned(),
                 target_ids: vec!["target".to_owned()],
+                cell_targets: Vec::new(),
             },
         )
         .unwrap();
@@ -132,6 +135,19 @@ fn movement_uses_the_position_owner_and_emits_a_replayable_event() {
             ..
         }
     ));
+}
+
+#[test]
+fn cell_target_actions_require_exactly_one_selected_destination_move() {
+    let failure = compile_normalized_rpg_json(invalid_cell_target_source().as_bytes())
+        .expect_err("invalid cell action shapes must fail");
+    let codes = failure
+        .diagnostics
+        .iter()
+        .map(|diagnostic| diagnostic.code.as_str())
+        .collect::<std::collections::BTreeSet<_>>();
+    assert!(codes.contains("RPG_IR_CELL_MOVEMENT_REQUIRED"));
+    assert!(codes.contains("RPG_IR_MOVE_TO_CELL_TARGET_INVALID"));
 }
 
 #[test]
@@ -185,6 +201,7 @@ fn late_random_failure_rolls_back_state_and_random_together() {
         action_id: "action.attack".to_owned(),
         actor_id: "actor".to_owned(),
         target_ids: vec!["target".to_owned()],
+        cell_targets: Vec::new(),
     };
 
     let rejection = ruleset
@@ -203,6 +220,7 @@ fn dice_requests_preserve_declared_shape_without_a_probe_limit() {
         action_id: "action.attack".to_owned(),
         actor_id: "actor".to_owned(),
         target_ids: vec!["target".to_owned()],
+        cell_targets: Vec::new(),
     };
     let mut state = single_target_state();
     let mut random = DeterministicRandomStream::new(vec![12]);
@@ -322,6 +340,7 @@ fn resource_bounds_reject_the_whole_transaction_without_misleading_events() {
                 action_id: "action.save".to_owned(),
                 actor_id: "actor".to_owned(),
                 target_ids: vec!["target-a".to_owned(), "target-b".to_owned()],
+                cell_targets: Vec::new(),
             },
         )
         .unwrap_err();
@@ -345,6 +364,7 @@ fn resource_bounds_reject_the_whole_transaction_without_misleading_events() {
                 action_id: "action.save".to_owned(),
                 actor_id: "actor".to_owned(),
                 target_ids: vec!["target-a".to_owned(), "target-b".to_owned()],
+                cell_targets: Vec::new(),
             },
         )
         .unwrap_err();
@@ -482,6 +502,39 @@ fn movement_source() -> String {
           {"kind":"operation","operation":{"kind":"move","subject":"target","deltaX":{"kind":"constant","value":2},"deltaY":{"kind":"constant","value":-1},"maximumDistance":3,"provokes":true}}
         }}
       }]
+    }"#
+    .to_owned()
+}
+
+fn invalid_cell_target_source() -> String {
+    r#"{
+      "schema":{"identity":"asha.rpg.ir","major":1},
+      "package":{"id":"consumer.package","version":"1.0.0"},
+      "catalogs":{"capabilities":["capability.position","capability.vitality"]},
+      "requirements":[
+        {"kind":"operation","id":"operation.heal","version":1},
+        {"kind":"operation","id":"operation.moveToCell","version":1},
+        {"kind":"capability","id":"capability.position","version":1},
+        {"kind":"capability","id":"capability.vitality","version":1}
+      ],
+      "actions":[
+        {
+          "id":"action.cell-without-move","name":"Invalid cell","sourcePath":"actions/invalid-cell",
+          "targets":{"kind":"cell","team":"any","maximumRange":2,"maximumTargets":1},
+          "check":{"kind":"noRoll"},"rollScope":"none","costs":[],
+          "program":{"kind":"atomic","body":{"kind":"onCheck","noRoll":
+            {"kind":"operation","operation":{"kind":"heal","amount":{"kind":"constant","value":1}}}
+          }}
+        },
+        {
+          "id":"action.participant-move-to-cell","name":"Invalid participant","sourcePath":"actions/invalid-participant",
+          "targets":{"kind":"participant","team":"ally","maximumRange":2,"maximumTargets":1},
+          "check":{"kind":"noRoll"},"rollScope":"none","costs":[],
+          "program":{"kind":"atomic","body":{"kind":"onCheck","noRoll":
+            {"kind":"operation","operation":{"kind":"moveToCell","maximumDistance":2,"provokes":true}}
+          }}
+        }
+      ]
     }"#
     .to_owned()
 }

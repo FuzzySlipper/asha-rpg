@@ -44,7 +44,7 @@ pub use rpg_ir::{
     ResolvedContentPack, RpgIrAction, RpgIrCatalogs, RpgIrCheck, RpgIrComparison, RpgIrFormula,
     RpgIrOperation, RpgIrPackage, RpgIrPredicate, RpgIrProgram, RpgIrReactionOption,
     RpgIrRequirement, RpgIrRequirementKind, RpgIrResourceCost, RpgIrRollScope, RpgIrSchema,
-    RpgIrStackingPolicy, RpgIrSubject, RpgIrTargetSelector, RpgIrTeamConstraint,
+    RpgIrStackingPolicy, RpgIrSubject, RpgIrTargetKind, RpgIrTargetSelector, RpgIrTeamConstraint,
     RpgVersionedIdentity, Ruleset, RulesetModels, RulesetNumericDomain, RulesetProvisions,
     RulesetSchema, RulesetValueContract, RulesetValueExpression, RulesetValueFormula,
     RulesetValueFormulaSchema, RulesetValueKind, RulesetValueSource, VersionedRpgRequirement,

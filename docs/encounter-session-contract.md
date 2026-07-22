@@ -34,15 +34,20 @@ Strict decoding rejects every additional field.
 
 ## Authority and readbacks
 
-Accepted actions and explicit end-turn controls atomically update state,
-modifier tenure, accepted events, and the next living initiative participant.
+Accepted actions, including artifact-authored selected-cell movement, and
+explicit end-turn controls atomically update state, modifier tenure, accepted
+events, and the next living initiative participant.
 A pending reaction blocks other commands until resolved. Rejections preserve
 state, log, turn, reaction, and accepted-random position.
 
 `RpgAuthoritySession::encounter_view` exposes board/cells, participant state,
-current actor and initiative, selected and legal actions/targets, available
-turn controls, pending reaction options, accepted events, and encounter
-outcome. It is descriptive output; only Rust mutates authority state.
+current actor and initiative, selected and legal actions plus participant or
+cell options, available turn controls, pending reaction options, accepted
+events, and encounter outcome. For a cell-target movement action, Rust binds
+each submitted cell id to the Scenario position, applies the authored range
+and movement bound, and exposes only destinations whose staged result remains
+inside the board, passable, and unoccupied. It is descriptive output; only
+Rust mutates authority state.
 
 ## Random evidence
 
@@ -59,5 +64,5 @@ randomness, or reapplies events.
 ## Non-claims
 
 The initial board authority does not claim pathfinding, area-target semantics,
-movement-cost evaluation, campaign persistence, scripted runners, AI control,
-Tester configuration, or Rulebench product protocols.
+multi-cell movement-cost budgeting, campaign persistence, scripted runners,
+AI control, Tester configuration, or Rulebench product protocols.

@@ -13,6 +13,9 @@ export declare function targets(options: {
     readonly maximumRange: number;
     readonly maximumTargets?: number;
 }): RpgIrTargetSelector;
+export declare function cells(options: {
+    readonly range: number;
+}): RpgIrTargetSelector;
 export declare function hostile(options: {
     readonly range: number;
     readonly maximum?: number;
@@ -81,6 +84,11 @@ export declare function moveEntity(options: {
     readonly subject: RpgIrSubject;
     readonly deltaX: RpgIrFormula;
     readonly deltaY: RpgIrFormula;
+    readonly maximumDistance: number;
+    readonly provokes: boolean;
+    readonly timing?: AuthoringTiming;
+}): AuthoringProgram;
+export declare function moveToCell(options: {
     readonly maximumDistance: number;
     readonly provokes: boolean;
     readonly timing?: AuthoringTiming;

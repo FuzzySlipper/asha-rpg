@@ -1513,20 +1513,19 @@ fn participant_is_living(state: &RpgCapabilityState, participant_id: &str) -> bo
 
 pub(crate) fn action_view(
     action: CompiledRpgAction,
-    candidate_ids: Vec<String>,
+    options: RpgActionOptionsView,
     unavailable: Option<RpgResolutionRejection>,
 ) -> RpgActionView {
+    let has_options = !options.participant_ids.is_empty()
+        || !options.cell_ids.is_empty()
+        || !options.area_ids.is_empty();
     RpgActionView {
         definition_id: action.id,
         label: action.name,
-        available: unavailable.is_none() && !candidate_ids.is_empty(),
+        available: unavailable.is_none() && has_options,
         unavailable,
         maximum_targets: action.targets.maximum_targets,
-        options: RpgActionOptionsView {
-            participant_ids: candidate_ids,
-            cell_ids: Vec::new(),
-            area_ids: Vec::new(),
-        },
+        options,
     }
 }
 

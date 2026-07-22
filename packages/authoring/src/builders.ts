@@ -62,9 +62,21 @@ export function targets(options: {
   readonly maximumTargets?: number;
 }): RpgIrTargetSelector {
   return frozen({
+    kind: 'participant',
     team: options.team,
     maximumRange: options.maximumRange,
     maximumTargets: options.maximumTargets ?? 1,
+  });
+}
+
+export function cells(options: {
+  readonly range: number;
+}): RpgIrTargetSelector {
+  return frozen({
+    kind: 'cell',
+    team: 'any',
+    maximumRange: options.range,
+    maximumTargets: 1,
   });
 }
 
@@ -300,6 +312,21 @@ export function moveEntity(options: {
       subject: options.subject,
       deltaX: options.deltaX,
       deltaY: options.deltaY,
+      maximumDistance: options.maximumDistance,
+      provokes: options.provokes,
+    }),
+    options.timing,
+  );
+}
+
+export function moveToCell(options: {
+  readonly maximumDistance: number;
+  readonly provokes: boolean;
+  readonly timing?: AuthoringTiming;
+}): AuthoringProgram {
+  return operation(
+    frozen({
+      kind: 'moveToCell',
       maximumDistance: options.maximumDistance,
       provokes: options.provokes,
     }),

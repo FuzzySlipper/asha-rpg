@@ -14,9 +14,18 @@ export function reactionOptionId(value) {
 }
 export function targets(options) {
     return frozen({
+        kind: 'participant',
         team: options.team,
         maximumRange: options.maximumRange,
         maximumTargets: options.maximumTargets ?? 1,
+    });
+}
+export function cells(options) {
+    return frozen({
+        kind: 'cell',
+        team: 'any',
+        maximumRange: options.range,
+        maximumTargets: 1,
     });
 }
 export function hostile(options) {
@@ -138,6 +147,13 @@ export function moveEntity(options) {
         subject: options.subject,
         deltaX: options.deltaX,
         deltaY: options.deltaY,
+        maximumDistance: options.maximumDistance,
+        provokes: options.provokes,
+    }), options.timing);
+}
+export function moveToCell(options) {
+    return operation(frozen({
+        kind: 'moveToCell',
         maximumDistance: options.maximumDistance,
         provokes: options.provokes,
     }), options.timing);

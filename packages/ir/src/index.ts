@@ -55,6 +55,7 @@ export type RpgIrRequirement =
     };
 
 export type RpgIrTeamConstraint = 'hostile' | 'ally' | 'any';
+export type RpgIrTargetKind = 'participant' | 'cell';
 export type RpgIrSubject = 'actor' | 'target';
 export type RpgIrRollScope = 'shared' | 'perTarget' | 'none';
 export type RpgIrComparison =
@@ -67,6 +68,7 @@ export type RpgIrComparison =
 export type RpgIrStackingPolicy = 'replace' | 'refresh';
 
 export interface RpgIrTargetSelector {
+  readonly kind: RpgIrTargetKind;
   readonly team: RpgIrTeamConstraint;
   readonly maximumRange: number;
   readonly maximumTargets: number;
@@ -150,6 +152,11 @@ export type RpgIrOperation =
       readonly subject: RpgIrSubject;
       readonly deltaX: RpgIrFormula;
       readonly deltaY: RpgIrFormula;
+      readonly maximumDistance: number;
+      readonly provokes: boolean;
+    }
+  | {
+      readonly kind: 'moveToCell';
       readonly maximumDistance: number;
       readonly provokes: boolean;
     }

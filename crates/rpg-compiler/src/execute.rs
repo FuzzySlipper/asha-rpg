@@ -9,7 +9,7 @@ use rpg_core::{
 };
 use rpg_ir::{
     RpgIrCheck, RpgIrComparison, RpgIrFormula, RpgIrOperation, RpgIrPredicate, RpgIrRollScope,
-    RpgIrSubject, RpgIrTeamConstraint,
+    RpgIrSubject, RpgIrTargetKind, RpgIrTeamConstraint,
 };
 
 use crate::compile::{CompiledAction, CompiledOperation, CompiledProgram};
@@ -126,6 +126,13 @@ impl CompiledRpgRules {
                 format!("unknown action {action_id}"),
             )
         })?;
+        if action.targets.kind == RpgIrTargetKind::Cell {
+            return Err(rejection(
+                "RPG_ACTION_BOARD_REQUIRED",
+                "$.actionId",
+                "cell-target candidates require the encounter board authority",
+            ));
+        }
         let actor = state.entity(actor_id).ok_or_else(|| {
             rejection(
                 "RPG_INTENT_ACTOR_UNKNOWN",
@@ -150,6 +157,18 @@ impl CompiledRpgRules {
             })
             .map(|target| target.id().to_owned())
             .collect())
+    }
+
+    pub fn target_kind(&self, action_id: &str) -> Result<RpgIrTargetKind, RpgResolutionRejection> {
+        self.action(action_id)
+            .map(|action| action.targets.kind)
+            .ok_or_else(|| {
+                rejection(
+                    "RPG_INTENT_ACTION_UNKNOWN",
+                    "$.actionId",
+                    format!("unknown action {action_id}"),
+                )
+            })
     }
 
     pub fn preflight(
@@ -210,37 +229,82 @@ fn validate_intent(
         ));
     }
 
-    for (index, target_id) in target_ids.iter().enumerate() {
-        let target = state.entity(target_id).ok_or_else(|| {
-            rejection(
-                "RPG_INTENT_TARGET_UNKNOWN",
-                format!("$.intent.targetIds[{index}]"),
-                format!("unknown target {target_id}"),
-            )
-        })?;
-        let team_allowed = match action.targets.team {
-            RpgIrTeamConstraint::Hostile => target.team() != actor.team(),
-            RpgIrTeamConstraint::Ally => target.team() == actor.team(),
-            RpgIrTeamConstraint::Any => true,
-        };
-        if !team_allowed {
-            return Err(rejection(
-                "RPG_INTENT_TARGET_TEAM_INVALID",
-                format!("$.intent.targetIds[{index}]"),
-                format!("target {target_id} does not satisfy the team selector"),
-            ));
+    match action.targets.kind {
+        RpgIrTargetKind::Participant => {
+            if !intent.cell_targets.is_empty() {
+                return Err(rejection(
+                    "RPG_INTENT_CELL_BINDING_UNEXPECTED",
+                    "$.intent.cellTargets",
+                    "participant-target actions cannot include cell bindings",
+                ));
+            }
+            for (index, target_id) in target_ids.iter().enumerate() {
+                let target = state.entity(target_id).ok_or_else(|| {
+                    rejection(
+                        "RPG_INTENT_TARGET_UNKNOWN",
+                        format!("$.intent.targetIds[{index}]"),
+                        format!("unknown target {target_id}"),
+                    )
+                })?;
+                let team_allowed = match action.targets.team {
+                    RpgIrTeamConstraint::Hostile => target.team() != actor.team(),
+                    RpgIrTeamConstraint::Ally => target.team() == actor.team(),
+                    RpgIrTeamConstraint::Any => true,
+                };
+                if !team_allowed {
+                    return Err(rejection(
+                        "RPG_INTENT_TARGET_TEAM_INVALID",
+                        format!("$.intent.targetIds[{index}]"),
+                        format!("target {target_id} does not satisfy the team selector"),
+                    ));
+                }
+                let distance = actor
+                    .position()
+                    .x
+                    .abs_diff(target.position().x)
+                    .saturating_add(actor.position().y.abs_diff(target.position().y));
+                if distance > action.targets.maximum_range {
+                    return Err(rejection(
+                        "RPG_INTENT_TARGET_OUT_OF_RANGE",
+                        format!("$.intent.targetIds[{index}]"),
+                        format!("target {target_id} is at range {distance}"),
+                    ));
+                }
+            }
         }
-        let distance = actor
-            .position()
-            .x
-            .abs_diff(target.position().x)
-            .saturating_add(actor.position().y.abs_diff(target.position().y));
-        if distance > action.targets.maximum_range {
-            return Err(rejection(
-                "RPG_INTENT_TARGET_OUT_OF_RANGE",
-                format!("$.intent.targetIds[{index}]"),
-                format!("target {target_id} is at range {distance}"),
-            ));
+        RpgIrTargetKind::Cell => {
+            if intent.cell_targets.len() != target_ids.len() {
+                return Err(rejection(
+                    "RPG_INTENT_CELL_BINDING_MISSING",
+                    "$.intent.cellTargets",
+                    "every selected cell id requires one authoritative position binding",
+                ));
+            }
+            for (index, target_id) in target_ids.iter().enumerate() {
+                let binding = intent
+                    .cell_targets
+                    .iter()
+                    .find(|binding| binding.id == *target_id)
+                    .ok_or_else(|| {
+                        rejection(
+                            "RPG_INTENT_CELL_BINDING_MISSING",
+                            format!("$.intent.targetIds[{index}]"),
+                            format!("selected cell {target_id} has no position binding"),
+                        )
+                    })?;
+                let distance = actor
+                    .position()
+                    .x
+                    .abs_diff(binding.position.x)
+                    .saturating_add(actor.position().y.abs_diff(binding.position.y));
+                if distance > action.targets.maximum_range {
+                    return Err(rejection(
+                        "RPG_INTENT_TARGET_OUT_OF_RANGE",
+                        format!("$.intent.targetIds[{index}]"),
+                        format!("cell {target_id} is at range {distance}"),
+                    ));
+                }
+            }
         }
     }
 
@@ -524,7 +588,9 @@ impl Execution<'_> {
             }
             RpgIrOperation::ChangeResource { .. } => RpgCapabilityId::Resources,
             RpgIrOperation::ApplyModifier { .. } => RpgCapabilityId::Modifiers,
-            RpgIrOperation::Move { .. } => RpgCapabilityId::Position,
+            RpgIrOperation::Move { .. } | RpgIrOperation::MoveToCell { .. } => {
+                RpgCapabilityId::Position
+            }
             RpgIrOperation::OpenReaction { .. } => RpgCapabilityId::Reactions,
         };
         if operation
@@ -653,6 +719,65 @@ impl Execution<'_> {
                 self.events.push(RpgDomainEvent::PositionChanged {
                     source_id: self.intent.actor_id.clone(),
                     entity_id,
+                    previous,
+                    current,
+                    provokes: *provokes,
+                });
+            }
+            RpgIrOperation::MoveToCell {
+                maximum_distance,
+                provokes,
+            } => {
+                let target_id = self.target_id(path)?;
+                let destination =
+                    self.intent
+                        .cell_targets
+                        .iter()
+                        .find(|target| target.id == target_id)
+                        .map(|target| target.position)
+                        .ok_or_else(|| {
+                            self.fail(
+                        "RPG_RUNTIME_CELL_BINDING_MISSING",
+                        path,
+                        format!("selected cell {target_id} has no authoritative position binding"),
+                    )
+                        })?;
+                let previous = self
+                    .workspace
+                    .state()
+                    .entity(&self.intent.actor_id)
+                    .map(|entity| entity.position())
+                    .ok_or_else(|| {
+                        self.fail(
+                            "RPG_RUNTIME_ACTOR_MISSING",
+                            path,
+                            format!("actor {} is missing", self.intent.actor_id),
+                        )
+                    })?;
+                let delta_x = i64::from(destination.x) - i64::from(previous.x);
+                let delta_y = i64::from(destination.y) - i64::from(previous.y);
+                let delta_x = i32::try_from(delta_x).map_err(|_| {
+                    self.fail(
+                        "RPG_RUNTIME_MOVEMENT_DELTA_INVALID",
+                        path,
+                        "selected cell x delta exceeds the supported position space",
+                    )
+                })?;
+                let delta_y = i32::try_from(delta_y).map_err(|_| {
+                    self.fail(
+                        "RPG_RUNTIME_MOVEMENT_DELTA_INVALID",
+                        path,
+                        "selected cell y delta exceeds the supported position space",
+                    )
+                })?;
+                let (previous, current) = self
+                    .workspace
+                    .position_owner()
+                    .move_entity(&self.intent.actor_id, delta_x, delta_y, *maximum_distance)
+                    .map_err(|error| self.mutation_rejection(error, path))?;
+                self.events.push(RpgDomainEvent::PositionChanged {
+                    source_id: self.intent.actor_id.clone(),
+                    entity_id: self.intent.actor_id.clone(),
                     previous,
                     current,
                     provokes: *provokes,

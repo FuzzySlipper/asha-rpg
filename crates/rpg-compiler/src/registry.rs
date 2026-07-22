@@ -91,6 +91,16 @@ const REGISTRATIONS: &[RpgOperationRegistration] = &[
         replay_implications: "Replay verifies the accepted PositionChanged event and resulting position view.",
     },
     RpgOperationRegistration {
+        id: "operation.moveToCell",
+        version: 1,
+        reads: &[RpgCapabilityId::Position],
+        mutation_owner: RpgCapabilityId::Position,
+        validation_behavior: "Resolve one authority-bound cell destination and reject movement beyond the declared maximum distance.",
+        accepted_events: &["PositionChanged"],
+        trace_behavior: "Record the selected cell, origin, destination, distance validation, and commit.",
+        replay_implications: "Replay verifies the selected cell binding, accepted PositionChanged event, and resulting position view.",
+    },
+    RpgOperationRegistration {
         id: "operation.openReaction",
         version: 1,
         reads: &[RpgCapabilityId::Reactions],
