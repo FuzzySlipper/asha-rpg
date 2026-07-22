@@ -12,8 +12,7 @@ Asha RPG is not:
 - a home for every consumer's named content catalog.
 
 The initial semantic profile does not yet claim contested checks, critical
-outcomes, area selectors, terrain pathfinding or multi-cell movement-cost
-evaluation, conditions, temporary vitality,
+outcomes, area selectors, conditions, temporary vitality,
 permanent or scheduler-relative durations, stack/highest-wins policies,
 or reaction-window authoring. Unknown requirements for those meanings fail
 closed. Portable checkpoint and replay are part of the existing authority
@@ -23,10 +22,13 @@ implementation claim.
 Scenario is setup-only data, not a gameplay runner, campaign save, AI plan, or
 product protocol. Version 1 claims entity target candidates and one
 artifact-authored cell-target shape for selected-destination movement: an
-unconditional no-roll branch containing only one `moveToCell` operation. This
-evidence-free shape makes every projected destination directly committable.
-Rust binds those cell ids to board positions and enforces range, board bounds,
-unique occupancy, and impassable destinations. Conditional, repeated,
+unconditional no-roll branch containing only one `moveToCell` operation. Rust
+projects deterministic least-cost routes over orthogonally adjacent authored
+cells, charges each entered cell's traversal cost (or one by default), and
+excludes occupied or impassable cells. Commands submit only the destination;
+Rust recomputes the route against current authority state before atomically
+committing it within the authored movement-cost bound. Diagonal travel,
+participant footprints, forced movement, conditional, repeated,
 random-composed, area, and general cell-target semantics remain non-claims.
 
 The TypeScript packages do not provide semantic preview, target evaluation,
