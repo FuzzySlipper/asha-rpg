@@ -2801,6 +2801,7 @@ function validateActionProcedureGraph(
         string,
         import('./play-bundle-types.js').ActionProcedureParameter
       >();
+      const usedParameterIds = new Set<string>();
       for (const [index, parameter] of record.definition.parameters.entries()) {
         const parameterPath = `${path}.parameters[${index}]`;
         if (!validPortableIdentifier(parameter.id)) {
@@ -2850,6 +2851,14 @@ function validateActionProcedureGraph(
           `${path}.implementation.template`,
           record,
           diagnostics,
+          usedParameterIds,
+        );
+        validateProcedureInlineTemplate(
+          record.definition.implementation.template,
+          parameters,
+          `${path}.implementation.template`,
+          record,
+          diagnostics,
         );
       } else {
         validateProcedureInvocation(
@@ -2861,6 +2870,19 @@ function validateActionProcedureGraph(
           ruleset,
           `${path}.implementation.invocation`,
           diagnostics,
+          usedParameterIds,
+        );
+      }
+      for (const parameterId of [...parameters.keys()].sort()) {
+        if (usedParameterIds.has(parameterId)) continue;
+        diagnostics.push(
+          diagnostic(
+            'source',
+            'ACTION_PROCEDURE_PARAMETER_UNUSED',
+            `${path}.parameters.${parameterId}`,
+            `procedure parameter ${parameterId} is declared but never consumed`,
+            profileDiagnosticContext(record),
+          ),
         );
       }
       continue;
@@ -2902,6 +2924,7 @@ function validateProcedureInvocation(
   ruleset: Ruleset,
   path: string,
   diagnostics: PlayBundleCompilerDiagnostic[],
+  usedOuterParameterIds?: Set<string>,
 ): void {
   const target = (resolvedReferences.get(globalDefinitionId(source)) ?? [])
     .map((globalId) => recordsByGlobalId.get(globalId))
@@ -2954,7 +2977,16 @@ function validateProcedureInvocation(
       );
       continue;
     }
-    const value = invocation.arguments[argumentId];
+    const value: unknown = invocation.arguments[argumentId];
+    if (
+      usedOuterParameterIds !== undefined &&
+      isRecord(value) &&
+      value['kind'] === 'parameter' &&
+      typeof value['parameterId'] === 'string' &&
+      outerParameters?.has(value['parameterId']) === true
+    ) {
+      usedOuterParameterIds.add(value['parameterId']);
+    }
     if (
       !procedureArgumentMatches(
         value,
@@ -2997,6 +3029,7 @@ function validateProcedureTemplateMarkers(
   path: string,
   record: DefinitionRecord,
   diagnostics: PlayBundleCompilerDiagnostic[],
+  usedParameterIds: Set<string>,
 ): void {
   if (typeof value === 'function' || typeof value === 'symbol') {
     diagnostics.push(
@@ -3018,6 +3051,7 @@ function validateProcedureTemplateMarkers(
         `${path}[${index}]`,
         record,
         diagnostics,
+        usedParameterIds,
       ),
     );
     return;
@@ -3030,6 +3064,9 @@ function validateProcedureTemplateMarkers(
       typeof parameterId === 'string'
         ? parameters.get(parameterId)
         : undefined;
+    if (parameter !== undefined) {
+      usedParameterIds.add(parameter.id);
+    }
     if (
       parameter === undefined ||
       parameter.type !== parameterType ||
@@ -3055,8 +3092,155 @@ function validateProcedureTemplateMarkers(
       `${path}.${field}`,
       record,
       diagnostics,
+      usedParameterIds,
     );
   }
+}
+
+function validateProcedureInlineTemplate(
+  template: unknown,
+  parameters: ReadonlyMap<
+    string,
+    import('./play-bundle-types.js').ActionProcedureParameter
+  >,
+  path: string,
+  record: DefinitionRecord,
+  diagnostics: PlayBundleCompilerDiagnostic[],
+): void {
+  const substitutions = new Map(
+    [...parameters].map(([parameterId, parameter]) => [
+      parameterId,
+      procedureParameterValidationSample(parameter),
+    ]),
+  );
+  const variants = [
+    substitutions,
+    ...[...parameters]
+      .filter((entry) => entry[1].type === 'boundedInteger')
+      .map(([parameterId, parameter]) => {
+        const variant = new Map(substitutions);
+        if (parameter.type === 'boundedInteger') {
+          variant.set(parameterId, parameter.maximum);
+        }
+        return variant;
+      }),
+  ];
+  if (
+    variants.every((variant) =>
+      isStructurallyValidActionBody(
+        materializeProcedureTemplateForValidation(template, variant),
+      ),
+    )
+  ) {
+    return;
+  }
+  diagnostics.push(
+    diagnostic(
+      'source',
+      'ACTION_PROCEDURE_TEMPLATE_INVALID',
+      path,
+      'procedure template does not materialize to a structurally valid action body',
+      profileDiagnosticContext(record),
+    ),
+  );
+}
+
+function procedureParameterValidationSample(
+  parameter: import('./play-bundle-types.js').ActionProcedureParameter,
+): unknown {
+  switch (parameter.type) {
+    case 'boundedInteger':
+      return parameter.minimum;
+    case 'identifier':
+      return 'procedure.parameter';
+    case 'boolean':
+      return false;
+    case 'formula':
+      return { kind: 'constant', value: 0 };
+    case 'rulesetValueReference':
+    case 'catalogReference':
+      return 'procedure.parameter';
+    case 'targeting':
+      return {
+        kind: 'participant',
+        team: 'any',
+        maximumRange: 1,
+        maximumTargets: 1,
+      };
+    case 'check':
+      return { kind: 'noRoll' };
+    case 'costs':
+      return [];
+    case 'program':
+      return { kind: 'sequence', steps: [] };
+    case 'semanticBranches':
+      return { kind: 'onCheck' };
+  }
+}
+
+function materializeProcedureTemplateForValidation(
+  value: unknown,
+  substitutions: ReadonlyMap<string, unknown>,
+): unknown {
+  if (Array.isArray(value)) {
+    return value.map((entry) =>
+      materializeProcedureTemplateForValidation(entry, substitutions),
+    );
+  }
+  if (!isRecord(value)) return value;
+  if (value['kind'] === 'parameter') {
+    const parameterId = value['parameterId'];
+    return typeof parameterId === 'string'
+      ? substitutions.get(parameterId)
+      : undefined;
+  }
+  return Object.fromEntries(
+    Object.entries(value).map(([field, child]) => [
+      field,
+      materializeProcedureTemplateForValidation(child, substitutions),
+    ]),
+  );
+}
+
+function isStructurallyValidActionBody(value: unknown): boolean {
+  if (
+    !isRecord(value) ||
+    Object.keys(value).sort().join(',') !==
+      'check,costs,program,rollScope,targets'
+  ) {
+    return false;
+  }
+  const targets = value['targets'];
+  const check = value['check'];
+  const program = value['program'];
+  return (
+    isRecord(targets) &&
+    (targets['kind'] === 'participant' || targets['kind'] === 'cell') &&
+    (targets['team'] === 'hostile' ||
+      targets['team'] === 'ally' ||
+      targets['team'] === 'any') &&
+    unsigned32(targets['maximumRange']) &&
+    unsigned32(targets['maximumTargets']) &&
+    isRecord(check) &&
+    (check['kind'] === 'noRoll' ||
+      check['kind'] === 'attack' ||
+      check['kind'] === 'savingThrow') &&
+    (value['rollScope'] === 'shared' ||
+      value['rollScope'] === 'perTarget' ||
+      value['rollScope'] === 'none') &&
+    Array.isArray(value['costs']) &&
+    isRecord(program) &&
+    isProgramKind(program['kind'])
+  );
+}
+
+function unsigned32(value: unknown): boolean {
+  return (
+    typeof value === 'number' &&
+    Number.isInteger(value) &&
+    value >= 0 &&
+    value <= 0xffff_ffff
+  );
 }
 
 function procedureArgumentMatches(
@@ -3077,7 +3261,11 @@ function procedureArgumentMatches(
     return (
       outer !== undefined &&
       outer.type === parameter.type &&
-      value['parameterType'] === parameter.type
+      value['parameterType'] === parameter.type &&
+      (outer.type !== 'boundedInteger' ||
+        parameter.type !== 'boundedInteger' ||
+        (outer.minimum >= parameter.minimum &&
+          outer.maximum <= parameter.maximum))
     );
   }
   switch (parameter.type) {

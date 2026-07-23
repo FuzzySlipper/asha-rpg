@@ -15,6 +15,7 @@ import {
   contentPackDependency,
   contentPackRequest,
   contentPackSource,
+  dice,
   defineActionDefinition,
   defineActionInvocationDefinition,
   defineActionProcedureDefinition,
@@ -64,6 +65,12 @@ const damageCatalog = defineContentCatalog({
       category: 'damageType',
       id: 'force',
       label: 'Force',
+    },
+    shadow: {
+      definitionId: 'damage.shadow',
+      category: 'damageType',
+      id: 'shadow',
+      label: 'Shadow',
     },
   },
 });
@@ -204,6 +211,104 @@ test('a dependent package invokes an owner-bound exported procedure and Rust exp
   );
 });
 
+test('two distinct actions share one Rust-expanded procedure without copying its body', () => {
+  const closeStrike = defineActionInvocationDefinition({
+    id: 'action.close-strike',
+    visibility: 'public',
+    extensionPolicy: 'sealed',
+    source: { module: 'consumer/actions.ts', declaration: 'closeStrike' },
+    presentation: { label: 'Close strike' },
+    procedure: basicAttackProcedure,
+    importAs: 'foundation',
+    arguments: {
+      'attack-bonus': constant(2),
+      damage: dice({ count: 1, sides: 6 }),
+      'damage-type': damageCatalog.references.force,
+      defense: rulesetDefense(contractTestRuleset, 'guard'),
+      range: 1,
+    },
+  });
+  const distantStrike = defineActionInvocationDefinition({
+    id: 'action.distant-strike',
+    visibility: 'public',
+    extensionPolicy: 'sealed',
+    source: { module: 'consumer/actions.ts', declaration: 'distantStrike' },
+    presentation: { label: 'Distant strike' },
+    procedure: basicAttackProcedure,
+    importAs: 'foundation',
+    arguments: {
+      'attack-bonus': constant(4),
+      damage: dice({ count: 2, sides: 8, bonus: 1 }),
+      'damage-type': damageCatalog.references.shadow,
+      defense: rulesetDefense(contractTestRuleset, 'resolve'),
+      range: 8,
+    },
+  });
+  const prepared = acceptedPreparedActions([closeStrike, distantStrike]);
+  const invocations = prepared.materializedDefinitions
+    .filter(
+      (definition) =>
+        definition.id === closeStrike.id ||
+        definition.id === distantStrike.id,
+    )
+    .map((definition) => definition.semantic);
+  assert.equal(invocations.length, 2);
+  assert.ok(
+    invocations.every(
+      (semantic) =>
+        readPath(semantic, ['procedureId']) === basicAttackProcedure.id,
+    ),
+  );
+  assert.notDeepEqual(
+    readPath(invocations[0], ['arguments']),
+    readPath(invocations[1], ['arguments']),
+  );
+  const closeArguments = readPath(invocations[0], ['arguments']);
+  const distantArguments = readPath(invocations[1], ['arguments']);
+  assert.equal(readPath(closeArguments, ['damage', 'count']), 1);
+  assert.equal(readPath(distantArguments, ['damage', 'count']), 2);
+  assert.equal(readPath(closeArguments, ['range']), 1);
+  assert.equal(readPath(distantArguments, ['range']), 8);
+  assert.equal(
+    readPath(closeArguments, ['damage-type', 'definitionId']),
+    damageCatalog.references.force.definitionId,
+  );
+  assert.equal(
+    readPath(distantArguments, ['damage-type', 'definitionId']),
+    damageCatalog.references.shadow.definitionId,
+  );
+  assert.equal(readPath(closeArguments, ['defense', 'id']), 'guard');
+  assert.equal(readPath(distantArguments, ['defense', 'id']), 'resolve');
+  assert.equal(compilePrepared(prepared).ok, true);
+
+  if (basicAttackProcedure.implementation.kind !== 'inline') {
+    assert.fail('fixture procedure must be inline');
+  }
+  const changedProcedure = {
+    ...basicAttackProcedure,
+    implementation: {
+      kind: 'inline' as const,
+      template: {
+        ...basicAttackProcedure.implementation.template,
+        targets: {
+          ...basicAttackProcedure.implementation.template.targets,
+          team: 'any' as const,
+        },
+      },
+    },
+  };
+  for (const actionDefinition of [closeStrike, distantStrike]) {
+    const baseline = compilePrepared(acceptedPrepared(actionDefinition));
+    const changed = compilePrepared(
+      acceptedPrepared(actionDefinition, true, changedProcedure),
+    );
+    assert.equal(baseline.ok, true, JSON.stringify(baseline));
+    assert.equal(changed.ok, true, JSON.stringify(changed));
+    if (!baseline.ok || !changed.ok) continue;
+    assert.notEqual(baseline.artifact.artifactId, changed.artifact.artifactId);
+  }
+});
+
 test('inline actions remain an explicit alternative to procedure invocation', () => {
   const inlineAction = action({
     id: actionId('action.inline'),
@@ -280,6 +385,253 @@ test('procedure composition forwards typed parameters without a TypeScript callb
   if (!result.ok) assert.fail(JSON.stringify(result.diagnostics));
   const compilation = compilePrepared(result.prepared);
   assert.equal(compilation.ok, true, JSON.stringify(compilation));
+});
+
+test('direct and composed procedures reject declared parameters they never consume', () => {
+  const unusedParameter = { id: 'unused', type: 'boolean' } as const;
+  const direct = {
+    ...basicAttackProcedure,
+    parameters: [...basicAttackProcedure.parameters, unusedParameter],
+  } as unknown as ContentDefinition;
+  assertProcedurePreparationFails(direct, 'ACTION_PROCEDURE_PARAMETER_UNUSED');
+
+  const composed = {
+    ...forwardedProcedure,
+    parameters: [...forwardedProcedure.parameters, unusedParameter],
+  } as unknown as ContentDefinition;
+  assertProcedurePreparationFails(
+    composed,
+    'ACTION_PROCEDURE_PARAMETER_UNUSED',
+  );
+
+  for (const procedureDefinition of [
+    basicAttackProcedure,
+    forwardedProcedure,
+  ]) {
+    const result = prepareUninvokedProcedure(procedureDefinition);
+    if (!result.ok) assert.fail(JSON.stringify(result.diagnostics));
+    assertRustCompilationFails(
+      rewritePreparedDefinitionSemantic(
+        result.prepared,
+        procedureDefinition.id,
+        (semantic) => appendProcedureParameter(semantic, unusedParameter),
+      ),
+      'ACTION_PROCEDURE_PARAMETER_UNUSED',
+    );
+  }
+});
+
+test('uninvoked exported procedures are fully validated by TypeScript and Rust', () => {
+  const concreteProcedureInput = {
+    kind: 'actionProcedure',
+    id: 'procedure.concrete-export',
+    ownerPackageId: foundationId,
+    visibility: 'public',
+    extensionPolicy: 'sealed',
+    source: {
+      module: 'foundation/action-procedures.ts',
+      declaration: 'concreteExport',
+    },
+    parameters: [damageTypeParameter],
+    implementation: {
+      kind: 'inline',
+      template: {
+        targets: {
+          kind: 'participant',
+          team: 'hostile',
+          maximumRange: 1,
+          maximumTargets: 1,
+        },
+        check: { kind: 'noRoll' },
+        rollScope: 'none',
+        costs: [],
+        program: {
+          kind: 'atomic',
+          body: {
+            kind: 'onCheck',
+            noRoll: {
+              kind: 'operation',
+              operation: {
+                kind: 'damage',
+                amount: { kind: 'constant', value: 1 },
+                damageType:
+                  actionProcedureParameterReference(damageTypeParameter),
+              },
+            },
+          },
+        },
+      },
+    },
+  } as const;
+  const concreteProcedure =
+    concreteProcedureInput as unknown as ContentDefinition;
+  const malformedInline = {
+    ...concreteProcedureInput,
+    implementation: {
+      kind: 'inline' as const,
+      template: {
+        ...concreteProcedureInput.implementation.template,
+        targets: {
+          ...concreteProcedureInput.implementation.template.targets,
+          maximumRange: 'near',
+        },
+      },
+    },
+  } as unknown as ContentDefinition;
+  assertProcedurePreparationFails(
+    malformedInline,
+    'ACTION_PROCEDURE_TEMPLATE_INVALID',
+  );
+
+  const directResult = prepareUninvokedProcedure(concreteProcedure);
+  if (!directResult.ok) assert.fail(JSON.stringify(directResult.diagnostics));
+  assertRustCompilationFails(
+    rewritePreparedDefinitionSemantic(
+      directResult.prepared,
+      concreteProcedure.id,
+      (semantic) =>
+        updateNestedValue(
+          semantic,
+          ['implementation', 'template', 'targets', 'maximumRange'],
+          'near',
+        ),
+    ),
+    'ACTION_PROCEDURE_TEMPLATE_INVALID',
+  );
+
+  if (forwardedProcedure.implementation.kind !== 'invocation') {
+    assert.fail('fixture procedure must compose through an invocation');
+  }
+  const missingNestedArgument = {
+    ...forwardedProcedure,
+    implementation: {
+      ...forwardedProcedure.implementation,
+      invocation: {
+        ...forwardedProcedure.implementation.invocation,
+        arguments: withoutArgument(
+          forwardedProcedure.implementation.invocation.arguments,
+          'range',
+        ),
+      },
+    },
+  } as unknown as ContentDefinition;
+  assertProcedurePreparationFails(
+    missingNestedArgument,
+    'ACTION_PROCEDURE_ARGUMENT_MISSING',
+  );
+  const wrongNestedArgument = {
+    ...forwardedProcedure,
+    implementation: {
+      ...forwardedProcedure.implementation,
+      invocation: {
+        ...forwardedProcedure.implementation.invocation,
+        arguments: {
+          ...forwardedProcedure.implementation.invocation.arguments,
+          range: 'near',
+        },
+      },
+    },
+  } as unknown as ContentDefinition;
+  assertProcedurePreparationFails(
+    wrongNestedArgument,
+    'ACTION_PROCEDURE_ARGUMENT_TYPE_MISMATCH',
+  );
+  const wrongNestedOwner = {
+    ...forwardedProcedure,
+    implementation: {
+      ...forwardedProcedure.implementation,
+      invocation: {
+        ...forwardedProcedure.implementation.invocation,
+        procedureOwnerPackageId: 'procedure.impostor',
+      },
+    },
+  } as unknown as ContentDefinition;
+  assertProcedurePreparationFails(
+    wrongNestedOwner,
+    'ACTION_PROCEDURE_REFERENCE_OWNER_MISMATCH',
+  );
+  const widerRangeParameter = { ...rangeParameter, maximum: 20 } as const;
+  const incompatibleForwarding = {
+    ...forwardedProcedure,
+    parameters: forwardedProcedure.parameters.map((parameter) =>
+      parameter.id === rangeParameter.id ? widerRangeParameter : parameter,
+    ),
+    implementation: actionProcedureInvocation(
+      basicAttackProcedure,
+      {
+        'attack-bonus':
+          actionProcedureParameterReference(attackBonusParameter),
+        damage: actionProcedureParameterReference(damageParameter),
+        'damage-type':
+          actionProcedureParameterReference(damageTypeParameter),
+        defense: actionProcedureParameterReference(defenseParameter),
+        range: actionProcedureParameterReference(widerRangeParameter),
+      },
+      'foundation',
+    ),
+  } as unknown as ContentDefinition;
+  assertProcedurePreparationFails(
+    incompatibleForwarding,
+    'ACTION_PROCEDURE_ARGUMENT_TYPE_MISMATCH',
+  );
+
+  const composedResult = prepareUninvokedProcedure(forwardedProcedure);
+  if (!composedResult.ok) {
+    assert.fail(JSON.stringify(composedResult.diagnostics));
+  }
+  const rustCases = [
+    {
+      code: 'ACTION_PROCEDURE_ARGUMENT_MISSING',
+      prepared: rewritePreparedDefinitionSemantic(
+        composedResult.prepared,
+        forwardedProcedure.id,
+        (semantic) =>
+          removeNestedProperty(semantic, [
+            'implementation',
+            'arguments',
+            'range',
+          ]),
+      ),
+    },
+    {
+      code: 'ACTION_PROCEDURE_REFERENCE_OWNER_MISMATCH',
+      prepared: rewritePreparedDefinitionSemantic(
+        composedResult.prepared,
+        forwardedProcedure.id,
+        (semantic) =>
+          updateNestedValue(
+            semantic,
+            ['implementation', 'procedureOwnerPackageId'],
+            'procedure.impostor',
+          ),
+      ),
+    },
+    {
+      code: 'ACTION_PROCEDURE_ARGUMENT_TYPE_MISMATCH',
+      prepared: rewritePreparedDefinitionSemantic(
+        composedResult.prepared,
+        forwardedProcedure.id,
+        (semantic) =>
+          updateNestedValue(
+            semantic,
+            ['implementation', 'arguments', 'range'],
+            'near',
+          ),
+      ),
+    },
+    {
+      code: 'ACTION_PROCEDURE_ARGUMENT_TYPE_MISMATCH',
+      prepared: rewritePreparedDefinitionSemantic(
+        composedResult.prepared,
+        forwardedProcedure.id,
+        (semantic) =>
+          updateProcedureParameterMaximum(semantic, rangeParameter.id, 20),
+      ),
+    },
+  ];
+  for (const entry of rustCases) {
+    assertRustCompilationFails(entry.prepared, entry.code);
+  }
 });
 
 test('missing, extra, wrong-typed, and wrong-owner invocation arguments fail preparation', () => {
@@ -464,9 +816,10 @@ test('procedure semantics participate in the artifact identity used by persisten
 function acceptedPrepared(
   actionDefinition: ContentDefinition,
   includeFoundation = true,
+  procedureDefinition = basicAttackProcedure,
 ): PreparedPlayBundle {
   const sources = includeFoundation
-    ? procedureSources(actionDefinition)
+    ? procedureSources(actionDefinition, procedureDefinition)
     : [singleActionSource(actionDefinition)];
   const consumerId = includeFoundation
     ? 'procedure.consumer'
@@ -486,8 +839,102 @@ function acceptedPrepared(
   return result.prepared;
 }
 
+function acceptedPreparedActions(
+  actionDefinitions: readonly ContentDefinition[],
+  procedureDefinition = basicAttackProcedure,
+): PreparedPlayBundle {
+  const result = preparePlayBundle({
+    bundle: composePlayBundle({
+      identity: { id: 'procedure.consumer.bundle', version: '1.0.0' },
+      ruleset: contractTestRuleset,
+      base: contentPackRequest({
+        id: 'procedure.consumer',
+        version: '1.0.0',
+      }),
+      add: [],
+      overlays: [],
+      configure: {},
+    }),
+    contentPacks: procedureSourcesForActions(
+      actionDefinitions,
+      procedureDefinition,
+    ),
+  });
+  if (!result.ok) assert.fail(JSON.stringify(result.diagnostics));
+  return result.prepared;
+}
+
+function prepareUninvokedProcedure(
+  procedureDefinition: ContentDefinition,
+): ReturnType<typeof preparePlayBundle> {
+  const ownerPackageId =
+    procedureDefinition.kind === 'actionProcedure'
+      ? procedureDefinition.ownerPackageId
+      : foundationId;
+  const foundationDefinitions =
+    ownerPackageId === foundationId
+      ? [...damageCatalog.definitions, procedureDefinition]
+      : [...damageCatalog.definitions, basicAttackProcedure];
+  const requirements = {
+    operations: [{ id: 'operation.damage' as const, version: 1 }],
+    capabilities: [
+      { id: 'capability.defenses' as const, version: 1 },
+      { id: 'capability.random' as const, version: 1 },
+      { id: 'capability.vitality' as const, version: 1 },
+    ],
+  };
+  const foundation = defineContentPack({
+    identity: { id: foundationId, version: '1.0.0' },
+    entry: { module: 'foundation/index.ts', declaration: 'content' },
+    requirements,
+    definitions: foundationDefinitions,
+    exports: foundationDefinitions.map((definition) => definition.id),
+  });
+  const consumer =
+    ownerPackageId === foundationId
+      ? undefined
+      : defineContentPack({
+          identity: { id: ownerPackageId, version: '1.0.0' },
+          entry: { module: 'consumer/index.ts', declaration: 'content' },
+          dependencies: [
+            contentPackDependency({
+              id: foundationId,
+              version: '1.0.0',
+              importAs: 'foundation',
+            }),
+          ],
+          requirements,
+          definitions: [procedureDefinition],
+          exports: [procedureDefinition.id],
+        });
+  return preparePlayBundle({
+    bundle: composePlayBundle({
+      identity: { id: 'procedure.uninvoked.bundle', version: '1.0.0' },
+      ruleset: contractTestRuleset,
+      base: contentPackRequest({
+        id: ownerPackageId,
+        version: '1.0.0',
+      }),
+      add: [],
+      overlays: [],
+      configure: {},
+    }),
+    contentPacks:
+      consumer === undefined
+        ? [contentPackSource(foundation)]
+        : [contentPackSource(consumer), contentPackSource(foundation)],
+  });
+}
+
 function procedureSources(
   actionDefinition: ContentDefinition,
+  procedureDefinition = basicAttackProcedure,
+): readonly ContentPackSource[] {
+  return procedureSourcesForActions([actionDefinition], procedureDefinition);
+}
+
+function procedureSourcesForActions(
+  actionDefinitions: readonly ContentDefinition[],
   procedureDefinition = basicAttackProcedure,
 ): readonly ContentPackSource[] {
   const foundation = defineContentPack({
@@ -517,8 +964,8 @@ function procedureSources(
         { id: 'capability.vitality', version: 1 },
       ],
     },
-    definitions: [actionDefinition],
-    exports: [actionDefinition.id],
+    definitions: actionDefinitions,
+    exports: actionDefinitions.map((definition) => definition.id),
   });
   return [contentPackSource(consumer), contentPackSource(foundation)];
 }
@@ -566,6 +1013,32 @@ function assertPreparationFails(
   assert.ok(
     result.diagnostics.some((diagnostic) => diagnostic.code === code),
     JSON.stringify(result.diagnostics),
+  );
+}
+
+function assertProcedurePreparationFails(
+  procedureDefinition: ContentDefinition,
+  code: string,
+): void {
+  const result = prepareUninvokedProcedure(procedureDefinition);
+  assert.equal(result.ok, false);
+  if (result.ok) return;
+  assert.ok(
+    result.diagnostics.some((diagnostic) => diagnostic.code === code),
+    JSON.stringify(result.diagnostics),
+  );
+}
+
+function assertRustCompilationFails(
+  prepared: PreparedPlayBundle,
+  code: string,
+): void {
+  const compilation = compilePrepared(prepared);
+  assert.equal(compilation.ok, false, JSON.stringify(compilation));
+  if (compilation.ok) return;
+  assert.ok(
+    compilation.diagnostics.some((diagnostic) => diagnostic.code === code),
+    JSON.stringify(compilation.diagnostics),
   );
 }
 
@@ -622,6 +1095,122 @@ function replaceArgument(
       [argumentId]: value,
     },
   };
+}
+
+function rewritePreparedDefinitionSemantic(
+  prepared: PreparedPlayBundle,
+  definitionId: string,
+  rewrite: (semantic: unknown) => unknown,
+): PreparedPlayBundle {
+  return {
+    ...prepared,
+    materializedDefinitions: prepared.materializedDefinitions.map(
+      (definition) => {
+        if (definition.id !== definitionId) return definition;
+        const semantic = rewrite(definition.semantic);
+        const { fingerprint: _fingerprint, ...identity } = definition;
+        return {
+          ...definition,
+          semantic,
+          fingerprint: stableFingerprint({ ...identity, semantic }),
+        };
+      },
+    ),
+    definitionCommitments: prepared.definitionCommitments.map((commitment) => {
+      if (
+        commitment.kind !== 'concrete' ||
+        commitment.definitionId !== definitionId
+      ) {
+        return commitment;
+      }
+      const stage = {
+        ...commitment.stage,
+        value: {
+          ...commitment.stage.value,
+          semantic: rewrite(commitment.stage.value.semantic),
+        },
+      };
+      return {
+        ...commitment,
+        stage,
+        fingerprint: stableFingerprint(stage),
+      };
+    }),
+  };
+}
+
+function updateNestedValue(
+  value: unknown,
+  path: readonly string[],
+  replacement: unknown,
+): unknown {
+  if (path.length === 0) return replacement;
+  if (!isObjectRecord(value)) return value;
+  const [field, ...remaining] = path;
+  if (field === undefined) return replacement;
+  return {
+    ...value,
+    [field]: updateNestedValue(value[field], remaining, replacement),
+  };
+}
+
+function removeNestedProperty(
+  value: unknown,
+  path: readonly string[],
+): unknown {
+  if (!isObjectRecord(value) || path.length === 0) return value;
+  const [field, ...remaining] = path;
+  if (field === undefined) return value;
+  if (remaining.length === 0) {
+    return Object.fromEntries(
+      Object.entries(value).filter(([candidate]) => candidate !== field),
+    );
+  }
+  return {
+    ...value,
+    [field]: removeNestedProperty(value[field], remaining),
+  };
+}
+
+function updateProcedureParameterMaximum(
+  semantic: unknown,
+  parameterId: string,
+  maximum: number,
+): unknown {
+  if (!isObjectRecord(semantic) || !Array.isArray(semantic['parameters'])) {
+    return semantic;
+  }
+  return {
+    ...semantic,
+    parameters: semantic['parameters'].map((parameter) =>
+      isObjectRecord(parameter) && parameter['id'] === parameterId
+        ? { ...parameter, maximum }
+        : parameter,
+    ),
+  };
+}
+
+function appendProcedureParameter(
+  semantic: unknown,
+  parameter: unknown,
+): unknown {
+  if (!isObjectRecord(semantic) || !Array.isArray(semantic['parameters'])) {
+    return semantic;
+  }
+  return {
+    ...semantic,
+    parameters: [...semantic['parameters'], parameter].sort((left, right) => {
+      const leftId = isObjectRecord(left) ? left['id'] : '';
+      const rightId = isObjectRecord(right) ? right['id'] : '';
+      return String(leftId).localeCompare(String(rightId));
+    }),
+  };
+}
+
+function isObjectRecord(
+  value: unknown,
+): value is Readonly<Record<string, unknown>> {
+  return value !== null && typeof value === 'object' && !Array.isArray(value);
 }
 
 function readPath(value: unknown, path: readonly string[]): unknown {

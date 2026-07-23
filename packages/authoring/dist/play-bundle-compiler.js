@@ -1689,6 +1689,7 @@ function validateActionProcedureGraph(records, resolvedReferences, ruleset, diag
                 diagnostics.push(diagnostic('source', 'ACTION_PROCEDURE_OWNER_MISMATCH', `${path}.ownerPackageId`, `procedure owner ${record.definition.ownerPackageId} does not match declaring package ${record.package.source.manifest.identity.id}`, profileDiagnosticContext(record)));
             }
             const parameters = new Map();
+            const usedParameterIds = new Set();
             for (const [index, parameter] of record.definition.parameters.entries()) {
                 const parameterPath = `${path}.parameters[${index}]`;
                 if (!validPortableIdentifier(parameter.id)) {
@@ -1706,10 +1707,16 @@ function validateActionProcedureGraph(records, resolvedReferences, ruleset, diag
                 }
             }
             if (record.definition.implementation.kind === 'inline') {
-                validateProcedureTemplateMarkers(record.definition.implementation.template, parameters, `${path}.implementation.template`, record, diagnostics);
+                validateProcedureTemplateMarkers(record.definition.implementation.template, parameters, `${path}.implementation.template`, record, diagnostics, usedParameterIds);
+                validateProcedureInlineTemplate(record.definition.implementation.template, parameters, `${path}.implementation.template`, record, diagnostics);
             }
             else {
-                validateProcedureInvocation(record, record.definition.implementation.invocation, parameters, resolvedReferences, recordsByGlobalId, ruleset, `${path}.implementation.invocation`, diagnostics);
+                validateProcedureInvocation(record, record.definition.implementation.invocation, parameters, resolvedReferences, recordsByGlobalId, ruleset, `${path}.implementation.invocation`, diagnostics, usedParameterIds);
+            }
+            for (const parameterId of [...parameters.keys()].sort()) {
+                if (usedParameterIds.has(parameterId))
+                    continue;
+                diagnostics.push(diagnostic('source', 'ACTION_PROCEDURE_PARAMETER_UNUSED', `${path}.parameters.${parameterId}`, `procedure parameter ${parameterId} is declared but never consumed`, profileDiagnosticContext(record)));
             }
             continue;
         }
@@ -1718,7 +1725,7 @@ function validateActionProcedureGraph(records, resolvedReferences, ruleset, diag
         }
     }
 }
-function validateProcedureInvocation(source, invocation, outerParameters, resolvedReferences, recordsByGlobalId, ruleset, path, diagnostics) {
+function validateProcedureInvocation(source, invocation, outerParameters, resolvedReferences, recordsByGlobalId, ruleset, path, diagnostics, usedOuterParameterIds) {
     const target = (resolvedReferences.get(globalDefinitionId(source)) ?? [])
         .map((globalId) => recordsByGlobalId.get(globalId))
         .find((candidate) => candidate?.definition.id === invocation.procedure.definitionId);
@@ -1740,6 +1747,13 @@ function validateProcedureInvocation(source, invocation, outerParameters, resolv
             continue;
         }
         const value = invocation.arguments[argumentId];
+        if (usedOuterParameterIds !== undefined &&
+            isRecord(value) &&
+            value['kind'] === 'parameter' &&
+            typeof value['parameterId'] === 'string' &&
+            outerParameters?.has(value['parameterId']) === true) {
+            usedOuterParameterIds.add(value['parameterId']);
+        }
         if (!procedureArgumentMatches(value, parameter, outerParameters, ruleset)) {
             diagnostics.push(diagnostic('source', 'ACTION_PROCEDURE_ARGUMENT_TYPE_MISMATCH', `${path}.arguments.${argumentId}`, `argument ${argumentId} does not satisfy ${parameter.type}`, profileDiagnosticContext(source)));
         }
@@ -1750,13 +1764,13 @@ function validateProcedureInvocation(source, invocation, outerParameters, resolv
         diagnostics.push(diagnostic('source', 'ACTION_PROCEDURE_ARGUMENT_MISSING', `${path}.arguments.${parameterId}`, `procedure ${target.definition.id} requires argument ${parameterId}`, profileDiagnosticContext(source)));
     }
 }
-function validateProcedureTemplateMarkers(value, parameters, path, record, diagnostics) {
+function validateProcedureTemplateMarkers(value, parameters, path, record, diagnostics, usedParameterIds) {
     if (typeof value === 'function' || typeof value === 'symbol') {
         diagnostics.push(diagnostic('source', 'ACTION_PROCEDURE_EXECUTABLE_VALUE_FORBIDDEN', path, 'procedure templates must contain portable data only', profileDiagnosticContext(record)));
         return;
     }
     if (Array.isArray(value)) {
-        value.forEach((entry, index) => validateProcedureTemplateMarkers(entry, parameters, `${path}[${index}]`, record, diagnostics));
+        value.forEach((entry, index) => validateProcedureTemplateMarkers(entry, parameters, `${path}[${index}]`, record, diagnostics, usedParameterIds));
         return;
     }
     if (!isRecord(value))
@@ -1767,6 +1781,9 @@ function validateProcedureTemplateMarkers(value, parameters, path, record, diagn
         const parameter = typeof parameterId === 'string'
             ? parameters.get(parameterId)
             : undefined;
+        if (parameter !== undefined) {
+            usedParameterIds.add(parameter.id);
+        }
         if (parameter === undefined ||
             parameter.type !== parameterType ||
             Object.keys(value).sort().join(',') !==
@@ -1776,8 +1793,110 @@ function validateProcedureTemplateMarkers(value, parameters, path, record, diagn
         return;
     }
     for (const [field, child] of Object.entries(value)) {
-        validateProcedureTemplateMarkers(child, parameters, `${path}.${field}`, record, diagnostics);
+        validateProcedureTemplateMarkers(child, parameters, `${path}.${field}`, record, diagnostics, usedParameterIds);
     }
+}
+function validateProcedureInlineTemplate(template, parameters, path, record, diagnostics) {
+    const substitutions = new Map([...parameters].map(([parameterId, parameter]) => [
+        parameterId,
+        procedureParameterValidationSample(parameter),
+    ]));
+    const variants = [
+        substitutions,
+        ...[...parameters]
+            .filter((entry) => entry[1].type === 'boundedInteger')
+            .map(([parameterId, parameter]) => {
+            const variant = new Map(substitutions);
+            if (parameter.type === 'boundedInteger') {
+                variant.set(parameterId, parameter.maximum);
+            }
+            return variant;
+        }),
+    ];
+    if (variants.every((variant) => isStructurallyValidActionBody(materializeProcedureTemplateForValidation(template, variant)))) {
+        return;
+    }
+    diagnostics.push(diagnostic('source', 'ACTION_PROCEDURE_TEMPLATE_INVALID', path, 'procedure template does not materialize to a structurally valid action body', profileDiagnosticContext(record)));
+}
+function procedureParameterValidationSample(parameter) {
+    switch (parameter.type) {
+        case 'boundedInteger':
+            return parameter.minimum;
+        case 'identifier':
+            return 'procedure.parameter';
+        case 'boolean':
+            return false;
+        case 'formula':
+            return { kind: 'constant', value: 0 };
+        case 'rulesetValueReference':
+        case 'catalogReference':
+            return 'procedure.parameter';
+        case 'targeting':
+            return {
+                kind: 'participant',
+                team: 'any',
+                maximumRange: 1,
+                maximumTargets: 1,
+            };
+        case 'check':
+            return { kind: 'noRoll' };
+        case 'costs':
+            return [];
+        case 'program':
+            return { kind: 'sequence', steps: [] };
+        case 'semanticBranches':
+            return { kind: 'onCheck' };
+    }
+}
+function materializeProcedureTemplateForValidation(value, substitutions) {
+    if (Array.isArray(value)) {
+        return value.map((entry) => materializeProcedureTemplateForValidation(entry, substitutions));
+    }
+    if (!isRecord(value))
+        return value;
+    if (value['kind'] === 'parameter') {
+        const parameterId = value['parameterId'];
+        return typeof parameterId === 'string'
+            ? substitutions.get(parameterId)
+            : undefined;
+    }
+    return Object.fromEntries(Object.entries(value).map(([field, child]) => [
+        field,
+        materializeProcedureTemplateForValidation(child, substitutions),
+    ]));
+}
+function isStructurallyValidActionBody(value) {
+    if (!isRecord(value) ||
+        Object.keys(value).sort().join(',') !==
+            'check,costs,program,rollScope,targets') {
+        return false;
+    }
+    const targets = value['targets'];
+    const check = value['check'];
+    const program = value['program'];
+    return (isRecord(targets) &&
+        (targets['kind'] === 'participant' || targets['kind'] === 'cell') &&
+        (targets['team'] === 'hostile' ||
+            targets['team'] === 'ally' ||
+            targets['team'] === 'any') &&
+        unsigned32(targets['maximumRange']) &&
+        unsigned32(targets['maximumTargets']) &&
+        isRecord(check) &&
+        (check['kind'] === 'noRoll' ||
+            check['kind'] === 'attack' ||
+            check['kind'] === 'savingThrow') &&
+        (value['rollScope'] === 'shared' ||
+            value['rollScope'] === 'perTarget' ||
+            value['rollScope'] === 'none') &&
+        Array.isArray(value['costs']) &&
+        isRecord(program) &&
+        isProgramKind(program['kind']));
+}
+function unsigned32(value) {
+    return (typeof value === 'number' &&
+        Number.isInteger(value) &&
+        value >= 0 &&
+        value <= 0xffff_ffff);
 }
 function procedureArgumentMatches(value, parameter, outerParameters, ruleset) {
     if (isRecord(value) && value['kind'] === 'parameter') {
@@ -1788,7 +1907,11 @@ function procedureArgumentMatches(value, parameter, outerParameters, ruleset) {
             : undefined;
         return (outer !== undefined &&
             outer.type === parameter.type &&
-            value['parameterType'] === parameter.type);
+            value['parameterType'] === parameter.type &&
+            (outer.type !== 'boundedInteger' ||
+                parameter.type !== 'boundedInteger' ||
+                (outer.minimum >= parameter.minimum &&
+                    outer.maximum <= parameter.maximum)));
     }
     switch (parameter.type) {
         case 'boundedInteger':

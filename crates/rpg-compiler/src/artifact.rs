@@ -1974,7 +1974,13 @@ fn normalized_ir_from_materialized(
             continue;
         }
         let path = format!("$.materializedDefinitions[{index}].semantic");
-        validate_action_procedure_definition(definition, &path, &mut diagnostics);
+        validate_action_procedure_definition(
+            definition,
+            &definitions,
+            &prepared.ruleset,
+            &path,
+            &mut diagnostics,
+        );
     }
 
     for (index, definition) in prepared.materialized_definitions.iter().enumerate() {
@@ -2045,6 +2051,7 @@ fn normalized_ir_from_materialized(
                     &prepared.ruleset,
                     &mut effective_references,
                     &mut visiting,
+                    false,
                     &format!("{path}.invocation"),
                     &mut diagnostics,
                 ) else {
@@ -2169,9 +2176,12 @@ fn validate_action_semantic_schema(
 
 fn validate_action_procedure_definition(
     definition: &MaterializedContentDefinition,
+    definitions: &BTreeMap<&str, &MaterializedContentDefinition>,
+    ruleset: &Ruleset,
     path: &str,
     diagnostics: &mut Vec<RpgDiagnostic>,
 ) {
+    let initial_diagnostic_count = diagnostics.len();
     let procedure = match serde_json::from_value::<MaterializedActionProcedureSemantic>(
         definition.semantic.clone(),
     ) {
@@ -2245,18 +2255,244 @@ fn validate_action_procedure_definition(
     }
     let implementation_value = serde_json::to_value(&procedure.implementation)
         .expect("procedure implementation serializes");
+    let mut used_parameters = BTreeSet::new();
     validate_parameter_markers(
         &implementation_value,
         &parameters,
         &format!("{path}.implementation"),
+        &mut used_parameters,
         diagnostics,
     );
+    for parameter_id in parameters.keys() {
+        if used_parameters.contains(*parameter_id) {
+            continue;
+        }
+        diagnostics.push(RpgDiagnostic::error(
+            RpgDiagnosticStage::Semantics,
+            "ACTION_PROCEDURE_PARAMETER_UNUSED",
+            format!("{path}.parameters.{parameter_id}"),
+            format!("procedure parameter {parameter_id} is declared but never consumed"),
+        ));
+    }
+    if let ActionProcedureImplementation::Invocation {
+        procedure_id,
+        procedure_owner_package_id,
+        arguments,
+    } = &procedure.implementation
+    {
+        validate_composed_action_procedure_contract(
+            definition,
+            procedure_id,
+            procedure_owner_package_id,
+            arguments,
+            &parameters,
+            definitions,
+            ruleset,
+            &format!("{path}.implementation"),
+            diagnostics,
+        );
+    }
+    if diagnostics.len() != initial_diagnostic_count {
+        return;
+    }
+
+    validate_action_procedure_callable(
+        definition,
+        &procedure,
+        definitions,
+        ruleset,
+        path,
+        diagnostics,
+    );
+}
+
+#[allow(clippy::too_many_arguments)]
+fn validate_composed_action_procedure_contract(
+    definition: &MaterializedContentDefinition,
+    procedure_id: &str,
+    procedure_owner_package_id: &str,
+    arguments: &BTreeMap<String, Value>,
+    outer_parameters: &BTreeMap<&str, &ActionProcedureParameter>,
+    definitions: &BTreeMap<&str, &MaterializedContentDefinition>,
+    ruleset: &Ruleset,
+    path: &str,
+    diagnostics: &mut Vec<RpgDiagnostic>,
+) {
+    if !definition
+        .references
+        .iter()
+        .any(|reference| reference == procedure_id)
+    {
+        diagnostics.push(RpgDiagnostic::error(
+            RpgDiagnosticStage::References,
+            "ACTION_PROCEDURE_REFERENCE_UNDECLARED",
+            format!("{path}.procedureId"),
+            format!("procedure {procedure_id} must be a direct definition reference"),
+        ));
+        return;
+    }
+    let Some(target_definition) = definitions.get(procedure_id) else {
+        diagnostics.push(RpgDiagnostic::error(
+            RpgDiagnosticStage::References,
+            "ACTION_PROCEDURE_DEFINITION_MISSING",
+            format!("{path}.procedureId"),
+            format!("procedure definition {procedure_id} is absent"),
+        ));
+        return;
+    };
+    if target_definition.kind != MaterializedContentDefinitionKind::ActionProcedure {
+        diagnostics.push(RpgDiagnostic::error(
+            RpgDiagnosticStage::References,
+            "ACTION_PROCEDURE_DEFINITION_KIND_INVALID",
+            format!("{path}.procedureId"),
+            format!("definition {procedure_id} is not an action procedure"),
+        ));
+        return;
+    }
+    if target_definition.provenance.package_id != procedure_owner_package_id {
+        diagnostics.push(RpgDiagnostic::error(
+            RpgDiagnosticStage::References,
+            "ACTION_PROCEDURE_REFERENCE_OWNER_MISMATCH",
+            format!("{path}.procedureOwnerPackageId"),
+            format!(
+                "procedure {procedure_id} belongs to {}, not {procedure_owner_package_id}",
+                target_definition.provenance.package_id
+            ),
+        ));
+        return;
+    }
+    let target = match serde_json::from_value::<MaterializedActionProcedureSemantic>(
+        target_definition.semantic.clone(),
+    ) {
+        Ok(target) => target,
+        Err(error) => {
+            diagnostics.push(RpgDiagnostic::error(
+                RpgDiagnosticStage::Semantics,
+                "ACTION_PROCEDURE_SEMANTIC_DECODE_FAILED",
+                format!("{path}.procedure"),
+                error.to_string(),
+            ));
+            return;
+        }
+    };
+    if !validate_action_semantic_schema(
+        &target.schema,
+        ACTION_PROCEDURE_IDENTITY,
+        ACTION_PROCEDURE_VERSION,
+        &format!("{path}.procedure.schema"),
+        diagnostics,
+    ) {
+        return;
+    }
+    let target_parameters = target
+        .parameters
+        .iter()
+        .map(|parameter| (parameter.id(), parameter))
+        .collect::<BTreeMap<_, _>>();
+    let effective_references = definition
+        .references
+        .iter()
+        .cloned()
+        .collect::<BTreeSet<_>>();
+    for (argument_id, argument) in arguments {
+        let argument_path = format!("{path}.arguments.{argument_id}");
+        let Some(target_parameter) = target_parameters.get(argument_id.as_str()) else {
+            diagnostics.push(RpgDiagnostic::error(
+                RpgDiagnosticStage::Semantics,
+                "ACTION_PROCEDURE_ARGUMENT_EXTRA",
+                &argument_path,
+                format!("procedure {procedure_id} has no parameter {argument_id}"),
+            ));
+            continue;
+        };
+        if let Some((outer_parameter_id, outer_parameter_type)) =
+            action_procedure_parameter_marker(argument)
+        {
+            let compatible =
+                outer_parameters
+                    .get(outer_parameter_id)
+                    .is_some_and(|outer_parameter| {
+                        outer_parameter.value_type() == outer_parameter_type
+                            && outer_parameter.value_type() == target_parameter.value_type()
+                            && bounded_parameter_domain_is_compatible(
+                                outer_parameter,
+                                target_parameter,
+                            )
+                    });
+            if !compatible {
+                diagnostics.push(RpgDiagnostic::error(
+                    RpgDiagnosticStage::Semantics,
+                    "ACTION_PROCEDURE_ARGUMENT_TYPE_MISMATCH",
+                    &argument_path,
+                    format!(
+                        "forwarded argument does not satisfy {}",
+                        target_parameter.value_type()
+                    ),
+                ));
+            }
+            continue;
+        }
+        let _ = normalize_procedure_argument(
+            argument,
+            target_parameter,
+            definitions,
+            ruleset,
+            &effective_references,
+            false,
+            &argument_path,
+            diagnostics,
+        );
+    }
+    for parameter_id in target_parameters.keys() {
+        if arguments.contains_key(*parameter_id) {
+            continue;
+        }
+        diagnostics.push(RpgDiagnostic::error(
+            RpgDiagnosticStage::Semantics,
+            "ACTION_PROCEDURE_ARGUMENT_MISSING",
+            format!("{path}.arguments.{parameter_id}"),
+            format!("procedure {procedure_id} requires argument {parameter_id}"),
+        ));
+    }
+}
+
+fn action_procedure_parameter_marker(value: &Value) -> Option<(&str, &str)> {
+    let object = value.as_object()?;
+    if object.get("kind").and_then(Value::as_str) != Some("parameter") {
+        return None;
+    }
+    Some((
+        object.get("parameterId")?.as_str()?,
+        object.get("parameterType")?.as_str()?,
+    ))
+}
+
+fn bounded_parameter_domain_is_compatible(
+    source: &ActionProcedureParameter,
+    target: &ActionProcedureParameter,
+) -> bool {
+    match (source, target) {
+        (
+            ActionProcedureParameter::BoundedInteger {
+                minimum: source_minimum,
+                maximum: source_maximum,
+                ..
+            },
+            ActionProcedureParameter::BoundedInteger {
+                minimum: target_minimum,
+                maximum: target_maximum,
+                ..
+            },
+        ) => source_minimum >= target_minimum && source_maximum <= target_maximum,
+        _ => true,
+    }
 }
 
 fn validate_parameter_markers(
     value: &Value,
     parameters: &BTreeMap<&str, &ActionProcedureParameter>,
     path: &str,
+    used_parameters: &mut BTreeSet<String>,
     diagnostics: &mut Vec<RpgDiagnostic>,
 ) {
     match value {
@@ -2266,6 +2502,7 @@ fn validate_parameter_markers(
                     value,
                     parameters,
                     &format!("{path}[{index}]"),
+                    used_parameters,
                     diagnostics,
                 );
             }
@@ -2275,6 +2512,9 @@ fn validate_parameter_markers(
         {
             let parameter_id = object.get("parameterId").and_then(Value::as_str);
             let parameter_type = object.get("parameterType").and_then(Value::as_str);
+            if parameter_id.is_some_and(|id| parameters.contains_key(id)) {
+                used_parameters.insert(parameter_id.expect("checked parameter id").to_owned());
+            }
             let valid = object.len() == 3
                 && parameter_id
                     .and_then(|id| parameters.get(id))
@@ -2294,11 +2534,110 @@ fn validate_parameter_markers(
                     value,
                     parameters,
                     &format!("{path}.{field}"),
+                    used_parameters,
                     diagnostics,
                 );
             }
         }
         _ => {}
+    }
+}
+
+fn validate_action_procedure_callable(
+    definition: &MaterializedContentDefinition,
+    procedure: &MaterializedActionProcedureSemantic,
+    definitions: &BTreeMap<&str, &MaterializedContentDefinition>,
+    ruleset: &Ruleset,
+    path: &str,
+    diagnostics: &mut Vec<RpgDiagnostic>,
+) {
+    let mut base_references = definition
+        .references
+        .iter()
+        .cloned()
+        .collect::<BTreeSet<_>>();
+    base_references.insert(definition.id.clone());
+    let base_arguments = procedure_validation_arguments(&procedure.parameters, ruleset);
+    let mut variants = vec![(base_arguments.clone(), base_references.clone())];
+    for parameter in &procedure.parameters {
+        if !matches!(parameter, ActionProcedureParameter::BoundedInteger { .. }) {
+            continue;
+        }
+        let mut arguments = base_arguments.clone();
+        for candidate in &procedure.parameters {
+            if candidate.id() != parameter.id() {
+                continue;
+            }
+            if let ActionProcedureParameter::BoundedInteger { maximum, .. } = candidate {
+                arguments.insert(candidate.id().to_owned(), Value::from(*maximum));
+            }
+        }
+        variants.push((arguments, base_references.clone()));
+    }
+
+    for (arguments, mut effective_references) in variants {
+        let mut visiting = Vec::new();
+        let _ = expand_action_procedure(
+            &definition.id,
+            &procedure.owner_package_id,
+            &arguments,
+            definitions,
+            ruleset,
+            &mut effective_references,
+            &mut visiting,
+            true,
+            &format!("{path}.callable"),
+            diagnostics,
+        );
+    }
+}
+
+fn procedure_validation_arguments(
+    parameters: &[ActionProcedureParameter],
+    ruleset: &Ruleset,
+) -> BTreeMap<String, Value> {
+    parameters
+        .iter()
+        .map(|parameter| {
+            (
+                parameter.id().to_owned(),
+                procedure_parameter_validation_sample(parameter, ruleset),
+            )
+        })
+        .collect()
+}
+
+fn procedure_parameter_validation_sample(
+    parameter: &ActionProcedureParameter,
+    ruleset: &Ruleset,
+) -> Value {
+    match parameter {
+        ActionProcedureParameter::BoundedInteger { minimum, .. } => Value::from(*minimum),
+        ActionProcedureParameter::Identifier { .. } => Value::from("procedure.parameter"),
+        ActionProcedureParameter::Boolean { .. } => Value::Bool(false),
+        ActionProcedureParameter::Formula { .. } => json!({"kind": "constant", "value": 0}),
+        ActionProcedureParameter::RulesetValueReference { .. } => {
+            json!({
+                "kind": RulesetValueKind::Stat,
+                "id": "procedure.parameter",
+                "rulesetId": ruleset.identity.id,
+            })
+        }
+        ActionProcedureParameter::CatalogReference { .. } => json!({
+            "definitionId": "procedure.parameter",
+            "category": "damageType",
+            "packageId": "procedure.parameter",
+        }),
+        ActionProcedureParameter::Targeting { .. } => json!({
+            "kind": "participant",
+            "team": "any",
+            "maximumRange": 1,
+            "maximumTargets": 1,
+        }),
+        ActionProcedureParameter::Check { .. } => json!({"kind": "noRoll"}),
+        ActionProcedureParameter::Costs { .. } => json!([]),
+        ActionProcedureParameter::Program { .. } => json!({"kind": "sequence", "steps": []}),
+        ActionProcedureParameter::SemanticBranches { .. } => json!({"kind": "onCheck"}),
     }
 }
 
@@ -2327,6 +2666,7 @@ fn expand_action_procedure(
     ruleset: &Ruleset,
     effective_references: &mut BTreeSet<String>,
     visiting: &mut Vec<String>,
+    allow_symbolic_references: bool,
     path: &str,
     diagnostics: &mut Vec<RpgDiagnostic>,
 ) -> Option<RpgIrActionBody> {
@@ -2426,6 +2766,7 @@ fn expand_action_procedure(
             definitions,
             ruleset,
             effective_references,
+            allow_symbolic_references,
             &format!("{path}.arguments.{argument_id}"),
             diagnostics,
         ) {
@@ -2498,6 +2839,7 @@ fn expand_action_procedure(
                 ruleset,
                 effective_references,
                 visiting,
+                allow_symbolic_references,
                 &format!("{path}.procedure"),
                 diagnostics,
             )
@@ -2507,12 +2849,14 @@ fn expand_action_procedure(
     expanded
 }
 
+#[allow(clippy::too_many_arguments)]
 fn normalize_procedure_argument(
     value: &Value,
     parameter: &ActionProcedureParameter,
     definitions: &BTreeMap<&str, &MaterializedContentDefinition>,
     ruleset: &Ruleset,
     effective_references: &BTreeSet<String>,
+    allow_symbolic_references: bool,
     path: &str,
     diagnostics: &mut Vec<RpgDiagnostic>,
 ) -> Option<Value> {
@@ -2544,10 +2888,11 @@ fn normalize_procedure_argument(
                 serde_json::from_value::<ProcedureRulesetValueReference>(value.clone()).ok();
             reference
                 .filter(|reference| {
-                    reference.ruleset_id == ruleset.identity.id
-                        && ruleset.provides.values.iter().any(|candidate| {
-                            candidate.kind == reference.kind && candidate.id == reference.id
-                        })
+                    allow_symbolic_references
+                        || (reference.ruleset_id == ruleset.identity.id
+                            && ruleset.provides.values.iter().any(|candidate| {
+                                candidate.kind == reference.kind && candidate.id == reference.id
+                            }))
                 })
                 .and_then(|reference| serde_json::to_value(reference).ok())
         }
@@ -2555,15 +2900,20 @@ fn normalize_procedure_argument(
             let reference = serde_json::from_value::<ProcedureCatalogReference>(value.clone()).ok();
             reference
                 .filter(|reference| {
-                    effective_references.contains(&reference.definition_id)
-                        && definitions
-                            .get(reference.definition_id.as_str())
-                            .is_some_and(|definition| {
-                                definition.provenance.package_id == reference.package_id
-                                    && definition.kind == MaterializedContentDefinitionKind::Support
-                                    && definition.semantic.get("catalog").and_then(Value::as_str)
-                                        == Some(reference.category.as_str())
-                            })
+                    allow_symbolic_references
+                        || (effective_references.contains(&reference.definition_id)
+                            && definitions
+                                .get(reference.definition_id.as_str())
+                                .is_some_and(|definition| {
+                                    definition.provenance.package_id == reference.package_id
+                                        && definition.kind
+                                            == MaterializedContentDefinitionKind::Support
+                                        && definition
+                                            .semantic
+                                            .get("catalog")
+                                            .and_then(Value::as_str)
+                                            == Some(reference.category.as_str())
+                                }))
                 })
                 .and_then(|reference| serde_json::to_value(reference).ok())
         }
