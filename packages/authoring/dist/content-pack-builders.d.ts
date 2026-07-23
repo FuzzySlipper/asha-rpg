@@ -1,6 +1,6 @@
 import type { ContentCatalogReference } from './catalogs.js';
 import type { RulesetValueReference } from './ruleset-builders.js';
-import type { ContentActionDefinition, PlayBundleManifest, ContentDefinition, ContentDefinitionReference, ContentParticipantProfileData, ContentParticipantProfileCapability, ContentDerivedDefinition, ContentPackDependency, ContentPackIdentity, ContentMixinApplication, ContentMixinDefinition, ContentPackManifest, ContentPatch, ContentPackRequest, ContentPackSource, ContentPolicyBinding, ContentReservedRelationship, ContentSupportDefinition, ContentTemplateDefinition, ScenarioBoundedValue } from './play-bundle-types.js';
+import type { ContentActionDefinition, ContentActionProcedureDefinition, ContentInvokedActionDefinition, ActionProcedureArgumentsFor, ActionProcedureCompositionArgumentsFor, ActionProcedureParameter, ActionProcedureParameterReference, ActionProcedureParameterType, PlayBundleManifest, ContentDefinition, ContentDefinitionReference, ContentParticipantProfileData, ContentParticipantProfileCapability, ContentDerivedDefinition, ContentPackDependency, ContentPackIdentity, ContentMixinApplication, ContentMixinDefinition, ContentPackManifest, ContentPatch, ContentPackRequest, ContentPackSource, ContentPolicyBinding, ContentReservedRelationship, ContentSupportDefinition, ContentTemplateDefinition, ScenarioBoundedValue } from './play-bundle-types.js';
 type OrdinaryDefinitionInput<Definition extends ContentDefinition> = Omit<Definition, 'kind' | 'lowLevelReferences'> & {
     readonly kind?: Definition['kind'];
 };
@@ -22,6 +22,18 @@ export declare function contentPackDependency(input: Omit<ContentPackDependency,
 export declare function contentPackRequest(input: ContentPackRequest): ContentPackRequest;
 export declare function definitionReference(input: ContentDefinitionReference): ContentDefinitionReference;
 export declare function defineActionDefinition(input: OrdinaryDefinitionInput<ContentActionDefinition>): ContentActionDefinition;
+export declare function defineActionProcedureDefinition<const Parameters extends readonly ActionProcedureParameter[]>(input: Omit<OrdinaryDefinitionInput<ContentActionProcedureDefinition<Parameters>>, 'parameters'> & {
+    readonly parameters: Parameters;
+}): ContentActionProcedureDefinition<Parameters>;
+export declare function defineActionInvocationDefinition<const Parameters extends readonly ActionProcedureParameter[]>(input: Omit<OrdinaryDefinitionInput<ContentInvokedActionDefinition>, 'invocation'> & {
+    readonly procedure: ContentActionProcedureDefinition<Parameters>;
+    readonly importAs?: string;
+    readonly arguments: ActionProcedureArgumentsFor<Parameters>;
+}): ContentInvokedActionDefinition;
+export declare function actionProcedureParameterReference<const Type extends ActionProcedureParameterType>(parameter: ActionProcedureParameter & {
+    readonly type: Type;
+}): ActionProcedureParameterReference<Type>;
+export declare function actionProcedureInvocation<const Parameters extends readonly ActionProcedureParameter[]>(procedure: ContentActionProcedureDefinition<Parameters>, argumentsById: ActionProcedureCompositionArgumentsFor<Parameters>, importAs?: string): import('./play-bundle-types.js').ActionProcedureImplementation;
 export declare function defineSupportDefinition(input: OrdinaryDefinitionInput<ContentSupportDefinition>): ContentSupportDefinition;
 export declare function defineParticipantProfileDefinition(input: Omit<OrdinaryDefinitionInput<ContentSupportDefinition>, 'semantic'> & {
     readonly profileId: string;

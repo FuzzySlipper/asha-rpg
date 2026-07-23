@@ -2093,22 +2093,26 @@ mod tests {
             visibility: MaterializedContentVisibility::Exported,
             extension_policy: ContentExtensionPolicy::Sealed,
             semantic: json!({
-                "id": "action.reactive",
-                "name": "Reactive strike",
-                "sourcePath": "actions/replay.rs#reactiveStrike",
-                "targets": {"team": "hostile", "maximumRange": 3, "maximumTargets": 1},
-                "check": {"kind": "attack", "modifier": {"kind": "constant", "value": 0}, "defenseId": "catalog.defense.guard"},
-                "rollScope": "shared",
-                "costs": [],
-                "program": {"kind": "atomic", "body": {"kind": "sequence", "steps": [
-                    {"kind": "operation", "operation": {"kind": "openReaction", "reactionId": "reaction.ward", "options": [
-                        {"id": "ward", "label": "Raise ward", "damageReduction": 3}
-                    ]}},
-                    {"kind": "onCheck",
-                      "hit": {"kind": "operation", "operation": {"kind": "damage", "amount": {"kind": "dice", "count": 2, "sides": 6, "bonus": 0}, "damageType": "catalog.damage.force"}},
-                      "miss": {"kind": "operation", "operation": {"kind": "damage", "amount": {"kind": "dice", "count": 1, "sides": 4, "bonus": 0}, "damageType": "catalog.damage.force"}}
-                    }
-                ]}}
+                "schema": {"identity": "asha.rpg.action-definition", "version": 1},
+                "kind": "inline",
+                "action": {
+                    "id": "action.reactive",
+                    "name": "Reactive strike",
+                    "sourcePath": "actions/replay.rs#reactiveStrike",
+                    "targets": {"team": "hostile", "maximumRange": 3, "maximumTargets": 1},
+                    "check": {"kind": "attack", "modifier": {"kind": "constant", "value": 0}, "defenseId": "catalog.defense.guard"},
+                    "rollScope": "shared",
+                    "costs": [],
+                    "program": {"kind": "atomic", "body": {"kind": "sequence", "steps": [
+                        {"kind": "operation", "operation": {"kind": "openReaction", "reactionId": "reaction.ward", "options": [
+                            {"id": "ward", "label": "Raise ward", "damageReduction": 3}
+                        ]}},
+                        {"kind": "onCheck",
+                          "hit": {"kind": "operation", "operation": {"kind": "damage", "amount": {"kind": "dice", "count": 2, "sides": 6, "bonus": 0}, "damageType": "catalog.damage.force"}},
+                          "miss": {"kind": "operation", "operation": {"kind": "damage", "amount": {"kind": "dice", "count": 1, "sides": 4, "bonus": 0}, "damageType": "catalog.damage.force"}}
+                        }
+                    ]}}
+                }
             }),
             presentation: json!({"label": "Reactive strike"}),
             references: vec![
@@ -2135,16 +2139,20 @@ mod tests {
             visibility: MaterializedContentVisibility::Exported,
             extension_policy: ContentExtensionPolicy::Sealed,
             semantic: json!({
-                "id": "action.move",
-                "name": "Move",
-                "sourcePath": "actions/replay.rs#moveAction",
-                "targets": {"kind": "cell", "team": "any", "maximumRange": 2, "maximumTargets": 1},
-                "check": {"kind": "noRoll"},
-                "rollScope": "none",
-                "costs": [],
-                "program": {"kind": "atomic", "body": {"kind": "onCheck", "noRoll": {
-                    "kind": "operation", "operation": {"kind": "moveToCell", "maximumDistance": 2, "provokes": true}
-                }}}
+                "schema": {"identity": "asha.rpg.action-definition", "version": 1},
+                "kind": "inline",
+                "action": {
+                    "id": "action.move",
+                    "name": "Move",
+                    "sourcePath": "actions/replay.rs#moveAction",
+                    "targets": {"kind": "cell", "team": "any", "maximumRange": 2, "maximumTargets": 1},
+                    "check": {"kind": "noRoll"},
+                    "rollScope": "none",
+                    "costs": [],
+                    "program": {"kind": "atomic", "body": {"kind": "onCheck", "noRoll": {
+                        "kind": "operation", "operation": {"kind": "moveToCell", "maximumDistance": 2, "provokes": true}
+                    }}}
+                }
             }),
             presentation: json!({"label": "Move"}),
             references: Vec::new(),

@@ -71,6 +71,17 @@ pub struct RpgIrAction {
     pub program: RpgIrProgram,
 }
 
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase", deny_unknown_fields)]
+pub struct RpgIrActionBody {
+    pub targets: RpgIrTargetSelector,
+    pub check: RpgIrCheck,
+    pub roll_scope: RpgIrRollScope,
+    #[serde(default)]
+    pub costs: Vec<RpgIrResourceCost>,
+    pub program: RpgIrProgram,
+}
+
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
 pub enum RpgIrTeamConstraint {

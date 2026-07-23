@@ -49,6 +49,26 @@ interface DefinitionRecord {
   readonly inheritedReferenceIds?: readonly string[];
 }
 
+function isInlineActionDefinition(
+  definition: ContentDefinition,
+): definition is import('./play-bundle-types.js').ContentActionDefinition {
+  return (
+    definition.kind === 'action' &&
+    'action' in definition &&
+    definition.action !== undefined
+  );
+}
+
+function isInvokedActionDefinition(
+  definition: ContentDefinition,
+): definition is import('./play-bundle-types.js').ContentInvokedActionDefinition {
+  return (
+    definition.kind === 'action' &&
+    'invocation' in definition &&
+    definition.invocation !== undefined
+  );
+}
+
 interface MaterializationResult {
   readonly records: readonly DefinitionRecord[];
   readonly definitionCommitments: readonly ContentDefinitionCommitment[];
@@ -140,6 +160,12 @@ export function preparePlayBundle(options: {
   if (materialization === undefined) return failed(diagnostics);
   const graph = closeDefinitionGraph(context, rootKeys, materialization.records);
   if (diagnostics.length > 0 || graph === undefined) return failed(diagnostics);
+  validateActionProcedureGraph(
+    graph.materialized,
+    graph.resolvedReferences,
+    options.bundle.ruleset,
+    diagnostics,
+  );
   validateParticipantProfiles(
     graph.materialized,
     graph.resolvedReferences,
@@ -896,7 +922,11 @@ function materializeSelectedDefinitions(
       return undefined;
     }
 
-    if (record.definition.kind === 'action' || record.definition.kind === 'support') {
+    if (
+      record.definition.kind === 'action' ||
+      record.definition.kind === 'actionProcedure' ||
+      record.definition.kind === 'support'
+    ) {
       if ((derivationsByDefinition.get(key)?.length ?? 0) > 0) {
         context.diagnostics.push(
           diagnostic(
@@ -1129,6 +1159,7 @@ function materializeSelectedDefinitions(
     for (const record of definitions.values()) {
       if (
         record.definition.kind === 'action' ||
+        record.definition.kind === 'actionProcedure' ||
         record.definition.kind === 'support' ||
         record.definition.kind === 'derived'
       ) {
@@ -1451,7 +1482,7 @@ function resolveRelationshipReference(
 }
 
 function definitionValue(record: DefinitionRecord): PatchedValue {
-  if (record.definition.kind === 'action') {
+  if (isInlineActionDefinition(record.definition)) {
     return { semantic: record.definition.action, presentation: record.definition.presentation ?? null };
   }
   if (record.definition.kind === 'support') {
@@ -1523,7 +1554,7 @@ function replaceConcreteRecordValue(
   value: PatchedValue,
   diagnostics: PlayBundleCompilerDiagnostic[],
 ): DefinitionRecord | undefined {
-  if (record.definition.kind === 'action') {
+  if (isInlineActionDefinition(record.definition)) {
     if (!isRecord(value.semantic)) return undefined;
     return {
       ...record,
@@ -1886,7 +1917,11 @@ function definitionMaterializationStage(
   record: DefinitionRecord,
   ruleset?: Ruleset,
 ): ContentMaterializationStage {
-  if (record.definition.kind !== 'action' && record.definition.kind !== 'support') {
+  if (
+    record.definition.kind !== 'action' &&
+    record.definition.kind !== 'actionProcedure' &&
+    record.definition.kind !== 'support'
+  ) {
     throw new Error(`definition ${record.definition.id} is not concrete`);
   }
   return {
@@ -2020,23 +2055,95 @@ function definitionCommitmentIdentity(
 }
 
 export function contentDefinitionMaterializationFingerprint(
-  definition: Extract<ContentDefinition, { readonly kind: 'action' | 'support' }>,
+  definition: Extract<
+    ContentDefinition,
+    { readonly kind: 'action' | 'actionProcedure' | 'support' }
+  >,
 ): string {
   return stableFingerprint({
     id: definition.id,
     kind: definition.kind,
     extensionPolicy: definition.extensionPolicy,
-    value: definition.kind === 'action'
-      ? { semantic: normalizeAction(definition.action), presentation: definition.presentation ?? null }
-      : { semantic: definition.semantic, presentation: definition.presentation ?? null },
+    value:
+      definition.kind === 'action'
+        ? {
+            semantic: isInlineActionDefinition(definition)
+              ? normalizeAction(definition.action)
+              : materializedActionSemantic(definition),
+            presentation: definition.presentation ?? null,
+          }
+        : definition.kind === 'actionProcedure'
+          ? {
+              semantic: materializedActionProcedureSemantic(definition),
+              presentation: definition.presentation ?? null,
+            }
+          : {
+              semantic: definition.semantic,
+              presentation: definition.presentation ?? null,
+            },
     references: authoredDefinitionReferenceIds(definition),
   });
+}
+
+function materializedActionSemantic(
+  definition: Extract<ContentDefinition, { readonly kind: 'action' }>,
+): unknown {
+  if (isInlineActionDefinition(definition)) {
+    return {
+      schema: { identity: 'asha.rpg.action-definition', version: 1 },
+      kind: 'inline',
+      action: normalizeAction(definition.action),
+    };
+  }
+  return {
+    schema: { identity: 'asha.rpg.action-definition', version: 1 },
+    kind: 'invocation',
+    procedureId: definition.invocation.procedure.definitionId,
+    procedureOwnerPackageId:
+      definition.invocation.procedureOwnerPackageId,
+    arguments: definition.invocation.arguments,
+  };
+}
+
+function materializedActionProcedureSemantic(
+  definition: import('./play-bundle-types.js').ContentActionProcedureDefinition,
+): unknown {
+  const implementation =
+    definition.implementation.kind === 'inline'
+      ? {
+          kind: 'inline' as const,
+          template: definition.implementation.template,
+        }
+      : {
+          kind: 'invocation' as const,
+          procedureId:
+            definition.implementation.invocation.procedure.definitionId,
+          procedureOwnerPackageId:
+            definition.implementation.invocation.procedureOwnerPackageId,
+          arguments: definition.implementation.invocation.arguments,
+        };
+  return {
+    schema: { identity: 'asha.rpg.action-procedure', version: 1 },
+    ownerPackageId: definition.ownerPackageId,
+    parameters: [...definition.parameters].sort((left, right) =>
+      left.id.localeCompare(right.id),
+    ),
+    implementation,
+  };
 }
 
 function normalizedDefinitionValue(record: DefinitionRecord): PatchedValue {
   if (record.definition.kind === 'action') {
     return {
-      semantic: normalizeAction(record.definition.action),
+      semantic: isInlineActionDefinition(record.definition)
+        ? normalizeAction(record.definition.action)
+        : materializedActionSemantic(record.definition),
+      presentation: record.definition.presentation ?? null,
+    };
+  }
+  if (record.definition.kind === 'actionProcedure') {
+    return {
+      semantic: materializedActionProcedureSemantic(record.definition),
       presentation: record.definition.presentation ?? null,
     };
   }
@@ -2098,11 +2205,21 @@ const CATALOG_REFERENCE_FIELDS: Readonly<
 function authoredDefinitionReferenceIds(
   definition: ContentDefinition,
 ): readonly string[] {
+  const procedureReferences =
+    isInvokedActionDefinition(definition)
+      ? [definition.invocation.procedure.definitionId]
+      : definition.kind === 'actionProcedure' &&
+          definition.implementation.kind === 'invocation'
+        ? [
+            definition.implementation.invocation.procedure.definitionId,
+          ]
+        : [];
   return [
     ...new Set([
       ...(definition.lowLevelReferences ?? []).map(
         (reference) => reference.definitionId,
       ),
+      ...procedureReferences,
       ...authoredCatalogReferences(definition).map(
         (reference) => reference.definitionId,
       ),
@@ -2114,8 +2231,20 @@ function authoredCatalogReferences(
   definition: ContentDefinition,
 ): readonly AuthoredCatalogReference[] {
   const byIdentity = new Map<string, AuthoredCatalogReference>();
-  if (definition.kind === 'action') {
+  if (isInlineActionDefinition(definition)) {
     collectCatalogReferences(definition.action, '$.action', byIdentity);
+  } else if (isInvokedActionDefinition(definition)) {
+    collectCatalogReferences(
+      definition.invocation.arguments,
+      '$.invocation.arguments',
+      byIdentity,
+    );
+  } else if (definition.kind === 'actionProcedure') {
+    collectCatalogReferences(
+      definition.implementation,
+      '$.implementation',
+      byIdentity,
+    );
   } else if (definition.kind === 'mixin') {
     collectCatalogReferences(definition.patch, '$.patch', byIdentity);
   } else if (
@@ -2149,6 +2278,22 @@ function collectCatalogReferences(
     return;
   }
   if (!isRecord(value)) return;
+  if (
+    typeof value['definitionId'] === 'string' &&
+    typeof value['packageId'] === 'string' &&
+    isCatalogCategory(value['category'])
+  ) {
+    const category = value['category'];
+    const definitionId = value['definitionId'];
+    const packageId = value['packageId'];
+    references.set(`${category}#${packageId}#${definitionId}`, {
+      definitionId,
+      category,
+      packageId,
+      path,
+    });
+    return;
+  }
   const ownedFields = new Set<string>();
   for (const ownership of catalogOwnershipOf(value)) {
     ownedFields.add(ownership.field);
@@ -2190,6 +2335,14 @@ function definitionReferences(
   ruleset?: Ruleset,
 ): readonly ContentDefinitionReference[] {
   const references = [...(record.definition.lowLevelReferences ?? [])];
+  if (isInvokedActionDefinition(record.definition)) {
+    references.push(record.definition.invocation.procedure);
+  } else if (
+    record.definition.kind === 'actionProcedure' &&
+    record.definition.implementation.kind === 'invocation'
+  ) {
+    references.push(record.definition.implementation.invocation.procedure);
+  }
   const inheritedLocalIds = new Set(
     (record.inheritedReferenceIds ?? []).map(localDefinitionId),
   );
@@ -2275,6 +2428,18 @@ function definitionReferences(
     );
   }
   return uniqueReferences(references);
+}
+
+function isCatalogCategory(
+  value: unknown,
+): value is import('./catalogs.js').ContentCatalogCategory {
+  return (
+    value === 'stat' ||
+    value === 'defense' ||
+    value === 'resource' ||
+    value === 'modifier' ||
+    value === 'damageType'
+  );
 }
 
 function cloneJsonValue(value: unknown): unknown {
@@ -2606,15 +2771,408 @@ function resolveDefinitionReference(
   return target;
 }
 
+function validateActionProcedureGraph(
+  records: readonly DefinitionRecord[],
+  resolvedReferences: ReadonlyMap<string, readonly string[]>,
+  ruleset: Ruleset,
+  diagnostics: PlayBundleCompilerDiagnostic[],
+): void {
+  const recordsByGlobalId = new Map(
+    records.map((record) => [globalDefinitionId(record), record]),
+  );
+  for (const record of records) {
+    if (record.definition.kind === 'actionProcedure') {
+      const path = `$.packages[${record.package.key}].definitions.${record.definition.id}`;
+      if (
+        record.definition.ownerPackageId !==
+        record.package.source.manifest.identity.id
+      ) {
+        diagnostics.push(
+          diagnostic(
+            'source',
+            'ACTION_PROCEDURE_OWNER_MISMATCH',
+            `${path}.ownerPackageId`,
+            `procedure owner ${record.definition.ownerPackageId} does not match declaring package ${record.package.source.manifest.identity.id}`,
+            profileDiagnosticContext(record),
+          ),
+        );
+      }
+      const parameters = new Map<
+        string,
+        import('./play-bundle-types.js').ActionProcedureParameter
+      >();
+      for (const [index, parameter] of record.definition.parameters.entries()) {
+        const parameterPath = `${path}.parameters[${index}]`;
+        if (!validPortableIdentifier(parameter.id)) {
+          diagnostics.push(
+            diagnostic(
+              'source',
+              'ACTION_PROCEDURE_PARAMETER_ID_INVALID',
+              `${parameterPath}.id`,
+              'procedure parameter identities must be portable identifiers',
+              profileDiagnosticContext(record),
+            ),
+          );
+        }
+        if (parameters.has(parameter.id)) {
+          diagnostics.push(
+            diagnostic(
+              'source',
+              'ACTION_PROCEDURE_PARAMETER_DUPLICATE',
+              `${parameterPath}.id`,
+              `procedure repeats parameter ${parameter.id}`,
+              profileDiagnosticContext(record),
+            ),
+          );
+        }
+        parameters.set(parameter.id, parameter);
+        if (
+          parameter.type === 'boundedInteger' &&
+          (!Number.isSafeInteger(parameter.minimum) ||
+            !Number.isSafeInteger(parameter.maximum) ||
+            parameter.minimum > parameter.maximum)
+        ) {
+          diagnostics.push(
+            diagnostic(
+              'source',
+              'ACTION_PROCEDURE_INTEGER_BOUNDS_INVALID',
+              parameterPath,
+              'bounded integer parameters require ordered safe-integer bounds',
+              profileDiagnosticContext(record),
+            ),
+          );
+        }
+      }
+      if (record.definition.implementation.kind === 'inline') {
+        validateProcedureTemplateMarkers(
+          record.definition.implementation.template,
+          parameters,
+          `${path}.implementation.template`,
+          record,
+          diagnostics,
+        );
+      } else {
+        validateProcedureInvocation(
+          record,
+          record.definition.implementation.invocation,
+          parameters,
+          resolvedReferences,
+          recordsByGlobalId,
+          ruleset,
+          `${path}.implementation.invocation`,
+          diagnostics,
+        );
+      }
+      continue;
+    }
+    if (isInvokedActionDefinition(record.definition)) {
+      validateProcedureInvocation(
+        record,
+        record.definition.invocation,
+        undefined,
+        resolvedReferences,
+        recordsByGlobalId,
+        ruleset,
+        `$.packages[${record.package.key}].definitions.${record.definition.id}.invocation`,
+        diagnostics,
+      );
+    }
+  }
+}
+
+function validateProcedureInvocation(
+  source: DefinitionRecord,
+  invocation: {
+    readonly procedure: ContentDefinitionReference;
+    readonly procedureOwnerPackageId: string;
+    readonly arguments: Readonly<
+      Record<
+        string,
+        | import('./play-bundle-types.js').ActionProcedureArgument
+        | import('./play-bundle-types.js').ActionProcedureParameterReference
+      >
+    >;
+  },
+  outerParameters: ReadonlyMap<
+    string,
+    import('./play-bundle-types.js').ActionProcedureParameter
+  > | undefined,
+  resolvedReferences: ReadonlyMap<string, readonly string[]>,
+  recordsByGlobalId: ReadonlyMap<string, DefinitionRecord>,
+  ruleset: Ruleset,
+  path: string,
+  diagnostics: PlayBundleCompilerDiagnostic[],
+): void {
+  const target = (resolvedReferences.get(globalDefinitionId(source)) ?? [])
+    .map((globalId) => recordsByGlobalId.get(globalId))
+    .find(
+      (candidate) =>
+        candidate?.definition.id === invocation.procedure.definitionId,
+    );
+  if (target === undefined || target.definition.kind !== 'actionProcedure') {
+    diagnostics.push(
+      diagnostic(
+        'graph',
+        'ACTION_PROCEDURE_REFERENCE_INVALID',
+        `${path}.procedure`,
+        `procedure ${invocation.procedure.definitionId} must resolve to an exported actionProcedure definition`,
+        profileDiagnosticContext(source),
+      ),
+    );
+    return;
+  }
+  if (
+    target.package.source.manifest.identity.id !==
+      invocation.procedureOwnerPackageId ||
+    target.definition.ownerPackageId !== invocation.procedureOwnerPackageId
+  ) {
+    diagnostics.push(
+      diagnostic(
+        'graph',
+        'ACTION_PROCEDURE_REFERENCE_OWNER_MISMATCH',
+        `${path}.procedureOwnerPackageId`,
+        `procedure ${invocation.procedure.definitionId} belongs to ${target.package.source.manifest.identity.id}, not ${invocation.procedureOwnerPackageId}`,
+        profileDiagnosticContext(source),
+      ),
+    );
+    return;
+  }
+  const expected = new Map(
+    target.definition.parameters.map((parameter) => [parameter.id, parameter]),
+  );
+  for (const argumentId of Object.keys(invocation.arguments).sort()) {
+    const parameter = expected.get(argumentId);
+    if (parameter === undefined) {
+      diagnostics.push(
+        diagnostic(
+          'source',
+          'ACTION_PROCEDURE_ARGUMENT_EXTRA',
+          `${path}.arguments.${argumentId}`,
+          `procedure ${target.definition.id} has no parameter ${argumentId}`,
+          profileDiagnosticContext(source),
+        ),
+      );
+      continue;
+    }
+    const value = invocation.arguments[argumentId];
+    if (
+      !procedureArgumentMatches(
+        value,
+        parameter,
+        outerParameters,
+        ruleset,
+      )
+    ) {
+      diagnostics.push(
+        diagnostic(
+          'source',
+          'ACTION_PROCEDURE_ARGUMENT_TYPE_MISMATCH',
+          `${path}.arguments.${argumentId}`,
+          `argument ${argumentId} does not satisfy ${parameter.type}`,
+          profileDiagnosticContext(source),
+        ),
+      );
+    }
+  }
+  for (const parameterId of [...expected.keys()].sort()) {
+    if (Object.hasOwn(invocation.arguments, parameterId)) continue;
+    diagnostics.push(
+      diagnostic(
+        'source',
+        'ACTION_PROCEDURE_ARGUMENT_MISSING',
+        `${path}.arguments.${parameterId}`,
+        `procedure ${target.definition.id} requires argument ${parameterId}`,
+        profileDiagnosticContext(source),
+      ),
+    );
+  }
+}
+
+function validateProcedureTemplateMarkers(
+  value: unknown,
+  parameters: ReadonlyMap<
+    string,
+    import('./play-bundle-types.js').ActionProcedureParameter
+  >,
+  path: string,
+  record: DefinitionRecord,
+  diagnostics: PlayBundleCompilerDiagnostic[],
+): void {
+  if (typeof value === 'function' || typeof value === 'symbol') {
+    diagnostics.push(
+      diagnostic(
+        'source',
+        'ACTION_PROCEDURE_EXECUTABLE_VALUE_FORBIDDEN',
+        path,
+        'procedure templates must contain portable data only',
+        profileDiagnosticContext(record),
+      ),
+    );
+    return;
+  }
+  if (Array.isArray(value)) {
+    value.forEach((entry, index) =>
+      validateProcedureTemplateMarkers(
+        entry,
+        parameters,
+        `${path}[${index}]`,
+        record,
+        diagnostics,
+      ),
+    );
+    return;
+  }
+  if (!isRecord(value)) return;
+  if (value['kind'] === 'parameter') {
+    const parameterId = value['parameterId'];
+    const parameterType = value['parameterType'];
+    const parameter =
+      typeof parameterId === 'string'
+        ? parameters.get(parameterId)
+        : undefined;
+    if (
+      parameter === undefined ||
+      parameter.type !== parameterType ||
+      Object.keys(value).sort().join(',') !==
+        'kind,parameterId,parameterType'
+    ) {
+      diagnostics.push(
+        diagnostic(
+          'source',
+          'ACTION_PROCEDURE_PARAMETER_REFERENCE_INVALID',
+          path,
+          'parameter markers must exactly name a declared parameter with the same type',
+          profileDiagnosticContext(record),
+        ),
+      );
+    }
+    return;
+  }
+  for (const [field, child] of Object.entries(value)) {
+    validateProcedureTemplateMarkers(
+      child,
+      parameters,
+      `${path}.${field}`,
+      record,
+      diagnostics,
+    );
+  }
+}
+
+function procedureArgumentMatches(
+  value: unknown,
+  parameter: import('./play-bundle-types.js').ActionProcedureParameter,
+  outerParameters: ReadonlyMap<
+    string,
+    import('./play-bundle-types.js').ActionProcedureParameter
+  > | undefined,
+  ruleset: Ruleset,
+): boolean {
+  if (isRecord(value) && value['kind'] === 'parameter') {
+    if (outerParameters === undefined) return false;
+    const outer =
+      typeof value['parameterId'] === 'string'
+        ? outerParameters.get(value['parameterId'])
+        : undefined;
+    return (
+      outer !== undefined &&
+      outer.type === parameter.type &&
+      value['parameterType'] === parameter.type
+    );
+  }
+  switch (parameter.type) {
+    case 'boundedInteger':
+      return (
+        typeof value === 'number' &&
+        Number.isSafeInteger(value) &&
+        value >= parameter.minimum &&
+        value <= parameter.maximum
+      );
+    case 'identifier':
+      return typeof value === 'string' && validPortableIdentifier(value);
+    case 'boolean':
+      return typeof value === 'boolean';
+    case 'formula':
+      return isRecord(value) && isFormulaKind(value['kind']);
+    case 'rulesetValueReference':
+      return (
+        isRecord(value) &&
+        (value['kind'] === 'stat' || value['kind'] === 'defense') &&
+        typeof value['id'] === 'string' &&
+        value['rulesetId'] === ruleset.identity.id &&
+        ruleset.provides.values.some(
+          (candidate) =>
+            candidate.kind === value['kind'] && candidate.id === value['id'],
+        )
+      );
+    case 'catalogReference':
+      return (
+        isRecord(value) &&
+        typeof value['definitionId'] === 'string' &&
+        typeof value['packageId'] === 'string' &&
+        isCatalogCategory(value['category'])
+      );
+    case 'targeting':
+      return (
+        isRecord(value) &&
+        (value['kind'] === 'participant' || value['kind'] === 'cell') &&
+        (value['team'] === 'hostile' ||
+          value['team'] === 'ally' ||
+          value['team'] === 'any')
+      );
+    case 'check':
+      return (
+        isRecord(value) &&
+        (value['kind'] === 'noRoll' ||
+          value['kind'] === 'attack' ||
+          value['kind'] === 'savingThrow')
+      );
+    case 'costs':
+      return Array.isArray(value);
+    case 'program':
+      return isRecord(value) && isProgramKind(value['kind']);
+    case 'semanticBranches':
+      return isRecord(value) && value['kind'] === 'onCheck';
+  }
+}
+
+function isFormulaKind(value: unknown): boolean {
+  return (
+    value === 'constant' ||
+    value === 'readStat' ||
+    value === 'add' ||
+    value === 'dice' ||
+    value === 'half'
+  );
+}
+
+function isProgramKind(value: unknown): boolean {
+  return (
+    value === 'operation' ||
+    value === 'sequence' ||
+    value === 'when' ||
+    value === 'repeat' ||
+    value === 'forEachTarget' ||
+    value === 'onCheck' ||
+    value === 'atomic'
+  );
+}
+
+function validPortableIdentifier(value: string): boolean {
+  return /^[a-z][a-z0-9._-]*$/.test(value);
+}
+
 function normalizeMaterializedActions(
   bundle: import('./play-bundle-types.js').PlayBundleManifest,
   graph: { readonly materialized: readonly DefinitionRecord[] },
   diagnostics: PlayBundleCompilerDiagnostic[],
 ): import('@asha-rpg/ir').NormalizedRpgIr | undefined {
   const actions = graph.materialized
-    .filter((record) => record.definition.kind === 'action')
+    .filter((record) => isInlineActionDefinition(record.definition))
     .map((record) => {
-      if (record.definition.kind !== 'action') throw new Error('unreachable narrowing failure');
+      if (!isInlineActionDefinition(record.definition)) {
+        throw new Error('unreachable narrowing failure');
+      }
       if (record.definition.action.id !== record.definition.id) {
         diagnostics.push(
           diagnostic(
@@ -2661,14 +3219,24 @@ function validateRulesetValueOwners(
   diagnostics: PlayBundleCompilerDiagnostic[],
 ): void {
   const authoredValue =
-    record.definition.kind === 'action'
+    isInlineActionDefinition(record.definition)
       ? record.definition.action
+      : isInvokedActionDefinition(record.definition)
+        ? record.definition.invocation.arguments
+        : record.definition.kind === 'actionProcedure'
+          ? record.definition.implementation
       : record.definition.kind === 'support' &&
           record.definition.semantic.catalog === 'participantProfile'
         ? record.definition.semantic.data
         : undefined;
   if (authoredValue === undefined) return;
-  const rootPath = record.definition.kind === 'action' ? '$.action' : '$.semantic.data';
+  const rootPath = isInlineActionDefinition(record.definition)
+    ? '$.action'
+    : isInvokedActionDefinition(record.definition)
+      ? '$.invocation.arguments'
+      : record.definition.kind === 'actionProcedure'
+        ? '$.implementation'
+        : '$.semantic.data';
   visitAuthoredValue(authoredValue, rootPath, (ownership, path) => {
     if (ownership.rulesetId === ruleset.identity.id) return;
     diagnostics.push(
@@ -2704,6 +3272,22 @@ function visitAuthoredValue(
     return;
   }
   if (!isRecord(value)) return;
+  if (
+    (value['kind'] === 'stat' || value['kind'] === 'defense') &&
+    typeof value['id'] === 'string' &&
+    typeof value['rulesetId'] === 'string'
+  ) {
+    visit(
+      {
+        field: 'id',
+        kind: value['kind'],
+        id: value['id'],
+        rulesetId: value['rulesetId'],
+      },
+      `${path}.id`,
+    );
+    return;
+  }
   for (const ownership of rulesetValueOwnershipOf(value)) {
     visit(ownership, `${path}.${ownership.field}`);
   }
@@ -3014,6 +3598,21 @@ function collectRequirements(
       capabilities.set(requirement.id, requirement.version);
     }
   }
+  for (const record of materialized) {
+    if (record.definition.kind === 'actionProcedure') {
+      collectAbstractActionRequirements(
+        record.definition.implementation,
+        operations,
+        capabilities,
+      );
+    } else if (isInvokedActionDefinition(record.definition)) {
+      collectAbstractActionRequirements(
+        record.definition.invocation.arguments,
+        operations,
+        capabilities,
+      );
+    }
+  }
   for (const entry of context.selected.values()) {
     for (const requirement of entry.source.manifest.requirements.operations) {
       operations.set(requirement.id, requirement.version);
@@ -3068,6 +3667,107 @@ function collectRequirements(
       ),
     numericDomains: [...numericDomains].sort(),
   };
+}
+
+function collectAbstractActionRequirements(
+  value: unknown,
+  operations: Map<RpgOperationId, number>,
+  capabilities: Map<RpgCapabilityId, number>,
+): void {
+  if (Array.isArray(value)) {
+    value.forEach((entry) =>
+      collectAbstractActionRequirements(entry, operations, capabilities),
+    );
+    return;
+  }
+  if (!isRecord(value)) return;
+  const operation = abstractOperationRequirement(value['kind']);
+  if (operation !== undefined) {
+    operations.set(operation.id, operation.version);
+    for (const capabilityId of operation.capabilities) {
+      capabilities.set(
+        capabilityId,
+        RPG_CAPABILITY_VERSIONS[capabilityId],
+      );
+    }
+  }
+  if (value['kind'] === 'attack' || value['kind'] === 'savingThrow') {
+    capabilities.set(
+      'capability.defenses',
+      RPG_CAPABILITY_VERSIONS['capability.defenses'],
+    );
+    capabilities.set(
+      'capability.random',
+      RPG_CAPABILITY_VERSIONS['capability.random'],
+    );
+  } else if (value['kind'] === 'readStat') {
+    capabilities.set(
+      'capability.stats',
+      RPG_CAPABILITY_VERSIONS['capability.stats'],
+    );
+  } else if (value['kind'] === 'dice') {
+    capabilities.set(
+      'capability.random',
+      RPG_CAPABILITY_VERSIONS['capability.random'],
+    );
+  }
+  for (const child of Object.values(value)) {
+    collectAbstractActionRequirements(child, operations, capabilities);
+  }
+}
+
+function abstractOperationRequirement(
+  kind: unknown,
+): {
+  readonly id: RpgOperationId;
+  readonly version: number;
+  readonly capabilities: readonly RpgCapabilityId[];
+} | undefined {
+  const values: Readonly<
+    Record<
+      string,
+      {
+        readonly id: RpgOperationId;
+        readonly capabilities: readonly RpgCapabilityId[];
+      }
+    >
+  > = {
+    damage: {
+      id: 'operation.damage',
+      capabilities: ['capability.vitality'],
+    },
+    heal: {
+      id: 'operation.heal',
+      capabilities: ['capability.vitality'],
+    },
+    changeResource: {
+      id: 'operation.changeResource',
+      capabilities: ['capability.resources'],
+    },
+    applyModifier: {
+      id: 'operation.applyModifier',
+      capabilities: ['capability.modifiers'],
+    },
+    move: {
+      id: 'operation.move',
+      capabilities: ['capability.position'],
+    },
+    moveToCell: {
+      id: 'operation.moveToCell',
+      capabilities: ['capability.position'],
+    },
+    openReaction: {
+      id: 'operation.openReaction',
+      capabilities: ['capability.reactions'],
+    },
+  };
+  const value = typeof kind === 'string' ? values[kind] : undefined;
+  return value === undefined
+    ? undefined
+    : {
+        ...value,
+        version: RPG_OPERATION_VERSIONS[value.id],
+      };
 }
 
 function validateCollectedRequirements(
@@ -3158,15 +3858,37 @@ function materializeDefinitions(
   return records
     .filter(
       (record): record is DefinitionRecord & {
-        readonly definition: Extract<ContentDefinition, { readonly kind: 'action' | 'support' }>;
-      } => record.definition.kind === 'action' || record.definition.kind === 'support',
+        readonly definition: Extract<
+          ContentDefinition,
+          { readonly kind: 'action' | 'actionProcedure' | 'support' }
+        >;
+      } =>
+        record.definition.kind === 'action' ||
+        record.definition.kind === 'actionProcedure' ||
+        record.definition.kind === 'support',
     )
     .map((record) => {
       const definition = record.definition;
       const semantic =
         definition.kind === 'action'
-          ? normalizedActions.get(definition.id)
-          : materializedSupportSemantic(definition);
+          ? isInlineActionDefinition(definition)
+            ? (() => {
+                const action = normalizedActions.get(definition.id);
+                return action === undefined
+                  ? undefined
+                  : {
+                      schema: {
+                        identity: 'asha.rpg.action-definition' as const,
+                        version: 1 as const,
+                      },
+                      kind: 'inline' as const,
+                      action,
+                    };
+              })()
+            : materializedActionSemantic(definition)
+          : definition.kind === 'actionProcedure'
+            ? materializedActionProcedureSemantic(definition)
+            : materializedSupportSemantic(definition);
       if (semantic === undefined) throw new Error(`materialization missing ${definition.id}`);
       const materialized = {
         id: definition.id,

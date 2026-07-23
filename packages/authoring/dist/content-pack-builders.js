@@ -14,6 +14,48 @@ export function definitionReference(input) {
 export function defineActionDefinition(input) {
     return immutable({ ...input, kind: 'action' });
 }
+export function defineActionProcedureDefinition(input) {
+    return immutable({
+        ...input,
+        kind: 'actionProcedure',
+        parameters: input.parameters,
+    });
+}
+export function defineActionInvocationDefinition(input) {
+    const { procedure, importAs, arguments: invocationArguments, ...definition } = input;
+    return immutable({
+        ...definition,
+        kind: 'action',
+        invocation: {
+            procedure: {
+                definitionId: procedure.id,
+                ...(importAs === undefined ? {} : { importAs }),
+            },
+            procedureOwnerPackageId: procedure.ownerPackageId,
+            arguments: invocationArguments,
+        },
+    });
+}
+export function actionProcedureParameterReference(parameter) {
+    return immutable({
+        kind: 'parameter',
+        parameterId: parameter.id,
+        parameterType: parameter.type,
+    });
+}
+export function actionProcedureInvocation(procedure, argumentsById, importAs) {
+    return immutable({
+        kind: 'invocation',
+        invocation: {
+            procedure: {
+                definitionId: procedure.id,
+                ...(importAs === undefined ? {} : { importAs }),
+            },
+            procedureOwnerPackageId: procedure.ownerPackageId,
+            arguments: argumentsById,
+        },
+    });
+}
 export function defineSupportDefinition(input) {
     return immutable({ ...input, kind: 'support' });
 }

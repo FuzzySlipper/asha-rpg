@@ -138,6 +138,25 @@ PlayBundles, and Scenarios. Action AST traversal derives semantic requirements
 and content graph edges. Package selection is explicit; callers pass immutable
 sources and no global registry or filesystem scan is used.
 
+Action reuse is represented by exported `actionProcedure` definitions. A
+procedure declares an owner package, a closed typed parameter schema, and
+either an abstract normalized action body or an invocation of another
+procedure. An action definition is exactly one inline action or one
+owner-bound procedure invocation. Bounded integers, identifiers, booleans,
+formulas, Ruleset-value references, Content Pack catalog references, targeting,
+checks, costs, programs, and check-outcome branches are portable argument
+types. Parameter references are inert JSON nodes; they are never TypeScript
+callbacks.
+
+The prepared and compiled artifacts retain procedure definitions and
+invocations as the authoritative structure. They do not carry a parallel
+submitted expansion. Rust independently checks owners, exact arguments,
+bounds, reference closure, composition cycles, and template shape, then
+expands to private `RpgIrAction` plans. Procedure source and semantics therefore
+participate in definition fingerprints and the PlayBundle artifact id, which
+also binds checkpoints and replay. Mixins and patches remain deterministic
+content-derivation tools, not the primary action-reuse mechanism.
+
 Derivation, ordered mixins, local patches, overlays, and configuration are
 materialized deterministically. The artifact contains final definitions and
 typed provenance, not runtime inheritance. Low-level graph and patch builders

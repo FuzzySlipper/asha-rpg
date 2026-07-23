@@ -131,7 +131,11 @@ test('ordered mixins, local patches, and overlays materialize deterministically'
   );
   assert.ok(actionDefinition);
   assert.equal(
-    readPath(actionDefinition.semantic, ['targets', 'maximumRange']),
+    readPath(actionDefinition.semantic, [
+      'action',
+      'targets',
+      'maximumRange',
+    ]),
     11,
   );
   assert.equal(actionDefinition.presentation?.label, 'Arc Variant: Stormfront');

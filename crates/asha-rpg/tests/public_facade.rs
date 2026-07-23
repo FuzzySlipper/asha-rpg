@@ -451,17 +451,21 @@ fn healing_prepared() -> PreparedPlayBundle {
         visibility: MaterializedContentVisibility::Exported,
         extension_policy: ContentExtensionPolicy::Sealed,
         semantic: json!({
-            "id": "action.heal",
-            "name": "Heal",
-            "sourcePath": "actions/heal.ts#heal",
-            "targets": {"team": "ally", "maximumRange": 3, "maximumTargets": 1},
-            "check": {"kind": "noRoll"},
-            "rollScope": "none",
-            "costs": [],
-            "program": {"kind": "atomic", "body": {"kind": "onCheck", "noRoll": {
-                "kind": "operation",
-                "operation": {"kind": "heal", "amount": {"kind": "constant", "value": 4}}
-            }}}
+            "schema": {"identity": "asha.rpg.action-definition", "version": 1},
+            "kind": "inline",
+            "action": {
+                "id": "action.heal",
+                "name": "Heal",
+                "sourcePath": "actions/heal.ts#heal",
+                "targets": {"team": "ally", "maximumRange": 3, "maximumTargets": 1},
+                "check": {"kind": "noRoll"},
+                "rollScope": "none",
+                "costs": [],
+                "program": {"kind": "atomic", "body": {"kind": "onCheck", "noRoll": {
+                    "kind": "operation",
+                    "operation": {"kind": "heal", "amount": {"kind": "constant", "value": 4}}
+                }}}
+            }
         }),
         presentation: json!({"label": "Heal"}),
         references: Vec::new(),

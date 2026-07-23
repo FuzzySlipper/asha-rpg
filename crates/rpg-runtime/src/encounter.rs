@@ -949,13 +949,14 @@ fn validate_board(
                         format!("{capability_path}.definitionId"),
                         format!("definition {definition_id} is not in the bound artifact"),
                     )),
-                    Some(MaterializedContentDefinitionKind::Action) => {
-                        diagnostics.push(scenario_diagnostic(
-                            "RPG_SCENARIO_CELL_DEFINITION_INCOMPATIBLE",
-                            format!("{capability_path}.definitionId"),
-                            "cell capabilities must reference an artifact support definition",
-                        ))
-                    }
+                    Some(
+                        MaterializedContentDefinitionKind::Action
+                        | MaterializedContentDefinitionKind::ActionProcedure,
+                    ) => diagnostics.push(scenario_diagnostic(
+                        "RPG_SCENARIO_CELL_DEFINITION_INCOMPATIBLE",
+                        format!("{capability_path}.definitionId"),
+                        "cell capabilities must reference an artifact support definition",
+                    )),
                     Some(MaterializedContentDefinitionKind::Support) => {}
                 }
             }

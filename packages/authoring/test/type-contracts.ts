@@ -7,6 +7,9 @@ import {
   changeResource,
   constant,
   damage,
+  actionProcedureParameterReference,
+  defineActionInvocationDefinition,
+  defineActionProcedureDefinition,
   defineRuleset,
   defineScenario,
   defineContentCatalog,
@@ -137,4 +140,74 @@ moveEntity({
   // @ts-expect-error Movement bounds are numeric data.
   maximumDistance: '2',
   provokes: false,
+});
+
+const distanceParameter = {
+  id: 'distance',
+  type: 'boundedInteger',
+  minimum: 1,
+  maximum: 12,
+} as const;
+const movementProcedure = defineActionProcedureDefinition({
+  id: 'procedure.move',
+  ownerPackageId: 'type-contracts.procedures',
+  visibility: 'public',
+  extensionPolicy: 'sealed',
+  source: {
+    module: 'test/type-contracts.ts',
+    declaration: 'movementProcedure',
+  },
+  parameters: [distanceParameter] as const,
+  implementation: {
+    kind: 'inline',
+    template: {
+      targets: {
+        kind: 'cell',
+        team: 'any',
+        maximumRange:
+          actionProcedureParameterReference(distanceParameter),
+        maximumTargets: 1,
+      },
+      check: { kind: 'noRoll' },
+      rollScope: 'none',
+      costs: [],
+      program: {
+        kind: 'atomic',
+        body: {
+          kind: 'onCheck',
+          noRoll: {
+            kind: 'operation',
+            operation: {
+              kind: 'moveToCell',
+              maximumDistance:
+                actionProcedureParameterReference(distanceParameter),
+              provokes: false,
+            },
+          },
+        },
+      },
+    },
+  },
+});
+
+defineActionInvocationDefinition({
+  id: 'action.move',
+  visibility: 'public',
+  extensionPolicy: 'sealed',
+  source: { module: 'test/type-contracts.ts', declaration: 'move' },
+  procedure: movementProcedure,
+  arguments: { distance: 6 },
+});
+
+defineActionInvocationDefinition({
+  id: 'action.invalid-move',
+  visibility: 'public',
+  extensionPolicy: 'sealed',
+  source: {
+    module: 'test/type-contracts.ts',
+    declaration: 'invalidMove',
+  },
+  procedure: movementProcedure,
+  // @ts-expect-error Procedure arguments are derived from the parameter schema.
+  arguments: { distance: 'six' },
 });

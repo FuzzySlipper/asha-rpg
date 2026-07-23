@@ -200,7 +200,146 @@ pub struct ContentDefinitionProvenance {
 #[serde(rename_all = "camelCase")]
 pub enum MaterializedContentDefinitionKind {
     Action,
+    ActionProcedure,
     Support,
+}
+
+pub const ACTION_DEFINITION_IDENTITY: &str = "asha.rpg.action-definition";
+pub const ACTION_PROCEDURE_IDENTITY: &str = "asha.rpg.action-procedure";
+pub const ACTION_DEFINITION_VERSION: u32 = 1;
+pub const ACTION_PROCEDURE_VERSION: u32 = 1;
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase", deny_unknown_fields)]
+pub struct ActionSemanticSchema {
+    pub identity: String,
+    pub version: u32,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(
+    tag = "kind",
+    rename_all = "camelCase",
+    rename_all_fields = "camelCase",
+    deny_unknown_fields
+)]
+pub enum MaterializedActionSemantic {
+    Inline {
+        schema: ActionSemanticSchema,
+        action: crate::RpgIrAction,
+    },
+    Invocation {
+        schema: ActionSemanticSchema,
+        procedure_id: String,
+        procedure_owner_package_id: String,
+        arguments: BTreeMap<String, Value>,
+    },
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(
+    tag = "type",
+    rename_all = "camelCase",
+    rename_all_fields = "camelCase",
+    deny_unknown_fields
+)]
+pub enum ActionProcedureParameter {
+    BoundedInteger {
+        id: String,
+        minimum: i64,
+        maximum: i64,
+    },
+    Identifier {
+        id: String,
+    },
+    Boolean {
+        id: String,
+    },
+    Formula {
+        id: String,
+    },
+    RulesetValueReference {
+        id: String,
+    },
+    CatalogReference {
+        id: String,
+    },
+    Targeting {
+        id: String,
+    },
+    Check {
+        id: String,
+    },
+    Costs {
+        id: String,
+    },
+    Program {
+        id: String,
+    },
+    SemanticBranches {
+        id: String,
+    },
+}
+
+impl ActionProcedureParameter {
+    pub fn id(&self) -> &str {
+        match self {
+            Self::BoundedInteger { id, .. }
+            | Self::Identifier { id }
+            | Self::Boolean { id }
+            | Self::Formula { id }
+            | Self::RulesetValueReference { id }
+            | Self::CatalogReference { id }
+            | Self::Targeting { id }
+            | Self::Check { id }
+            | Self::Costs { id }
+            | Self::Program { id }
+            | Self::SemanticBranches { id } => id,
+        }
+    }
+
+    pub const fn value_type(&self) -> &'static str {
+        match self {
+            Self::BoundedInteger { .. } => "boundedInteger",
+            Self::Identifier { .. } => "identifier",
+            Self::Boolean { .. } => "boolean",
+            Self::Formula { .. } => "formula",
+            Self::RulesetValueReference { .. } => "rulesetValueReference",
+            Self::CatalogReference { .. } => "catalogReference",
+            Self::Targeting { .. } => "targeting",
+            Self::Check { .. } => "check",
+            Self::Costs { .. } => "costs",
+            Self::Program { .. } => "program",
+            Self::SemanticBranches { .. } => "semanticBranches",
+        }
+    }
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(
+    tag = "kind",
+    rename_all = "camelCase",
+    rename_all_fields = "camelCase",
+    deny_unknown_fields
+)]
+pub enum ActionProcedureImplementation {
+    Inline {
+        template: Value,
+    },
+    Invocation {
+        procedure_id: String,
+        procedure_owner_package_id: String,
+        arguments: BTreeMap<String, Value>,
+    },
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase", deny_unknown_fields)]
+pub struct MaterializedActionProcedureSemantic {
+    pub schema: ActionSemanticSchema,
+    pub owner_package_id: String,
+    pub parameters: Vec<ActionProcedureParameter>,
+    pub implementation: ActionProcedureImplementation,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]

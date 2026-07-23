@@ -1,6 +1,19 @@
-import type { RpgCapabilityId, RpgOperationId } from "@asha-rpg/ir";
+import type {
+  RpgCapabilityId,
+  RpgIrCheck,
+  RpgIrFormula,
+  RpgIrProgram,
+  RpgIrResourceCost,
+  RpgIrTargetSelector,
+  RpgOperationId,
+} from "@asha-rpg/ir";
 
 import type { AuthoredAction } from "./types.js";
+import type {
+  ContentCatalogCategory,
+  ContentCatalogReference,
+} from "./catalogs.js";
+import type { RulesetValueReference } from "./ruleset-builders.js";
 
 export interface RpgVersionedIdentity {
   readonly id: string;
@@ -258,6 +271,174 @@ export interface ContentActionDefinition extends ContentDefinitionBase {
   readonly action: AuthoredAction;
 }
 
+export type ActionProcedureParameterType =
+  | "boundedInteger"
+  | "identifier"
+  | "boolean"
+  | "formula"
+  | "rulesetValueReference"
+  | "catalogReference"
+  | "targeting"
+  | "check"
+  | "costs"
+  | "program"
+  | "semanticBranches";
+
+export type ActionProcedureParameter =
+  | {
+      readonly id: string;
+      readonly type: "boundedInteger";
+      readonly minimum: number;
+      readonly maximum: number;
+    }
+  | {
+      readonly id: string;
+      readonly type: Exclude<ActionProcedureParameterType, "boundedInteger">;
+    };
+
+export interface ActionProcedureParameterReference<
+  Type extends ActionProcedureParameterType = ActionProcedureParameterType,
+> {
+  readonly kind: "parameter";
+  readonly parameterId: string;
+  readonly parameterType: Type;
+}
+
+type ProcedureReferenceType<Value> =
+  [Value] extends [number]
+    ? "boundedInteger"
+    : [Value] extends [boolean]
+      ? "boolean"
+      : [Value] extends [string]
+        ? "identifier" | "catalogReference" | "rulesetValueReference"
+        : [Value] extends [RpgIrFormula]
+          ? "formula"
+          : [Value] extends [RpgIrTargetSelector]
+            ? "targeting"
+            : [Value] extends [RpgIrCheck]
+              ? "check"
+              : [Value] extends [readonly RpgIrResourceCost[]]
+                ? "costs"
+                : [Value] extends [RpgIrProgram]
+                  ? "program" | "semanticBranches"
+                  : never;
+
+type ActionProcedureTemplateNode<Value> =
+  | ActionProcedureParameterReference<ProcedureReferenceType<Value>>
+  | (Value extends readonly (infer Entry)[]
+      ? readonly ActionProcedureTemplateNode<Entry>[]
+      : Value extends object
+        ? { readonly [Key in keyof Value]: ActionProcedureTemplateNode<Value[Key]> }
+        : Value);
+
+/** A normalized action body whose leaves may be supplied by typed parameters. */
+export interface ActionProcedureTemplate {
+  readonly targets: ActionProcedureTemplateNode<RpgIrTargetSelector>;
+  readonly check: ActionProcedureTemplateNode<RpgIrCheck>;
+  readonly rollScope: ActionProcedureTemplateNode<
+    import("@asha-rpg/ir").RpgIrRollScope
+  >;
+  readonly costs: ActionProcedureTemplateNode<readonly RpgIrResourceCost[]>;
+  readonly program: ActionProcedureTemplateNode<RpgIrProgram>;
+}
+
+export type ActionProcedureArgument =
+  | number
+  | string
+  | boolean
+  | RpgIrFormula
+  | RulesetValueReference<RulesetValueKind, string, string>
+  | ContentCatalogReference<ContentCatalogCategory, string>
+  | RpgIrTargetSelector
+  | RpgIrCheck
+  | readonly RpgIrResourceCost[]
+  | RpgIrProgram;
+
+type ActionProcedureArgumentFor<
+  Parameter extends ActionProcedureParameter,
+> = Parameter["type"] extends "boundedInteger"
+  ? number
+  : Parameter["type"] extends "identifier"
+    ? string
+    : Parameter["type"] extends "boolean"
+      ? boolean
+      : Parameter["type"] extends "formula"
+        ? RpgIrFormula
+        : Parameter["type"] extends "rulesetValueReference"
+          ? RulesetValueReference<RulesetValueKind, string, string>
+          : Parameter["type"] extends "catalogReference"
+            ? ContentCatalogReference<ContentCatalogCategory, string>
+            : Parameter["type"] extends "targeting"
+              ? RpgIrTargetSelector
+              : Parameter["type"] extends "check"
+                ? RpgIrCheck
+                : Parameter["type"] extends "costs"
+                  ? readonly RpgIrResourceCost[]
+                  : RpgIrProgram;
+
+export type ActionProcedureArgumentsFor<
+  Parameters extends readonly ActionProcedureParameter[],
+> = {
+  readonly [Parameter in Parameters[number] as Parameter["id"]]:
+    ActionProcedureArgumentFor<Parameter>;
+};
+
+export type ActionProcedureCompositionArgumentsFor<
+  Parameters extends readonly ActionProcedureParameter[],
+> = {
+  readonly [Parameter in Parameters[number] as Parameter["id"]]:
+    | ActionProcedureArgumentFor<Parameter>
+    | ActionProcedureParameterReference<Parameter["type"]>;
+};
+
+export interface ActionProcedureInvocation<
+  Arguments extends Readonly<Record<string, ActionProcedureArgument>> =
+    Readonly<Record<string, ActionProcedureArgument>>,
+> {
+  readonly procedure: ContentDefinitionReference;
+  readonly procedureOwnerPackageId: string;
+  readonly arguments: Arguments;
+}
+
+export type ActionProcedureImplementation =
+  | {
+      readonly kind: "inline";
+      readonly template: ActionProcedureTemplate;
+    }
+  | {
+      readonly kind: "invocation";
+      readonly invocation: {
+        readonly procedure: ContentDefinitionReference;
+        readonly procedureOwnerPackageId: string;
+        readonly arguments: Readonly<
+          Record<
+            string,
+            ActionProcedureArgument | ActionProcedureParameterReference
+          >
+        >;
+      };
+    };
+
+export interface ContentActionProcedureDefinition<
+  Parameters extends readonly ActionProcedureParameter[] =
+    readonly ActionProcedureParameter[],
+> extends ContentDefinitionBase {
+  readonly kind: "actionProcedure";
+  readonly ownerPackageId: string;
+  readonly parameters: Parameters;
+  readonly implementation: ActionProcedureImplementation;
+}
+
+export interface ContentInvokedActionDefinition extends ContentDefinitionBase {
+  readonly kind: "action";
+  readonly invocation: ActionProcedureInvocation;
+  readonly action?: never;
+}
+
+export type ContentConcreteActionDefinition =
+  | ContentActionDefinition
+  | ContentInvokedActionDefinition;
+
 export interface ContentSupportDefinition extends ContentDefinitionBase {
   readonly kind: "support";
   readonly semantic: {
@@ -319,7 +500,8 @@ export interface ContentMixinDefinition extends ContentDefinitionBase {
 }
 
 export type ContentDefinition =
-  | ContentActionDefinition
+  | ContentConcreteActionDefinition
+  | ContentActionProcedureDefinition
   | ContentSupportDefinition
   | ContentTemplateDefinition
   | ContentDerivedDefinition
@@ -467,7 +649,7 @@ export interface ContentPatchChangeProvenance {
 
 export interface ContentMaterializationStage {
   readonly id: string;
-  readonly kind: "action" | "support";
+  readonly kind: "action" | "actionProcedure" | "support";
   readonly extensionPolicy: ContentExtensionPolicy;
   readonly value: {
     readonly semantic: unknown;
@@ -546,7 +728,7 @@ export interface ContentOverlayProvenance {
 
 export interface MaterializedContentDefinition {
   readonly id: string;
-  readonly kind: "action" | "support";
+  readonly kind: "action" | "actionProcedure" | "support";
   readonly visibility: "exported" | "support";
   readonly extensionPolicy: ContentExtensionPolicy;
   readonly semantic: unknown;

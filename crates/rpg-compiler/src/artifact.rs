@@ -1,18 +1,21 @@
 use std::collections::{BTreeMap, BTreeSet};
 
 use rpg_ir::{
-    CompiledParticipantProfile, CompiledPlayBundleArtifact, ContentDefinitionCommitment,
-    ContentImpactPlane, ContentMaterializationStage, ContentMaterializationValue,
-    ContentMixinParameterCommitment, ContentMixinParameterType, ContentPatch,
-    ContentPatchChangeProvenance, ContentPatchMemberKey, ContentPatchMemberSelector,
-    ContentPatchOperation, ContentPatchPathSegment, ContentPatchPosition, ContentRelationshipKind,
-    MaterializedContentDefinition, MaterializedContentDefinitionKind,
+    ActionProcedureImplementation, ActionProcedureParameter, CompiledParticipantProfile,
+    CompiledPlayBundleArtifact, ContentDefinitionCommitment, ContentImpactPlane,
+    ContentMaterializationStage, ContentMaterializationValue, ContentMixinParameterCommitment,
+    ContentMixinParameterType, ContentPatch, ContentPatchChangeProvenance, ContentPatchMemberKey,
+    ContentPatchMemberSelector, ContentPatchOperation, ContentPatchPathSegment,
+    ContentPatchPosition, ContentRelationshipKind, MaterializedActionProcedureSemantic,
+    MaterializedActionSemantic, MaterializedContentDefinition, MaterializedContentDefinitionKind,
     MaterializedContentVisibility, MaterializedParticipantProfileData, NormalizedRpgIr,
     ParticipantProfileInitialCapability, PlayBundleArtifactSchema, PlayBundleFingerprints,
-    PreparedPlayBundle, RpgIrAction, RpgIrCatalogs, RpgIrCheck, RpgIrFormula, RpgIrOperation,
-    RpgIrPackage, RpgIrPredicate, RpgIrProgram, RpgIrRequirement, RpgIrRequirementKind,
-    RpgIrSchema, Ruleset, RulesetValueExpression, RulesetValueKind, RulesetValueSource,
-    VersionedRpgRequirement, COMPILED_PLAY_BUNDLE_IDENTITY, PARTICIPANT_PROFILE_IDENTITY,
+    PreparedPlayBundle, RpgIrAction, RpgIrActionBody, RpgIrCatalogs, RpgIrCheck, RpgIrFormula,
+    RpgIrOperation, RpgIrPackage, RpgIrPredicate, RpgIrProgram, RpgIrRequirement,
+    RpgIrRequirementKind, RpgIrResourceCost, RpgIrSchema, RpgIrTargetSelector, Ruleset,
+    RulesetValueExpression, RulesetValueKind, RulesetValueSource, VersionedRpgRequirement,
+    ACTION_DEFINITION_IDENTITY, ACTION_DEFINITION_VERSION, ACTION_PROCEDURE_IDENTITY,
+    ACTION_PROCEDURE_VERSION, COMPILED_PLAY_BUNDLE_IDENTITY, PARTICIPANT_PROFILE_IDENTITY,
     PARTICIPANT_PROFILE_VERSION, PLAY_BUNDLE_ARTIFACT_MAJOR, PREPARED_PLAY_BUNDLE_IDENTITY,
     RPG_IR_IDENTITY, RPG_IR_MAJOR,
 };
@@ -1967,20 +1970,106 @@ fn normalized_ir_from_materialized(
     let mut actions = Vec::new();
 
     for (index, definition) in prepared.materialized_definitions.iter().enumerate() {
+        if definition.kind != MaterializedContentDefinitionKind::ActionProcedure {
+            continue;
+        }
+        let path = format!("$.materializedDefinitions[{index}].semantic");
+        validate_action_procedure_definition(definition, &path, &mut diagnostics);
+    }
+
+    for (index, definition) in prepared.materialized_definitions.iter().enumerate() {
         if definition.kind != MaterializedContentDefinitionKind::Action {
             continue;
         }
         let path = format!("$.materializedDefinitions[{index}].semantic");
-        let mut action = match serde_json::from_value::<RpgIrAction>(definition.semantic.clone()) {
-            Ok(action) => action,
-            Err(error) => {
-                diagnostics.push(RpgDiagnostic::error(
-                    RpgDiagnosticStage::Semantics,
-                    "CONTENT_PACK_ACTION_SEMANTIC_DECODE_FAILED",
-                    &path,
-                    error.to_string(),
-                ));
-                continue;
+        let semantic =
+            match serde_json::from_value::<MaterializedActionSemantic>(definition.semantic.clone())
+            {
+                Ok(semantic) => semantic,
+                Err(error) => {
+                    diagnostics.push(RpgDiagnostic::error(
+                        RpgDiagnosticStage::Semantics,
+                        "CONTENT_PACK_ACTION_SEMANTIC_DECODE_FAILED",
+                        &path,
+                        error.to_string(),
+                    ));
+                    continue;
+                }
+            };
+        let (mut action, effective_references) = match semantic {
+            MaterializedActionSemantic::Inline { schema, action } => {
+                if !validate_action_semantic_schema(
+                    &schema,
+                    ACTION_DEFINITION_IDENTITY,
+                    ACTION_DEFINITION_VERSION,
+                    &format!("{path}.schema"),
+                    &mut diagnostics,
+                ) {
+                    continue;
+                }
+                (
+                    action,
+                    definition
+                        .references
+                        .iter()
+                        .cloned()
+                        .collect::<BTreeSet<_>>(),
+                )
+            }
+            MaterializedActionSemantic::Invocation {
+                schema,
+                procedure_id,
+                procedure_owner_package_id,
+                arguments,
+            } => {
+                if !validate_action_semantic_schema(
+                    &schema,
+                    ACTION_DEFINITION_IDENTITY,
+                    ACTION_DEFINITION_VERSION,
+                    &format!("{path}.schema"),
+                    &mut diagnostics,
+                ) {
+                    continue;
+                }
+                let mut effective_references = definition
+                    .references
+                    .iter()
+                    .cloned()
+                    .collect::<BTreeSet<_>>();
+                let mut visiting = Vec::new();
+                let Some(body) = expand_action_procedure(
+                    &procedure_id,
+                    &procedure_owner_package_id,
+                    &arguments,
+                    &definitions,
+                    &prepared.ruleset,
+                    &mut effective_references,
+                    &mut visiting,
+                    &format!("{path}.invocation"),
+                    &mut diagnostics,
+                ) else {
+                    continue;
+                };
+                let name = definition
+                    .presentation
+                    .get("label")
+                    .and_then(Value::as_str)
+                    .filter(|label| !label.trim().is_empty())
+                    .unwrap_or(&definition.id)
+                    .to_owned();
+                (
+                    RpgIrAction {
+                        id: definition.id.clone(),
+                        name,
+                        source_path: definition.provenance.source.module.clone(),
+                        targets: body.targets,
+                        check: body.check,
+                        roll_scope: body.roll_scope,
+                        costs: body.costs,
+                        program: body.program,
+                    },
+                    effective_references,
+                )
             }
         };
         if action.id != definition.id {
@@ -1994,9 +2083,11 @@ fn normalized_ir_from_materialized(
                 ),
             ));
         }
+        let mut effective_definition = definition.clone();
+        effective_definition.references = effective_references.into_iter().collect();
         resolve_action_catalogs(
             &mut action,
-            definition,
+            &effective_definition,
             &definitions,
             &ruleset_catalogs,
             &path,
@@ -2055,6 +2146,521 @@ fn normalized_ir_from_materialized(
         requirements,
         actions,
     })
+}
+
+fn validate_action_semantic_schema(
+    schema: &rpg_ir::ActionSemanticSchema,
+    identity: &str,
+    version: u32,
+    path: &str,
+    diagnostics: &mut Vec<RpgDiagnostic>,
+) -> bool {
+    if schema.identity == identity && schema.version == version {
+        return true;
+    }
+    diagnostics.push(RpgDiagnostic::error(
+        RpgDiagnosticStage::Compatibility,
+        "ACTION_SEMANTIC_SCHEMA_UNSUPPORTED",
+        path,
+        format!("expected {identity}@{version}"),
+    ));
+    false
+}
+
+fn validate_action_procedure_definition(
+    definition: &MaterializedContentDefinition,
+    path: &str,
+    diagnostics: &mut Vec<RpgDiagnostic>,
+) {
+    let procedure = match serde_json::from_value::<MaterializedActionProcedureSemantic>(
+        definition.semantic.clone(),
+    ) {
+        Ok(procedure) => procedure,
+        Err(error) => {
+            diagnostics.push(RpgDiagnostic::error(
+                RpgDiagnosticStage::Semantics,
+                "ACTION_PROCEDURE_SEMANTIC_DECODE_FAILED",
+                path,
+                error.to_string(),
+            ));
+            return;
+        }
+    };
+    if !validate_action_semantic_schema(
+        &procedure.schema,
+        ACTION_PROCEDURE_IDENTITY,
+        ACTION_PROCEDURE_VERSION,
+        &format!("{path}.schema"),
+        diagnostics,
+    ) {
+        return;
+    }
+    if procedure.owner_package_id != definition.provenance.package_id {
+        diagnostics.push(RpgDiagnostic::error(
+            RpgDiagnosticStage::References,
+            "ACTION_PROCEDURE_OWNER_MISMATCH",
+            format!("{path}.ownerPackageId"),
+            format!(
+                "procedure owner {} does not match declaring package {}",
+                procedure.owner_package_id, definition.provenance.package_id
+            ),
+        ));
+    }
+    let mut parameters = BTreeMap::new();
+    let mut previous = None::<&str>;
+    for (index, parameter) in procedure.parameters.iter().enumerate() {
+        let parameter_path = format!("{path}.parameters[{index}]");
+        if previous.is_some_and(|previous| previous >= parameter.id()) {
+            diagnostics.push(RpgDiagnostic::error(
+                RpgDiagnosticStage::Artifact,
+                "ACTION_PROCEDURE_PARAMETERS_NOT_CANONICAL",
+                &parameter_path,
+                "procedure parameters must be strictly identity-sorted",
+            ));
+        }
+        previous = Some(parameter.id());
+        if !valid_identifier(parameter.id())
+            || parameters.insert(parameter.id(), parameter).is_some()
+        {
+            diagnostics.push(RpgDiagnostic::error(
+                RpgDiagnosticStage::Semantics,
+                "ACTION_PROCEDURE_PARAMETER_INVALID",
+                &parameter_path,
+                "procedure parameter identities must be unique portable identifiers",
+            ));
+        }
+        if let ActionProcedureParameter::BoundedInteger {
+            minimum, maximum, ..
+        } = parameter
+        {
+            if minimum > maximum {
+                diagnostics.push(RpgDiagnostic::error(
+                    RpgDiagnosticStage::Semantics,
+                    "ACTION_PROCEDURE_INTEGER_BOUNDS_INVALID",
+                    &parameter_path,
+                    "bounded integer parameter minimum must not exceed maximum",
+                ));
+            }
+        }
+    }
+    let implementation_value = serde_json::to_value(&procedure.implementation)
+        .expect("procedure implementation serializes");
+    validate_parameter_markers(
+        &implementation_value,
+        &parameters,
+        &format!("{path}.implementation"),
+        diagnostics,
+    );
+}
+
+fn validate_parameter_markers(
+    value: &Value,
+    parameters: &BTreeMap<&str, &ActionProcedureParameter>,
+    path: &str,
+    diagnostics: &mut Vec<RpgDiagnostic>,
+) {
+    match value {
+        Value::Array(values) => {
+            for (index, value) in values.iter().enumerate() {
+                validate_parameter_markers(
+                    value,
+                    parameters,
+                    &format!("{path}[{index}]"),
+                    diagnostics,
+                );
+            }
+        }
+        Value::Object(object)
+            if object.get("kind").and_then(Value::as_str) == Some("parameter") =>
+        {
+            let parameter_id = object.get("parameterId").and_then(Value::as_str);
+            let parameter_type = object.get("parameterType").and_then(Value::as_str);
+            let valid = object.len() == 3
+                && parameter_id
+                    .and_then(|id| parameters.get(id))
+                    .is_some_and(|parameter| Some(parameter.value_type()) == parameter_type);
+            if !valid {
+                diagnostics.push(RpgDiagnostic::error(
+                    RpgDiagnosticStage::Semantics,
+                    "ACTION_PROCEDURE_PARAMETER_REFERENCE_INVALID",
+                    path,
+                    "parameter marker must exactly name a declared parameter with the same type",
+                ));
+            }
+        }
+        Value::Object(object) => {
+            for (field, value) in object {
+                validate_parameter_markers(
+                    value,
+                    parameters,
+                    &format!("{path}.{field}"),
+                    diagnostics,
+                );
+            }
+        }
+        _ => {}
+    }
+}
+
+#[derive(Debug, Deserialize, Serialize)]
+#[serde(rename_all = "camelCase", deny_unknown_fields)]
+struct ProcedureRulesetValueReference {
+    kind: RulesetValueKind,
+    id: String,
+    ruleset_id: String,
+}
+
+#[derive(Debug, Deserialize, Serialize)]
+#[serde(rename_all = "camelCase", deny_unknown_fields)]
+struct ProcedureCatalogReference {
+    definition_id: String,
+    category: String,
+    package_id: String,
+}
+
+#[allow(clippy::too_many_arguments)]
+fn expand_action_procedure(
+    procedure_id: &str,
+    procedure_owner_package_id: &str,
+    arguments: &BTreeMap<String, Value>,
+    definitions: &BTreeMap<&str, &MaterializedContentDefinition>,
+    ruleset: &Ruleset,
+    effective_references: &mut BTreeSet<String>,
+    visiting: &mut Vec<String>,
+    path: &str,
+    diagnostics: &mut Vec<RpgDiagnostic>,
+) -> Option<RpgIrActionBody> {
+    if !effective_references.contains(procedure_id) {
+        diagnostics.push(RpgDiagnostic::error(
+            RpgDiagnosticStage::References,
+            "ACTION_PROCEDURE_REFERENCE_UNDECLARED",
+            format!("{path}.procedureId"),
+            format!("procedure {procedure_id} must be a direct definition reference"),
+        ));
+        return None;
+    }
+    if let Some(cycle_start) = visiting.iter().position(|entry| entry == procedure_id) {
+        let mut cycle = visiting[cycle_start..].to_vec();
+        cycle.push(procedure_id.to_owned());
+        diagnostics.push(RpgDiagnostic::error(
+            RpgDiagnosticStage::References,
+            "ACTION_PROCEDURE_CYCLE",
+            path,
+            format!("procedure cycle: {}", cycle.join(" -> ")),
+        ));
+        return None;
+    }
+    let Some(definition) = definitions.get(procedure_id) else {
+        diagnostics.push(RpgDiagnostic::error(
+            RpgDiagnosticStage::References,
+            "ACTION_PROCEDURE_DEFINITION_MISSING",
+            format!("{path}.procedureId"),
+            format!("procedure definition {procedure_id} is absent"),
+        ));
+        return None;
+    };
+    if definition.kind != MaterializedContentDefinitionKind::ActionProcedure {
+        diagnostics.push(RpgDiagnostic::error(
+            RpgDiagnosticStage::References,
+            "ACTION_PROCEDURE_DEFINITION_KIND_INVALID",
+            format!("{path}.procedureId"),
+            format!("definition {procedure_id} is not an action procedure"),
+        ));
+        return None;
+    }
+    if definition.provenance.package_id != procedure_owner_package_id {
+        diagnostics.push(RpgDiagnostic::error(
+            RpgDiagnosticStage::References,
+            "ACTION_PROCEDURE_REFERENCE_OWNER_MISMATCH",
+            format!("{path}.procedureOwnerPackageId"),
+            format!(
+                "procedure {procedure_id} belongs to {}, not {procedure_owner_package_id}",
+                definition.provenance.package_id
+            ),
+        ));
+        return None;
+    }
+    let procedure = match serde_json::from_value::<MaterializedActionProcedureSemantic>(
+        definition.semantic.clone(),
+    ) {
+        Ok(procedure) => procedure,
+        Err(error) => {
+            diagnostics.push(RpgDiagnostic::error(
+                RpgDiagnosticStage::Semantics,
+                "ACTION_PROCEDURE_SEMANTIC_DECODE_FAILED",
+                format!("{path}.procedure"),
+                error.to_string(),
+            ));
+            return None;
+        }
+    };
+    if !validate_action_semantic_schema(
+        &procedure.schema,
+        ACTION_PROCEDURE_IDENTITY,
+        ACTION_PROCEDURE_VERSION,
+        &format!("{path}.procedure.schema"),
+        diagnostics,
+    ) {
+        return None;
+    }
+    effective_references.extend(definition.references.iter().cloned());
+    let parameters = procedure
+        .parameters
+        .iter()
+        .map(|parameter| (parameter.id(), parameter))
+        .collect::<BTreeMap<_, _>>();
+    let mut substitutions = BTreeMap::new();
+    for (argument_id, argument) in arguments {
+        let Some(parameter) = parameters.get(argument_id.as_str()) else {
+            diagnostics.push(RpgDiagnostic::error(
+                RpgDiagnosticStage::Semantics,
+                "ACTION_PROCEDURE_ARGUMENT_EXTRA",
+                format!("{path}.arguments.{argument_id}"),
+                format!("procedure {procedure_id} has no parameter {argument_id}"),
+            ));
+            continue;
+        };
+        if let Some(value) = normalize_procedure_argument(
+            argument,
+            parameter,
+            definitions,
+            ruleset,
+            effective_references,
+            &format!("{path}.arguments.{argument_id}"),
+            diagnostics,
+        ) {
+            substitutions.insert(argument_id.as_str(), value);
+        }
+    }
+    for parameter_id in parameters.keys() {
+        if arguments.contains_key(*parameter_id) {
+            continue;
+        }
+        diagnostics.push(RpgDiagnostic::error(
+            RpgDiagnosticStage::Semantics,
+            "ACTION_PROCEDURE_ARGUMENT_MISSING",
+            format!("{path}.arguments.{parameter_id}"),
+            format!("procedure {procedure_id} requires argument {parameter_id}"),
+        ));
+    }
+    if substitutions.len() != parameters.len() {
+        return None;
+    }
+    visiting.push(procedure_id.to_owned());
+    let expanded = match procedure.implementation {
+        ActionProcedureImplementation::Inline { template } => {
+            let substituted = substitute_action_procedure_parameters(
+                &template,
+                &substitutions,
+                true,
+                &format!("{path}.template"),
+                diagnostics,
+            )?;
+            match serde_json::from_value::<RpgIrActionBody>(substituted) {
+                Ok(body) => Some(body),
+                Err(error) => {
+                    diagnostics.push(RpgDiagnostic::error(
+                        RpgDiagnosticStage::Semantics,
+                        "ACTION_PROCEDURE_TEMPLATE_INVALID",
+                        format!("{path}.template"),
+                        error.to_string(),
+                    ));
+                    None
+                }
+            }
+        }
+        ActionProcedureImplementation::Invocation {
+            procedure_id: nested_procedure_id,
+            procedure_owner_package_id: nested_procedure_owner_package_id,
+            arguments: nested_arguments,
+        } => {
+            let arguments_value = Value::Object(
+                nested_arguments
+                    .into_iter()
+                    .collect::<serde_json::Map<String, Value>>(),
+            );
+            let substituted = substitute_action_procedure_parameters(
+                &arguments_value,
+                &substitutions,
+                false,
+                &format!("{path}.arguments"),
+                diagnostics,
+            )?;
+            let Value::Object(arguments_object) = substituted else {
+                unreachable!("procedure invocation arguments remain an object");
+            };
+            let nested_arguments = arguments_object.into_iter().collect::<BTreeMap<_, _>>();
+            expand_action_procedure(
+                &nested_procedure_id,
+                &nested_procedure_owner_package_id,
+                &nested_arguments,
+                definitions,
+                ruleset,
+                effective_references,
+                visiting,
+                &format!("{path}.procedure"),
+                diagnostics,
+            )
+        }
+    };
+    visiting.pop();
+    expanded
+}
+
+fn normalize_procedure_argument(
+    value: &Value,
+    parameter: &ActionProcedureParameter,
+    definitions: &BTreeMap<&str, &MaterializedContentDefinition>,
+    ruleset: &Ruleset,
+    effective_references: &BTreeSet<String>,
+    path: &str,
+    diagnostics: &mut Vec<RpgDiagnostic>,
+) -> Option<Value> {
+    let normalized = match parameter {
+        ActionProcedureParameter::BoundedInteger {
+            minimum, maximum, ..
+        } => value
+            .as_i64()
+            .filter(|value| value >= minimum && value <= maximum)
+            .map(Value::from),
+        ActionProcedureParameter::Identifier { .. } => value
+            .as_str()
+            .filter(|value| valid_identifier(value))
+            .map(|value| Value::String(value.to_owned())),
+        ActionProcedureParameter::Boolean { .. } => value.as_bool().map(Value::Bool),
+        ActionProcedureParameter::Formula { .. } => strict_argument::<RpgIrFormula>(value),
+        ActionProcedureParameter::Targeting { .. } => strict_argument::<RpgIrTargetSelector>(value),
+        ActionProcedureParameter::Check { .. } => strict_argument::<RpgIrCheck>(value),
+        ActionProcedureParameter::Costs { .. } => strict_argument::<Vec<RpgIrResourceCost>>(value),
+        ActionProcedureParameter::Program { .. } => strict_argument::<RpgIrProgram>(value),
+        ActionProcedureParameter::SemanticBranches { .. } => {
+            let program = serde_json::from_value::<RpgIrProgram>(value.clone()).ok();
+            program
+                .filter(|program| matches!(program, RpgIrProgram::OnCheck { .. }))
+                .and_then(|program| serde_json::to_value(program).ok())
+        }
+        ActionProcedureParameter::RulesetValueReference { .. } => {
+            let reference =
+                serde_json::from_value::<ProcedureRulesetValueReference>(value.clone()).ok();
+            reference
+                .filter(|reference| {
+                    reference.ruleset_id == ruleset.identity.id
+                        && ruleset.provides.values.iter().any(|candidate| {
+                            candidate.kind == reference.kind && candidate.id == reference.id
+                        })
+                })
+                .and_then(|reference| serde_json::to_value(reference).ok())
+        }
+        ActionProcedureParameter::CatalogReference { .. } => {
+            let reference = serde_json::from_value::<ProcedureCatalogReference>(value.clone()).ok();
+            reference
+                .filter(|reference| {
+                    effective_references.contains(&reference.definition_id)
+                        && definitions
+                            .get(reference.definition_id.as_str())
+                            .is_some_and(|definition| {
+                                definition.provenance.package_id == reference.package_id
+                                    && definition.kind == MaterializedContentDefinitionKind::Support
+                                    && definition.semantic.get("catalog").and_then(Value::as_str)
+                                        == Some(reference.category.as_str())
+                            })
+                })
+                .and_then(|reference| serde_json::to_value(reference).ok())
+        }
+    };
+    if normalized.is_none() {
+        diagnostics.push(RpgDiagnostic::error(
+            RpgDiagnosticStage::Semantics,
+            "ACTION_PROCEDURE_ARGUMENT_TYPE_MISMATCH",
+            path,
+            format!("argument does not satisfy {}", parameter.value_type()),
+        ));
+    }
+    normalized
+}
+
+fn strict_argument<T>(value: &Value) -> Option<Value>
+where
+    T: for<'de> Deserialize<'de> + Serialize,
+{
+    serde_json::from_value::<T>(value.clone())
+        .ok()
+        .and_then(|value| serde_json::to_value(value).ok())
+}
+
+fn substitute_action_procedure_parameters(
+    value: &Value,
+    substitutions: &BTreeMap<&str, Value>,
+    materialize_references: bool,
+    path: &str,
+    diagnostics: &mut Vec<RpgDiagnostic>,
+) -> Option<Value> {
+    match value {
+        Value::Array(values) => values
+            .iter()
+            .enumerate()
+            .map(|(index, value)| {
+                substitute_action_procedure_parameters(
+                    value,
+                    substitutions,
+                    materialize_references,
+                    &format!("{path}[{index}]"),
+                    diagnostics,
+                )
+            })
+            .collect::<Option<Vec<_>>>()
+            .map(Value::Array),
+        Value::Object(object)
+            if object.get("kind").and_then(Value::as_str) == Some("parameter") =>
+        {
+            let parameter_id = object.get("parameterId").and_then(Value::as_str);
+            if object.len() != 3 || parameter_id.is_none() {
+                diagnostics.push(RpgDiagnostic::error(
+                    RpgDiagnosticStage::Semantics,
+                    "ACTION_PROCEDURE_PARAMETER_REFERENCE_INVALID",
+                    path,
+                    "parameter marker is malformed",
+                ));
+                return None;
+            }
+            let Some(value) = parameter_id.and_then(|id| substitutions.get(id)) else {
+                diagnostics.push(RpgDiagnostic::error(
+                    RpgDiagnosticStage::Semantics,
+                    "ACTION_PROCEDURE_PARAMETER_UNRESOLVED",
+                    path,
+                    "parameter marker has no supplied argument",
+                ));
+                return None;
+            };
+            if materialize_references {
+                match object.get("parameterType").and_then(Value::as_str) {
+                    Some("catalogReference") => {
+                        return value.get("definitionId").cloned();
+                    }
+                    Some("rulesetValueReference") => {
+                        return value.get("id").cloned();
+                    }
+                    _ => {}
+                }
+            }
+            Some(value.clone())
+        }
+        Value::Object(object) => object
+            .iter()
+            .map(|(field, value)| {
+                substitute_action_procedure_parameters(
+                    value,
+                    substitutions,
+                    materialize_references,
+                    &format!("{path}.{field}"),
+                    diagnostics,
+                )
+                .map(|value| (field.clone(), value))
+            })
+            .collect::<Option<serde_json::Map<_, _>>>()
+            .map(Value::Object),
+        _ => Some(value.clone()),
+    }
 }
 
 fn resolve_action_catalogs(
@@ -2965,12 +3571,23 @@ fn materialization_relationship_identity(
 fn materialization_stage(
     definition: &MaterializedContentDefinition,
 ) -> ContentMaterializationStage {
+    let semantic = if definition.kind == MaterializedContentDefinitionKind::Action
+        && definition.semantic.get("kind").and_then(Value::as_str) == Some("inline")
+    {
+        definition
+            .semantic
+            .get("action")
+            .cloned()
+            .unwrap_or_else(|| definition.semantic.clone())
+    } else {
+        definition.semantic.clone()
+    };
     ContentMaterializationStage {
         id: definition.id.clone(),
         kind: definition.kind,
         extension_policy: definition.extension_policy,
         value: ContentMaterializationValue {
-            semantic: definition.semantic.clone(),
+            semantic,
             presentation: definition.presentation.clone(),
         },
         references: definition.references.clone(),
@@ -3915,7 +4532,7 @@ fn fingerprints(
 fn semantic_definition_value(definition: &MaterializedContentDefinition) -> Value {
     let mut semantic = definition.semantic.clone();
     if definition.kind == MaterializedContentDefinitionKind::Action {
-        if let Some(object) = semantic.as_object_mut() {
+        if let Some(object) = semantic.get_mut("action").and_then(Value::as_object_mut) {
             object.remove("name");
             object.remove("sourcePath");
         }
@@ -3929,7 +4546,8 @@ fn action_semantic_field(definition: &MaterializedContentDefinition, field: &str
     }
     definition
         .semantic
-        .get(field)
+        .get("action")
+        .and_then(|action| action.get(field))
         .cloned()
         .unwrap_or(Value::Null)
 }

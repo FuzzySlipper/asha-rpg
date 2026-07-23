@@ -5,6 +5,13 @@ import { retainRulesetValueOwnership, rulesetValueId } from './ruleset-builders.
 import type { RulesetValueReference } from './ruleset-builders.js';
 import type {
   ContentActionDefinition,
+  ContentActionProcedureDefinition,
+  ContentInvokedActionDefinition,
+  ActionProcedureArgumentsFor,
+  ActionProcedureCompositionArgumentsFor,
+  ActionProcedureParameter,
+  ActionProcedureParameterReference,
+  ActionProcedureParameterType,
   PlayBundleManifest,
   ContentDefinition,
   ContentDefinitionReference,
@@ -84,6 +91,83 @@ export function defineActionDefinition(
   input: OrdinaryDefinitionInput<ContentActionDefinition>,
 ): ContentActionDefinition {
   return immutable({ ...input, kind: 'action' as const });
+}
+
+export function defineActionProcedureDefinition<
+  const Parameters extends readonly ActionProcedureParameter[],
+>(
+  input: Omit<
+    OrdinaryDefinitionInput<ContentActionProcedureDefinition<Parameters>>,
+    'parameters'
+  > & {
+    readonly parameters: Parameters;
+  },
+): ContentActionProcedureDefinition<Parameters> {
+  return immutable({
+    ...input,
+    kind: 'actionProcedure' as const,
+    parameters: input.parameters,
+  });
+}
+
+export function defineActionInvocationDefinition<
+  const Parameters extends readonly ActionProcedureParameter[],
+>(
+  input: Omit<
+    OrdinaryDefinitionInput<ContentInvokedActionDefinition>,
+    'invocation'
+  > & {
+    readonly procedure: ContentActionProcedureDefinition<Parameters>;
+    readonly importAs?: string;
+    readonly arguments: ActionProcedureArgumentsFor<Parameters>;
+  },
+): ContentInvokedActionDefinition {
+  const { procedure, importAs, arguments: invocationArguments, ...definition } =
+    input;
+  return immutable({
+    ...definition,
+    kind: 'action' as const,
+    invocation: {
+      procedure: {
+        definitionId: procedure.id,
+        ...(importAs === undefined ? {} : { importAs }),
+      },
+      procedureOwnerPackageId: procedure.ownerPackageId,
+      arguments: invocationArguments,
+    },
+  });
+}
+
+export function actionProcedureParameterReference<
+  const Type extends ActionProcedureParameterType,
+>(
+  parameter: ActionProcedureParameter & { readonly type: Type },
+): ActionProcedureParameterReference<Type> {
+  return immutable({
+    kind: 'parameter' as const,
+    parameterId: parameter.id,
+    parameterType: parameter.type,
+  });
+}
+
+export function actionProcedureInvocation<
+  const Parameters extends readonly ActionProcedureParameter[],
+>(
+  procedure: ContentActionProcedureDefinition<Parameters>,
+  argumentsById: ActionProcedureCompositionArgumentsFor<Parameters>,
+  importAs?: string,
+): import('./play-bundle-types.js').ActionProcedureImplementation {
+  return immutable({
+    kind: 'invocation' as const,
+    invocation: {
+      procedure: {
+        definitionId: procedure.id,
+        ...(importAs === undefined ? {} : { importAs }),
+      },
+      procedureOwnerPackageId: procedure.ownerPackageId,
+      arguments: argumentsById,
+    },
+  });
 }
 
 export function defineSupportDefinition(
