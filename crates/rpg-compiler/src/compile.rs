@@ -6,6 +6,7 @@ use rpg_ir::{
     RpgIrProgram, RpgIrRequirementKind, RpgIrResourceCost, RpgIrRollScope, RpgIrSubject,
     RpgIrTargetKind, RpgIrTargetSelector, RpgIrTeamConstraint, RPG_IR_IDENTITY, RPG_IR_MAJOR,
 };
+use serde::Serialize;
 
 use crate::diagnostic::{RpgCompileFailure, RpgDiagnostic, RpgDiagnosticStage};
 use crate::registry::{capability_version, operation_registration, RpgOperationRegistration};
@@ -122,7 +123,8 @@ impl CompiledRpgRules {
     }
 }
 
-#[derive(Debug, Clone, PartialEq, Eq)]
+#[derive(Debug, Clone, PartialEq, Eq, Serialize)]
+#[serde(rename_all = "camelCase")]
 pub struct CompiledRpgAction {
     pub id: String,
     pub name: String,
@@ -160,7 +162,8 @@ fn selected_destination_maximum_distance(program: &CompiledProgram) -> Option<u3
     }
 }
 
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize)]
+#[serde(rename_all = "camelCase")]
 /// A closed authority branch that must be selected before a catalog random
 /// request becomes required.
 pub enum RpgRandomPlanConditionKind {
@@ -175,13 +178,15 @@ pub enum RpgRandomPlanConditionKind {
     AnyPreviousFalse,
 }
 
-#[derive(Debug, Clone, PartialEq, Eq)]
+#[derive(Debug, Clone, PartialEq, Eq, Serialize)]
+#[serde(rename_all = "camelCase")]
 pub struct RpgRandomPlanCondition {
     pub kind: RpgRandomPlanConditionKind,
     pub path: String,
 }
 
-#[derive(Debug, Clone, PartialEq, Eq)]
+#[derive(Debug, Clone, PartialEq, Eq, Serialize)]
+#[serde(rename_all = "camelCase")]
 /// One possible random request and the complete branch condition stack that
 /// guards it. An empty condition list means the request is unconditional;
 /// sibling entries with exclusive conditions are alternatives, not a union of

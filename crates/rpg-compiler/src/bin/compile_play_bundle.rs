@@ -6,11 +6,15 @@ fn main() {
         .read_to_end(&mut source)
         .expect("read prepared PlayBundle from stdin");
     let output = match rpg_compiler::compile_prepared_play_bundle_json(&source) {
-        Ok(bundle) => serde_json::json!({
-            "ok": true,
-            "artifact": bundle.artifact(),
-            "diagnostics": [],
-        }),
+        Ok(bundle) => {
+            let compiled_actions = bundle.rules().actions().collect::<Vec<_>>();
+            serde_json::json!({
+                "ok": true,
+                "artifact": bundle.artifact(),
+                "compiledActions": compiled_actions,
+                "diagnostics": [],
+            })
+        }
         Err(failure) => serde_json::json!({
             "ok": false,
             "diagnostics": failure.diagnostics,

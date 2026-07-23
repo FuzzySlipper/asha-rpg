@@ -2577,7 +2577,7 @@ fn validate_action_procedure_callable(
 
     for (arguments, mut effective_references) in variants {
         let mut visiting = Vec::new();
-        let _ = expand_action_procedure(
+        let expanded = expand_action_procedure(
             &definition.id,
             &procedure.owner_package_id,
             &arguments,
@@ -2589,7 +2589,80 @@ fn validate_action_procedure_callable(
             &format!("{path}.callable"),
             diagnostics,
         );
+        if let Some(body) = expanded {
+            validate_expanded_action_procedure_body(definition, body, path, diagnostics);
+        }
     }
+}
+
+fn validate_expanded_action_procedure_body(
+    definition: &MaterializedContentDefinition,
+    body: RpgIrActionBody,
+    path: &str,
+    diagnostics: &mut Vec<RpgDiagnostic>,
+) {
+    let action = RpgIrAction {
+        id: definition.id.clone(),
+        name: definition.id.clone(),
+        source_path: definition.provenance.source.module.clone(),
+        targets: body.targets,
+        check: body.check,
+        roll_scope: body.roll_scope,
+        costs: body.costs,
+        program: body.program,
+    };
+    let mut catalogs = DerivedCatalogs::default();
+    collect_action_catalogs(&action, &mut catalogs);
+    let capabilities = capability_registrations()
+        .iter()
+        .map(|registration| registration.id.as_str().to_owned())
+        .collect::<Vec<_>>();
+    let requirements = operation_registrations()
+        .iter()
+        .map(|registration| RpgIrRequirement {
+            kind: RpgIrRequirementKind::Operation,
+            id: registration.id.to_owned(),
+            version: registration.version,
+        })
+        .chain(
+            capability_registrations()
+                .iter()
+                .map(|registration| RpgIrRequirement {
+                    kind: RpgIrRequirementKind::Capability,
+                    id: registration.id.as_str().to_owned(),
+                    version: registration.version,
+                }),
+        )
+        .collect();
+    let source = NormalizedRpgIr {
+        schema: RpgIrSchema {
+            identity: RPG_IR_IDENTITY.to_owned(),
+            major: RPG_IR_MAJOR,
+        },
+        package: RpgIrPackage {
+            id: "procedure.validation".to_owned(),
+            version: "1.0.0".to_owned(),
+        },
+        catalogs: RpgIrCatalogs {
+            stats: catalogs.stats.into_iter().collect(),
+            defenses: catalogs.defenses.into_iter().collect(),
+            resources: catalogs.resources.into_iter().collect(),
+            modifiers: catalogs.modifiers.into_iter().collect(),
+            capabilities,
+        },
+        requirements,
+        actions: vec![action],
+    };
+    let Err(failure) = compile_normalized_rpg_ir(source) else {
+        return;
+    };
+    diagnostics.extend(failure.diagnostics.into_iter().map(|mut diagnostic| {
+        diagnostic.path = diagnostic.path.strip_prefix("$.actions[0]").map_or_else(
+            || format!("{path}.callable.validation.{}", diagnostic.path),
+            |suffix| format!("{path}.callable{suffix}"),
+        );
+        diagnostic
+    }));
 }
 
 fn procedure_validation_arguments(
@@ -2636,8 +2709,29 @@ fn procedure_parameter_validation_sample(
         }),
         ActionProcedureParameter::Check { .. } => json!({"kind": "noRoll"}),
         ActionProcedureParameter::Costs { .. } => json!([]),
-        ActionProcedureParameter::Program { .. } => json!({"kind": "sequence", "steps": []}),
-        ActionProcedureParameter::SemanticBranches { .. } => json!({"kind": "onCheck"}),
+        ActionProcedureParameter::Program { .. } => json!({
+            "kind": "atomic",
+            "body": {
+                "kind": "onCheck",
+                "noRoll": {
+                    "kind": "operation",
+                    "operation": {
+                        "kind": "heal",
+                        "amount": {"kind": "constant", "value": 1},
+                    },
+                },
+            },
+        }),
+        ActionProcedureParameter::SemanticBranches { .. } => json!({
+            "kind": "onCheck",
+            "noRoll": {
+                "kind": "operation",
+                "operation": {
+                    "kind": "heal",
+                    "amount": {"kind": "constant", "value": 1},
+                },
+            },
+        }),
     }
 }
 

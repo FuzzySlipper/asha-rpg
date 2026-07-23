@@ -279,7 +279,25 @@ test('two distinct actions share one Rust-expanded procedure without copying its
   );
   assert.equal(readPath(closeArguments, ['defense', 'id']), 'guard');
   assert.equal(readPath(distantArguments, ['defense', 'id']), 'resolve');
-  assert.equal(compilePrepared(prepared).ok, true);
+  const compilation = compilePrepared(prepared);
+  assert.equal(compilation.ok, true, JSON.stringify(compilation));
+  if (!compilation.ok) return;
+  const closeCompiled = compiledAction(compilation, closeStrike.id);
+  const distantCompiled = compiledAction(compilation, distantStrike.id);
+  assert.equal(closeCompiled.targets.maximumRange, 1);
+  assert.equal(distantCompiled.targets.maximumRange, 8);
+  assert.equal(closeCompiled.check.defenseId, 'guard');
+  assert.equal(distantCompiled.check.defenseId, 'resolve');
+  const closeDamageRequest = formulaDiceRequest(closeCompiled);
+  const distantDamageRequest = formulaDiceRequest(distantCompiled);
+  assert.deepEqual(
+    [closeDamageRequest.count, closeDamageRequest.sides],
+    [1, 6],
+  );
+  assert.deepEqual(
+    [distantDamageRequest.count, distantDamageRequest.sides],
+    [2, 8],
+  );
 
   if (basicAttackProcedure.implementation.kind !== 'inline') {
     assert.fail('fixture procedure must be inline');
@@ -306,6 +324,14 @@ test('two distinct actions share one Rust-expanded procedure without copying its
     assert.equal(changed.ok, true, JSON.stringify(changed));
     if (!baseline.ok || !changed.ok) continue;
     assert.notEqual(baseline.artifact.artifactId, changed.artifact.artifactId);
+    assert.equal(
+      compiledAction(baseline, actionDefinition.id).targets.team,
+      'hostile',
+    );
+    assert.equal(
+      compiledAction(changed, actionDefinition.id).targets.team,
+      'any',
+    );
   }
 });
 
@@ -498,6 +524,59 @@ test('uninvoked exported procedures are fully validated by TypeScript and Rust',
     ),
     'ACTION_PROCEDURE_TEMPLATE_INVALID',
   );
+
+  const semanticallyInvalidProcedure = {
+    kind: 'actionProcedure',
+    id: 'procedure.semantic-invalid',
+    ownerPackageId: foundationId,
+    visibility: 'public',
+    extensionPolicy: 'sealed',
+    source: {
+      module: 'foundation/action-procedures.ts',
+      declaration: 'semanticInvalid',
+    },
+    parameters: [],
+    implementation: {
+      kind: 'inline',
+      template: {
+        targets: {
+          kind: 'participant',
+          team: 'hostile',
+          maximumRange: 1,
+          maximumTargets: 0,
+        },
+        check: { kind: 'noRoll' },
+        rollScope: 'none',
+        costs: [],
+        program: { kind: 'sequence', steps: [] },
+      },
+    },
+  } as unknown as ContentDefinition;
+  const semanticResult = prepareUninvokedProcedure(
+    semanticallyInvalidProcedure,
+  );
+  if (!semanticResult.ok) {
+    assert.fail(JSON.stringify(semanticResult.diagnostics));
+  }
+  const semanticCompilation = compilePrepared(semanticResult.prepared);
+  assert.equal(
+    semanticCompilation.ok,
+    false,
+    JSON.stringify(semanticCompilation),
+  );
+  if (semanticCompilation.ok) return;
+  for (const code of [
+    'RPG_IR_TARGET_BOUND_INVALID',
+    'RPG_IR_EMPTY_SEQUENCE',
+    'RPG_IR_ATOMIC_ROOT_REQUIRED',
+  ]) {
+    assert.ok(
+      semanticCompilation.diagnostics.some(
+        (diagnostic) => diagnostic.code === code,
+      ),
+      JSON.stringify(semanticCompilation.diagnostics),
+    );
+  }
 
   if (forwardedProcedure.implementation.kind !== 'invocation') {
     assert.fail('fixture procedure must compose through an invocation');
@@ -1231,6 +1310,7 @@ function readPath(value: unknown, path: readonly string[]): unknown {
 type CompilationResult =
   | {
       readonly ok: true;
+      readonly compiledActions: readonly CompiledActionProjection[];
       readonly artifact: {
         readonly artifactId: string;
         readonly materializedDefinitions: readonly {
@@ -1256,6 +1336,48 @@ type CompilationResult =
       readonly ok: false;
       readonly diagnostics: readonly { readonly code: string }[];
     };
+
+type CompiledActionProjection = {
+  readonly id: string;
+  readonly targets: {
+    readonly team: string;
+    readonly maximumRange: number;
+    readonly maximumTargets: number;
+  };
+  readonly check: {
+    readonly kind: string;
+    readonly defenseId?: string;
+  };
+  readonly randomPlan: readonly {
+    readonly request: {
+      readonly kind: string;
+      readonly count: number;
+      readonly sides: number;
+      readonly path: string;
+    };
+  }[];
+};
+
+function compiledAction(
+  compilation: Extract<CompilationResult, { readonly ok: true }>,
+  actionId: string,
+): CompiledActionProjection {
+  const result = compilation.compiledActions.find(
+    (action) => action.id === actionId,
+  );
+  assert.ok(result, `missing compiled action ${actionId}`);
+  return result;
+}
+
+function formulaDiceRequest(
+  action: CompiledActionProjection,
+): CompiledActionProjection['randomPlan'][number]['request'] {
+  const result = action.randomPlan.find(
+    (entry) => entry.request.kind === 'formulaDice',
+  );
+  assert.ok(result, `missing formula-dice request for ${action.id}`);
+  return result.request;
+}
 
 function compilePrepared(prepared: PreparedPlayBundle): CompilationResult {
   const compilation = spawnSync(
