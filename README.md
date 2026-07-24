@@ -65,6 +65,16 @@ Content Packs may also carry inert support records for consumer-owned setup
 profiles and similar presentation/configuration data. Those records remain
 closed data in the compiled artifact and cannot add executable Rust semantics.
 
+Content Packs may define sealed character classes and character features using
+the registered RPG schemas. A participant profile and Scenario explicitly bind
+one class and a canonical subset of its features. Rust validates the class
+graph, stores the selection in participant authority state, and evaluates
+bounded attack-roll contributions from current positions, teams, and vitality.
+The initial conditions include cardinal flanking, cardinal surrounding, and
+conjunction. Applied sources are retained in `AttackResolved.contributions` so
+downstream logs can explain the action modifier and every class/feature bonus
+without recalculating semantics in TypeScript.
+
 `@asha-rpg/ir` publishes the strict normalized data contract and a checked
 vocabulary generated from the Rust registry. `@asha-rpg/authoring` publishes
 immutable catalog-bound ids, selectors, checks, formulas, predicates, costs,
@@ -78,7 +88,7 @@ It exports distinct `Ruleset`, `ContentPack`, `PlayBundle`, and `Scenario`
 contracts. A Ruleset has no authored gameplay definitions; a Scenario has no
 definitions or gameplay script. It does not evaluate gameplay semantics or discover packages from global
 registries or the filesystem. Rust validates the prepared graph, creates the
-private executable plan, and emits the closed `asha.rpg.play-bundle.compiled@1`
+private executable plan, and emits the closed `asha.rpg.play-bundle.compiled@2`
 artifact with independent source, semantic, and presentation fingerprints.
 Representative consumer code lives in
 `examples/representative-actions.ts`; its normalized artifact is sent through

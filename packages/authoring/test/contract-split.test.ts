@@ -9,6 +9,8 @@ import {
   composePlayBundle,
   contentPackRequest,
   contentPackSource,
+  defineCharacterClassDefinition,
+  defineCharacterFeatureDefinition,
   defineContentPack,
   defineParticipantProfileData,
   defineParticipantProfileDefinition,
@@ -153,7 +155,7 @@ test("Content Pack requirements are checked directly against Ruleset provisions"
   );
 });
 
-test("Content Packs may carry inert consumer setup data without extending Rust catalogs", () => {
+test("Content Packs carry typed class, feature, and participant setup definitions", () => {
   const profileRuleset = defineRuleset({
     ...semanticRuleset,
     provides: {
@@ -180,6 +182,33 @@ test("Content Packs may carry inert consumer setup data without extending Rust c
     source: { module: "contract/profiles.ts", declaration: "profileHeal" },
     action: authoredAction,
   });
+  const flankingFeature = defineCharacterFeatureDefinition({
+    id: "feature.flanking",
+    visibility: "public",
+    extensionPolicy: "sealed",
+    source: { module: "contract/profiles.ts", declaration: "flanking" },
+    presentation: { label: "Flanking Discipline" },
+    characterFeature: {
+      rollContributions: [
+        {
+          id: "flanking",
+          selector: "attack",
+          condition: { kind: "actorFlanksTarget" },
+          amount: 2,
+        },
+      ],
+    },
+  });
+  const vanguardClass = defineCharacterClassDefinition({
+    id: "class.vanguard",
+    visibility: "public",
+    extensionPolicy: "sealed",
+    source: { module: "contract/profiles.ts", declaration: "vanguardClass" },
+    presentation: { label: "Vanguard" },
+    characterClass: {
+      featureDefinitions: [{ definitionId: flankingFeature.id }],
+    },
+  });
   const profile = defineParticipantProfileDefinition({
     id: "profile.vanguard",
     visibility: "public",
@@ -190,6 +219,8 @@ test("Content Packs may carry inert consumer setup data without extending Rust c
     profile: defineParticipantProfileData({
       role: "player",
       definitionReferences: [{ definitionId: actionDefinition.id }],
+      classDefinition: { definitionId: vanguardClass.id },
+      featureDefinitions: [{ definitionId: flankingFeature.id }],
       capabilities: [
         participantProfileVitality({ current: 10, max: 10 }),
         participantProfileStat(rulesetStat(profileRuleset, "strength"), 16),
@@ -199,7 +230,12 @@ test("Content Packs may carry inert consumer setup data without extending Rust c
   const contentPack = defineContentPack({
     identity: { id: "contract.profile-content", version: "1.0.0" },
     entry: { module: "contract/profiles.ts", declaration: "content" },
-    definitions: [actionDefinition, profile],
+    definitions: [
+      actionDefinition,
+      flankingFeature,
+      vanguardClass,
+      profile,
+    ],
   });
   const result = preparePlayBundle({
     bundle: composePlayBundle({
@@ -225,9 +261,11 @@ test("Content Packs may carry inert consumer setup data without extending Rust c
     | { readonly data: unknown }
     | undefined;
   assert.deepEqual(materializedSemantic?.data, {
-    schema: { identity: "asha.rpg.participant-profile", version: 1 },
+    schema: { identity: "asha.rpg.participant-profile", version: 2 },
     role: "player",
     definitionIds: [actionDefinition.id],
+    classDefinitionId: vanguardClass.id,
+    featureDefinitionIds: [flankingFeature.id],
     items: [],
     equipment: [],
     capabilities: [
@@ -239,6 +277,72 @@ test("Content Packs may carry inert consumer setup data without extending Rust c
     { kind: "stat", id: "strength" },
   ]);
   assert.deepEqual(result.prepared.contentRequirements.numericDomains, ["score"]);
+
+  const invalidFeature = defineCharacterFeatureDefinition({
+    ...flankingFeature,
+    id: "feature.invalid-surrounded",
+    extensionPolicy: "patchable",
+    source: {
+      module: "contract/profiles.ts",
+      declaration: "invalidSurrounded",
+    },
+    characterFeature: {
+      rollContributions: [
+        {
+          id: "duplicate-selector",
+          selector: "attack",
+          condition: { kind: "always" },
+          amount: 1,
+        },
+        {
+          id: "invalid-surrounded",
+          selector: "attack",
+          condition: {
+            kind: "actorSurrounded",
+            minimumHostiles: 5,
+          },
+          amount: 1,
+        },
+      ],
+    },
+  });
+  const invalidContent = defineContentPack({
+    identity: { id: "contract.invalid-feature-content", version: "1.0.0" },
+    entry: {
+      module: "contract/profiles.ts",
+      declaration: "invalidFeatureContent",
+    },
+    definitions: [invalidFeature],
+  });
+  const invalidResult = preparePlayBundle({
+    bundle: composePlayBundle({
+      identity: { id: "contract.invalid-feature-bundle", version: "1.0.0" },
+      ruleset: profileRuleset,
+      base: contentPackRequest({
+        id: invalidContent.identity.id,
+        version: "1.0.0",
+      }),
+      add: [],
+      overlays: [],
+      configure: {},
+    }),
+    contentPacks: [contentPackSource(invalidContent)],
+  });
+  assert.equal(invalidResult.ok, false);
+  if (!invalidResult.ok) {
+    assert.ok(invalidResult.diagnostics.some(
+      (diagnostic) =>
+        diagnostic.code === "CHARACTER_FEATURE_EXTENSION_POLICY_UNSUPPORTED",
+    ));
+    assert.ok(invalidResult.diagnostics.some(
+      (diagnostic) =>
+        diagnostic.code === "CHARACTER_FEATURE_SURROUNDED_THRESHOLD_INVALID",
+    ));
+    assert.ok(invalidResult.diagnostics.some(
+      (diagnostic) =>
+        diagnostic.code === "CHARACTER_FEATURE_SELECTOR_DUPLICATE",
+    ));
+  }
 
   const foreignRuleset = defineRuleset({
     ...profileRuleset,
@@ -299,7 +403,7 @@ test("Scenario builder emits setup-only immutable data", () => {
     },
   });
 
-  assert.deepEqual(scenario.schema, { id: "asha.rpg.scenario", version: 1 });
+  assert.deepEqual(scenario.schema, { id: "asha.rpg.scenario", version: 2 });
   assert.equal(Object.isFrozen(scenario.board), true);
   assert.equal("commands" in scenario, false);
   assert.equal("rolls" in scenario, false);

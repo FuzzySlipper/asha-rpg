@@ -94,6 +94,33 @@ export function defineItemDefinition(input) {
         },
     });
 }
+export function defineCharacterFeatureDefinition(input) {
+    return immutable({
+        ...input,
+        kind: 'characterFeature',
+        characterFeature: {
+            schema: {
+                identity: 'asha.rpg.character-feature',
+                version: 1,
+            },
+            rollContributions: [...input.characterFeature.rollContributions].sort((left, right) => left.id.localeCompare(right.id)),
+        },
+    });
+}
+export function defineCharacterClassDefinition(input) {
+    return immutable({
+        ...input,
+        kind: 'characterClass',
+        lowLevelReferences: [...input.characterClass.featureDefinitions],
+        characterClass: {
+            schema: {
+                identity: 'asha.rpg.character-class',
+                version: 1,
+            },
+            featureDefinitions: [...input.characterClass.featureDefinitions].sort((left, right) => `${left.importAs ?? ''}#${left.definitionId}`.localeCompare(`${right.importAs ?? ''}#${right.definitionId}`)),
+        },
+    });
+}
 export function itemBoundedIntegerAttribute(input) {
     return immutable({ ...input, type: 'boundedInteger' });
 }
@@ -120,6 +147,10 @@ export function defineParticipantProfileDefinition(input) {
         kind: 'support',
         lowLevelReferences: [
             ...profile.definitionReferences,
+            ...(profile.classDefinition === null
+                ? []
+                : [profile.classDefinition]),
+            ...profile.featureDefinitions,
             ...profile.items.map((item) => item.definition),
         ],
         semantic: {
@@ -134,9 +165,11 @@ export function defineParticipantProfileData(input) {
         ...input,
         schema: {
             identity: 'asha.rpg.participant-profile',
-            version: 1,
+            version: 2,
         },
         definitionReferences: [...input.definitionReferences],
+        classDefinition: input.classDefinition ?? null,
+        featureDefinitions: [...(input.featureDefinitions ?? [])].sort((left, right) => `${left.importAs ?? ''}#${left.definitionId}`.localeCompare(`${right.importAs ?? ''}#${right.definitionId}`)),
         items: [...(input.items ?? [])],
         equipment: [...(input.equipment ?? [])],
         capabilities: [...input.capabilities],

@@ -43,6 +43,8 @@ pub struct RpgEntityState {
     id: String,
     team: Team,
     position: GridPosition,
+    class_definition_id: Option<String>,
+    character_feature_ids: Vec<String>,
     vitality: BoundedValue,
     stats: BTreeMap<String, i32>,
     defenses: BTreeMap<String, i32>,
@@ -56,6 +58,8 @@ impl RpgEntityState {
             id: id.into(),
             team,
             position,
+            class_definition_id: None,
+            character_feature_ids: Vec::new(),
             vitality: BoundedValue {
                 current: vitality,
                 max: vitality,
@@ -105,6 +109,8 @@ impl RpgEntityState {
             id,
             team,
             position,
+            class_definition_id: None,
+            character_feature_ids: Vec::new(),
             vitality,
             stats: BTreeMap::new(),
             defenses: BTreeMap::new(),
@@ -176,6 +182,37 @@ impl RpgEntityState {
         Ok(())
     }
 
+    pub fn restore_character_selection(
+        &mut self,
+        class_definition_id: Option<String>,
+        character_feature_ids: Vec<String>,
+    ) -> Result<(), RpgStateRestoreError> {
+        if self.class_definition_id.is_some() || !self.character_feature_ids.is_empty() {
+            return Err(RpgStateRestoreError::DuplicateIdentity);
+        }
+        if class_definition_id
+            .as_deref()
+            .is_some_and(|definition_id| definition_id.trim().is_empty())
+        {
+            return Err(RpgStateRestoreError::EmptyIdentity);
+        }
+        let mut previous = None::<&str>;
+        for feature_id in &character_feature_ids {
+            if feature_id.trim().is_empty()
+                || previous.is_some_and(|previous| previous >= feature_id.as_str())
+            {
+                return Err(RpgStateRestoreError::DuplicateIdentity);
+            }
+            previous = Some(feature_id);
+        }
+        if class_definition_id.is_none() && !character_feature_ids.is_empty() {
+            return Err(RpgStateRestoreError::EmptyIdentity);
+        }
+        self.class_definition_id = class_definition_id;
+        self.character_feature_ids = character_feature_ids;
+        Ok(())
+    }
+
     pub fn id(&self) -> &str {
         &self.id
     }
@@ -190,6 +227,14 @@ impl RpgEntityState {
 
     pub fn vitality(&self) -> BoundedValue {
         self.vitality
+    }
+
+    pub fn class_definition_id(&self) -> Option<&str> {
+        self.class_definition_id.as_deref()
+    }
+
+    pub fn character_feature_ids(&self) -> &[String] {
+        &self.character_feature_ids
     }
 
     pub fn stat(&self, id: &str) -> Option<i32> {
@@ -783,6 +828,55 @@ pub struct RpgReactionDecision {
     pub option_id: Option<String>,
 }
 
+#[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub enum RpgRollContributionSelector {
+    Attack,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(
+    tag = "kind",
+    rename_all = "camelCase",
+    rename_all_fields = "camelCase",
+    deny_unknown_fields
+)]
+pub enum RpgRollContributionCondition {
+    Always,
+    ActorFlanksTarget,
+    ActorSurrounded {
+        minimum_hostiles: u32,
+    },
+    All {
+        conditions: Vec<RpgRollContributionCondition>,
+    },
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(
+    tag = "kind",
+    rename_all = "camelCase",
+    rename_all_fields = "camelCase",
+    deny_unknown_fields
+)]
+pub enum RpgRollContributionReason {
+    ActionCheckModifier,
+    CharacterFeature {
+        contribution_id: String,
+        selector: RpgRollContributionSelector,
+        condition: RpgRollContributionCondition,
+    },
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase", deny_unknown_fields)]
+pub struct RpgRollContribution {
+    pub source_definition_id: String,
+    pub source_label: String,
+    pub amount: i32,
+    pub reason: RpgRollContributionReason,
+}
+
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(
     tag = "kind",
@@ -804,6 +898,7 @@ pub enum RpgDomainEvent {
         defense_id: String,
         defense: i32,
         hit: bool,
+        contributions: Vec<RpgRollContribution>,
     },
     SavingThrowResolved {
         target_id: String,

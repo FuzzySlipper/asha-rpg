@@ -20,14 +20,21 @@ without a second ledger. Use `actionPatch`, `deriveAction`, and
 are low-level compiler-fixture escape hatches.
 
 Ordinary support definitions may also carry a consumer-owned catalog name and
-inert `semantic.data`. This is intended for setup profiles, item grants, and
-similar product data that must survive PlayBundle compilation. It is never an
-executable callback surface; Rust only interprets the registered action
-catalogs and operations.
+inert `semantic.data`. This is intended for product data that must survive
+PlayBundle compilation. It is never an executable callback surface; Rust only
+interprets registered schemas, action catalogs, and operations.
 
 Use `defineParticipantProfileDefinition` for portable participant defaults. It
 stores capabilities as Scenario DTOs and closes the definition graph over the
 profile's selected action/content ids, so consumers do not maintain a second
 reference ledger.
+
+Use `defineCharacterFeatureDefinition` for sealed, bounded roll-contribution
+data and `defineCharacterClassDefinition` for the exported feature set offered
+by a class. `defineParticipantProfileData` explicitly selects the class and a
+canonical subset of its features. TypeScript only authors and validates this
+immutable data; Rust independently compiles the definitions, owns the selected
+participant state, evaluates spatial conditions, and emits applied
+contributions.
 
 The package emits data only. Rust remains semantic and state authority.

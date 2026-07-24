@@ -1,11 +1,12 @@
 use std::collections::BTreeMap;
 
+use rpg_core::{RpgRollContributionCondition, RpgRollContributionSelector};
 use serde::{Deserialize, Serialize};
 use serde_json::Value;
 
 pub const PREPARED_PLAY_BUNDLE_IDENTITY: &str = "asha.rpg.play-bundle.prepared";
 pub const COMPILED_PLAY_BUNDLE_IDENTITY: &str = "asha.rpg.play-bundle.compiled";
-pub const PLAY_BUNDLE_ARTIFACT_MAJOR: u32 = 1;
+pub const PLAY_BUNDLE_ARTIFACT_MAJOR: u32 = 2;
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase", deny_unknown_fields)]
@@ -201,6 +202,8 @@ pub struct ContentDefinitionProvenance {
 pub enum MaterializedContentDefinitionKind {
     Action,
     ActionProcedure,
+    CharacterClass,
+    CharacterFeature,
     Item,
     Support,
 }
@@ -208,9 +211,13 @@ pub enum MaterializedContentDefinitionKind {
 pub const ACTION_DEFINITION_IDENTITY: &str = "asha.rpg.action-definition";
 pub const ACTION_PROCEDURE_IDENTITY: &str = "asha.rpg.action-procedure";
 pub const ITEM_IDENTITY: &str = "asha.rpg.item";
+pub const CHARACTER_CLASS_IDENTITY: &str = "asha.rpg.character-class";
+pub const CHARACTER_FEATURE_IDENTITY: &str = "asha.rpg.character-feature";
 pub const ACTION_DEFINITION_VERSION: u32 = 1;
 pub const ACTION_PROCEDURE_VERSION: u32 = 1;
 pub const ITEM_VERSION: u32 = 1;
+pub const CHARACTER_CLASS_VERSION: u32 = 1;
+pub const CHARACTER_FEATURE_VERSION: u32 = 1;
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase", deny_unknown_fields)]
@@ -457,6 +464,61 @@ pub struct CompiledItemDefinition {
     pub attributes: Vec<ItemAttribute>,
 }
 
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase", deny_unknown_fields)]
+pub struct CharacterClassSchema {
+    pub identity: String,
+    pub version: u32,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase", deny_unknown_fields)]
+pub struct MaterializedCharacterClassData {
+    pub schema: CharacterClassSchema,
+    pub feature_definition_ids: Vec<String>,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase", deny_unknown_fields)]
+pub struct CharacterFeatureSchema {
+    pub identity: String,
+    pub version: u32,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase", deny_unknown_fields)]
+pub struct CharacterFeatureRollContribution {
+    pub id: String,
+    pub selector: RpgRollContributionSelector,
+    pub condition: RpgRollContributionCondition,
+    pub amount: i32,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase", deny_unknown_fields)]
+pub struct MaterializedCharacterFeatureData {
+    pub schema: CharacterFeatureSchema,
+    pub roll_contributions: Vec<CharacterFeatureRollContribution>,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase", deny_unknown_fields)]
+pub struct CompiledCharacterClass {
+    pub definition_id: String,
+    pub label: String,
+    pub description: Option<String>,
+    pub feature_definition_ids: Vec<String>,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase", deny_unknown_fields)]
+pub struct CompiledCharacterFeature {
+    pub definition_id: String,
+    pub label: String,
+    pub description: Option<String>,
+    pub roll_contributions: Vec<CharacterFeatureRollContribution>,
+}
+
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
 pub enum MaterializedContentVisibility {
@@ -488,7 +550,7 @@ pub struct MaterializedContentDefinition {
 }
 
 pub const PARTICIPANT_PROFILE_IDENTITY: &str = "asha.rpg.participant-profile";
-pub const PARTICIPANT_PROFILE_VERSION: u32 = 1;
+pub const PARTICIPANT_PROFILE_VERSION: u32 = 2;
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase", deny_unknown_fields)]
@@ -548,6 +610,9 @@ pub struct MaterializedParticipantProfileData {
     pub schema: ParticipantProfileSchema,
     pub role: ParticipantProfileRole,
     pub definition_ids: Vec<String>,
+    pub class_definition_id: Option<String>,
+    #[serde(default)]
+    pub feature_definition_ids: Vec<String>,
     #[serde(default)]
     pub items: Vec<ParticipantProfileItemInstance>,
     #[serde(default)]
@@ -578,6 +643,8 @@ pub struct CompiledParticipantProfile {
     pub description: Option<String>,
     pub role: ParticipantProfileRole,
     pub definition_ids: Vec<String>,
+    pub class_definition_id: Option<String>,
+    pub feature_definition_ids: Vec<String>,
     pub items: Vec<ParticipantProfileItemInstance>,
     pub equipment: Vec<ParticipantProfileEquipmentSlot>,
     pub capabilities: Vec<ParticipantProfileInitialCapability>,

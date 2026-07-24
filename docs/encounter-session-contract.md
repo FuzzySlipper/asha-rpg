@@ -7,18 +7,20 @@ consumer compiles or loads a `CompiledPlayBundle` and calls
 `RpgAuthoritySession::from_scenario`. Rust validates the entire Scenario before
 creating mutable authority state.
 
-The schema is `asha.rpg.scenario@1`. `playBundleId` must exactly match the
-compiled artifact. Checkpoint schema `asha.rpg.session.checkpoint@4` stores the
+The schema is `asha.rpg.scenario@2`. `playBundleId` must exactly match the
+compiled artifact. Checkpoint schema `asha.rpg.session.checkpoint@5` stores the
 Scenario and its `fnv1a64.rpg-scenario.v1` fingerprint. Replay entry schema
-version 5 binds before/after boundaries to that Scenario, source binding, turn,
-revision, and state hash.
+version 6 binds before/after boundaries to that Scenario, source binding, turn,
+revision, and state hash. Accepted event schema version 3 carries structured
+roll contributions, and encounter-view schema version 5 exposes explicit
+class/feature selection.
 
 ## Setup-only data
 
 A Scenario contains only:
 
 - board extent and typed cell capabilities;
-- participants, teams, positions, and selected exported Content Pack definition ids;
+- participants, teams, positions, selected class/features, and selected exported Content Pack definition ids;
 - stable item instances plus exact item-instance-to-slot equipment bindings;
 - initial vitality, named Ruleset stat/defense values, and Content Pack resource/modifier values;
 - initiative order, current actor, round, and turn;
@@ -35,6 +37,13 @@ and every Scenario instance/equipment reference before state exists. Equipment
 is authority state embedded in the Scenario, state hash, checkpoint, and
 replay boundary; it is not a host-side presentation hint.
 
+Participant profile schema `asha.rpg.participant-profile@2` and Scenario
+participants bind an optional exported character class and a canonical selected
+feature list. Every selected feature must be exported, compiled by Rust, and
+listed by the selected class. Features cannot be selected without a class.
+Class and feature selection is authority state covered by checkpoint restore,
+state hashing, and replay; it is not a host-supplied modifier list.
+
 Scenario is not an execution script. It cannot encode definitions, commands,
 targets, reactions, roll values, expected events/outcomes, or Tester settings.
 Strict decoding rejects every additional field.
@@ -46,6 +55,14 @@ explicit end-turn controls atomically update state, modifier tenure, accepted
 events, and the next living initiative participant.
 A pending reaction blocks other commands until resolved. Rejections preserve
 state, log, turn, reaction, and accepted-random position.
+
+Attack resolution reports its applied roll contributions as structured event
+data. The action check modifier is first. Selected feature contributions follow
+in canonical feature and contribution order when their Rust-evaluated spatial
+conditions hold. Flanking requires a living same-team ally opposite the actor
+across a cardinally adjacent living target. Surrounded counts living hostiles in
+the four cardinally adjacent cells. Defeated or repositioned participants
+therefore change later resolutions without changing the selected features.
 
 `RpgAuthoritySession::encounter_view` exposes board/cells, participant state,
 inventory/equipment, current actor and initiative, selected and legal actions
@@ -87,4 +104,5 @@ randomness, or reapplies events.
 The initial board authority does not claim diagonal or hex topology,
 jumping/flying/teleport movement, opportunity attacks, per-step effects,
 area-target semantics, campaign persistence, scripted runners, AI control,
-Tester configuration, or Rulebench product protocols.
+Tester configuration, class levels or prerequisites, non-attack feature
+contributions, a general condition language, or Rulebench product protocols.

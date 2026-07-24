@@ -13,9 +13,9 @@ use rpg_ir::{MaterializedContentDefinitionKind, MaterializedContentVisibility, R
 use serde::{Deserialize, Serialize};
 
 pub const RPG_SCENARIO_SCHEMA_ID: &str = "asha.rpg.scenario";
-pub const RPG_SCENARIO_SCHEMA_VERSION: u32 = 1;
+pub const RPG_SCENARIO_SCHEMA_VERSION: u32 = 2;
 pub const RPG_ENCOUNTER_VIEW_SCHEMA_ID: &str = "asha.rpg.encounter.view";
-pub const RPG_ENCOUNTER_VIEW_SCHEMA_VERSION: u32 = 4;
+pub const RPG_ENCOUNTER_VIEW_SCHEMA_VERSION: u32 = 5;
 pub const RPG_END_TURN_CONTROL_ID: &str = "control.end-turn";
 
 const MAXIMUM_BOARD_EXTENT: u32 = 1_024;
@@ -94,6 +94,10 @@ pub struct RpgParticipantSetup {
     pub team_id: RpgTeamId,
     pub position: GridPosition,
     pub definition_ids: Vec<String>,
+    #[serde(default)]
+    pub class_definition_id: Option<String>,
+    #[serde(default)]
+    pub feature_definition_ids: Vec<String>,
     #[serde(default)]
     pub items: Vec<RpgItemInstanceSetup>,
     #[serde(default)]
@@ -255,6 +259,8 @@ pub struct RpgParticipantView {
     pub team_id: RpgTeamId,
     pub position: GridPosition,
     pub definition_ids: Vec<String>,
+    pub class_definition_id: Option<String>,
+    pub feature_definition_ids: Vec<String>,
     pub items: Vec<RpgItemInstanceView>,
     pub equipment: Vec<RpgEquipmentSlotSetup>,
     pub vitality: BoundedValue,
@@ -638,6 +644,12 @@ pub(crate) fn build_encounter(
             vitality,
         )
         .expect("validated participant state restores");
+        entity
+            .restore_character_selection(
+                participant.class_definition_id.clone(),
+                participant.feature_definition_ids.clone(),
+            )
+            .expect("validated character selection restores");
         for capability in &participant.capabilities {
             match capability {
                 RpgInitialCapability::Vitality { .. } => {}
@@ -753,6 +765,16 @@ fn validate_scenario(
         .iter()
         .map(|item| (item.definition_id.as_str(), item))
         .collect::<BTreeMap<_, _>>();
+    let character_classes = bundle
+        .character_classes()
+        .iter()
+        .map(|class| (class.definition_id.as_str(), class))
+        .collect::<BTreeMap<_, _>>();
+    let character_features = bundle
+        .character_features()
+        .iter()
+        .map(|feature| feature.definition_id.as_str())
+        .collect::<BTreeSet<_>>();
     let required_capabilities = bundle
         .rules()
         .required_capabilities()
@@ -884,6 +906,14 @@ fn validate_scenario(
                 "each authority-controlled participant must reference an artifact action",
             ));
         }
+        validate_participant_character_selection(
+            participant,
+            &path,
+            &definition_kinds,
+            &character_classes,
+            &character_features,
+            &mut diagnostics,
+        );
         validate_participant_items(
             participant,
             &path,
@@ -910,6 +940,89 @@ fn validate_scenario(
     }
     validate_turn(scenario, &participant_ids, &mut diagnostics);
     diagnostics
+}
+
+fn validate_participant_character_selection(
+    participant: &RpgParticipantSetup,
+    path: &str,
+    definition_kinds: &BTreeMap<
+        &str,
+        (
+            MaterializedContentDefinitionKind,
+            MaterializedContentVisibility,
+        ),
+    >,
+    character_classes: &BTreeMap<&str, &rpg_ir::CompiledCharacterClass>,
+    character_features: &BTreeSet<&str>,
+    diagnostics: &mut Vec<RpgScenarioDiagnostic>,
+) {
+    let selected_class = participant.class_definition_id.as_deref().and_then(|class_id| {
+        let valid = definition_kinds.get(class_id).is_some_and(|(kind, visibility)| {
+            *kind == MaterializedContentDefinitionKind::CharacterClass
+                && *visibility == MaterializedContentVisibility::Exported
+        });
+        if !valid {
+            diagnostics.push(scenario_diagnostic(
+                "RPG_SCENARIO_CLASS_DEFINITION_INVALID",
+                format!("{path}.classDefinitionId"),
+                format!(
+                    "class definition {class_id} must be an exported characterClass in the bound artifact"
+                ),
+            ));
+            return None;
+        }
+        character_classes.get(class_id).copied()
+    });
+    if participant.class_definition_id.is_none() && !participant.feature_definition_ids.is_empty() {
+        diagnostics.push(scenario_diagnostic(
+            "RPG_SCENARIO_FEATURE_CLASS_REQUIRED",
+            format!("{path}.featureDefinitionIds"),
+            "participant feature selection requires an explicit character class",
+        ));
+    }
+    let mut previous = None::<&str>;
+    for (index, feature_id) in participant.feature_definition_ids.iter().enumerate() {
+        let feature_path = format!("{path}.featureDefinitionIds[{index}]");
+        if !portable_identifier(feature_id)
+            || previous.is_some_and(|previous| previous >= feature_id.as_str())
+        {
+            diagnostics.push(scenario_diagnostic(
+                "RPG_SCENARIO_FEATURE_DEFINITIONS_NOT_CANONICAL",
+                &feature_path,
+                "participant feature identities must be unique, sorted portable identifiers",
+            ));
+        }
+        previous = Some(feature_id);
+        let valid = definition_kinds
+            .get(feature_id.as_str())
+            .is_some_and(|(kind, visibility)| {
+                *kind == MaterializedContentDefinitionKind::CharacterFeature
+                    && *visibility == MaterializedContentVisibility::Exported
+                    && character_features.contains(feature_id.as_str())
+            });
+        if !valid {
+            diagnostics.push(scenario_diagnostic(
+                "RPG_SCENARIO_FEATURE_DEFINITION_INVALID",
+                &feature_path,
+                format!(
+                    "feature definition {feature_id} must be an exported characterFeature in the bound artifact"
+                ),
+            ));
+            continue;
+        }
+        if selected_class.is_some_and(|class| {
+            class
+                .feature_definition_ids
+                .binary_search(feature_id)
+                .is_err()
+        }) {
+            diagnostics.push(scenario_diagnostic(
+                "RPG_SCENARIO_FEATURE_NOT_IN_CLASS",
+                feature_path,
+                format!("selected class does not make character feature {feature_id} available"),
+            ));
+        }
+    }
 }
 
 fn validate_participant_items(
@@ -1128,6 +1241,8 @@ fn validate_board(
                     Some(
                         MaterializedContentDefinitionKind::Action
                         | MaterializedContentDefinitionKind::ActionProcedure
+                        | MaterializedContentDefinitionKind::CharacterClass
+                        | MaterializedContentDefinitionKind::CharacterFeature
                         | MaterializedContentDefinitionKind::Item,
                     ) => diagnostics.push(scenario_diagnostic(
                         "RPG_SCENARIO_CELL_DEFINITION_INCOMPATIBLE",
@@ -1739,6 +1854,20 @@ pub(crate) fn validate_restored_encounter(
             "checkpoint state must contain exactly the scenario participants",
         ));
     }
+    for (index, participant) in authority.scenario.participants.iter().enumerate() {
+        let Some(entity) = state.entity(&participant.id) else {
+            continue;
+        };
+        if entity.class_definition_id() != participant.class_definition_id.as_deref()
+            || entity.character_feature_ids() != participant.feature_definition_ids.as_slice()
+        {
+            diagnostics.push(scenario_diagnostic(
+                "RPG_CHECKPOINT_CHARACTER_SELECTION_MISMATCH",
+                format!("$.state.entities[{index}]"),
+                "checkpoint class and character-feature selection must match the scenario binding",
+            ));
+        }
+    }
     if authority.turn.initiative_order != authority.scenario.turn.initiative_order {
         diagnostics.push(scenario_diagnostic(
             "RPG_CHECKPOINT_TURN_ORDER_MISMATCH",
@@ -1913,6 +2042,8 @@ pub(crate) fn participant_view(
         team_id: entity.team().clone(),
         position: entity.position(),
         definition_ids,
+        class_definition_id: entity.class_definition_id().map(str::to_owned),
+        feature_definition_ids: entity.character_feature_ids().to_vec(),
         items: items
             .iter()
             .map(|item| {

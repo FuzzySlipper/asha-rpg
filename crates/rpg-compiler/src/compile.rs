@@ -2,10 +2,10 @@ use std::collections::{BTreeMap, BTreeSet};
 
 use rpg_core::{RpgRandomRequest, RpgRandomRequestKind, MAXIMUM_RPG_MODIFIER_TURNS};
 use rpg_ir::{
-    EquippedItemBindingRequirement, NormalizedRpgIr, RpgIrAction, RpgIrCheck, RpgIrFormula,
-    RpgIrOperation, RpgIrPredicate, RpgIrProgram, RpgIrRequirementKind, RpgIrResourceCost,
-    RpgIrRollScope, RpgIrSubject, RpgIrTargetKind, RpgIrTargetSelector, RpgIrTeamConstraint,
-    RPG_IR_IDENTITY, RPG_IR_MAJOR,
+    CompiledCharacterFeature, EquippedItemBindingRequirement, NormalizedRpgIr, RpgIrAction,
+    RpgIrCheck, RpgIrFormula, RpgIrOperation, RpgIrPredicate, RpgIrProgram, RpgIrRequirementKind,
+    RpgIrResourceCost, RpgIrRollScope, RpgIrSubject, RpgIrTargetKind, RpgIrTargetSelector,
+    RpgIrTeamConstraint, RPG_IR_IDENTITY, RPG_IR_MAJOR,
 };
 use serde::Serialize;
 
@@ -78,6 +78,7 @@ pub struct CompiledRpgRules {
     actions: BTreeMap<String, CompiledAction>,
     bound_actions: BTreeMap<(String, String), CompiledAction>,
     binding_requirements: BTreeMap<String, EquippedItemBindingRequirement>,
+    character_features: BTreeMap<String, CompiledCharacterFeature>,
 }
 
 impl CompiledRpgRules {
@@ -182,6 +183,21 @@ impl CompiledRpgRules {
                 action,
             );
         }
+    }
+
+    pub(crate) fn register_character_features(&mut self, features: &[CompiledCharacterFeature]) {
+        self.character_features = features
+            .iter()
+            .cloned()
+            .map(|feature| (feature.definition_id.clone(), feature))
+            .collect();
+    }
+
+    pub(crate) fn character_feature(
+        &self,
+        definition_id: &str,
+    ) -> Option<&CompiledCharacterFeature> {
+        self.character_features.get(definition_id)
     }
 }
 
@@ -384,6 +400,7 @@ pub fn compile_normalized_rpg_ir(
             .collect(),
         bound_actions: BTreeMap::new(),
         binding_requirements: BTreeMap::new(),
+        character_features: BTreeMap::new(),
     })
 }
 

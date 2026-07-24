@@ -334,6 +334,46 @@ export interface ContentItemDefinition extends ContentDefinitionBase {
     readonly kind: "item";
     readonly item: ContentItemData;
 }
+export type ContentRollContributionSelector = "attack";
+export type ContentRollContributionCondition = {
+    readonly kind: "always";
+} | {
+    readonly kind: "actorFlanksTarget";
+} | {
+    readonly kind: "actorSurrounded";
+    readonly minimumHostiles: number;
+} | {
+    readonly kind: "all";
+    readonly conditions: readonly ContentRollContributionCondition[];
+};
+export interface ContentCharacterFeatureRollContribution {
+    readonly id: string;
+    readonly selector: ContentRollContributionSelector;
+    readonly condition: ContentRollContributionCondition;
+    readonly amount: number;
+}
+export interface ContentCharacterClassData {
+    readonly schema: {
+        readonly identity: "asha.rpg.character-class";
+        readonly version: 1;
+    };
+    readonly featureDefinitions: readonly ContentDefinitionReference[];
+}
+export interface ContentCharacterClassDefinition extends ContentDefinitionBase {
+    readonly kind: "characterClass";
+    readonly characterClass: ContentCharacterClassData;
+}
+export interface ContentCharacterFeatureData {
+    readonly schema: {
+        readonly identity: "asha.rpg.character-feature";
+        readonly version: 1;
+    };
+    readonly rollContributions: readonly ContentCharacterFeatureRollContribution[];
+}
+export interface ContentCharacterFeatureDefinition extends ContentDefinitionBase {
+    readonly kind: "characterFeature";
+    readonly characterFeature: ContentCharacterFeatureData;
+}
 export interface ContentSupportDefinition extends ContentDefinitionBase {
     readonly kind: "support";
     readonly semantic: {
@@ -356,10 +396,12 @@ export type ContentParticipantProfileCapability = ScenarioInitialCapability & {
 export interface ContentParticipantProfileData {
     readonly schema: {
         readonly identity: "asha.rpg.participant-profile";
-        readonly version: 1;
+        readonly version: 2;
     };
     readonly role: "player" | "creature";
     readonly definitionReferences: readonly ContentDefinitionReference[];
+    readonly classDefinition: ContentDefinitionReference | null;
+    readonly featureDefinitions: readonly ContentDefinitionReference[];
     readonly items: readonly {
         readonly id: string;
         readonly definition: ContentDefinitionReference;
@@ -374,10 +416,12 @@ export interface ContentParticipantProfileData {
 export interface MaterializedParticipantProfileData {
     readonly schema: {
         readonly identity: "asha.rpg.participant-profile";
-        readonly version: 1;
+        readonly version: 2;
     };
     readonly role: "player" | "creature";
     readonly definitionIds: readonly string[];
+    readonly classDefinitionId: string | null;
+    readonly featureDefinitionIds: readonly string[];
     readonly items: readonly {
         readonly id: string;
         readonly definitionId: string;
@@ -400,7 +444,7 @@ export interface ContentMixinDefinition extends ContentDefinitionBase {
     readonly parameters: readonly ContentMixinParameter[];
     readonly patch: ContentPatch;
 }
-export type ContentDefinition = ContentConcreteActionDefinition | ContentActionProcedureDefinition | ContentItemDefinition | ContentSupportDefinition | ContentTemplateDefinition | ContentDerivedDefinition | ContentMixinDefinition;
+export type ContentDefinition = ContentConcreteActionDefinition | ContentActionProcedureDefinition | ContentCharacterClassDefinition | ContentCharacterFeatureDefinition | ContentItemDefinition | ContentSupportDefinition | ContentTemplateDefinition | ContentDerivedDefinition | ContentMixinDefinition;
 export interface ContentPolicyBinding {
     readonly id: string;
     readonly policyId: string;
@@ -521,7 +565,7 @@ export interface ContentPatchChangeProvenance {
 }
 export interface ContentMaterializationStage {
     readonly id: string;
-    readonly kind: "action" | "actionProcedure" | "item" | "support";
+    readonly kind: "action" | "actionProcedure" | "characterClass" | "characterFeature" | "item" | "support";
     readonly extensionPolicy: ContentExtensionPolicy;
     readonly value: {
         readonly semantic: unknown;
@@ -593,7 +637,7 @@ export interface ContentOverlayProvenance {
 }
 export interface MaterializedContentDefinition {
     readonly id: string;
-    readonly kind: "action" | "actionProcedure" | "item" | "support";
+    readonly kind: "action" | "actionProcedure" | "characterClass" | "characterFeature" | "item" | "support";
     readonly visibility: "exported" | "support";
     readonly extensionPolicy: ContentExtensionPolicy;
     readonly semantic: unknown;
@@ -605,7 +649,7 @@ export interface MaterializedContentDefinition {
 export interface PreparedPlayBundle {
     readonly schema: {
         readonly identity: "asha.rpg.play-bundle.prepared";
-        readonly major: 1;
+        readonly major: 2;
     };
     readonly playBundleIdentity: PlayBundleIdentity;
     readonly ruleset: Ruleset;
@@ -676,7 +720,7 @@ export type ScenarioCellCapabilityValue = {
 export interface Scenario {
     readonly schema: {
         readonly id: "asha.rpg.scenario";
-        readonly version: 1;
+        readonly version: 2;
     };
     readonly playBundleId: string;
     readonly board: {
@@ -699,6 +743,8 @@ export interface Scenario {
         readonly teamId: string;
         readonly position: ScenarioPosition;
         readonly definitionIds: readonly string[];
+        readonly classDefinitionId?: string;
+        readonly featureDefinitionIds?: readonly string[];
         readonly items?: readonly {
             readonly id: string;
             readonly definitionId: string;

@@ -1,16 +1,17 @@
 use asha_rpg::{
-    compile_prepared_play_bundle, materialized_definition_fingerprint, BoundedValue,
-    ContentDefinitionProvenance, ContentExtensionPolicy, ContentPackRequirements,
+    compile_prepared_play_bundle, load_compiled_play_bundle, materialized_definition_fingerprint,
+    BoundedValue, ContentDefinitionProvenance, ContentExtensionPolicy, ContentPackRequirements,
     ContentRelationshipKind, ContentRelationshipProvenance, ContentSourceLocation,
     ContentValueRequirement, GridPosition, MaterializedContentDefinition,
     MaterializedContentDefinitionKind, MaterializedContentVisibility, PlayBundleArtifactSchema,
     PreparedPlayBundle, ResolvedContentPack, RpgActionProposal, RpgAuthoritySession, RpgBoardSetup,
-    RpgCommandOutcome, RpgInitialCapability, RpgParticipantSetup, RpgRandomSourceBinding,
-    RpgRollTapeSource, RpgScenario, RpgTeamId, RpgTurnControl, RpgTurnControlProposal,
-    RpgTurnInitialization, RpgVersionedIdentity, Ruleset, RulesetModels, RulesetNumericDomain,
-    RulesetProvisions, RulesetSchema, RulesetValueContract, RulesetValueExpression,
-    RulesetValueFormula, RulesetValueFormulaSchema, RulesetValueKind, RulesetValueSource,
-    VersionedRpgRequirement, PLAY_BUNDLE_ARTIFACT_MAJOR, PREPARED_PLAY_BUNDLE_IDENTITY,
+    RpgCommandOutcome, RpgDomainEvent, RpgInitialCapability, RpgParticipantSetup, RpgRandomRequest,
+    RpgRandomRequestKind, RpgRandomSourceBinding, RpgRollTapeEntry, RpgRollTapeSource, RpgScenario,
+    RpgTeamId, RpgTurnControl, RpgTurnControlProposal, RpgTurnInitialization, RpgVersionedIdentity,
+    Ruleset, RulesetModels, RulesetNumericDomain, RulesetProvisions, RulesetSchema,
+    RulesetValueContract, RulesetValueExpression, RulesetValueFormula, RulesetValueFormulaSchema,
+    RulesetValueKind, RulesetValueSource, VersionedRpgRequirement, PLAY_BUNDLE_ARTIFACT_MAJOR,
+    PREPARED_PLAY_BUNDLE_IDENTITY,
 };
 use serde_json::json;
 
@@ -221,6 +222,234 @@ fn equipped_items_project_distinct_bound_actions_and_reject_tampering_atomically
 }
 
 #[test]
+fn character_features_resolve_multiple_spatial_roll_contributions_and_replay() {
+    let prepared = conditional_feature_prepared();
+    let bundle = compile_prepared_play_bundle(prepared.clone()).unwrap();
+    assert_eq!(bundle.character_classes().len(), 1);
+    assert_eq!(bundle.character_features().len(), 2);
+
+    let mut changed = prepared.clone();
+    let surrounded = changed
+        .materialized_definitions
+        .iter_mut()
+        .find(|definition| definition.id == "feature.surrounded")
+        .unwrap();
+    surrounded.semantic["rollContributions"][0]["amount"] = json!(2);
+    surrounded.fingerprint = materialized_definition_fingerprint(surrounded).unwrap();
+    let changed_bundle = compile_prepared_play_bundle(changed).unwrap();
+    assert_ne!(
+        changed_bundle.artifact().artifact_id,
+        bundle.artifact().artifact_id
+    );
+
+    let mut invalid_threshold = prepared.clone();
+    let invalid_surrounded = invalid_threshold
+        .materialized_definitions
+        .iter_mut()
+        .find(|definition| definition.id == "feature.surrounded")
+        .unwrap();
+    invalid_surrounded.semantic["rollContributions"][0]["condition"]["minimumHostiles"] = json!(5);
+    invalid_surrounded.fingerprint =
+        materialized_definition_fingerprint(invalid_surrounded).unwrap();
+    let invalid_threshold_failure = compile_prepared_play_bundle(invalid_threshold).unwrap_err();
+    assert!(invalid_threshold_failure
+        .diagnostics
+        .iter()
+        .any(|diagnostic| { diagnostic.code == "CHARACTER_FEATURE_SURROUNDED_THRESHOLD_INVALID" }));
+
+    let mut duplicate_selector = prepared.clone();
+    let duplicate_flanking = duplicate_selector
+        .materialized_definitions
+        .iter_mut()
+        .find(|definition| definition.id == "feature.flanking")
+        .unwrap();
+    duplicate_flanking.semantic["rollContributions"]
+        .as_array_mut()
+        .unwrap()
+        .push(json!({
+            "id": "second-flanking",
+            "selector": "attack",
+            "condition": {"kind": "always"},
+            "amount": 1
+        }));
+    duplicate_flanking.fingerprint =
+        materialized_definition_fingerprint(duplicate_flanking).unwrap();
+    let duplicate_selector_failure = compile_prepared_play_bundle(duplicate_selector).unwrap_err();
+    assert!(duplicate_selector_failure
+        .diagnostics
+        .iter()
+        .any(|diagnostic| diagnostic.code == "CHARACTER_FEATURE_SELECTOR_DUPLICATE"));
+
+    let mut tampered_artifact = bundle.artifact().clone();
+    tampered_artifact
+        .materialized_definitions
+        .iter_mut()
+        .find(|definition| definition.id == "feature.flanking")
+        .unwrap()
+        .semantic["rollContributions"][0]["amount"] = json!(99);
+    let tamper_failure = load_compiled_play_bundle(tampered_artifact).unwrap_err();
+    assert!(
+        tamper_failure
+            .diagnostics
+            .iter()
+            .any(|diagnostic| diagnostic.code == "CONTENT_PACK_DEFINITION_FINGERPRINT_MISMATCH"),
+        "{:?}",
+        tamper_failure.diagnostics
+    );
+
+    let scenario = conditional_feature_scenario(&bundle);
+    let mut session = RpgAuthoritySession::from_scenario(bundle.clone(), scenario).unwrap();
+    let initial = session.checkpoint().unwrap();
+    let mut source = attack_roll_source(&session, 5);
+    let (outcome, entry) = session
+        .submit_with_random_source_recorded(
+            RpgActionProposal {
+                expected_revision: 0,
+                action_id: "action.strike".to_owned(),
+                actor_id: "actor".to_owned(),
+                target_ids: vec!["target".to_owned()],
+                item_binding: None,
+            },
+            &mut source,
+        )
+        .unwrap();
+    let RpgCommandOutcome::Accepted(receipt) = outcome else {
+        panic!("conditional attack should be accepted: {outcome:?}");
+    };
+    let contributions = receipt
+        .events
+        .iter()
+        .find_map(|event| match event {
+            RpgDomainEvent::AttackResolved {
+                total,
+                contributions,
+                ..
+            } => {
+                assert_eq!(*total, 11);
+                Some(contributions)
+            }
+            _ => None,
+        })
+        .expect("attack event retains contribution evidence");
+    assert_eq!(
+        contributions
+            .iter()
+            .map(|contribution| (
+                contribution.source_definition_id.as_str(),
+                contribution.amount
+            ))
+            .collect::<Vec<_>>(),
+        vec![
+            ("action.strike", 3),
+            ("feature.flanking", 2),
+            ("feature.surrounded", 1),
+        ]
+    );
+
+    let replayed = RpgAuthoritySession::replay(initial, &[entry]).unwrap();
+    assert_eq!(
+        replayed.state_hash().unwrap(),
+        session.state_hash().unwrap()
+    );
+    assert_eq!(replayed.encounter_view().log, session.encounter_view().log);
+    let mut tampered_checkpoint = session.checkpoint().unwrap();
+    tampered_checkpoint
+        .state
+        .entities
+        .iter_mut()
+        .find(|entity| entity.id == "actor")
+        .unwrap()
+        .character_feature_ids
+        .clear();
+    let checkpoint_failure =
+        RpgAuthoritySession::restore_checkpoint(tampered_checkpoint).unwrap_err();
+    assert_eq!(
+        checkpoint_failure.diagnostics[0].code,
+        "RPG_CHECKPOINT_STATE_HASH_MISMATCH"
+    );
+
+    let mut without_flank = conditional_feature_scenario(&bundle);
+    without_flank
+        .participants
+        .iter_mut()
+        .find(|participant| participant.id == "ally")
+        .unwrap()
+        .position = GridPosition { x: 4, y: 1 };
+    assert_eq!(
+        conditional_attack_feature_sources(bundle.clone(), without_flank),
+        vec!["feature.surrounded"]
+    );
+
+    let mut without_surround = conditional_feature_scenario(&bundle);
+    without_surround
+        .participants
+        .iter_mut()
+        .find(|participant| participant.id == "hostile-two")
+        .unwrap()
+        .position = GridPosition { x: 4, y: 0 };
+    assert_eq!(
+        conditional_attack_feature_sources(bundle.clone(), without_surround),
+        vec!["feature.flanking"]
+    );
+
+    let mut defeated_ally = conditional_feature_scenario(&bundle);
+    defeated_ally
+        .participants
+        .iter_mut()
+        .find(|participant| participant.id == "ally")
+        .unwrap()
+        .capabilities[0] = RpgInitialCapability::Vitality {
+        value: BoundedValue {
+            current: 0,
+            max: 20,
+        },
+    };
+    assert_eq!(
+        conditional_attack_feature_sources(bundle.clone(), defeated_ally),
+        vec!["feature.surrounded"]
+    );
+
+    let mut wrong_team_ally = conditional_feature_scenario(&bundle);
+    wrong_team_ally
+        .participants
+        .iter_mut()
+        .find(|participant| participant.id == "ally")
+        .unwrap()
+        .team_id = RpgTeamId::enemy();
+    assert_eq!(
+        conditional_attack_feature_sources(bundle.clone(), wrong_team_ally),
+        vec!["feature.surrounded"]
+    );
+
+    let mut defeated_hostile = conditional_feature_scenario(&bundle);
+    defeated_hostile
+        .participants
+        .iter_mut()
+        .find(|participant| participant.id == "hostile-two")
+        .unwrap()
+        .capabilities[0] = RpgInitialCapability::Vitality {
+        value: BoundedValue {
+            current: 0,
+            max: 20,
+        },
+    };
+    assert_eq!(
+        conditional_attack_feature_sources(bundle.clone(), defeated_hostile),
+        vec!["feature.flanking"]
+    );
+
+    let mut duplicate_selection = conditional_feature_scenario(&bundle);
+    duplicate_selection.participants[0].feature_definition_ids =
+        vec!["feature.flanking".to_owned(), "feature.flanking".to_owned()];
+    let duplicate_failure =
+        RpgAuthoritySession::from_scenario(bundle, duplicate_selection).unwrap_err();
+    assert!(duplicate_failure
+        .diagnostics
+        .iter()
+        .any(|diagnostic| { diagnostic.code == "RPG_SCENARIO_FEATURE_DEFINITIONS_NOT_CANONICAL" }));
+}
+
+#[test]
 fn public_facade_rejects_noncanonical_value_and_numeric_domain_requirements() {
     let mut duplicated = healing_prepared();
     duplicated.content_requirements.values = vec![
@@ -410,10 +639,12 @@ fn participant_profile_prepared() -> PreparedPlayBundle {
             "data": {
                 "schema": {
                     "identity": "asha.rpg.participant-profile",
-                    "version": 1
+                    "version": 2
                 },
                 "role": "player",
                 "definitionIds": ["action.heal"],
+                "classDefinitionId": null,
+                "featureDefinitionIds": [],
                 "capabilities": [{
                     "owner": "vitality",
                     "value": {"current": 10, "max": 10}
@@ -554,6 +785,8 @@ fn participant(
         team_id,
         position: GridPosition { x, y: 0 },
         definition_ids: vec!["action.heal".to_owned()],
+        class_definition_id: None,
+        feature_definition_ids: Vec::new(),
         items: Vec::new(),
         equipment: Vec::new(),
         capabilities: vec![RpgInitialCapability::Vitality {
@@ -563,6 +796,309 @@ fn participant(
             },
         }],
     }
+}
+
+fn conditional_feature_prepared() -> PreparedPlayBundle {
+    let mut prepared = healing_prepared();
+    let provenance = |definition_id: &str, module: &str| ContentDefinitionProvenance {
+        definition_id: definition_id.to_owned(),
+        package_id: "consumer.package".to_owned(),
+        package_version: "1.0.0".to_owned(),
+        source: ContentSourceLocation {
+            module: module.to_owned(),
+            declaration: definition_id.replace('.', "_"),
+        },
+    };
+    let mut action = MaterializedContentDefinition {
+        id: "action.strike".to_owned(),
+        kind: MaterializedContentDefinitionKind::Action,
+        visibility: MaterializedContentVisibility::Exported,
+        extension_policy: ContentExtensionPolicy::Sealed,
+        semantic: json!({
+            "schema": {"identity": "asha.rpg.action-definition", "version": 1},
+            "kind": "inline",
+            "action": {
+                "id": "action.strike",
+                "name": "Strike",
+                "sourcePath": "actions/strike.ts#strike",
+                "targets": {
+                    "kind": "participant",
+                    "team": "hostile",
+                    "maximumRange": 1,
+                    "maximumTargets": 1
+                },
+                "check": {
+                    "kind": "attack",
+                    "modifier": {"kind": "constant", "value": 3},
+                    "defenseId": "guard"
+                },
+                "rollScope": "perTarget",
+                "costs": [],
+                "program": {
+                    "kind": "atomic",
+                    "body": {
+                        "kind": "onCheck",
+                        "hit": {
+                            "kind": "operation",
+                            "operation": {
+                                "kind": "heal",
+                                "amount": {"kind": "constant", "value": 1}
+                            }
+                        }
+                    }
+                }
+            }
+        }),
+        presentation: json!({"label": "Strike"}),
+        references: Vec::new(),
+        provenance: provenance("action.strike", "actions/strike.ts"),
+        fingerprint: String::new(),
+    };
+    let mut class = MaterializedContentDefinition {
+        id: "class.vanguard".to_owned(),
+        kind: MaterializedContentDefinitionKind::CharacterClass,
+        visibility: MaterializedContentVisibility::Exported,
+        extension_policy: ContentExtensionPolicy::Sealed,
+        semantic: json!({
+            "schema": {"identity": "asha.rpg.character-class", "version": 1},
+            "featureDefinitionIds": ["feature.flanking", "feature.surrounded"]
+        }),
+        presentation: json!({"label": "Vanguard"}),
+        references: vec![
+            "feature.flanking".to_owned(),
+            "feature.surrounded".to_owned(),
+        ],
+        provenance: provenance("class.vanguard", "classes/vanguard.ts"),
+        fingerprint: String::new(),
+    };
+    let mut flanking = MaterializedContentDefinition {
+        id: "feature.flanking".to_owned(),
+        kind: MaterializedContentDefinitionKind::CharacterFeature,
+        visibility: MaterializedContentVisibility::Exported,
+        extension_policy: ContentExtensionPolicy::Sealed,
+        semantic: json!({
+            "schema": {"identity": "asha.rpg.character-feature", "version": 1},
+            "rollContributions": [{
+                "id": "flanking",
+                "selector": "attack",
+                "condition": {"kind": "actorFlanksTarget"},
+                "amount": 2
+            }]
+        }),
+        presentation: json!({"label": "Flanking Discipline"}),
+        references: Vec::new(),
+        provenance: provenance("feature.flanking", "features/flanking.ts"),
+        fingerprint: String::new(),
+    };
+    let mut surrounded = MaterializedContentDefinition {
+        id: "feature.surrounded".to_owned(),
+        kind: MaterializedContentDefinitionKind::CharacterFeature,
+        visibility: MaterializedContentVisibility::Exported,
+        extension_policy: ContentExtensionPolicy::Sealed,
+        semantic: json!({
+            "schema": {"identity": "asha.rpg.character-feature", "version": 1},
+            "rollContributions": [{
+                "id": "surrounded",
+                "selector": "attack",
+                "condition": {
+                    "kind": "actorSurrounded",
+                    "minimumHostiles": 2
+                },
+                "amount": 1
+            }]
+        }),
+        presentation: json!({"label": "Against the Press"}),
+        references: Vec::new(),
+        provenance: provenance("feature.surrounded", "features/surrounded.ts"),
+        fingerprint: String::new(),
+    };
+    for definition in [&mut action, &mut class, &mut flanking, &mut surrounded] {
+        definition.fingerprint = materialized_definition_fingerprint(definition).unwrap();
+    }
+
+    prepared.play_bundle_identity.id = "consumer.conditional-features".to_owned();
+    prepared.ruleset.provides.capabilities = vec![
+        VersionedRpgRequirement {
+            id: "capability.defenses".to_owned(),
+            version: 1,
+        },
+        VersionedRpgRequirement {
+            id: "capability.random".to_owned(),
+            version: 1,
+        },
+        VersionedRpgRequirement {
+            id: "capability.vitality".to_owned(),
+            version: 1,
+        },
+    ];
+    prepared.ruleset.provides.numeric_domains = vec![RulesetNumericDomain {
+        id: "check-total".to_owned(),
+        minimum: 0,
+        maximum: 100,
+    }];
+    prepared.ruleset.provides.values = vec![RulesetValueContract {
+        kind: RulesetValueKind::Defense,
+        id: "guard".to_owned(),
+        label: "Guard".to_owned(),
+        numeric_domain_id: "check-total".to_owned(),
+        source: RulesetValueSource::Input,
+    }];
+    prepared.content_requirements.capabilities = prepared.ruleset.provides.capabilities.clone();
+    prepared.content_requirements.values = vec![ContentValueRequirement {
+        kind: RulesetValueKind::Defense,
+        id: "guard".to_owned(),
+    }];
+    prepared.content_requirements.numeric_domains = vec!["check-total".to_owned()];
+    prepared.exported_roots = vec![
+        "action.strike".to_owned(),
+        "class.vanguard".to_owned(),
+        "feature.flanking".to_owned(),
+        "feature.surrounded".to_owned(),
+    ];
+    prepared.materialized_definitions = vec![action, class, flanking, surrounded];
+    prepared.definition_provenance = prepared
+        .materialized_definitions
+        .iter()
+        .map(|definition| definition.provenance.clone())
+        .collect();
+    prepared.relationships = prepared
+        .exported_roots
+        .iter()
+        .enumerate()
+        .map(|(order, target)| ContentRelationshipProvenance {
+            kind: ContentRelationshipKind::Exports,
+            source: "consumer.package@1.0.0".to_owned(),
+            target: target.clone(),
+            order,
+        })
+        .collect();
+    prepared
+}
+
+fn conditional_feature_scenario(bundle: &asha_rpg::CompiledPlayBundle) -> RpgScenario {
+    let mut actor = participant("actor", "Actor", RpgTeamId::ally(), 1, 20);
+    actor.position = GridPosition { x: 1, y: 1 };
+    actor.definition_ids = vec!["action.strike".to_owned()];
+    actor.class_definition_id = Some("class.vanguard".to_owned());
+    actor.feature_definition_ids = vec![
+        "feature.flanking".to_owned(),
+        "feature.surrounded".to_owned(),
+    ];
+    actor.capabilities.push(RpgInitialCapability::Defense {
+        id: "guard".to_owned(),
+        value: 10,
+    });
+
+    let mut ally = participant("ally", "Ally", RpgTeamId::ally(), 3, 20);
+    ally.position = GridPosition { x: 3, y: 1 };
+    ally.definition_ids = vec!["action.strike".to_owned()];
+    ally.capabilities.push(RpgInitialCapability::Defense {
+        id: "guard".to_owned(),
+        value: 10,
+    });
+
+    let mut target = participant("target", "Target", RpgTeamId::enemy(), 2, 10);
+    target.position = GridPosition { x: 2, y: 1 };
+    target.definition_ids = vec!["action.strike".to_owned()];
+    target.capabilities.push(RpgInitialCapability::Defense {
+        id: "guard".to_owned(),
+        value: 10,
+    });
+
+    let mut hostile_two = participant("hostile-two", "Hostile Two", RpgTeamId::enemy(), 1, 20);
+    hostile_two.position = GridPosition { x: 1, y: 0 };
+    hostile_two.definition_ids = vec!["action.strike".to_owned()];
+    hostile_two
+        .capabilities
+        .push(RpgInitialCapability::Defense {
+            id: "guard".to_owned(),
+            value: 10,
+        });
+
+    RpgScenario {
+        schema: RpgScenario::schema(),
+        play_bundle_id: bundle.artifact().artifact_id.clone(),
+        board: RpgBoardSetup {
+            width: 5,
+            height: 3,
+            cells: Vec::new(),
+        },
+        participants: vec![actor, ally, target, hostile_two],
+        turn: RpgTurnInitialization {
+            initiative_order: vec![
+                "actor".to_owned(),
+                "ally".to_owned(),
+                "target".to_owned(),
+                "hostile-two".to_owned(),
+            ],
+            current_actor_id: "actor".to_owned(),
+            round: 1,
+            turn: 1,
+        },
+        random_source: RpgRandomSourceBinding {
+            policy_id: "consumer.recorded-evidence".to_owned(),
+            policy_version: 1,
+            source_id: "consumer.roll-tape".to_owned(),
+            source_version: 1,
+        },
+    }
+}
+
+fn attack_roll_source(session: &RpgAuthoritySession, roll: u32) -> RpgRollTapeSource {
+    RpgRollTapeSource::new(
+        session.scenario().random_source.clone(),
+        [RpgRollTapeEntry {
+            request: RpgRandomRequest {
+                kind: RpgRandomRequestKind::AttackCheck,
+                count: 1,
+                sides: 20,
+                path: "$.action.check.targets[0].roll".to_owned(),
+            },
+            values: vec![roll],
+        }],
+    )
+}
+
+fn conditional_attack_feature_sources(
+    bundle: asha_rpg::CompiledPlayBundle,
+    scenario: RpgScenario,
+) -> Vec<&'static str> {
+    let mut session = RpgAuthoritySession::from_scenario(bundle, scenario).unwrap();
+    let mut source = attack_roll_source(&session, 5);
+    let (outcome, _) = session
+        .submit_with_random_source_recorded(
+            RpgActionProposal {
+                expected_revision: 0,
+                action_id: "action.strike".to_owned(),
+                actor_id: "actor".to_owned(),
+                target_ids: vec!["target".to_owned()],
+                item_binding: None,
+            },
+            &mut source,
+        )
+        .unwrap();
+    let RpgCommandOutcome::Accepted(receipt) = outcome else {
+        panic!("counterexample attack should remain accepted: {outcome:?}");
+    };
+    receipt
+        .events
+        .iter()
+        .find_map(|event| match event {
+            RpgDomainEvent::AttackResolved { contributions, .. } => Some(
+                contributions
+                    .iter()
+                    .filter_map(
+                        |contribution| match contribution.source_definition_id.as_str() {
+                            "feature.flanking" => Some("feature.flanking"),
+                            "feature.surrounded" => Some("feature.surrounded"),
+                            _ => None,
+                        },
+                    )
+                    .collect(),
+            ),
+            _ => None,
+        })
+        .unwrap_or_default()
 }
 
 fn item_bound_bundle() -> asha_rpg::CompiledPlayBundle {

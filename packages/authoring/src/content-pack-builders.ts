@@ -6,6 +6,10 @@ import type { RulesetValueReference } from './ruleset-builders.js';
 import type {
   ContentActionDefinition,
   ContentActionProcedureDefinition,
+  ContentCharacterClassData,
+  ContentCharacterClassDefinition,
+  ContentCharacterFeatureData,
+  ContentCharacterFeatureDefinition,
   ContentInvokedActionDefinition,
   ActionProcedureArgumentsFor,
   ActionProcedureCompositionArgumentsFor,
@@ -241,6 +245,56 @@ export function defineItemDefinition(
   });
 }
 
+export function defineCharacterFeatureDefinition(
+  input: Omit<
+    OrdinaryDefinitionInput<ContentCharacterFeatureDefinition>,
+    'characterFeature'
+  > & {
+    readonly characterFeature: Omit<ContentCharacterFeatureData, 'schema'>;
+  },
+): ContentCharacterFeatureDefinition {
+  return immutable({
+    ...input,
+    kind: 'characterFeature' as const,
+    characterFeature: {
+      schema: {
+        identity: 'asha.rpg.character-feature' as const,
+        version: 1 as const,
+      },
+      rollContributions: [...input.characterFeature.rollContributions].sort(
+        (left, right) => left.id.localeCompare(right.id),
+      ),
+    },
+  });
+}
+
+export function defineCharacterClassDefinition(
+  input: Omit<
+    OrdinaryDefinitionInput<ContentCharacterClassDefinition>,
+    'characterClass'
+  > & {
+    readonly characterClass: Omit<ContentCharacterClassData, 'schema'>;
+  },
+): ContentCharacterClassDefinition {
+  return immutable({
+    ...input,
+    kind: 'characterClass' as const,
+    lowLevelReferences: [...input.characterClass.featureDefinitions],
+    characterClass: {
+      schema: {
+        identity: 'asha.rpg.character-class' as const,
+        version: 1 as const,
+      },
+      featureDefinitions: [...input.characterClass.featureDefinitions].sort(
+        (left, right) =>
+          `${left.importAs ?? ''}#${left.definitionId}`.localeCompare(
+            `${right.importAs ?? ''}#${right.definitionId}`,
+          ),
+      ),
+    },
+  });
+}
+
 export function itemBoundedIntegerAttribute(input: {
   readonly id: string;
   readonly value: number;
@@ -316,6 +370,10 @@ export function defineParticipantProfileDefinition(
     kind: 'support' as const,
     lowLevelReferences: [
       ...profile.definitionReferences,
+      ...(profile.classDefinition === null
+        ? []
+        : [profile.classDefinition]),
+      ...profile.featureDefinitions,
       ...profile.items.map((item) => item.definition),
     ],
     semantic: {
@@ -329,19 +387,33 @@ export function defineParticipantProfileDefinition(
 export function defineParticipantProfileData(
   input: Omit<
     ContentParticipantProfileData,
-    'schema' | 'items' | 'equipment'
+    | 'schema'
+    | 'classDefinition'
+    | 'featureDefinitions'
+    | 'items'
+    | 'equipment'
   > &
     Partial<
-      Pick<ContentParticipantProfileData, 'items' | 'equipment'>
+      Pick<
+        ContentParticipantProfileData,
+        'classDefinition' | 'featureDefinitions' | 'items' | 'equipment'
+      >
     >,
 ): ContentParticipantProfileData {
   return immutable({
     ...input,
     schema: {
       identity: 'asha.rpg.participant-profile' as const,
-      version: 1 as const,
+      version: 2 as const,
     },
     definitionReferences: [...input.definitionReferences],
+    classDefinition: input.classDefinition ?? null,
+    featureDefinitions: [...(input.featureDefinitions ?? [])].sort(
+      (left, right) =>
+        `${left.importAs ?? ''}#${left.definitionId}`.localeCompare(
+          `${right.importAs ?? ''}#${right.definitionId}`,
+        ),
+    ),
     items: [...(input.items ?? [])],
     equipment: [...(input.equipment ?? [])],
     capabilities: [...input.capabilities],

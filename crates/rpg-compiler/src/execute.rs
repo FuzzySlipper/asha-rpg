@@ -1,15 +1,16 @@
 use std::collections::BTreeMap;
 
 use rpg_core::{
-    DeterministicRandomStream, RpgCapabilityId, RpgCapabilityMutationError, RpgCapabilityState,
-    RpgCapabilityWorkspace, RpgDomainEvent, RpgIntent, RpgModifierStackingPolicy,
-    RpgRandomEvidence, RpgRandomRequest, RpgRandomRequestKind, RpgReactionDecision,
-    RpgReactionOption, RpgReactionRequest, RpgResolutionReceipt, RpgResolutionRejection,
-    RpgTraceStep,
+    DeterministicRandomStream, GridPosition, RpgCapabilityId, RpgCapabilityMutationError,
+    RpgCapabilityState, RpgCapabilityWorkspace, RpgDomainEvent, RpgIntent,
+    RpgModifierStackingPolicy, RpgRandomEvidence, RpgRandomRequest, RpgRandomRequestKind,
+    RpgReactionDecision, RpgReactionOption, RpgReactionRequest, RpgResolutionReceipt,
+    RpgResolutionRejection, RpgRollContribution, RpgRollContributionCondition,
+    RpgRollContributionReason, RpgRollContributionSelector, RpgTraceStep,
 };
 use rpg_ir::{
-    RpgIrCheck, RpgIrComparison, RpgIrFormula, RpgIrOperation, RpgIrPredicate, RpgIrRollScope,
-    RpgIrSubject, RpgIrTargetKind, RpgIrTeamConstraint,
+    CompiledCharacterFeature, RpgIrCheck, RpgIrComparison, RpgIrFormula, RpgIrOperation,
+    RpgIrPredicate, RpgIrRollScope, RpgIrSubject, RpgIrTargetKind, RpgIrTeamConstraint,
 };
 
 use crate::compile::{CompiledAction, CompiledOperation, CompiledProgram};
@@ -44,12 +45,12 @@ impl CompiledRpgRules {
         self.resolve_internal(state, random, intent, Some(reaction))
     }
 
-    fn resolve_internal(
-        &self,
+    fn resolve_internal<'a>(
+        &'a self,
         state: &mut RpgCapabilityState,
         random: &mut DeterministicRandomStream,
-        intent: &RpgIntent,
-        reaction: Option<&RpgReactionDecision>,
+        intent: &'a RpgIntent,
+        reaction: Option<&'a RpgReactionDecision>,
     ) -> Result<RpgResolutionReceipt, RpgResolutionRejection> {
         let action = self
             .action_for_binding(
@@ -66,6 +67,11 @@ impl CompiledRpgRules {
                     format!("unknown action {}", intent.action_id),
                 )
             })?;
+        let character_feature_ids = state
+            .entity(&intent.actor_id)
+            .map(|actor| actor.character_feature_ids())
+            .unwrap_or_default();
+        let character_features = self.resolve_character_features(character_feature_ids)?;
         let target_ids = validate_intent(action, state, intent)?;
         let mut execution = Execution {
             action,
@@ -81,6 +87,7 @@ impl CompiledRpgRules {
             reaction,
             reaction_consumed: false,
             pending_damage_reduction: 0,
+            character_features,
         };
 
         execution.spend_costs()?;
@@ -120,6 +127,33 @@ impl CompiledRpgRules {
         };
         execution.workspace.commit(state, random);
         Ok(receipt)
+    }
+
+    fn resolve_character_features(
+        &self,
+        character_feature_ids: &[String],
+    ) -> Result<Vec<&CompiledCharacterFeature>, RpgResolutionRejection> {
+        let mut previous = None::<&str>;
+        let mut features = Vec::with_capacity(character_feature_ids.len());
+        for (index, feature_id) in character_feature_ids.iter().enumerate() {
+            if previous.is_some_and(|previous| previous >= feature_id.as_str()) {
+                return Err(rejection(
+                    "RPG_RESOLUTION_FEATURE_SELECTION_NOT_CANONICAL",
+                    format!("$.characterFeatureIds[{index}]"),
+                    "selected character feature identities must be unique and sorted",
+                ));
+            }
+            previous = Some(feature_id);
+            let feature = self.character_feature(feature_id).ok_or_else(|| {
+                rejection(
+                    "RPG_RESOLUTION_FEATURE_UNKNOWN",
+                    format!("$.characterFeatureIds[{index}]"),
+                    format!("character feature {feature_id} is not in the compiled PlayBundle"),
+                )
+            })?;
+            features.push(feature);
+        }
+        Ok(features)
     }
 
     pub fn candidate_ids(
@@ -379,6 +413,7 @@ struct Execution<'a> {
     reaction: Option<&'a RpgReactionDecision>,
     reaction_consumed: bool,
     pending_damage_reduction: u32,
+    character_features: Vec<&'a CompiledCharacterFeature>,
 }
 
 impl Execution<'_> {
@@ -437,9 +472,26 @@ impl Execution<'_> {
                         )?,
                     };
                     let modifier = self.eval_formula(modifier, &format!("{path}.modifier"))?;
-                    let total = i32::try_from(roll)
-                        .unwrap_or(i32::MAX)
-                        .saturating_add(modifier);
+                    let mut contributions = vec![RpgRollContribution {
+                        source_definition_id: self.intent.action_id.clone(),
+                        source_label: self.action.name.clone(),
+                        amount: modifier,
+                        reason: RpgRollContributionReason::ActionCheckModifier,
+                    }];
+                    contributions
+                        .extend(self.applicable_character_feature_contributions(&target_id));
+                    let total = contributions.iter().try_fold(
+                        i32::try_from(roll).unwrap_or(i32::MAX),
+                        |running, contribution| {
+                            running.checked_add(contribution.amount).ok_or_else(|| {
+                                self.fail(
+                                    "RPG_RUNTIME_ROLL_TOTAL_OVERFLOW",
+                                    &format!("{path}.contributions"),
+                                    "roll contribution total exceeded the runtime integer domain",
+                                )
+                            })
+                        },
+                    )?;
                     let defense = self
                         .workspace
                         .state()
@@ -461,6 +513,7 @@ impl Execution<'_> {
                         defense_id: defense_id.clone(),
                         defense,
                         hit,
+                        contributions,
                     });
                     if hit {
                         CheckOutcome::Hit
@@ -521,6 +574,97 @@ impl Execution<'_> {
         }
         self.current_target = None;
         Ok(())
+    }
+
+    fn applicable_character_feature_contributions(
+        &self,
+        target_id: &str,
+    ) -> Vec<RpgRollContribution> {
+        let mut contributions = Vec::new();
+        for feature in &self.character_features {
+            for contribution in &feature.roll_contributions {
+                if contribution.selector != RpgRollContributionSelector::Attack
+                    || !self.roll_condition_applies(&contribution.condition, target_id)
+                {
+                    continue;
+                }
+                contributions.push(RpgRollContribution {
+                    source_definition_id: feature.definition_id.clone(),
+                    source_label: feature.label.clone(),
+                    amount: contribution.amount,
+                    reason: RpgRollContributionReason::CharacterFeature {
+                        contribution_id: contribution.id.clone(),
+                        selector: contribution.selector,
+                        condition: contribution.condition.clone(),
+                    },
+                });
+            }
+        }
+        contributions
+    }
+
+    fn roll_condition_applies(
+        &self,
+        condition: &RpgRollContributionCondition,
+        target_id: &str,
+    ) -> bool {
+        match condition {
+            RpgRollContributionCondition::Always => true,
+            RpgRollContributionCondition::ActorFlanksTarget => self.actor_flanks_target(target_id),
+            RpgRollContributionCondition::ActorSurrounded { minimum_hostiles } => {
+                self.actor_adjacent_living_hostile_count() >= *minimum_hostiles
+            }
+            RpgRollContributionCondition::All { conditions } => conditions
+                .iter()
+                .all(|condition| self.roll_condition_applies(condition, target_id)),
+        }
+    }
+
+    fn actor_flanks_target(&self, target_id: &str) -> bool {
+        let state = self.workspace.state();
+        let Some(actor) = state.entity(&self.intent.actor_id) else {
+            return false;
+        };
+        let Some(target) = state.entity(target_id) else {
+            return false;
+        };
+        if actor.vitality().current <= 0
+            || target.vitality().current <= 0
+            || target.team() == actor.team()
+            || cardinal_distance(actor.position(), target.position()) != 1
+        {
+            return false;
+        }
+        state.entities().any(|ally| {
+            ally.id() != actor.id()
+                && ally.id() != target.id()
+                && ally.team() == actor.team()
+                && ally.vitality().current > 0
+                && cardinal_distance(ally.position(), target.position()) == 1
+                && positions_are_opposite(actor.position(), target.position(), ally.position())
+        })
+    }
+
+    fn actor_adjacent_living_hostile_count(&self) -> u32 {
+        let state = self.workspace.state();
+        let Some(actor) = state.entity(&self.intent.actor_id) else {
+            return 0;
+        };
+        if actor.vitality().current <= 0 {
+            return 0;
+        }
+        u32::try_from(
+            state
+                .entities()
+                .filter(|candidate| {
+                    candidate.id() != actor.id()
+                        && candidate.team() != actor.team()
+                        && candidate.vitality().current > 0
+                        && cardinal_distance(candidate.position(), actor.position()) == 1
+                })
+                .count(),
+        )
+        .unwrap_or(u32::MAX)
     }
 
     fn execute_program(
@@ -1206,6 +1350,23 @@ impl Execution<'_> {
             reaction_request: None,
         }
     }
+}
+
+fn cardinal_distance(left: GridPosition, right: GridPosition) -> u32 {
+    left.x
+        .abs_diff(right.x)
+        .saturating_add(left.y.abs_diff(right.y))
+}
+
+fn positions_are_opposite(first: GridPosition, center: GridPosition, second: GridPosition) -> bool {
+    (first.y == center.y
+        && second.y == center.y
+        && u64::from(first.x).saturating_add(u64::from(second.x))
+            == u64::from(center.x).saturating_mul(2))
+        || (first.x == center.x
+            && second.x == center.x
+            && u64::from(first.y).saturating_add(u64::from(second.y))
+                == u64::from(center.y).saturating_mul(2))
 }
 
 fn rejection(

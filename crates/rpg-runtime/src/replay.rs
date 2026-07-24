@@ -22,9 +22,9 @@ use crate::{
 
 pub const RPG_CHECKPOINT_SCHEMA_ID: &str = "asha.rpg.session.checkpoint";
 pub const RPG_REPLAY_ENTRY_SCHEMA_ID: &str = "asha.rpg.session.replay-entry";
-pub const RPG_CHECKPOINT_SCHEMA_VERSION: u32 = 4;
-pub const RPG_REPLAY_ENTRY_SCHEMA_VERSION: u32 = 5;
-pub const RPG_EVENT_SCHEMA_VERSION: u32 = 2;
+pub const RPG_CHECKPOINT_SCHEMA_VERSION: u32 = 5;
+pub const RPG_REPLAY_ENTRY_SCHEMA_VERSION: u32 = 6;
+pub const RPG_EVENT_SCHEMA_VERSION: u32 = 3;
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase", deny_unknown_fields)]
@@ -92,6 +92,8 @@ pub struct RpgPortableEntityState {
     pub id: String,
     pub team: Team,
     pub position: GridPosition,
+    pub class_definition_id: Option<String>,
+    pub character_feature_ids: Vec<String>,
     pub vitality: BoundedValue,
     pub stats: Vec<RpgPortableNamedInteger>,
     pub defenses: Vec<RpgPortableNamedInteger>,
@@ -767,6 +769,8 @@ fn portable_state(state: &RpgCapabilityState) -> RpgPortableCapabilityState {
                 id: entity.id().to_owned(),
                 team: entity.team().clone(),
                 position: entity.position(),
+                class_definition_id: entity.class_definition_id().map(str::to_owned),
+                character_feature_ids: entity.character_feature_ids().to_vec(),
                 vitality: entity.vitality(),
                 stats: entity
                     .stats()
@@ -816,6 +820,14 @@ fn restore_state(
             source.vitality,
         )
         .map_err(|error| state_restore_failure(&path, error))?;
+        entity
+            .restore_character_selection(
+                source.class_definition_id.clone(),
+                source.character_feature_ids.clone(),
+            )
+            .map_err(|error| {
+                state_restore_failure(&format!("{path}.characterFeatureIds"), error)
+            })?;
         for stat in &source.stats {
             entity
                 .restore_stat(stat.id.clone(), stat.value)
@@ -1579,6 +1591,8 @@ mod tests {
             team_id: Team::enemy(),
             position: GridPosition { x: 5, y: 2 },
             definition_ids: vec!["action.reactive".to_owned()],
+            class_definition_id: None,
+            feature_definition_ids: Vec::new(),
             items: Vec::new(),
             equipment: Vec::new(),
             capabilities: vec![
@@ -2454,6 +2468,8 @@ mod tests {
                     team_id: Team::ally(),
                     position: GridPosition { x: 0, y: 0 },
                     definition_ids: vec!["action.reactive".to_owned(), "action.move".to_owned()],
+                    class_definition_id: None,
+                    feature_definition_ids: Vec::new(),
                     items: Vec::new(),
                     equipment: Vec::new(),
                     capabilities: vec![
@@ -2481,6 +2497,8 @@ mod tests {
                     team_id: Team::enemy(),
                     position: GridPosition { x: 1, y: 1 },
                     definition_ids: vec!["action.reactive".to_owned(), "action.move".to_owned()],
+                    class_definition_id: None,
+                    feature_definition_ids: Vec::new(),
                     items: Vec::new(),
                     equipment: Vec::new(),
                     capabilities: vec![

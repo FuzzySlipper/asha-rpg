@@ -1,13 +1,16 @@
 use std::collections::{BTreeMap, BTreeSet};
 
+use rpg_core::{RpgRollContributionCondition, RpgRollContributionSelector};
 use rpg_ir::{
-    ActionProcedureImplementation, ActionProcedureParameter, CompiledItemDefinition,
-    CompiledParticipantProfile, CompiledPlayBundleArtifact, ContentDefinitionCommitment,
+    ActionProcedureImplementation, ActionProcedureParameter, CompiledCharacterClass,
+    CompiledCharacterFeature, CompiledItemDefinition, CompiledParticipantProfile,
+    CompiledPlayBundleArtifact, ContentDefinitionCommitment, ContentExtensionPolicy,
     ContentImpactPlane, ContentMaterializationStage, ContentMaterializationValue,
     ContentMixinParameterCommitment, ContentMixinParameterType, ContentPatch,
     ContentPatchChangeProvenance, ContentPatchMemberKey, ContentPatchMemberSelector,
     ContentPatchOperation, ContentPatchPathSegment, ContentPatchPosition, ContentRelationshipKind,
     ItemAttribute, MaterializedActionProcedureSemantic, MaterializedActionSemantic,
+    MaterializedCharacterClassData, MaterializedCharacterFeatureData,
     MaterializedContentDefinition, MaterializedContentDefinitionKind,
     MaterializedContentVisibility, MaterializedItemSemantic, MaterializedParticipantProfileData,
     NormalizedRpgIr, ParticipantProfileInitialCapability, PlayBundleArtifactSchema,
@@ -16,9 +19,10 @@ use rpg_ir::{
     RpgIrRequirement, RpgIrRequirementKind, RpgIrResourceCost, RpgIrSchema, RpgIrTargetSelector,
     Ruleset, RulesetValueExpression, RulesetValueKind, RulesetValueSource, VersionedRpgRequirement,
     ACTION_DEFINITION_IDENTITY, ACTION_DEFINITION_VERSION, ACTION_PROCEDURE_IDENTITY,
-    ACTION_PROCEDURE_VERSION, COMPILED_PLAY_BUNDLE_IDENTITY, ITEM_IDENTITY, ITEM_VERSION,
-    PARTICIPANT_PROFILE_IDENTITY, PARTICIPANT_PROFILE_VERSION, PLAY_BUNDLE_ARTIFACT_MAJOR,
-    PREPARED_PLAY_BUNDLE_IDENTITY, RPG_IR_IDENTITY, RPG_IR_MAJOR,
+    ACTION_PROCEDURE_VERSION, CHARACTER_CLASS_IDENTITY, CHARACTER_CLASS_VERSION,
+    CHARACTER_FEATURE_IDENTITY, CHARACTER_FEATURE_VERSION, COMPILED_PLAY_BUNDLE_IDENTITY,
+    ITEM_IDENTITY, ITEM_VERSION, PARTICIPANT_PROFILE_IDENTITY, PARTICIPANT_PROFILE_VERSION,
+    PLAY_BUNDLE_ARTIFACT_MAJOR, PREPARED_PLAY_BUNDLE_IDENTITY, RPG_IR_IDENTITY, RPG_IR_MAJOR,
 };
 use serde::{Deserialize, Serialize};
 use serde_json::{json, Value};
@@ -35,6 +39,8 @@ pub struct CompiledPlayBundle {
     rules: CompiledRpgRules,
     value_plan: CompiledRulesetValuePlan,
     items: Vec<CompiledItemDefinition>,
+    character_classes: Vec<CompiledCharacterClass>,
+    character_features: Vec<CompiledCharacterFeature>,
     participant_profiles: Vec<CompiledParticipantProfile>,
 }
 
@@ -59,6 +65,14 @@ impl CompiledPlayBundle {
         &self.items
     }
 
+    pub fn character_classes(&self) -> &[CompiledCharacterClass] {
+        &self.character_classes
+    }
+
+    pub fn character_features(&self) -> &[CompiledCharacterFeature] {
+        &self.character_features
+    }
+
     pub fn into_artifact(self) -> CompiledPlayBundleArtifact {
         self.artifact
     }
@@ -68,6 +82,10 @@ pub const RULESET_VALUE_FORMULA_IDENTITY: &str = "asha.rpg.ruleset-value-formula
 pub const RULESET_VALUE_FORMULA_VERSION: u32 = 1;
 const MAX_RULESET_VALUE_FORMULA_DEPTH: usize = 16;
 const MAX_RULESET_VALUE_FORMULA_NODES: usize = 64;
+const MAX_CHARACTER_FEATURE_CONTRIBUTIONS: usize = 32;
+const MAX_ROLL_CONDITION_DEPTH: usize = 8;
+const MAX_ROLL_CONDITION_NODES: usize = 32;
+const MAX_ROLL_CONTRIBUTION_ABSOLUTE: i32 = 1_000;
 
 #[derive(Debug, Clone, PartialEq, Eq, PartialOrd, Ord)]
 pub struct RulesetValueKey {
@@ -170,12 +188,16 @@ pub fn compile_prepared_play_bundle(
     }
 
     let items = compile_items(&prepared)?;
+    let character_features = compile_character_features(&prepared)?;
+    let character_classes = compile_character_classes(&prepared, &character_features)?;
     let (normalized_ir, bound_action_registrations) =
         normalized_ir_from_materialized(&prepared, &items)?;
     let mut rules = compile_normalized_rpg_ir(normalized_ir)?;
     rules.register_bound_actions(bound_action_registrations);
+    rules.register_character_features(&character_features);
     let value_plan = compile_ruleset_value_plan(&prepared.ruleset)?;
-    let participant_profiles = compile_participant_profiles(&prepared, &items)?;
+    let participant_profiles =
+        compile_participant_profiles(&prepared, &items, &character_classes, &character_features)?;
     let fingerprints = fingerprints(&prepared)?;
     let artifact_schema = PlayBundleArtifactSchema {
         identity: COMPILED_PLAY_BUNDLE_IDENTITY.to_owned(),
@@ -224,6 +246,8 @@ pub fn compile_prepared_play_bundle(
         rules,
         value_plan,
         items,
+        character_classes,
+        character_features,
         participant_profiles,
     })
 }
@@ -1162,6 +1186,328 @@ fn compile_items(
     }
 }
 
+fn compile_character_features(
+    prepared: &PreparedPlayBundle,
+) -> Result<Vec<CompiledCharacterFeature>, RpgCompileFailure> {
+    let mut diagnostics = Vec::new();
+    let mut features = Vec::new();
+    for (definition_index, definition) in prepared.materialized_definitions.iter().enumerate() {
+        if definition.kind != MaterializedContentDefinitionKind::CharacterFeature {
+            continue;
+        }
+        let path = format!("$.materializedDefinitions[{definition_index}]");
+        if definition.extension_policy != ContentExtensionPolicy::Sealed {
+            diagnostics.push(RpgDiagnostic::error(
+                RpgDiagnosticStage::Semantics,
+                "CHARACTER_FEATURE_EXTENSION_POLICY_UNSUPPORTED",
+                format!("{path}.extensionPolicy"),
+                "character features are sealed in the current semantic contract",
+            ));
+        }
+        let feature = match serde_json::from_value::<MaterializedCharacterFeatureData>(
+            definition.semantic.clone(),
+        ) {
+            Ok(feature) => feature,
+            Err(error) => {
+                diagnostics.push(RpgDiagnostic::error(
+                    RpgDiagnosticStage::Semantics,
+                    "CHARACTER_FEATURE_SEMANTIC_DECODE_FAILED",
+                    format!("{path}.semantic"),
+                    error.to_string(),
+                ));
+                continue;
+            }
+        };
+        if feature.schema.identity != CHARACTER_FEATURE_IDENTITY
+            || feature.schema.version != CHARACTER_FEATURE_VERSION
+        {
+            diagnostics.push(RpgDiagnostic::error(
+                RpgDiagnosticStage::Compatibility,
+                "CHARACTER_FEATURE_SCHEMA_UNSUPPORTED",
+                format!("{path}.semantic.schema"),
+                format!("expected {CHARACTER_FEATURE_IDENTITY}@{CHARACTER_FEATURE_VERSION}"),
+            ));
+        }
+        if feature.roll_contributions.is_empty()
+            || feature.roll_contributions.len() > MAX_CHARACTER_FEATURE_CONTRIBUTIONS
+        {
+            diagnostics.push(RpgDiagnostic::error(
+                RpgDiagnosticStage::Semantics,
+                "CHARACTER_FEATURE_CONTRIBUTIONS_INVALID",
+                format!("{path}.semantic.rollContributions"),
+                format!(
+                    "character features require 1..={MAX_CHARACTER_FEATURE_CONTRIBUTIONS} roll contributions"
+                ),
+            ));
+        }
+        let mut previous_id = None::<&str>;
+        let mut selectors = BTreeSet::new();
+        for (contribution_index, contribution) in feature.roll_contributions.iter().enumerate() {
+            let contribution_path =
+                format!("{path}.semantic.rollContributions[{contribution_index}]");
+            if !valid_identifier(&contribution.id)
+                || previous_id.is_some_and(|previous| previous >= contribution.id.as_str())
+            {
+                diagnostics.push(RpgDiagnostic::error(
+                    RpgDiagnosticStage::Artifact,
+                    "CHARACTER_FEATURE_CONTRIBUTIONS_NOT_CANONICAL",
+                    format!("{contribution_path}.id"),
+                    "roll contribution identities must be unique, sorted portable identifiers",
+                ));
+            }
+            previous_id = Some(&contribution.id);
+            if !selectors.insert(contribution.selector) {
+                diagnostics.push(RpgDiagnostic::error(
+                    RpgDiagnosticStage::Semantics,
+                    "CHARACTER_FEATURE_SELECTOR_DUPLICATE",
+                    format!("{contribution_path}.selector"),
+                    "a character feature may contribute at most once to each roll selector",
+                ));
+            }
+            if contribution.amount == 0
+                || contribution.amount < -MAX_ROLL_CONTRIBUTION_ABSOLUTE
+                || contribution.amount > MAX_ROLL_CONTRIBUTION_ABSOLUTE
+            {
+                diagnostics.push(RpgDiagnostic::error(
+                    RpgDiagnosticStage::Semantics,
+                    "CHARACTER_FEATURE_CONTRIBUTION_AMOUNT_INVALID",
+                    format!("{contribution_path}.amount"),
+                    format!(
+                        "roll contribution amounts must be non-zero within -{MAX_ROLL_CONTRIBUTION_ABSOLUTE}..={MAX_ROLL_CONTRIBUTION_ABSOLUTE}"
+                    ),
+                ));
+            }
+            match contribution.selector {
+                RpgRollContributionSelector::Attack => {}
+            }
+            let mut condition_nodes = 0;
+            validate_roll_contribution_condition(
+                &contribution.condition,
+                1,
+                &mut condition_nodes,
+                &format!("{contribution_path}.condition"),
+                &mut diagnostics,
+            );
+        }
+        let label = required_definition_label(
+            definition,
+            definition_index,
+            "CHARACTER_FEATURE_LABEL_REQUIRED",
+            "character features require a presentation label",
+            &mut diagnostics,
+        );
+        features.push(CompiledCharacterFeature {
+            definition_id: definition.id.clone(),
+            label: label.unwrap_or_else(|| definition.id.clone()),
+            description: definition
+                .presentation
+                .get("description")
+                .and_then(Value::as_str)
+                .map(str::to_owned),
+            roll_contributions: feature.roll_contributions,
+        });
+    }
+    if diagnostics.is_empty() {
+        features.sort_by(|left, right| left.definition_id.cmp(&right.definition_id));
+        Ok(features)
+    } else {
+        Err(RpgCompileFailure { diagnostics })
+    }
+}
+
+fn compile_character_classes(
+    prepared: &PreparedPlayBundle,
+    compiled_features: &[CompiledCharacterFeature],
+) -> Result<Vec<CompiledCharacterClass>, RpgCompileFailure> {
+    let definitions = prepared
+        .materialized_definitions
+        .iter()
+        .map(|definition| (definition.id.as_str(), definition))
+        .collect::<BTreeMap<_, _>>();
+    let feature_ids = compiled_features
+        .iter()
+        .map(|feature| feature.definition_id.as_str())
+        .collect::<BTreeSet<_>>();
+    let mut diagnostics = Vec::new();
+    let mut classes = Vec::new();
+    for (definition_index, definition) in prepared.materialized_definitions.iter().enumerate() {
+        if definition.kind != MaterializedContentDefinitionKind::CharacterClass {
+            continue;
+        }
+        let path = format!("$.materializedDefinitions[{definition_index}]");
+        if definition.extension_policy != ContentExtensionPolicy::Sealed {
+            diagnostics.push(RpgDiagnostic::error(
+                RpgDiagnosticStage::Semantics,
+                "CHARACTER_CLASS_EXTENSION_POLICY_UNSUPPORTED",
+                format!("{path}.extensionPolicy"),
+                "character classes are sealed in the current semantic contract",
+            ));
+        }
+        let class = match serde_json::from_value::<MaterializedCharacterClassData>(
+            definition.semantic.clone(),
+        ) {
+            Ok(class) => class,
+            Err(error) => {
+                diagnostics.push(RpgDiagnostic::error(
+                    RpgDiagnosticStage::Semantics,
+                    "CHARACTER_CLASS_SEMANTIC_DECODE_FAILED",
+                    format!("{path}.semantic"),
+                    error.to_string(),
+                ));
+                continue;
+            }
+        };
+        if class.schema.identity != CHARACTER_CLASS_IDENTITY
+            || class.schema.version != CHARACTER_CLASS_VERSION
+        {
+            diagnostics.push(RpgDiagnostic::error(
+                RpgDiagnosticStage::Compatibility,
+                "CHARACTER_CLASS_SCHEMA_UNSUPPORTED",
+                format!("{path}.semantic.schema"),
+                format!("expected {CHARACTER_CLASS_IDENTITY}@{CHARACTER_CLASS_VERSION}"),
+            ));
+        }
+        if class.feature_definition_ids.is_empty() {
+            diagnostics.push(RpgDiagnostic::error(
+                RpgDiagnosticStage::Requirements,
+                "CHARACTER_CLASS_FEATURE_REQUIRED",
+                format!("{path}.semantic.featureDefinitionIds"),
+                "character classes require at least one selectable feature",
+            ));
+        }
+        let mut previous_feature = None::<&str>;
+        for (feature_index, feature_id) in class.feature_definition_ids.iter().enumerate() {
+            let feature_path = format!("{path}.semantic.featureDefinitionIds[{feature_index}]");
+            if !valid_identifier(feature_id)
+                || previous_feature.is_some_and(|previous| previous >= feature_id.as_str())
+            {
+                diagnostics.push(RpgDiagnostic::error(
+                    RpgDiagnosticStage::Artifact,
+                    "CHARACTER_CLASS_FEATURES_NOT_CANONICAL",
+                    &feature_path,
+                    "class feature identities must be unique, sorted portable identifiers",
+                ));
+            }
+            previous_feature = Some(feature_id);
+            let valid = definitions.get(feature_id.as_str()).is_some_and(|target| {
+                target.kind == MaterializedContentDefinitionKind::CharacterFeature
+                    && target.visibility == MaterializedContentVisibility::Exported
+                    && feature_ids.contains(feature_id.as_str())
+                    && definition.references.binary_search(feature_id).is_ok()
+            });
+            if !valid {
+                diagnostics.push(RpgDiagnostic::error(
+                    RpgDiagnosticStage::References,
+                    "CHARACTER_CLASS_FEATURE_REFERENCE_INVALID",
+                    feature_path,
+                    format!(
+                        "class feature {feature_id} must be an exported characterFeature graph edge"
+                    ),
+                ));
+            }
+        }
+        let label = required_definition_label(
+            definition,
+            definition_index,
+            "CHARACTER_CLASS_LABEL_REQUIRED",
+            "character classes require a presentation label",
+            &mut diagnostics,
+        );
+        classes.push(CompiledCharacterClass {
+            definition_id: definition.id.clone(),
+            label: label.unwrap_or_else(|| definition.id.clone()),
+            description: definition
+                .presentation
+                .get("description")
+                .and_then(Value::as_str)
+                .map(str::to_owned),
+            feature_definition_ids: class.feature_definition_ids,
+        });
+    }
+    if diagnostics.is_empty() {
+        classes.sort_by(|left, right| left.definition_id.cmp(&right.definition_id));
+        Ok(classes)
+    } else {
+        Err(RpgCompileFailure { diagnostics })
+    }
+}
+
+fn required_definition_label(
+    definition: &MaterializedContentDefinition,
+    definition_index: usize,
+    code: &'static str,
+    message: &'static str,
+    diagnostics: &mut Vec<RpgDiagnostic>,
+) -> Option<String> {
+    let label = definition
+        .presentation
+        .get("label")
+        .and_then(Value::as_str)
+        .filter(|label| !label.trim().is_empty());
+    if label.is_none() {
+        diagnostics.push(RpgDiagnostic::error(
+            RpgDiagnosticStage::Semantics,
+            code,
+            format!("$.materializedDefinitions[{definition_index}].presentation.label"),
+            message,
+        ));
+    }
+    label.map(str::to_owned)
+}
+
+fn validate_roll_contribution_condition(
+    condition: &RpgRollContributionCondition,
+    depth: usize,
+    nodes: &mut usize,
+    path: &str,
+    diagnostics: &mut Vec<RpgDiagnostic>,
+) {
+    *nodes = nodes.saturating_add(1);
+    if depth > MAX_ROLL_CONDITION_DEPTH || *nodes > MAX_ROLL_CONDITION_NODES {
+        diagnostics.push(RpgDiagnostic::error(
+            RpgDiagnosticStage::Semantics,
+            "CHARACTER_FEATURE_CONDITION_BOUNDS_EXCEEDED",
+            path,
+            format!(
+                "roll conditions support at most {MAX_ROLL_CONDITION_DEPTH} levels and {MAX_ROLL_CONDITION_NODES} nodes"
+            ),
+        ));
+        return;
+    }
+    match condition {
+        RpgRollContributionCondition::Always | RpgRollContributionCondition::ActorFlanksTarget => {}
+        RpgRollContributionCondition::ActorSurrounded { minimum_hostiles } => {
+            if !(2..=4).contains(minimum_hostiles) {
+                diagnostics.push(RpgDiagnostic::error(
+                    RpgDiagnosticStage::Semantics,
+                    "CHARACTER_FEATURE_SURROUNDED_THRESHOLD_INVALID",
+                    format!("{path}.minimumHostiles"),
+                    "cardinal-grid surrounded thresholds must be within 2..=4",
+                ));
+            }
+        }
+        RpgRollContributionCondition::All { conditions } => {
+            if conditions.is_empty() || conditions.len() > 8 {
+                diagnostics.push(RpgDiagnostic::error(
+                    RpgDiagnosticStage::Semantics,
+                    "CHARACTER_FEATURE_ALL_CONDITIONS_INVALID",
+                    format!("{path}.conditions"),
+                    "all conditions require 1..=8 child conditions",
+                ));
+            }
+            for (index, child) in conditions.iter().enumerate() {
+                validate_roll_contribution_condition(
+                    child,
+                    depth.saturating_add(1),
+                    nodes,
+                    &format!("{path}.conditions[{index}]"),
+                    diagnostics,
+                );
+            }
+        }
+    }
+}
+
 fn validate_canonical_identifiers(
     values: &[String],
     path: &str,
@@ -1223,6 +1569,8 @@ fn validate_item_catalog_reference(
 fn compile_participant_profiles(
     prepared: &PreparedPlayBundle,
     compiled_items: &[CompiledItemDefinition],
+    compiled_classes: &[CompiledCharacterClass],
+    compiled_features: &[CompiledCharacterFeature],
 ) -> Result<Vec<CompiledParticipantProfile>, RpgCompileFailure> {
     let definitions = prepared
         .materialized_definitions
@@ -1279,6 +1627,14 @@ fn compile_participant_profiles(
         .iter()
         .map(|item| (item.definition_id.as_str(), item))
         .collect::<BTreeMap<_, _>>();
+    let compiled_classes = compiled_classes
+        .iter()
+        .map(|class| (class.definition_id.as_str(), class))
+        .collect::<BTreeMap<_, _>>();
+    let compiled_features = compiled_features
+        .iter()
+        .map(|feature| feature.definition_id.as_str())
+        .collect::<BTreeSet<_>>();
 
     for (definition_index, definition) in prepared.materialized_definitions.iter().enumerate() {
         if definition.kind != MaterializedContentDefinitionKind::Support
@@ -1380,6 +1736,16 @@ fn compile_participant_profiles(
                 "participant profiles require at least one exported action",
             ));
         }
+        validate_profile_character_selection(
+            data.class_definition_id.as_deref(),
+            &data.feature_definition_ids,
+            definition,
+            &definitions,
+            &compiled_classes,
+            &compiled_features,
+            &path,
+            &mut diagnostics,
+        );
         validate_profile_items(
             &data.items,
             &data.equipment,
@@ -1528,6 +1894,8 @@ fn compile_participant_profiles(
                 description,
                 role: data.role,
                 definition_ids: data.definition_ids,
+                class_definition_id: data.class_definition_id,
+                feature_definition_ids: data.feature_definition_ids,
                 capabilities: data.capabilities,
                 items: data.items,
                 equipment: data.equipment,
@@ -1540,6 +1908,97 @@ fn compile_participant_profiles(
         Ok(profiles)
     } else {
         Err(RpgCompileFailure { diagnostics })
+    }
+}
+
+#[allow(clippy::too_many_arguments)]
+fn validate_profile_character_selection(
+    class_definition_id: Option<&str>,
+    feature_definition_ids: &[String],
+    profile_definition: &MaterializedContentDefinition,
+    definitions: &BTreeMap<&str, &MaterializedContentDefinition>,
+    compiled_classes: &BTreeMap<&str, &CompiledCharacterClass>,
+    compiled_features: &BTreeSet<&str>,
+    path: &str,
+    diagnostics: &mut Vec<RpgDiagnostic>,
+) {
+    let selected_class = class_definition_id.and_then(|class_id| {
+        let valid = definitions.get(class_id).is_some_and(|definition| {
+            definition.kind == MaterializedContentDefinitionKind::CharacterClass
+                && definition.visibility == MaterializedContentVisibility::Exported
+                && profile_definition
+                    .references
+                    .binary_search_by(|candidate| candidate.as_str().cmp(class_id))
+                    .is_ok()
+        });
+        if !valid {
+            diagnostics.push(RpgDiagnostic::error(
+                RpgDiagnosticStage::References,
+                "PARTICIPANT_PROFILE_CLASS_REFERENCE_INVALID",
+                format!("{path}.data.classDefinitionId"),
+                format!("profile class {class_id} must be an exported characterClass graph edge"),
+            ));
+            return None;
+        }
+        compiled_classes.get(class_id).copied()
+    });
+    if class_definition_id.is_none() && !feature_definition_ids.is_empty() {
+        diagnostics.push(RpgDiagnostic::error(
+            RpgDiagnosticStage::Requirements,
+            "PARTICIPANT_PROFILE_FEATURE_CLASS_REQUIRED",
+            format!("{path}.data.featureDefinitionIds"),
+            "profile feature selection requires an explicit character class",
+        ));
+    }
+    let mut previous = None::<&str>;
+    for (index, feature_id) in feature_definition_ids.iter().enumerate() {
+        let feature_path = format!("{path}.data.featureDefinitionIds[{index}]");
+        if !valid_identifier(feature_id)
+            || previous.is_some_and(|previous| previous >= feature_id.as_str())
+        {
+            diagnostics.push(RpgDiagnostic::error(
+                RpgDiagnosticStage::Artifact,
+                "PARTICIPANT_PROFILE_FEATURES_NOT_CANONICAL",
+                &feature_path,
+                "profile feature identities must be unique, sorted portable identifiers",
+            ));
+        }
+        previous = Some(feature_id);
+        let valid = definitions
+            .get(feature_id.as_str())
+            .is_some_and(|definition| {
+                definition.kind == MaterializedContentDefinitionKind::CharacterFeature
+                    && definition.visibility == MaterializedContentVisibility::Exported
+                    && compiled_features.contains(feature_id.as_str())
+                    && profile_definition
+                        .references
+                        .binary_search(feature_id)
+                        .is_ok()
+            });
+        if !valid {
+            diagnostics.push(RpgDiagnostic::error(
+                RpgDiagnosticStage::References,
+                "PARTICIPANT_PROFILE_FEATURE_REFERENCE_INVALID",
+                &feature_path,
+                format!(
+                    "profile feature {feature_id} must be an exported characterFeature graph edge"
+                ),
+            ));
+            continue;
+        }
+        if selected_class.is_some_and(|class| {
+            class
+                .feature_definition_ids
+                .binary_search(feature_id)
+                .is_err()
+        }) {
+            diagnostics.push(RpgDiagnostic::error(
+                RpgDiagnosticStage::Requirements,
+                "PARTICIPANT_PROFILE_FEATURE_NOT_IN_CLASS",
+                feature_path,
+                format!("selected class does not make character feature {feature_id} available"),
+            ));
+        }
     }
 }
 

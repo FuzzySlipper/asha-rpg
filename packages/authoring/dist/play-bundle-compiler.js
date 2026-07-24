@@ -58,6 +58,7 @@ export function preparePlayBundle(options) {
         return failed(diagnostics);
     validateActionProcedureGraph(graph.materialized, graph.resolvedReferences, options.bundle.ruleset, diagnostics);
     validateItemDefinitions(graph.materialized, diagnostics);
+    validateCharacterDefinitions(graph.materialized, graph.resolvedReferences, diagnostics);
     validateParticipantProfiles(graph.materialized, graph.resolvedReferences, options.bundle.ruleset, diagnostics);
     if (diagnostics.length > 0)
         return failed(diagnostics);
@@ -96,7 +97,7 @@ export function preparePlayBundle(options) {
         })),
     ].sort(compareRelationship);
     const prepared = immutable({
-        schema: { identity: 'asha.rpg.play-bundle.prepared', major: 1 },
+        schema: { identity: 'asha.rpg.play-bundle.prepared', major: 2 },
         playBundleIdentity: options.bundle.identity,
         ruleset: options.bundle.ruleset,
         contentPacks: [...context.selected.values()]
@@ -520,6 +521,8 @@ function materializeSelectedDefinitions(context, bundle, overlayPackages) {
         }
         if (record.definition.kind === 'action' ||
             record.definition.kind === 'actionProcedure' ||
+            record.definition.kind === 'characterClass' ||
+            record.definition.kind === 'characterFeature' ||
             record.definition.kind === 'item' ||
             record.definition.kind === 'support') {
             if ((derivationsByDefinition.get(key)?.length ?? 0) > 0) {
@@ -659,6 +662,8 @@ function materializeSelectedDefinitions(context, bundle, overlayPackages) {
         for (const record of definitions.values()) {
             if (record.definition.kind === 'action' ||
                 record.definition.kind === 'actionProcedure' ||
+                record.definition.kind === 'characterClass' ||
+                record.definition.kind === 'characterFeature' ||
                 record.definition.kind === 'item' ||
                 record.definition.kind === 'support' ||
                 record.definition.kind === 'derived') {
@@ -836,6 +841,18 @@ function definitionValue(record) {
     }
     if (record.definition.kind === 'support') {
         return { semantic: record.definition.semantic, presentation: record.definition.presentation ?? null };
+    }
+    if (record.definition.kind === 'characterClass') {
+        return {
+            semantic: materializedCharacterClassData(record.definition),
+            presentation: record.definition.presentation ?? null,
+        };
+    }
+    if (record.definition.kind === 'characterFeature') {
+        return {
+            semantic: record.definition.characterFeature,
+            presentation: record.definition.presentation ?? null,
+        };
     }
     throw new Error(`definition ${record.definition.id} is not concrete`);
 }
@@ -1164,6 +1181,8 @@ function definitionMaterializationFingerprint(record, ruleset) {
 function definitionMaterializationStage(record, ruleset) {
     if (record.definition.kind !== 'action' &&
         record.definition.kind !== 'actionProcedure' &&
+        record.definition.kind !== 'characterClass' &&
+        record.definition.kind !== 'characterFeature' &&
         record.definition.kind !== 'item' &&
         record.definition.kind !== 'support') {
         throw new Error(`definition ${record.definition.id} is not concrete`);
@@ -1252,10 +1271,20 @@ export function contentDefinitionMaterializationFingerprint(definition) {
                         semantic: definition.item,
                         presentation: definition.presentation ?? null,
                     }
-                    : {
-                        semantic: definition.semantic,
-                        presentation: definition.presentation ?? null,
-                    },
+                    : definition.kind === 'characterClass'
+                        ? {
+                            semantic: materializedCharacterClassData(definition),
+                            presentation: definition.presentation ?? null,
+                        }
+                        : definition.kind === 'characterFeature'
+                            ? {
+                                semantic: definition.characterFeature,
+                                presentation: definition.presentation ?? null,
+                            }
+                            : {
+                                semantic: definition.semantic,
+                                presentation: definition.presentation ?? null,
+                            },
         references: authoredDefinitionReferenceIds(definition),
     });
 }
@@ -1276,6 +1305,14 @@ function materializedActionSemantic(definition) {
         ...(definition.invocation.binding === undefined
             ? {}
             : { binding: definition.invocation.binding }),
+    };
+}
+function materializedCharacterClassData(definition) {
+    return {
+        schema: definition.characterClass.schema,
+        featureDefinitionIds: definition.characterClass.featureDefinitions
+            .map((reference) => reference.definitionId)
+            .sort(),
     };
 }
 function materializedActionProcedureSemantic(definition) {
@@ -1315,6 +1352,18 @@ function normalizedDefinitionValue(record) {
     if (record.definition.kind === 'item') {
         return {
             semantic: record.definition.item,
+            presentation: record.definition.presentation ?? null,
+        };
+    }
+    if (record.definition.kind === 'characterClass') {
+        return {
+            semantic: materializedCharacterClassData(record.definition),
+            presentation: record.definition.presentation ?? null,
+        };
+    }
+    if (record.definition.kind === 'characterFeature') {
+        return {
+            semantic: record.definition.characterFeature,
             presentation: record.definition.presentation ?? null,
         };
     }
@@ -2216,6 +2265,115 @@ function visitAuthoredValue(value, path, visit) {
         visitAuthoredValue(child, `${path}.${field}`, visit);
     }
 }
+function validateCharacterDefinitions(materialized, resolvedReferences, diagnostics) {
+    const recordsByGlobalId = new Map(materialized.map((record) => [globalDefinitionId(record), record]));
+    for (const record of materialized) {
+        if (record.definition.kind === 'characterClass') {
+            const path = `$.packages[${record.package.key}].definitions.${record.definition.id}.characterClass`;
+            const data = record.definition.characterClass;
+            if (record.definition.extensionPolicy !== 'sealed') {
+                diagnostics.push(diagnostic('compatibility', 'CHARACTER_CLASS_EXTENSION_POLICY_UNSUPPORTED', `$.packages[${record.package.key}].definitions.${record.definition.id}.extensionPolicy`, 'character classes are sealed in the current semantic contract', { definitionId: record.definition.id, source: record.definition.source }));
+            }
+            if (data.schema.identity !== 'asha.rpg.character-class' ||
+                data.schema.version !== 1) {
+                diagnostics.push(diagnostic('compatibility', 'CHARACTER_CLASS_SCHEMA_UNSUPPORTED', `${path}.schema`, 'character classes require asha.rpg.character-class@1', { definitionId: record.definition.id, source: record.definition.source }));
+            }
+            if (data.featureDefinitions.length === 0) {
+                diagnostics.push(diagnostic('compatibility', 'CHARACTER_CLASS_FEATURE_REQUIRED', `${path}.featureDefinitions`, 'character classes require at least one selectable feature', { definitionId: record.definition.id, source: record.definition.source }));
+            }
+            const identities = new Set();
+            for (const [index, reference] of data.featureDefinitions.entries()) {
+                const referencePath = `${path}.featureDefinitions[${index}]`;
+                const identity = `${reference.importAs ?? ''}#${reference.definitionId}`;
+                if (!validPortableIdentifier(reference.definitionId) ||
+                    identities.has(identity)) {
+                    diagnostics.push(diagnostic('source', 'CHARACTER_CLASS_FEATURES_NOT_CANONICAL', referencePath, 'class feature references must be unique portable identities', { definitionId: record.definition.id, source: record.definition.source }));
+                }
+                identities.add(identity);
+                const target = resolvedDefinitionReference(record, reference, resolvedReferences, recordsByGlobalId);
+                if (target === undefined ||
+                    target.definition.kind !== 'characterFeature' ||
+                    !target.exported ||
+                    target.definition.visibility !== 'public') {
+                    diagnostics.push(diagnostic('graph', 'CHARACTER_CLASS_FEATURE_REFERENCE_INVALID', referencePath, `class feature ${reference.definitionId} must resolve to an exported characterFeature`, { definitionId: record.definition.id, source: record.definition.source }));
+                }
+            }
+            continue;
+        }
+        if (record.definition.kind !== 'characterFeature')
+            continue;
+        const path = `$.packages[${record.package.key}].definitions.${record.definition.id}.characterFeature`;
+        const data = record.definition.characterFeature;
+        if (record.definition.extensionPolicy !== 'sealed') {
+            diagnostics.push(diagnostic('compatibility', 'CHARACTER_FEATURE_EXTENSION_POLICY_UNSUPPORTED', `$.packages[${record.package.key}].definitions.${record.definition.id}.extensionPolicy`, 'character features are sealed in the current semantic contract', { definitionId: record.definition.id, source: record.definition.source }));
+        }
+        if (data.schema.identity !== 'asha.rpg.character-feature' ||
+            data.schema.version !== 1) {
+            diagnostics.push(diagnostic('compatibility', 'CHARACTER_FEATURE_SCHEMA_UNSUPPORTED', `${path}.schema`, 'character features require asha.rpg.character-feature@1', { definitionId: record.definition.id, source: record.definition.source }));
+        }
+        if (data.rollContributions.length === 0 ||
+            data.rollContributions.length > 32) {
+            diagnostics.push(diagnostic('source', 'CHARACTER_FEATURE_CONTRIBUTIONS_INVALID', `${path}.rollContributions`, 'character features require 1..=32 roll contributions', { definitionId: record.definition.id, source: record.definition.source }));
+        }
+        let previousId;
+        const selectors = new Set();
+        for (const [index, contribution] of data.rollContributions.entries()) {
+            const contributionPath = `${path}.rollContributions[${index}]`;
+            if (!validPortableIdentifier(contribution.id) ||
+                (previousId !== undefined && previousId >= contribution.id)) {
+                diagnostics.push(diagnostic('source', 'CHARACTER_FEATURE_CONTRIBUTIONS_NOT_CANONICAL', `${contributionPath}.id`, 'roll contribution identities must be unique, sorted portable identifiers', { definitionId: record.definition.id, source: record.definition.source }));
+            }
+            previousId = contribution.id;
+            if (selectors.has(contribution.selector)) {
+                diagnostics.push(diagnostic('source', 'CHARACTER_FEATURE_SELECTOR_DUPLICATE', `${contributionPath}.selector`, 'a character feature may contribute at most once to each roll selector', { definitionId: record.definition.id, source: record.definition.source }));
+            }
+            selectors.add(contribution.selector);
+            if (contribution.selector !== 'attack' ||
+                !Number.isInteger(contribution.amount) ||
+                contribution.amount === 0 ||
+                contribution.amount < -1_000 ||
+                contribution.amount > 1_000) {
+                diagnostics.push(diagnostic('source', 'CHARACTER_FEATURE_CONTRIBUTION_INVALID', contributionPath, 'attack contributions require a non-zero integer amount within -1000..=1000', { definitionId: record.definition.id, source: record.definition.source }));
+            }
+            const nodeCounter = { value: 0 };
+            validateRollContributionCondition(contribution.condition, 1, nodeCounter, `${contributionPath}.condition`, record, diagnostics);
+        }
+    }
+}
+function validateRollContributionCondition(condition, depth, nodes, path, record, diagnostics) {
+    nodes.value += 1;
+    if (depth > 8 || nodes.value > 32) {
+        diagnostics.push(diagnostic('source', 'CHARACTER_FEATURE_CONDITION_BOUNDS_EXCEEDED', path, 'roll conditions support at most 8 levels and 32 nodes', { definitionId: record.definition.id, source: record.definition.source }));
+        return;
+    }
+    if (condition.kind === 'always' || condition.kind === 'actorFlanksTarget') {
+        return;
+    }
+    if (condition.kind === 'actorSurrounded') {
+        if (!Number.isInteger(condition.minimumHostiles) ||
+            condition.minimumHostiles < 2 ||
+            condition.minimumHostiles > 4) {
+            diagnostics.push(diagnostic('source', 'CHARACTER_FEATURE_SURROUNDED_THRESHOLD_INVALID', `${path}.minimumHostiles`, 'cardinal-grid surrounded thresholds must be within 2..=4', { definitionId: record.definition.id, source: record.definition.source }));
+        }
+        return;
+    }
+    if (condition.conditions.length === 0 || condition.conditions.length > 8) {
+        diagnostics.push(diagnostic('source', 'CHARACTER_FEATURE_ALL_CONDITIONS_INVALID', `${path}.conditions`, 'all conditions require 1..=8 child conditions', { definitionId: record.definition.id, source: record.definition.source }));
+    }
+    condition.conditions.forEach((child, index) => validateRollContributionCondition(child, depth + 1, nodes, `${path}.conditions[${index}]`, record, diagnostics));
+}
+function resolvedDefinitionReference(source, reference, resolvedReferences, recordsByGlobalId) {
+    const packageKey = reference.importAs === undefined
+        ? source.package.key
+        : source.package.aliases.get(reference.importAs);
+    if (packageKey === undefined)
+        return undefined;
+    const targetGlobalId = `${packageKey}#${reference.definitionId}`;
+    if (!(resolvedReferences.get(globalDefinitionId(source)) ?? []).includes(targetGlobalId)) {
+        return undefined;
+    }
+    return recordsByGlobalId.get(targetGlobalId);
+}
 function validateParticipantProfiles(materialized, resolvedReferences, ruleset, diagnostics) {
     const recordsByGlobalId = new Map(materialized.map((record) => [globalDefinitionId(record), record]));
     const rulesetValues = new Map(ruleset.provides.values.map((value) => [`${value.kind}:${value.id}`, value]));
@@ -2226,7 +2384,7 @@ function validateParticipantProfiles(materialized, resolvedReferences, ruleset, 
         const path = `$.packages[${record.package.key}].definitions.${record.definition.id}.semantic.data`;
         const profile = authoredParticipantProfile(record.definition);
         if (profile === undefined) {
-            diagnostics.push(diagnostic('source', 'PARTICIPANT_PROFILE_SCHEMA_INVALID', path, 'participant profiles require asha.rpg.participant-profile@1, a role, definition references, and typed base capabilities', profileDiagnosticContext(record)));
+            diagnostics.push(diagnostic('source', 'PARTICIPANT_PROFILE_SCHEMA_INVALID', path, 'participant profiles require asha.rpg.participant-profile@2, a role, explicit class/feature selection, definition references, and typed base capabilities', profileDiagnosticContext(record)));
             continue;
         }
         const definitionIdentities = new Set();
@@ -2251,6 +2409,46 @@ function validateParticipantProfiles(materialized, resolvedReferences, ruleset, 
         }
         if (!hasAction) {
             diagnostics.push(diagnostic('compatibility', 'PARTICIPANT_PROFILE_ACTION_REQUIRED', `${path}.definitionReferences`, 'an exported participant profile must reference at least one action', profileDiagnosticContext(record)));
+        }
+        const selectedClass = profile.classDefinition === null
+            ? undefined
+            : resolvedDefinitionReference(record, profile.classDefinition, resolvedReferences, recordsByGlobalId);
+        if (profile.classDefinition !== null &&
+            (selectedClass === undefined ||
+                selectedClass.definition.kind !== 'characterClass' ||
+                !selectedClass.exported ||
+                selectedClass.definition.visibility !== 'public')) {
+            diagnostics.push(diagnostic('graph', 'PARTICIPANT_PROFILE_CLASS_REFERENCE_INVALID', `${path}.classDefinition`, `profile class ${profile.classDefinition.definitionId} must resolve to an exported characterClass`, profileDiagnosticContext(record)));
+        }
+        if (profile.classDefinition === null &&
+            profile.featureDefinitions.length > 0) {
+            diagnostics.push(diagnostic('compatibility', 'PARTICIPANT_PROFILE_FEATURE_CLASS_REQUIRED', `${path}.featureDefinitions`, 'profile feature selection requires an explicit character class', profileDiagnosticContext(record)));
+        }
+        const classFeatureTargets = selectedClass?.definition.kind === 'characterClass'
+            ? new Set(selectedClass.definition.characterClass.featureDefinitions
+                .map((reference) => resolvedDefinitionReference(selectedClass, reference, resolvedReferences, recordsByGlobalId))
+                .filter((target) => target !== undefined)
+                .map(globalDefinitionId))
+            : new Set();
+        const selectedFeatureIdentities = new Set();
+        for (const [index, reference] of profile.featureDefinitions.entries()) {
+            const featurePath = `${path}.featureDefinitions[${index}]`;
+            const identity = `${reference.importAs ?? ''}#${reference.definitionId}`;
+            if (selectedFeatureIdentities.has(identity)) {
+                diagnostics.push(diagnostic('source', 'PARTICIPANT_PROFILE_FEATURES_NOT_CANONICAL', featurePath, `participant profile repeats feature ${reference.definitionId}`, profileDiagnosticContext(record)));
+            }
+            selectedFeatureIdentities.add(identity);
+            const target = resolvedDefinitionReference(record, reference, resolvedReferences, recordsByGlobalId);
+            if (target === undefined ||
+                target.definition.kind !== 'characterFeature' ||
+                !target.exported ||
+                target.definition.visibility !== 'public') {
+                diagnostics.push(diagnostic('graph', 'PARTICIPANT_PROFILE_FEATURE_REFERENCE_INVALID', featurePath, `profile feature ${reference.definitionId} must resolve to an exported characterFeature`, profileDiagnosticContext(record)));
+                continue;
+            }
+            if (!classFeatureTargets.has(globalDefinitionId(target))) {
+                diagnostics.push(diagnostic('compatibility', 'PARTICIPANT_PROFILE_FEATURE_NOT_IN_CLASS', featurePath, `selected class does not make character feature ${reference.definitionId} available`, profileDiagnosticContext(record)));
+            }
         }
         const itemInstances = new Map();
         for (const [index, item] of profile.items.entries()) {
@@ -2363,10 +2561,14 @@ function authoredParticipantProfile(definition) {
         return undefined;
     const schema = data['schema'];
     if (schema['identity'] !== 'asha.rpg.participant-profile' ||
-        schema['version'] !== 1 ||
+        schema['version'] !== 2 ||
         (data['role'] !== 'player' && data['role'] !== 'creature') ||
         !Array.isArray(data['definitionReferences']) ||
         !data['definitionReferences'].every(isProfileDefinitionReference) ||
+        !(data['classDefinition'] === null ||
+            isProfileDefinitionReference(data['classDefinition'])) ||
+        !Array.isArray(data['featureDefinitions']) ||
+        !data['featureDefinitions'].every(isProfileDefinitionReference) ||
         !Array.isArray(data['items']) ||
         !data['items'].every(isProfileItem) ||
         !Array.isArray(data['equipment']) ||
@@ -2636,6 +2838,12 @@ function materializedSupportSemantic(definition) {
             definitionIds: profile.definitionReferences
                 .map((reference) => reference.definitionId)
                 .sort(),
+            classDefinitionId: profile.classDefinition === null
+                ? null
+                : profile.classDefinition.definitionId,
+            featureDefinitionIds: profile.featureDefinitions
+                .map((reference) => reference.definitionId)
+                .sort(),
             items: profile.items
                 .map((item) => ({
                 id: item.id,
@@ -2653,6 +2861,8 @@ function materializeDefinitions(records, references, exportedRoots, actions) {
     return records
         .filter((record) => record.definition.kind === 'action' ||
         record.definition.kind === 'actionProcedure' ||
+        record.definition.kind === 'characterClass' ||
+        record.definition.kind === 'characterFeature' ||
         record.definition.kind === 'item' ||
         record.definition.kind === 'support')
         .map((record) => {
@@ -2675,9 +2885,13 @@ function materializeDefinitions(records, references, exportedRoots, actions) {
                 : materializedActionSemantic(definition)
             : definition.kind === 'actionProcedure'
                 ? materializedActionProcedureSemantic(definition)
-                : definition.kind === 'item'
-                    ? definition.item
-                    : materializedSupportSemantic(definition);
+                : definition.kind === 'characterClass'
+                    ? materializedCharacterClassData(definition)
+                    : definition.kind === 'characterFeature'
+                        ? definition.characterFeature
+                        : definition.kind === 'item'
+                            ? definition.item
+                            : materializedSupportSemantic(definition);
         if (semantic === undefined)
             throw new Error(`materialization missing ${definition.id}`);
         const materialized = {

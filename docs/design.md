@@ -16,8 +16,8 @@ ruleset:
 | --- | --- | --- |
 | `Ruleset` (`asha.rpg.ruleset@1`) | language compatibility, Rust-bound operation and capability provisions, named stat/defense contracts, numeric domains | actions, spells, classes, creatures, items, conditions, presentation, setup |
 | `ContentPack` | authored definitions, presentation, dependencies, derivation, mixins, overlays | Rust execution callbacks, board/participants, commands or expected outcomes |
-| `PlayBundle` (`asha.rpg.play-bundle.prepared@1` / `.compiled@1`) | one Ruleset plus an exact compatible Content Pack closure and fingerprints | ambient discovery, executable TypeScript, scenario scripts |
-| `Scenario` (`asha.rpg.scenario@1`) | board, participants, selected definitions, initial values, initiative, and random-source policy for one PlayBundle | definitions, commands, targets, reactions, rolls, expected events/outcomes, Tester configuration |
+| `PlayBundle` (`asha.rpg.play-bundle.prepared@2` / `.compiled@2`) | one Ruleset plus an exact compatible Content Pack closure and fingerprints | ambient discovery, executable TypeScript, scenario scripts |
+| `Scenario` (`asha.rpg.scenario@2`) | board, participants, selected definitions, initial values, initiative, and random-source policy for one PlayBundle | definitions, commands, targets, reactions, rolls, expected events/outcomes, Tester configuration |
 
 A Tester is a caller of the same accessible interaction surface as a person;
 it is not a field in any of these contracts.
@@ -96,11 +96,42 @@ nominal Ruleset ownership, numeric-domain lookup, Scenario materialization, and
 checkpoint/replay enforcement remain RPG-owned and are not upstream claims.
 
 Support definitions may use consumer-owned catalog names and inert `data` for
-setup profiles, items, conditions, or other product presentation. Rust keeps
-that data inside the artifact identity and definition graph but interprets only
-the closed action catalogs and operation vocabulary. This is how an independent
-rules repository can describe setup ergonomics without creating a second rules
-engine or a d20-specific Rust enum.
+conditions or other product presentation. Rust keeps that data inside the
+artifact identity and definition graph but interprets only registered semantic
+schemas. This is how an independent rules repository can describe setup
+ergonomics without creating a second rules engine or a d20-specific Rust enum.
+
+## Character classes and roll contributions
+
+Character classes and character features are closed, typed Content Pack
+definitions. A class lists exported feature definitions; a participant profile
+and Scenario select one class and a canonical subset of its features. Rust
+validates those graph edges and selections, stores the selection in participant
+authority state, and binds it into the Scenario fingerprint, checkpoint,
+portable state hash, and replay boundary. A command cannot submit or replace
+feature semantics.
+
+The initial feature selector contributes to attack checks. A contribution has a
+stable id, source definition id and label, signed amount, and one bounded
+condition tree. Conditions currently support always, actor flanks target, actor
+surrounded by a minimum number of hostiles, and conjunction. Flanking means the
+living actor and a living ally on the same team are cardinally adjacent on
+opposite sides of the living target. Surrounded counts living hostile
+participants in the four cardinally adjacent cells. These are exact square-grid
+authority rules, not presentation heuristics.
+
+Rust evaluates conditions from staged participant state at resolution time.
+The action check modifier is recorded first; applicable feature contributions
+then follow canonical feature-definition and contribution-id order. Every
+applied source is retained in `AttackResolved.contributions`, and checked
+addition produces the resolved modifier and total. A feature may declare at
+most one contribution for a selector, and duplicate feature selection is
+rejected rather than stacked accidentally.
+
+Classes and features are sealed in this contract version. It does not yet claim
+levels, prerequisites, feature choices during a session, diagonal flanking,
+range-shaped auras, a general-purpose condition VM, or contribution selectors
+for saves, damage, healing, or defenses.
 
 ## Rust semantic profile
 
@@ -125,11 +156,13 @@ numeric domains, content-owned resource/modifier ids, board, occupancy,
 initiative, capability owners, and random-source binding before mutable state
 exists.
 
-Checkpoint schema version 3 embeds the exact compiled PlayBundle, Scenario and
+Checkpoint schema version 5 embeds the exact compiled PlayBundle, Scenario and
 Scenario fingerprint, portable state, turn/log, accepted random position,
-pending phase, and canonical state hash. Replay entry schema version 4 records
+pending phase, and canonical state hash. Replay entry schema version 6 records
 ordinary submit/reaction/turn-control operations and verifies before/after
-boundaries. Replay never reruns authoring or substitutes a candidate artifact.
+boundaries. Accepted event schema version 3 and encounter-view schema version 5
+carry the contribution and character-selection additions. Replay never reruns
+authoring or substitutes a candidate artifact.
 
 ## TypeScript authoring
 
