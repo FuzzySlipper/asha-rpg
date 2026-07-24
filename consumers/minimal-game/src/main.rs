@@ -3,9 +3,9 @@ use std::io::{self, Read};
 use asha_rpg::{
     compile_prepared_play_bundle_json, decode_replay_entries, encode_replay_entries, BoundedValue,
     GridPosition, RpgActionProposal, RpgAuthoritySession, RpgBoardSetup, RpgCommandOutcome,
-    RpgDomainEvent, RpgScenario, RpgInitialCapability, RpgParticipantSetup,
-    RpgRandomRequest, RpgRandomSource, RpgRandomSourceBinding, RpgRandomSourceFailure,
-    RpgReactionProposal, RpgTeamId, RpgTurnInitialization,
+    RpgDomainEvent, RpgInitialCapability, RpgParticipantSetup, RpgRandomRequest, RpgRandomSource,
+    RpgRandomSourceBinding, RpgRandomSourceFailure, RpgReactionProposal, RpgScenario, RpgTeamId,
+    RpgTurnInitialization,
 };
 
 fn main() {
@@ -13,8 +13,8 @@ fn main() {
     io::stdin()
         .read_to_end(&mut prepared_source)
         .expect("read prepared PlayBundle from stdin");
-    let bundle =
-        compile_prepared_play_bundle_json(&prepared_source).expect("compile exact prepared artifact");
+    let bundle = compile_prepared_play_bundle_json(&prepared_source)
+        .expect("compile exact prepared artifact");
     let scenario = RpgScenario {
         schema: RpgScenario::schema(),
         play_bundle_id: bundle.artifact().artifact_id.clone(),
@@ -52,10 +52,11 @@ fn main() {
     let (pending_outcome, submit_entry) = recording
         .submit_with_random_source_recorded(
             RpgActionProposal {
-            expected_revision: 0,
-            action_id: "portable.reactive-strike".to_owned(),
-            actor_id: "hero".to_owned(),
-            target_ids: vec!["guardian".to_owned()],
+                expected_revision: 0,
+                action_id: "portable.reactive-strike".to_owned(),
+                actor_id: "hero".to_owned(),
+                target_ids: vec!["guardian".to_owned()],
+                item_binding: None,
             },
             &mut source,
         )
@@ -99,10 +100,10 @@ fn main() {
         panic!("reaction should commit: {accepted:?}");
     };
     assert_eq!(receipt.random_consumed, 2);
-    assert!(receipt.events.iter().any(|event| matches!(
-        event,
-        RpgDomainEvent::DamageApplied { amount: 1, .. }
-    )));
+    assert!(receipt
+        .events
+        .iter()
+        .any(|event| matches!(event, RpgDomainEvent::DamageApplied { amount: 1, .. })));
     assert_eq!(
         replayed
             .state()
@@ -128,10 +129,7 @@ impl RpgRandomSource for ConstantTwoSource {
         &self.binding
     }
 
-    fn draw(
-        &mut self,
-        request: &RpgRandomRequest,
-    ) -> Result<Vec<u32>, RpgRandomSourceFailure> {
+    fn draw(&mut self, request: &RpgRandomRequest) -> Result<Vec<u32>, RpgRandomSourceFailure> {
         Ok(vec![2_u32.min(request.sides); request.count as usize])
     }
 }
@@ -143,6 +141,10 @@ fn participant(id: &str, label: &str, team_id: RpgTeamId, x: u32) -> RpgParticip
         team_id,
         position: GridPosition { x, y: 0 },
         definition_ids: vec!["portable.reactive-strike".to_owned()],
+        class_definition_id: None,
+        feature_definition_ids: Vec::new(),
+        items: Vec::new(),
+        equipment: Vec::new(),
         capabilities: vec![RpgInitialCapability::Vitality {
             value: BoundedValue {
                 current: 20,
