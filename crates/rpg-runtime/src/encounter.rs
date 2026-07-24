@@ -6,7 +6,7 @@ use std::{
 use rpg_compiler::{CompiledPlayBundle, CompiledRpgAction, RulesetValueKey};
 use rpg_core::{
     ActiveRpgModifier, BoundedValue, GridPosition, RpgCapabilityState, RpgEntityState, RpgIntent,
-    RpgRandomRequest, RpgReactionRequest, RpgResolutionRejection, RpgTeamId,
+    RpgIntentItemBinding, RpgRandomRequest, RpgReactionRequest, RpgResolutionRejection, RpgTeamId,
     MAXIMUM_RPG_MODIFIER_TURNS,
 };
 use rpg_ir::{MaterializedContentDefinitionKind, MaterializedContentVisibility, RulesetValueKind};
@@ -15,7 +15,7 @@ use serde::{Deserialize, Serialize};
 pub const RPG_SCENARIO_SCHEMA_ID: &str = "asha.rpg.scenario";
 pub const RPG_SCENARIO_SCHEMA_VERSION: u32 = 1;
 pub const RPG_ENCOUNTER_VIEW_SCHEMA_ID: &str = "asha.rpg.encounter.view";
-pub const RPG_ENCOUNTER_VIEW_SCHEMA_VERSION: u32 = 3;
+pub const RPG_ENCOUNTER_VIEW_SCHEMA_VERSION: u32 = 4;
 pub const RPG_END_TURN_CONTROL_ID: &str = "control.end-turn";
 
 const MAXIMUM_BOARD_EXTENT: u32 = 1_024;
@@ -94,7 +94,25 @@ pub struct RpgParticipantSetup {
     pub team_id: RpgTeamId,
     pub position: GridPosition,
     pub definition_ids: Vec<String>,
+    #[serde(default)]
+    pub items: Vec<RpgItemInstanceSetup>,
+    #[serde(default)]
+    pub equipment: Vec<RpgEquipmentSlotSetup>,
     pub capabilities: Vec<RpgInitialCapability>,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase", deny_unknown_fields)]
+pub struct RpgItemInstanceSetup {
+    pub id: String,
+    pub definition_id: String,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase", deny_unknown_fields)]
+pub struct RpgEquipmentSlotSetup {
+    pub slot_id: String,
+    pub item_instance_id: String,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
@@ -201,6 +219,8 @@ pub struct RpgEncounterLogEntry {
     pub state_revision: u64,
     pub actor_id: String,
     pub action_id: String,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub item_binding: Option<RpgIntentItemBinding>,
     pub events: Vec<rpg_core::RpgDomainEvent>,
 }
 
@@ -235,11 +255,26 @@ pub struct RpgParticipantView {
     pub team_id: RpgTeamId,
     pub position: GridPosition,
     pub definition_ids: Vec<String>,
+    pub items: Vec<RpgItemInstanceView>,
+    pub equipment: Vec<RpgEquipmentSlotSetup>,
     pub vitality: BoundedValue,
     pub stats: Vec<RpgNamedIntegerView>,
     pub defenses: Vec<RpgNamedIntegerView>,
     pub resources: Vec<RpgNamedBoundedView>,
     pub modifiers: Vec<RpgModifierView>,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase", deny_unknown_fields)]
+pub struct RpgItemInstanceView {
+    pub id: String,
+    pub definition_id: String,
+    pub label: String,
+    pub description: Option<String>,
+    pub tags: Vec<String>,
+    pub traits: Vec<String>,
+    pub allowed_slots: Vec<String>,
+    pub attributes: Vec<rpg_ir::ItemAttribute>,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
@@ -263,6 +298,8 @@ pub struct RpgCellPathView {
 pub struct RpgActionView {
     pub definition_id: String,
     pub label: String,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub item_binding: Option<RpgIntentItemBinding>,
     pub available: bool,
     pub unavailable: Option<RpgResolutionRejection>,
     pub maximum_targets: u32,
@@ -324,6 +361,8 @@ pub struct RpgActionProposal {
     pub action_id: String,
     pub actor_id: String,
     pub target_ids: Vec<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub item_binding: Option<RpgIntentItemBinding>,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
@@ -507,6 +546,7 @@ pub(crate) struct RpgEncounterAuthority {
     pub(crate) turn: RpgTurnState,
     pub(crate) participant_definitions: BTreeMap<String, Vec<String>>,
     pub(crate) participant_labels: BTreeMap<String, String>,
+    pub(crate) item_definitions: BTreeMap<String, rpg_ir::CompiledItemDefinition>,
     pub(crate) log: Vec<RpgEncounterLogEntry>,
 }
 
@@ -552,6 +592,7 @@ impl RpgEncounterAuthority {
             state_revision: receipt.state_revision,
             actor_id: receipt.actor_id.clone(),
             action_id: receipt.action_id.clone(),
+            item_binding: receipt.item_binding.clone(),
             events: receipt.events.clone(),
         });
     }
@@ -565,6 +606,7 @@ impl RpgEncounterAuthority {
             state_revision: receipt.state_revision,
             actor_id: receipt.actor_id.clone(),
             action_id: receipt.control.id().to_owned(),
+            item_binding: None,
             events: receipt.events.clone(),
         });
     }
@@ -657,6 +699,12 @@ pub(crate) fn build_encounter(
             .iter()
             .map(|participant| (participant.id.clone(), participant.label.clone()))
             .collect(),
+        item_definitions: bundle
+            .items()
+            .iter()
+            .cloned()
+            .map(|item| (item.definition_id.clone(), item))
+            .collect(),
         scenario,
         log: Vec::new(),
     };
@@ -700,6 +748,11 @@ fn validate_scenario(
         })
         .collect::<BTreeMap<_, _>>();
     let action_ids = bundle.rules().action_ids().collect::<BTreeSet<_>>();
+    let item_definitions = bundle
+        .items()
+        .iter()
+        .map(|item| (item.definition_id.as_str(), item))
+        .collect::<BTreeMap<_, _>>();
     let required_capabilities = bundle
         .rules()
         .required_capabilities()
@@ -831,6 +884,13 @@ fn validate_scenario(
                 "each authority-controlled participant must reference an artifact action",
             ));
         }
+        validate_participant_items(
+            participant,
+            &path,
+            &definition_kinds,
+            &item_definitions,
+            &mut diagnostics,
+        );
         validate_participant_capabilities(
             bundle,
             participant,
@@ -850,6 +910,122 @@ fn validate_scenario(
     }
     validate_turn(scenario, &participant_ids, &mut diagnostics);
     diagnostics
+}
+
+fn validate_participant_items(
+    participant: &RpgParticipantSetup,
+    path: &str,
+    definition_kinds: &BTreeMap<
+        &str,
+        (
+            MaterializedContentDefinitionKind,
+            MaterializedContentVisibility,
+        ),
+    >,
+    item_definitions: &BTreeMap<&str, &rpg_ir::CompiledItemDefinition>,
+    diagnostics: &mut Vec<RpgScenarioDiagnostic>,
+) {
+    let mut item_instances = BTreeMap::new();
+    for (index, item) in participant.items.iter().enumerate() {
+        let item_path = format!("{path}.items[{index}]");
+        if !portable_identifier(&item.id)
+            || item_instances
+                .insert(item.id.as_str(), item.definition_id.as_str())
+                .is_some()
+        {
+            diagnostics.push(scenario_diagnostic(
+                "RPG_SCENARIO_ITEM_INSTANCE_ID_INVALID",
+                format!("{item_path}.id"),
+                "item instance identities must be non-empty and unique per participant",
+            ));
+        }
+        match definition_kinds.get(item.definition_id.as_str()) {
+            Some((
+                MaterializedContentDefinitionKind::Item,
+                MaterializedContentVisibility::Exported,
+            )) if item_definitions.contains_key(item.definition_id.as_str()) => {}
+            Some((MaterializedContentDefinitionKind::Item, _)) => {
+                diagnostics.push(scenario_diagnostic(
+                    "RPG_SCENARIO_ITEM_DEFINITION_NOT_EXPORTED",
+                    format!("{item_path}.definitionId"),
+                    format!(
+                        "item definition {} is not exported by the bound artifact",
+                        item.definition_id
+                    ),
+                ));
+            }
+            Some(_) => diagnostics.push(scenario_diagnostic(
+                "RPG_SCENARIO_ITEM_DEFINITION_INCOMPATIBLE",
+                format!("{item_path}.definitionId"),
+                format!("definition {} is not an item", item.definition_id),
+            )),
+            None => diagnostics.push(scenario_diagnostic(
+                "RPG_SCENARIO_ITEM_DEFINITION_UNKNOWN",
+                format!("{item_path}.definitionId"),
+                format!(
+                    "item definition {} is not in the bound artifact",
+                    item.definition_id
+                ),
+            )),
+        }
+    }
+
+    let mut slots = BTreeSet::new();
+    let mut equipped_instances = BTreeSet::new();
+    for (index, equipment) in participant.equipment.iter().enumerate() {
+        let equipment_path = format!("{path}.equipment[{index}]");
+        if !portable_identifier(&equipment.slot_id) || !slots.insert(equipment.slot_id.as_str()) {
+            diagnostics.push(scenario_diagnostic(
+                "RPG_SCENARIO_EQUIPMENT_SLOT_INVALID",
+                format!("{equipment_path}.slotId"),
+                "equipment slot identities must be non-empty and unique per participant",
+            ));
+        }
+        if !equipped_instances.insert(equipment.item_instance_id.as_str()) {
+            diagnostics.push(scenario_diagnostic(
+                "RPG_SCENARIO_ITEM_EQUIPPED_MULTIPLE_TIMES",
+                format!("{equipment_path}.itemInstanceId"),
+                "one item instance may occupy only one equipment slot",
+            ));
+        }
+        let Some(definition_id) = item_instances.get(equipment.item_instance_id.as_str()) else {
+            diagnostics.push(scenario_diagnostic(
+                "RPG_SCENARIO_EQUIPMENT_ITEM_UNKNOWN",
+                format!("{equipment_path}.itemInstanceId"),
+                format!(
+                    "equipment references unknown item instance {}",
+                    equipment.item_instance_id
+                ),
+            ));
+            continue;
+        };
+        if let Some(item) = item_definitions.get(definition_id) {
+            if item
+                .allowed_slots
+                .binary_search(&equipment.slot_id)
+                .is_err()
+            {
+                diagnostics.push(scenario_diagnostic(
+                    "RPG_SCENARIO_EQUIPMENT_SLOT_NOT_ALLOWED",
+                    format!("{equipment_path}.slotId"),
+                    format!(
+                        "item definition {} cannot occupy slot {}",
+                        item.definition_id, equipment.slot_id
+                    ),
+                ));
+            }
+        }
+    }
+}
+
+fn portable_identifier(value: &str) -> bool {
+    let mut characters = value.chars();
+    characters
+        .next()
+        .is_some_and(|value| value.is_ascii_lowercase())
+        && characters.all(|value| {
+            value.is_ascii_lowercase() || value.is_ascii_digit() || matches!(value, '.' | '_' | '-')
+        })
 }
 
 fn validate_binding(
@@ -951,7 +1127,8 @@ fn validate_board(
                     )),
                     Some(
                         MaterializedContentDefinitionKind::Action
-                        | MaterializedContentDefinitionKind::ActionProcedure,
+                        | MaterializedContentDefinitionKind::ActionProcedure
+                        | MaterializedContentDefinitionKind::Item,
                     ) => diagnostics.push(scenario_diagnostic(
                         "RPG_SCENARIO_CELL_DEFINITION_INCOMPATIBLE",
                         format!("{capability_path}.definitionId"),
@@ -1542,6 +1719,7 @@ pub(crate) fn runtime_board_rejection(
 pub(crate) fn validate_restored_encounter(
     authority: &RpgEncounterAuthority,
     state: &RpgCapabilityState,
+    rules: &rpg_compiler::CompiledRpgRules,
 ) -> Vec<RpgScenarioDiagnostic> {
     let mut diagnostics = Vec::new();
     let setup_ids = authority
@@ -1602,10 +1780,12 @@ pub(crate) fn validate_restored_encounter(
                 entry.action_id == RPG_END_TURN_CONTROL_ID || definitions.contains(&entry.action_id)
             })
             .unwrap_or(false);
+        let item_binding_valid = restored_log_item_binding_is_valid(authority, rules, entry);
         if entry.sequence != expected_sequence
             || entry.state_revision == 0
             || entry.state_revision > state.revision()
             || !action_owned
+            || !item_binding_valid
         {
             diagnostics.push(scenario_diagnostic(
                 "RPG_CHECKPOINT_LOG_INVALID",
@@ -1615,6 +1795,45 @@ pub(crate) fn validate_restored_encounter(
         }
     }
     diagnostics
+}
+
+fn restored_log_item_binding_is_valid(
+    authority: &RpgEncounterAuthority,
+    rules: &rpg_compiler::CompiledRpgRules,
+    entry: &RpgEncounterLogEntry,
+) -> bool {
+    let requirement = rules.binding_requirement(&entry.action_id);
+    match (requirement, &entry.item_binding) {
+        (None, None) => true,
+        (None, Some(_)) | (Some(_), None) => false,
+        (Some(requirement), Some(binding)) => {
+            if binding.binding_id != requirement.id
+                || requirement
+                    .slot_ids
+                    .binary_search(&binding.slot_id)
+                    .is_err()
+                || !rules
+                    .bound_item_definition_ids(&entry.action_id)
+                    .any(|definition_id| definition_id == binding.item_definition_id)
+            {
+                return false;
+            }
+            authority
+                .scenario
+                .participants
+                .iter()
+                .find(|participant| participant.id == entry.actor_id)
+                .is_some_and(|participant| {
+                    participant.items.iter().any(|item| {
+                        item.id == binding.item_instance_id
+                            && item.definition_id == binding.item_definition_id
+                    }) && participant.equipment.iter().any(|equipment| {
+                        equipment.slot_id == binding.slot_id
+                            && equipment.item_instance_id == binding.item_instance_id
+                    })
+                })
+        }
+    }
 }
 
 pub(crate) fn living_intent_rejection(
@@ -1659,6 +1878,8 @@ fn participant_is_living(state: &RpgCapabilityState, participant_id: &str) -> bo
 
 pub(crate) fn action_view(
     action: CompiledRpgAction,
+    item_binding: Option<RpgIntentItemBinding>,
+    item_label: Option<&str>,
     options: RpgActionOptionsView,
     unavailable: Option<RpgResolutionRejection>,
 ) -> RpgActionView {
@@ -1667,7 +1888,10 @@ pub(crate) fn action_view(
         || !options.area_ids.is_empty();
     RpgActionView {
         definition_id: action.id,
-        label: action.name,
+        label: item_label
+            .map(|item_label| format!("{} — {item_label}", action.name))
+            .unwrap_or(action.name),
+        item_binding,
         available: unavailable.is_none() && has_options,
         unavailable,
         maximum_targets: action.targets.maximum_targets,
@@ -1679,6 +1903,9 @@ pub(crate) fn participant_view(
     entity: &RpgEntityState,
     label: String,
     definition_ids: Vec<String>,
+    items: &[RpgItemInstanceSetup],
+    equipment: &[RpgEquipmentSlotSetup],
+    item_definitions: &BTreeMap<String, rpg_ir::CompiledItemDefinition>,
 ) -> RpgParticipantView {
     RpgParticipantView {
         id: entity.id().to_owned(),
@@ -1686,6 +1913,33 @@ pub(crate) fn participant_view(
         team_id: entity.team().clone(),
         position: entity.position(),
         definition_ids,
+        items: items
+            .iter()
+            .map(|item| {
+                let definition = item_definitions.get(&item.definition_id);
+                RpgItemInstanceView {
+                    id: item.id.clone(),
+                    definition_id: item.definition_id.clone(),
+                    label: definition
+                        .map(|definition| definition.label.clone())
+                        .unwrap_or_else(|| item.definition_id.clone()),
+                    description: definition.and_then(|definition| definition.description.clone()),
+                    tags: definition
+                        .map(|definition| definition.tags.clone())
+                        .unwrap_or_default(),
+                    traits: definition
+                        .map(|definition| definition.traits.clone())
+                        .unwrap_or_default(),
+                    allowed_slots: definition
+                        .map(|definition| definition.allowed_slots.clone())
+                        .unwrap_or_default(),
+                    attributes: definition
+                        .map(|definition| definition.attributes.clone())
+                        .unwrap_or_default(),
+                }
+            })
+            .collect(),
+        equipment: equipment.to_vec(),
         vitality: entity.vitality(),
         stats: entity
             .stats()

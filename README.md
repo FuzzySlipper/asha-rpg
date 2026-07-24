@@ -53,9 +53,17 @@ they are never delegated to consumer callbacks.
 
 Rulesets explicitly bind checks, ordered turns, scenario-supplied initiative,
 reactions, and action economy to Rust-supported model versions. Content Packs
-may also carry inert support records for consumer-owned setup profiles, items,
-and similar presentation/configuration data. Those records remain closed data
-in the compiled artifact and cannot add executable Rust semantics.
+may define inert typed items with tags, traits, allowed equipment slots, and
+bounded integer, identifier, dice, owner-bound catalog-reference, or
+Ruleset-reference attributes. Shared actions may read those attributes through
+an explicit equipped-item binding. Rust validates the item schema and
+materializes one compiled semantic variant per compatible item definition;
+Scenario item instances and equipment select the exact variant at runtime.
+Items cannot contain executable callbacks or operation trees.
+
+Content Packs may also carry inert support records for consumer-owned setup
+profiles and similar presentation/configuration data. Those records remain
+closed data in the compiled artifact and cannot add executable Rust semantics.
 
 `@asha-rpg/ir` publishes the strict normalized data contract and a checked
 vocabulary generated from the Rust registry. `@asha-rpg/authoring` publishes

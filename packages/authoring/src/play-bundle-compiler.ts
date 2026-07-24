@@ -166,6 +166,7 @@ export function preparePlayBundle(options: {
     options.bundle.ruleset,
     diagnostics,
   );
+  validateItemDefinitions(graph.materialized, diagnostics);
   validateParticipantProfiles(
     graph.materialized,
     graph.resolvedReferences,
@@ -925,6 +926,7 @@ function materializeSelectedDefinitions(
     if (
       record.definition.kind === 'action' ||
       record.definition.kind === 'actionProcedure' ||
+      record.definition.kind === 'item' ||
       record.definition.kind === 'support'
     ) {
       if ((derivationsByDefinition.get(key)?.length ?? 0) > 0) {
@@ -1160,6 +1162,7 @@ function materializeSelectedDefinitions(
       if (
         record.definition.kind === 'action' ||
         record.definition.kind === 'actionProcedure' ||
+        record.definition.kind === 'item' ||
         record.definition.kind === 'support' ||
         record.definition.kind === 'derived'
       ) {
@@ -1920,6 +1923,7 @@ function definitionMaterializationStage(
   if (
     record.definition.kind !== 'action' &&
     record.definition.kind !== 'actionProcedure' &&
+    record.definition.kind !== 'item' &&
     record.definition.kind !== 'support'
   ) {
     throw new Error(`definition ${record.definition.id} is not concrete`);
@@ -2057,7 +2061,9 @@ function definitionCommitmentIdentity(
 export function contentDefinitionMaterializationFingerprint(
   definition: Extract<
     ContentDefinition,
-    { readonly kind: 'action' | 'actionProcedure' | 'support' }
+    {
+      readonly kind: 'action' | 'actionProcedure' | 'item' | 'support';
+    }
   >,
 ): string {
   return stableFingerprint({
@@ -2077,6 +2083,11 @@ export function contentDefinitionMaterializationFingerprint(
               semantic: materializedActionProcedureSemantic(definition),
               presentation: definition.presentation ?? null,
             }
+          : definition.kind === 'item'
+            ? {
+                semantic: definition.item,
+                presentation: definition.presentation ?? null,
+              }
           : {
               semantic: definition.semantic,
               presentation: definition.presentation ?? null,
@@ -2102,6 +2113,9 @@ function materializedActionSemantic(
     procedureOwnerPackageId:
       definition.invocation.procedureOwnerPackageId,
     arguments: definition.invocation.arguments,
+    ...(definition.invocation.binding === undefined
+      ? {}
+      : { binding: definition.invocation.binding }),
   };
 }
 
@@ -2144,6 +2158,12 @@ function normalizedDefinitionValue(record: DefinitionRecord): PatchedValue {
   if (record.definition.kind === 'actionProcedure') {
     return {
       semantic: materializedActionProcedureSemantic(record.definition),
+      presentation: record.definition.presentation ?? null,
+    };
+  }
+  if (record.definition.kind === 'item') {
+    return {
+      semantic: record.definition.item,
       presentation: record.definition.presentation ?? null,
     };
   }
@@ -2245,6 +2265,8 @@ function authoredCatalogReferences(
       '$.implementation',
       byIdentity,
     );
+  } else if (definition.kind === 'item') {
+    collectCatalogReferences(definition.item, '$.item', byIdentity);
   } else if (definition.kind === 'mixin') {
     collectCatalogReferences(definition.patch, '$.patch', byIdentity);
   } else if (
@@ -2912,8 +2934,10 @@ function validateProcedureInvocation(
         string,
         | import('./play-bundle-types.js').ActionProcedureArgument
         | import('./play-bundle-types.js').ActionProcedureParameterReference
+        | import('./play-bundle-types.js').EquippedItemAttributeReference
       >
     >;
+    readonly binding?: import('./play-bundle-types.js').EquippedItemBindingRequirement;
   },
   outerParameters: ReadonlyMap<
     string,
@@ -2926,6 +2950,13 @@ function validateProcedureInvocation(
   diagnostics: PlayBundleCompilerDiagnostic[],
   usedOuterParameterIds?: Set<string>,
 ): void {
+  validateEquippedItemBinding(
+    invocation.binding,
+    invocation.arguments,
+    source,
+    path,
+    diagnostics,
+  );
   const target = (resolvedReferences.get(globalDefinitionId(source)) ?? [])
     .map((globalId) => recordsByGlobalId.get(globalId))
     .find(
@@ -3252,6 +3283,23 @@ function procedureArgumentMatches(
   > | undefined,
   ruleset: Ruleset,
 ): boolean {
+  if (isRecord(value) && value['kind'] === 'equippedItemAttribute') {
+    return (
+      outerParameters === undefined &&
+      typeof value['bindingId'] === 'string' &&
+      validPortableIdentifier(value['bindingId']) &&
+      typeof value['attributeId'] === 'string' &&
+      validPortableIdentifier(value['attributeId']) &&
+      value['parameterType'] === parameter.type &&
+      (parameter.type === 'boundedInteger' ||
+        parameter.type === 'identifier' ||
+        parameter.type === 'formula' ||
+        parameter.type === 'catalogReference' ||
+        parameter.type === 'rulesetValueReference') &&
+      Object.keys(value).sort().join(',') ===
+        'attributeId,bindingId,kind,parameterType'
+    );
+  }
   if (isRecord(value) && value['kind'] === 'parameter') {
     if (outerParameters === undefined) return false;
     const outer =
@@ -3324,6 +3372,75 @@ function procedureArgumentMatches(
   }
 }
 
+function validateEquippedItemBinding(
+  binding: import('./play-bundle-types.js').EquippedItemBindingRequirement | undefined,
+  argumentsById: Readonly<Record<string, unknown>>,
+  record: DefinitionRecord,
+  path: string,
+  diagnostics: PlayBundleCompilerDiagnostic[],
+): void {
+  const attributeReferences = Object.entries(argumentsById)
+    .filter(
+      (entry): entry is [string, Readonly<Record<string, unknown>>] =>
+        isRecord(entry[1]) && entry[1]['kind'] === 'equippedItemAttribute',
+    )
+    .map(([argumentId, value]) => ({ argumentId, value }));
+  if (binding === undefined) {
+    for (const reference of attributeReferences) {
+      diagnostics.push(
+        diagnostic(
+          'source',
+          'ACTION_ITEM_BINDING_REQUIRED',
+          `${path}.arguments.${reference.argumentId}`,
+          'equipped item attributes require an explicit action binding',
+          profileDiagnosticContext(record),
+        ),
+      );
+    }
+    return;
+  }
+  if (!validPortableIdentifier(binding.id)) {
+    diagnostics.push(
+      diagnostic(
+        'source',
+        'ACTION_ITEM_BINDING_ID_INVALID',
+        `${path}.binding.id`,
+        'item binding identity must be a portable identifier',
+        profileDiagnosticContext(record),
+      ),
+    );
+  }
+  for (const [field, values] of [
+    ['requiredTags', binding.requiredTags],
+    ['requiredTraits', binding.requiredTraits],
+    ['slotIds', binding.slotIds],
+  ] as const) {
+    if (!identifiersAreCanonical(values)) {
+      diagnostics.push(
+        diagnostic(
+          'source',
+          'ACTION_ITEM_BINDING_REQUIREMENT_INVALID',
+          `${path}.binding.${field}`,
+          `${field} must contain unique sorted portable identifiers`,
+          profileDiagnosticContext(record),
+        ),
+      );
+    }
+  }
+  for (const reference of attributeReferences) {
+    if (reference.value['bindingId'] === binding.id) continue;
+    diagnostics.push(
+      diagnostic(
+        'source',
+        'ACTION_ITEM_BINDING_REFERENCE_MISMATCH',
+        `${path}.arguments.${reference.argumentId}.bindingId`,
+        `item attribute reference must name binding ${binding.id}`,
+        profileDiagnosticContext(record),
+      ),
+    );
+  }
+}
+
 function isFormulaKind(value: unknown): boolean {
   return (
     value === 'constant' ||
@@ -3348,6 +3465,166 @@ function isProgramKind(value: unknown): boolean {
 
 function validPortableIdentifier(value: string): boolean {
   return /^[a-z][a-z0-9._-]*$/.test(value);
+}
+
+function identifiersAreCanonical(values: readonly string[]): boolean {
+  let previous: string | undefined;
+  for (const value of values) {
+    if (
+      !validPortableIdentifier(value) ||
+      (previous !== undefined && previous >= value)
+    ) {
+      return false;
+    }
+    previous = value;
+  }
+  return true;
+}
+
+function validateItemDefinitions(
+  records: readonly DefinitionRecord[],
+  diagnostics: PlayBundleCompilerDiagnostic[],
+): void {
+  for (const record of records) {
+    if (record.definition.kind !== 'item') continue;
+    const item = record.definition.item;
+    const path = `$.packages[${record.package.key}].definitions.${record.definition.id}.item`;
+    if (
+      item.schema.identity !== 'asha.rpg.item' ||
+      item.schema.version !== 1
+    ) {
+      diagnostics.push(
+        diagnostic(
+          'compatibility',
+          'ITEM_SCHEMA_UNSUPPORTED',
+          `${path}.schema`,
+          'items require asha.rpg.item@1',
+          profileDiagnosticContext(record),
+        ),
+      );
+    }
+    if (
+      Object.keys(item).sort().join(',') !==
+      'allowedSlots,attributes,schema,tags,traits'
+    ) {
+      diagnostics.push(
+        diagnostic(
+          'source',
+          'ITEM_EXECUTABLE_OR_UNKNOWN_FIELD_FORBIDDEN',
+          path,
+          'items may contain only schema, tags, traits, allowedSlots, and typed attributes',
+          profileDiagnosticContext(record),
+        ),
+      );
+    }
+    for (const [field, values] of [
+      ['tags', item.tags],
+      ['traits', item.traits],
+      ['allowedSlots', item.allowedSlots],
+    ] as const) {
+      if (!identifiersAreCanonical(values)) {
+        diagnostics.push(
+          diagnostic(
+            'source',
+            'ITEM_IDENTIFIERS_NOT_CANONICAL',
+            `${path}.${field}`,
+            `${field} must contain unique sorted portable identifiers`,
+            profileDiagnosticContext(record),
+          ),
+        );
+      }
+    }
+    if (item.allowedSlots.length === 0) {
+      diagnostics.push(
+        diagnostic(
+          'source',
+          'ITEM_ALLOWED_SLOT_REQUIRED',
+          `${path}.allowedSlots`,
+          'an equipable item must allow at least one authored slot',
+          profileDiagnosticContext(record),
+        ),
+      );
+    }
+    if (
+      !identifiersAreCanonical(
+        item.attributes.map((attribute) => attribute.id),
+      )
+    ) {
+      diagnostics.push(
+        diagnostic(
+          'source',
+          'ITEM_ATTRIBUTES_NOT_CANONICAL',
+          `${path}.attributes`,
+          'item attributes must have unique sorted portable identities',
+          profileDiagnosticContext(record),
+        ),
+      );
+    }
+    for (const [index, attribute] of item.attributes.entries()) {
+      const attributePath = `${path}.attributes[${index}]`;
+      const valid = (() => {
+        switch (attribute.type) {
+          case 'boundedInteger':
+            return (
+              Object.keys(attribute).sort().join(',') ===
+                'id,maximum,minimum,type,value' &&
+              Number.isSafeInteger(attribute.minimum) &&
+              Number.isSafeInteger(attribute.maximum) &&
+              Number.isSafeInteger(attribute.value) &&
+              attribute.minimum <= attribute.value &&
+              attribute.value <= attribute.maximum
+            );
+          case 'identifier':
+            return (
+              Object.keys(attribute).sort().join(',') ===
+                'id,type,valueId' &&
+              validPortableIdentifier(attribute.valueId)
+            );
+          case 'dice':
+            return (
+              Object.keys(attribute).sort().join(',') ===
+                'bonus,count,id,sides,type' &&
+              Number.isSafeInteger(attribute.count) &&
+              attribute.count >= 1 &&
+              attribute.count <= 64 &&
+              Number.isSafeInteger(attribute.sides) &&
+              attribute.sides >= 2 &&
+              attribute.sides <= 1_000 &&
+              Number.isSafeInteger(attribute.bonus)
+            );
+          case 'catalogReference':
+            return (
+              Object.keys(attribute).sort().join(',') ===
+                'id,type,value' &&
+              isRecord(attribute.value) &&
+              typeof attribute.value['definitionId'] === 'string' &&
+              typeof attribute.value['packageId'] === 'string' &&
+              isCatalogCategory(attribute.value['category'])
+            );
+          case 'rulesetValueReference':
+            return (
+              Object.keys(attribute).sort().join(',') ===
+                'id,type,value' &&
+              isRecord(attribute.value) &&
+              (attribute.value['kind'] === 'stat' ||
+                attribute.value['kind'] === 'defense') &&
+              typeof attribute.value['id'] === 'string' &&
+              typeof attribute.value['rulesetId'] === 'string'
+            );
+        }
+      })();
+      if (valid) continue;
+      diagnostics.push(
+        diagnostic(
+          'source',
+          'ITEM_ATTRIBUTE_INVALID',
+          attributePath,
+          `item attribute ${attribute.id} does not satisfy ${attribute.type}`,
+          profileDiagnosticContext(record),
+        ),
+      );
+    }
+  }
 }
 
 function normalizeMaterializedActions(
@@ -3413,6 +3690,8 @@ function validateRulesetValueOwners(
         ? record.definition.invocation.arguments
         : record.definition.kind === 'actionProcedure'
           ? record.definition.implementation
+          : record.definition.kind === 'item'
+            ? record.definition.item
       : record.definition.kind === 'support' &&
           record.definition.semantic.catalog === 'participantProfile'
         ? record.definition.semantic.data
@@ -3424,7 +3703,9 @@ function validateRulesetValueOwners(
       ? '$.invocation.arguments'
       : record.definition.kind === 'actionProcedure'
         ? '$.implementation'
-        : '$.semantic.data';
+        : record.definition.kind === 'item'
+          ? '$.item'
+          : '$.semantic.data';
   visitAuthoredValue(authoredValue, rootPath, (ownership, path) => {
     if (ownership.rulesetId === ruleset.identity.id) return;
     diagnostics.push(
@@ -3555,6 +3836,100 @@ function validateParticipantProfiles(
       ));
     }
 
+    const itemInstances = new Map<string, DefinitionRecord>();
+    for (const [index, item] of profile.items.entries()) {
+      const itemPath = `${path}.items[${index}]`;
+      if (
+        !validPortableIdentifier(item.id) ||
+        itemInstances.has(item.id)
+      ) {
+        diagnostics.push(diagnostic(
+          'source',
+          'PARTICIPANT_PROFILE_ITEM_INSTANCE_ID_INVALID',
+          `${itemPath}.id`,
+          'profile item instance identities must be unique portable identifiers',
+          profileDiagnosticContext(record),
+        ));
+      }
+      const targetPackageKey =
+        item.definition.importAs === undefined
+          ? record.package.key
+          : record.package.aliases.get(item.definition.importAs);
+      const targetGlobalId =
+        targetPackageKey === undefined
+          ? undefined
+          : `${targetPackageKey}#${item.definition.definitionId}`;
+      const target =
+        targetGlobalId !== undefined && resolved.includes(targetGlobalId)
+          ? recordsByGlobalId.get(targetGlobalId)
+          : undefined;
+      if (target === undefined) continue;
+      if (
+        target.definition.kind !== 'item' ||
+        !target.exported ||
+        target.definition.visibility !== 'public'
+      ) {
+        diagnostics.push(diagnostic(
+          'graph',
+          'PARTICIPANT_PROFILE_ITEM_DEFINITION_INVALID',
+          `${itemPath}.definition`,
+          `profile item ${item.definition.definitionId} must resolve to an exported item definition`,
+          profileDiagnosticContext(record),
+        ));
+        continue;
+      }
+      itemInstances.set(item.id, target);
+    }
+    const equipmentSlots = new Set<string>();
+    const equippedItems = new Set<string>();
+    for (const [index, equipment] of profile.equipment.entries()) {
+      const equipmentPath = `${path}.equipment[${index}]`;
+      if (
+        !validPortableIdentifier(equipment.slotId) ||
+        equipmentSlots.has(equipment.slotId)
+      ) {
+        diagnostics.push(diagnostic(
+          'source',
+          'PARTICIPANT_PROFILE_EQUIPMENT_SLOT_INVALID',
+          `${equipmentPath}.slotId`,
+          'profile equipment slot identities must be unique portable identifiers',
+          profileDiagnosticContext(record),
+        ));
+      }
+      equipmentSlots.add(equipment.slotId);
+      if (equippedItems.has(equipment.itemInstanceId)) {
+        diagnostics.push(diagnostic(
+          'source',
+          'PARTICIPANT_PROFILE_ITEM_EQUIPPED_MULTIPLE_TIMES',
+          `${equipmentPath}.itemInstanceId`,
+          'one profile item instance may occupy only one equipment slot',
+          profileDiagnosticContext(record),
+        ));
+      }
+      equippedItems.add(equipment.itemInstanceId);
+      const item = itemInstances.get(equipment.itemInstanceId);
+      if (item === undefined) {
+        diagnostics.push(diagnostic(
+          'source',
+          'PARTICIPANT_PROFILE_EQUIPMENT_ITEM_UNKNOWN',
+          `${equipmentPath}.itemInstanceId`,
+          `equipment references unknown item instance ${equipment.itemInstanceId}`,
+          profileDiagnosticContext(record),
+        ));
+      } else if (
+        item.definition.kind === 'item' &&
+        !item.definition.item.allowedSlots.includes(equipment.slotId)
+      ) {
+        diagnostics.push(diagnostic(
+          'compatibility',
+          'PARTICIPANT_PROFILE_EQUIPMENT_SLOT_NOT_ALLOWED',
+          `${equipmentPath}.slotId`,
+          `item ${item.definition.id} cannot occupy slot ${equipment.slotId}`,
+          profileDiagnosticContext(record),
+        ));
+      }
+    }
+
     let vitalityCount = 0;
     const capabilityIdentities = new Set<string>();
     for (const [index, capability] of profile.capabilities.entries()) {
@@ -3675,12 +4050,32 @@ function authoredParticipantProfile(
     (data['role'] !== 'player' && data['role'] !== 'creature') ||
     !Array.isArray(data['definitionReferences']) ||
     !data['definitionReferences'].every(isProfileDefinitionReference) ||
+    !Array.isArray(data['items']) ||
+    !data['items'].every(isProfileItem) ||
+    !Array.isArray(data['equipment']) ||
+    !data['equipment'].every(isProfileEquipment) ||
     !Array.isArray(data['capabilities']) ||
     !data['capabilities'].every(isProfileCapability)
   ) {
     return undefined;
   }
   return data as unknown as import('./play-bundle-types.js').ContentParticipantProfileData;
+}
+
+function isProfileItem(value: unknown): boolean {
+  return (
+    isRecord(value) &&
+    typeof value['id'] === 'string' &&
+    isProfileDefinitionReference(value['definition'])
+  );
+}
+
+function isProfileEquipment(value: unknown): boolean {
+  return (
+    isRecord(value) &&
+    typeof value['slotId'] === 'string' &&
+    typeof value['itemInstanceId'] === 'string'
+  );
 }
 
 function isProfileDefinitionReference(value: unknown): boolean {
@@ -4028,6 +4423,15 @@ function materializedSupportSemantic(
       definitionIds: profile.definitionReferences
         .map((reference) => reference.definitionId)
         .sort(),
+      items: profile.items
+        .map((item) => ({
+          id: item.id,
+          definitionId: item.definition.definitionId,
+        }))
+        .sort((left, right) => left.id.localeCompare(right.id)),
+      equipment: [...profile.equipment].sort((left, right) =>
+        left.slotId.localeCompare(right.slotId),
+      ),
       capabilities: profile.capabilities,
     } satisfies import('./play-bundle-types.js').MaterializedParticipantProfileData,
   };
@@ -4048,11 +4452,18 @@ function materializeDefinitions(
       (record): record is DefinitionRecord & {
         readonly definition: Extract<
           ContentDefinition,
-          { readonly kind: 'action' | 'actionProcedure' | 'support' }
+          {
+            readonly kind:
+              | 'action'
+              | 'actionProcedure'
+              | 'item'
+              | 'support';
+          }
         >;
       } =>
         record.definition.kind === 'action' ||
         record.definition.kind === 'actionProcedure' ||
+        record.definition.kind === 'item' ||
         record.definition.kind === 'support',
     )
     .map((record) => {
@@ -4076,6 +4487,8 @@ function materializeDefinitions(
             : materializedActionSemantic(definition)
           : definition.kind === 'actionProcedure'
             ? materializedActionProcedureSemantic(definition)
+            : definition.kind === 'item'
+              ? definition.item
             : materializedSupportSemantic(definition);
       if (semantic === undefined) throw new Error(`materialization missing ${definition.id}`);
       const materialized = {

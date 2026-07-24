@@ -2,9 +2,10 @@ use std::collections::{BTreeMap, BTreeSet};
 
 use rpg_core::{RpgRandomRequest, RpgRandomRequestKind, MAXIMUM_RPG_MODIFIER_TURNS};
 use rpg_ir::{
-    NormalizedRpgIr, RpgIrAction, RpgIrCheck, RpgIrFormula, RpgIrOperation, RpgIrPredicate,
-    RpgIrProgram, RpgIrRequirementKind, RpgIrResourceCost, RpgIrRollScope, RpgIrSubject,
-    RpgIrTargetKind, RpgIrTargetSelector, RpgIrTeamConstraint, RPG_IR_IDENTITY, RPG_IR_MAJOR,
+    EquippedItemBindingRequirement, NormalizedRpgIr, RpgIrAction, RpgIrCheck, RpgIrFormula,
+    RpgIrOperation, RpgIrPredicate, RpgIrProgram, RpgIrRequirementKind, RpgIrResourceCost,
+    RpgIrRollScope, RpgIrSubject, RpgIrTargetKind, RpgIrTargetSelector, RpgIrTeamConstraint,
+    RPG_IR_IDENTITY, RPG_IR_MAJOR,
 };
 use serde::Serialize;
 
@@ -75,6 +76,8 @@ pub struct CompiledRpgRules {
     package_version: String,
     capability_plan: BTreeMap<String, u32>,
     actions: BTreeMap<String, CompiledAction>,
+    bound_actions: BTreeMap<(String, String), CompiledAction>,
+    binding_requirements: BTreeMap<String, EquippedItemBindingRequirement>,
 }
 
 impl CompiledRpgRules {
@@ -87,28 +90,48 @@ impl CompiledRpgRules {
     }
 
     pub fn action_ids(&self) -> impl Iterator<Item = &str> {
-        self.actions.keys().map(String::as_str)
+        self.actions
+            .keys()
+            .chain(self.binding_requirements.keys())
+            .map(String::as_str)
     }
 
     pub fn actions(&self) -> impl Iterator<Item = CompiledRpgAction> + '_ {
-        self.actions.iter().map(|(id, action)| CompiledRpgAction {
-            id: id.clone(),
-            name: action.name.clone(),
-            source_path: action.source_path.clone(),
-            targets: action.targets.clone(),
-            check: action.check.clone(),
-            roll_scope: action.roll_scope,
-            costs: action.costs.clone(),
-            random_plan: action.random_plan.clone(),
-            selected_destination_maximum_distance: selected_destination_maximum_distance(
-                &action.program,
-            ),
-        })
+        self.actions
+            .iter()
+            .map(|(id, action)| compiled_action_projection(id, action, None))
+            .chain(
+                self.bound_actions
+                    .iter()
+                    .map(|((action_id, item_definition_id), action)| {
+                        compiled_action_projection(
+                            action_id,
+                            action,
+                            Some(CompiledEquippedItemActionBinding {
+                                requirement: self
+                                    .binding_requirements
+                                    .get(action_id)
+                                    .expect("bound action requirement exists")
+                                    .clone(),
+                                item_definition_id: item_definition_id.clone(),
+                            }),
+                        )
+                    }),
+            )
     }
 
     pub fn selected_destination_maximum_distance(&self, action_id: &str) -> Option<u32> {
         self.actions
             .get(action_id)
+            .and_then(|action| selected_destination_maximum_distance(&action.program))
+    }
+
+    pub fn selected_destination_maximum_distance_for_binding(
+        &self,
+        action_id: &str,
+        item_definition_id: Option<&str>,
+    ) -> Option<u32> {
+        self.action_for_binding(action_id, item_definition_id)
             .and_then(|action| selected_destination_maximum_distance(&action.program))
     }
 
@@ -118,9 +141,56 @@ impl CompiledRpgRules {
             .map(|(id, version)| (id.as_str(), *version))
     }
 
-    pub(crate) fn action(&self, id: &str) -> Option<&CompiledAction> {
-        self.actions.get(id)
+    pub fn binding_requirement(&self, action_id: &str) -> Option<&EquippedItemBindingRequirement> {
+        self.binding_requirements.get(action_id)
     }
+
+    pub fn bound_item_definition_ids<'a>(
+        &'a self,
+        action_id: &'a str,
+    ) -> impl Iterator<Item = &'a str> + 'a {
+        self.bound_actions
+            .keys()
+            .filter(move |(candidate_action_id, _)| candidate_action_id == action_id)
+            .map(|(_, item_definition_id)| item_definition_id.as_str())
+    }
+
+    pub(crate) fn action_for_binding(
+        &self,
+        action_id: &str,
+        item_definition_id: Option<&str>,
+    ) -> Option<&CompiledAction> {
+        match item_definition_id {
+            Some(item_definition_id) => self
+                .bound_actions
+                .get(&(action_id.to_owned(), item_definition_id.to_owned())),
+            None => self.actions.get(action_id),
+        }
+    }
+
+    pub(crate) fn register_bound_actions(&mut self, registrations: Vec<BoundActionRegistration>) {
+        for registration in registrations {
+            let action = self
+                .actions
+                .remove(&registration.compiled_action_id)
+                .expect("bound action compilation produced its synthetic action");
+            self.binding_requirements
+                .entry(registration.action_id.clone())
+                .or_insert_with(|| registration.requirement.clone());
+            self.bound_actions.insert(
+                (registration.action_id, registration.item_definition_id),
+                action,
+            );
+        }
+    }
+}
+
+#[derive(Debug, Clone)]
+pub(crate) struct BoundActionRegistration {
+    pub(crate) compiled_action_id: String,
+    pub(crate) action_id: String,
+    pub(crate) item_definition_id: String,
+    pub(crate) requirement: EquippedItemBindingRequirement,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize)]
@@ -135,6 +205,36 @@ pub struct CompiledRpgAction {
     pub costs: Vec<RpgIrResourceCost>,
     pub random_plan: Vec<RpgRandomPlanEntry>,
     pub selected_destination_maximum_distance: Option<u32>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub binding: Option<CompiledEquippedItemActionBinding>,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct CompiledEquippedItemActionBinding {
+    pub requirement: EquippedItemBindingRequirement,
+    pub item_definition_id: String,
+}
+
+fn compiled_action_projection(
+    id: &str,
+    action: &CompiledAction,
+    binding: Option<CompiledEquippedItemActionBinding>,
+) -> CompiledRpgAction {
+    CompiledRpgAction {
+        id: id.to_owned(),
+        name: action.name.clone(),
+        source_path: action.source_path.clone(),
+        targets: action.targets.clone(),
+        check: action.check.clone(),
+        roll_scope: action.roll_scope,
+        costs: action.costs.clone(),
+        random_plan: action.random_plan.clone(),
+        selected_destination_maximum_distance: selected_destination_maximum_distance(
+            &action.program,
+        ),
+        binding,
+    }
 }
 
 fn selected_destination_maximum_distance(program: &CompiledProgram) -> Option<u32> {
@@ -282,6 +382,8 @@ pub fn compile_normalized_rpg_ir(
             .into_iter()
             .map(|action| (action.id.clone(), compile_action(action)))
             .collect(),
+        bound_actions: BTreeMap::new(),
+        binding_requirements: BTreeMap::new(),
     })
 }
 

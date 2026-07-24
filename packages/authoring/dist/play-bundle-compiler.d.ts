@@ -6,6 +6,6 @@ export declare function preparePlayBundle(options: {
     readonly target?: PlayBundleCompilerTarget;
 }): PreparePlayBundleResult;
 export declare function contentDefinitionMaterializationFingerprint(definition: Extract<ContentDefinition, {
-    readonly kind: 'action' | 'actionProcedure' | 'support';
+    readonly kind: 'action' | 'actionProcedure' | 'item' | 'support';
 }>): string;
 //# sourceMappingURL=play-bundle-compiler.d.ts.map

@@ -12,6 +12,8 @@ fn main() {
                 "ok": true,
                 "artifact": bundle.artifact(),
                 "compiledActions": compiled_actions,
+                "compiledItems": bundle.items(),
+                "participantProfiles": bundle.participant_profiles(),
                 "diagnostics": [],
             })
         }

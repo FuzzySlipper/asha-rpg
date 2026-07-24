@@ -1,6 +1,6 @@
 import type { ContentCatalogReference } from './catalogs.js';
 import type { RulesetValueReference } from './ruleset-builders.js';
-import type { ContentActionDefinition, ContentActionProcedureDefinition, ContentInvokedActionDefinition, ActionProcedureArgumentsFor, ActionProcedureCompositionArgumentsFor, ActionProcedureParameter, ActionProcedureParameterReference, ActionProcedureParameterType, PlayBundleManifest, ContentDefinition, ContentDefinitionReference, ContentParticipantProfileData, ContentParticipantProfileCapability, ContentDerivedDefinition, ContentPackDependency, ContentPackIdentity, ContentMixinApplication, ContentMixinDefinition, ContentPackManifest, ContentPatch, ContentPackRequest, ContentPackSource, ContentPolicyBinding, ContentReservedRelationship, ContentSupportDefinition, ContentTemplateDefinition, ScenarioBoundedValue } from './play-bundle-types.js';
+import type { ContentActionDefinition, ContentActionProcedureDefinition, ContentInvokedActionDefinition, ActionProcedureArgumentsFor, ActionProcedureCompositionArgumentsFor, ActionProcedureParameter, ActionProcedureParameterReference, ActionProcedureParameterType, ContentItemAttribute, ContentItemData, ContentItemDefinition, EquippedItemAttributeReference, EquippedItemBindingRequirement, PlayBundleManifest, ContentDefinition, ContentDefinitionReference, ContentParticipantProfileData, ContentParticipantProfileCapability, ContentDerivedDefinition, ContentPackDependency, ContentPackIdentity, ContentMixinApplication, ContentMixinDefinition, ContentPackManifest, ContentPatch, ContentPackRequest, ContentPackSource, ContentPolicyBinding, ContentReservedRelationship, ContentSupportDefinition, ContentTemplateDefinition, ScenarioBoundedValue } from './play-bundle-types.js';
 type OrdinaryDefinitionInput<Definition extends ContentDefinition> = Omit<Definition, 'kind' | 'lowLevelReferences'> & {
     readonly kind?: Definition['kind'];
 };
@@ -29,17 +29,45 @@ export declare function defineActionInvocationDefinition<const Parameters extend
     readonly procedure: ContentActionProcedureDefinition<Parameters>;
     readonly importAs?: string;
     readonly arguments: ActionProcedureArgumentsFor<Parameters>;
+    readonly binding?: EquippedItemBindingRequirement;
 }): ContentInvokedActionDefinition;
 export declare function actionProcedureParameterReference<const Type extends ActionProcedureParameterType>(parameter: ActionProcedureParameter & {
     readonly type: Type;
 }): ActionProcedureParameterReference<Type>;
+export declare function equippedItemAttribute<const Type extends ActionProcedureParameterType>(parameter: ActionProcedureParameter & {
+    readonly type: Type;
+}, input: {
+    readonly bindingId: string;
+    readonly attributeId: string;
+}): EquippedItemAttributeReference<Type>;
 export declare function actionProcedureInvocation<const Parameters extends readonly ActionProcedureParameter[]>(procedure: ContentActionProcedureDefinition<Parameters>, argumentsById: ActionProcedureCompositionArgumentsFor<Parameters>, importAs?: string): import('./play-bundle-types.js').ActionProcedureImplementation;
 export declare function defineSupportDefinition(input: OrdinaryDefinitionInput<ContentSupportDefinition>): ContentSupportDefinition;
+export declare function defineItemDefinition(input: Omit<OrdinaryDefinitionInput<ContentItemDefinition>, 'item'> & {
+    readonly item: Omit<ContentItemData, 'schema'>;
+}): ContentItemDefinition;
+export declare function itemBoundedIntegerAttribute(input: {
+    readonly id: string;
+    readonly value: number;
+    readonly minimum: number;
+    readonly maximum: number;
+}): ContentItemAttribute;
+export declare function itemIdentifierAttribute(input: {
+    readonly id: string;
+    readonly valueId: string;
+}): ContentItemAttribute;
+export declare function itemDiceAttribute(input: {
+    readonly id: string;
+    readonly count: number;
+    readonly sides: number;
+    readonly bonus?: number;
+}): ContentItemAttribute;
+export declare function itemCatalogReferenceAttribute(id: string, reference: ContentCatalogReference<import('./catalogs.js').ContentCatalogCategory, string>): ContentItemAttribute;
+export declare function itemRulesetValueReferenceAttribute(id: string, reference: RulesetValueReference<import('./play-bundle-types.js').RulesetValueKind, string, string>): ContentItemAttribute;
 export declare function defineParticipantProfileDefinition(input: Omit<OrdinaryDefinitionInput<ContentSupportDefinition>, 'semantic'> & {
     readonly profileId: string;
     readonly profile: ContentParticipantProfileData;
 }): ContentSupportDefinition;
-export declare function defineParticipantProfileData(input: Omit<ContentParticipantProfileData, 'schema'>): ContentParticipantProfileData;
+export declare function defineParticipantProfileData(input: Omit<ContentParticipantProfileData, 'schema' | 'items' | 'equipment'> & Partial<Pick<ContentParticipantProfileData, 'items' | 'equipment'>>): ContentParticipantProfileData;
 export declare function participantProfileVitality(value: ScenarioBoundedValue): ContentParticipantProfileCapability;
 export declare function participantProfileStat(reference: RulesetValueReference<'stat', string, string>, value: number): ContentParticipantProfileCapability;
 export declare function participantProfileDefense(reference: RulesetValueReference<'defense', string, string>, value: number): ContentParticipantProfileCapability;

@@ -31,6 +31,10 @@ committing it within the authored movement-cost bound. Diagonal travel,
 participant footprints, forced movement, conditional, repeated,
 random-composed, area, and general cell-target semantics remain non-claims.
 
+Typed item instances and initial equipment are authority-owned setup facts.
+Inventory economy, loot, encumbrance, consumable depletion, and gameplay
+equip/unequip operations remain non-claims.
+
 The TypeScript packages do not provide semantic preview, target evaluation,
 dice execution, predicate evaluation, state access, effect execution, or a
 mutable gameplay context. Their structural diagnostics are convenience only;

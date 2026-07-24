@@ -228,6 +228,8 @@ test("Content Packs may carry inert consumer setup data without extending Rust c
     schema: { identity: "asha.rpg.participant-profile", version: 1 },
     role: "player",
     definitionIds: [actionDefinition.id],
+    items: [],
+    equipment: [],
     capabilities: [
       { owner: "vitality", value: { current: 10, max: 10 } },
       { owner: "stat", id: "strength", value: 16 },

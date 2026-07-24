@@ -57,6 +57,7 @@ fn public_facade_builds_an_artifact_bound_setup_and_executes_a_turn() {
                 action_id: "action.heal".to_owned(),
                 actor_id: "actor".to_owned(),
                 target_ids: vec!["target".to_owned()],
+                item_binding: None,
             },
             &mut source,
         )
@@ -86,6 +87,137 @@ fn public_facade_builds_an_artifact_bound_setup_and_executes_a_turn() {
     ));
     assert_eq!(session.turn().current_actor_id, "opponent");
     assert_eq!(session.encounter_view().log.len(), 2);
+}
+
+#[test]
+fn equipped_items_project_distinct_bound_actions_and_reject_tampering_atomically() {
+    let bundle = item_bound_bundle();
+    let mut changed_item = item_bound_prepared();
+    changed_item.materialized_definitions[1].semantic["attributes"][0]["value"] = json!(8);
+    changed_item.materialized_definitions[1].fingerprint =
+        materialized_definition_fingerprint(&changed_item.materialized_definitions[1]).unwrap();
+    let changed_bundle = compile_prepared_play_bundle(changed_item).unwrap();
+    assert_ne!(
+        changed_bundle.artifact().artifact_id,
+        bundle.artifact().artifact_id
+    );
+
+    let mut executable_item = item_bound_prepared();
+    executable_item.materialized_definitions[1].semantic["execute"] =
+        json!({"kind": "operation", "operation": {"kind": "heal"}});
+    executable_item.materialized_definitions[1].fingerprint =
+        materialized_definition_fingerprint(&executable_item.materialized_definitions[1]).unwrap();
+    let executable_failure = compile_prepared_play_bundle(executable_item).unwrap_err();
+    assert!(executable_failure
+        .diagnostics
+        .iter()
+        .any(|diagnostic| diagnostic.code == "ITEM_SEMANTIC_DECODE_FAILED"));
+
+    let mut invalid_equipment = item_bound_scenario(&bundle);
+    invalid_equipment.participants[0].equipment[0].slot_id = "backpack".to_owned();
+    let invalid_equipment_failure =
+        RpgAuthoritySession::from_scenario(bundle.clone(), invalid_equipment).unwrap_err();
+    assert!(invalid_equipment_failure
+        .diagnostics
+        .iter()
+        .any(|diagnostic| diagnostic.code == "RPG_SCENARIO_EQUIPMENT_SLOT_NOT_ALLOWED"));
+
+    let mut without_items = item_bound_scenario(&bundle);
+    without_items.participants[0].items.clear();
+    without_items.participants[0].equipment.clear();
+    let unavailable = RpgAuthoritySession::from_scenario(bundle.clone(), without_items).unwrap();
+    let unavailable_actions = unavailable.encounter_view().actions;
+    assert!(!unavailable_actions.is_empty());
+    assert!(unavailable_actions.iter().all(|action| {
+        !action.available
+            && action
+                .unavailable
+                .as_ref()
+                .is_some_and(|failure| failure.code == "RPG_ACTION_ITEM_BINDING_UNAVAILABLE")
+    }));
+
+    let scenario = item_bound_scenario(&bundle);
+    let mut session = RpgAuthoritySession::from_scenario(bundle.clone(), scenario).unwrap();
+    let actions = session.encounter_view().actions;
+    assert_eq!(actions.len(), 2);
+    assert_eq!(actions[0].label, "Use Healing Kit — Greater Healing Kit");
+    assert_eq!(actions[1].label, "Use Healing Kit — Healing Kit");
+    assert_ne!(
+        actions[0]
+            .item_binding
+            .as_ref()
+            .map(|binding| binding.item_instance_id.as_str()),
+        actions[1]
+            .item_binding
+            .as_ref()
+            .map(|binding| binding.item_instance_id.as_str()),
+    );
+
+    let mut tampered = actions[1]
+        .item_binding
+        .clone()
+        .expect("bound action carries exact equipment");
+    tampered.item_instance_id = "kit.missing".to_owned();
+    let before = session.state_hash().unwrap();
+    let mut source = RpgRollTapeSource::new(session.scenario().random_source.clone(), Vec::new());
+    let (outcome, _) = session
+        .submit_with_random_source_recorded(
+            RpgActionProposal {
+                expected_revision: 0,
+                action_id: "action.item-heal".to_owned(),
+                actor_id: "actor".to_owned(),
+                target_ids: vec!["target".to_owned()],
+                item_binding: Some(tampered),
+            },
+            &mut source,
+        )
+        .unwrap();
+    let RpgCommandOutcome::Rejected(rejection) = outcome else {
+        panic!("tampered item binding must be rejected: {outcome:?}");
+    };
+    assert_eq!(rejection.code, "RPG_ACTION_ITEM_BINDING_STALE");
+    assert_eq!(session.state_hash().unwrap(), before);
+
+    let selected = actions[0]
+        .item_binding
+        .clone()
+        .expect("bound action carries exact equipment");
+    let initial = session.checkpoint().unwrap();
+    let (outcome, entry) = session
+        .submit_with_random_source_recorded(
+            RpgActionProposal {
+                expected_revision: 0,
+                action_id: "action.item-heal".to_owned(),
+                actor_id: "actor".to_owned(),
+                target_ids: vec!["target".to_owned()],
+                item_binding: Some(selected.clone()),
+            },
+            &mut source,
+        )
+        .unwrap();
+    let RpgCommandOutcome::Accepted(receipt) = outcome else {
+        panic!("valid equipment binding must execute: {outcome:?}");
+    };
+    assert_eq!(receipt.item_binding, Some(selected));
+    assert_eq!(
+        session.state().entity("target").unwrap().vitality().current,
+        17
+    );
+    assert_eq!(
+        session.encounter_view().log[0].item_binding,
+        receipt.item_binding
+    );
+
+    let replayed = RpgAuthoritySession::replay(initial, &[entry]).unwrap();
+    assert_eq!(
+        replayed.state_hash().unwrap(),
+        session.state_hash().unwrap()
+    );
+    let restored = RpgAuthoritySession::restore_checkpoint(session.checkpoint().unwrap()).unwrap();
+    assert_eq!(
+        restored.state_hash().unwrap(),
+        session.state_hash().unwrap()
+    );
 }
 
 #[test]
@@ -422,6 +554,8 @@ fn participant(
         team_id,
         position: GridPosition { x, y: 0 },
         definition_ids: vec!["action.heal".to_owned()],
+        items: Vec::new(),
+        equipment: Vec::new(),
         capabilities: vec![RpgInitialCapability::Vitality {
             value: BoundedValue {
                 current: vitality,
@@ -429,6 +563,242 @@ fn participant(
             },
         }],
     }
+}
+
+fn item_bound_bundle() -> asha_rpg::CompiledPlayBundle {
+    compile_prepared_play_bundle(item_bound_prepared()).unwrap()
+}
+
+fn item_bound_scenario(bundle: &asha_rpg::CompiledPlayBundle) -> RpgScenario {
+    let mut actor = participant("actor", "Actor", RpgTeamId::ally(), 0, 20);
+    actor.definition_ids = vec!["action.item-heal".to_owned()];
+    actor.items = vec![
+        asha_rpg::RpgItemInstanceSetup {
+            id: "kit.greater".to_owned(),
+            definition_id: "item.greater-healing-kit".to_owned(),
+        },
+        asha_rpg::RpgItemInstanceSetup {
+            id: "kit.standard".to_owned(),
+            definition_id: "item.healing-kit".to_owned(),
+        },
+    ];
+    actor.equipment = vec![
+        asha_rpg::RpgEquipmentSlotSetup {
+            slot_id: "hand.main".to_owned(),
+            item_instance_id: "kit.greater".to_owned(),
+        },
+        asha_rpg::RpgEquipmentSlotSetup {
+            slot_id: "hand.off".to_owned(),
+            item_instance_id: "kit.standard".to_owned(),
+        },
+    ];
+    let mut target = participant("target", "Target", RpgTeamId::ally(), 1, 10);
+    target.definition_ids = vec!["action.item-heal".to_owned()];
+    let mut opponent = participant("opponent", "Opponent", RpgTeamId::enemy(), 2, 20);
+    opponent.definition_ids = vec!["action.item-heal".to_owned()];
+    RpgScenario {
+        schema: RpgScenario::schema(),
+        play_bundle_id: bundle.artifact().artifact_id.clone(),
+        board: RpgBoardSetup {
+            width: 3,
+            height: 1,
+            cells: Vec::new(),
+        },
+        participants: vec![actor, target, opponent],
+        turn: RpgTurnInitialization {
+            initiative_order: vec![
+                "actor".to_owned(),
+                "target".to_owned(),
+                "opponent".to_owned(),
+            ],
+            current_actor_id: "actor".to_owned(),
+            round: 1,
+            turn: 1,
+        },
+        random_source: RpgRandomSourceBinding {
+            policy_id: "consumer.recorded-evidence".to_owned(),
+            policy_version: 1,
+            source_id: "consumer.roll-tape".to_owned(),
+            source_version: 1,
+        },
+    }
+}
+
+fn item_bound_prepared() -> PreparedPlayBundle {
+    let mut prepared = healing_prepared();
+    let package_id = "consumer.package";
+    let package_version = "1.0.0";
+    let provenance = |definition_id: &str, module: &str| ContentDefinitionProvenance {
+        definition_id: definition_id.to_owned(),
+        package_id: package_id.to_owned(),
+        package_version: package_version.to_owned(),
+        source: ContentSourceLocation {
+            module: module.to_owned(),
+            declaration: definition_id.replace('.', "_"),
+        },
+    };
+    let mut action = MaterializedContentDefinition {
+        id: "action.item-heal".to_owned(),
+        kind: MaterializedContentDefinitionKind::Action,
+        visibility: MaterializedContentVisibility::Exported,
+        extension_policy: ContentExtensionPolicy::Sealed,
+        semantic: json!({
+            "schema": {"identity": "asha.rpg.action-definition", "version": 1},
+            "kind": "invocation",
+            "procedureId": "procedure.item-heal",
+            "procedureOwnerPackageId": package_id,
+            "arguments": {
+                "amount": {
+                    "kind": "equippedItemAttribute",
+                    "bindingId": "healing-kit",
+                    "attributeId": "healing",
+                    "parameterType": "boundedInteger"
+                }
+            },
+            "binding": {
+                "id": "healing-kit",
+                "requiredTags": ["healing"],
+                "requiredTraits": ["usable"],
+                "slotIds": ["hand.main", "hand.off"]
+            }
+        }),
+        presentation: json!({"label": "Use Healing Kit"}),
+        references: vec!["procedure.item-heal".to_owned()],
+        provenance: provenance("action.item-heal", "actions/item-heal.ts"),
+        fingerprint: String::new(),
+    };
+    let mut greater_item = MaterializedContentDefinition {
+        id: "item.greater-healing-kit".to_owned(),
+        kind: MaterializedContentDefinitionKind::Item,
+        visibility: MaterializedContentVisibility::Exported,
+        extension_policy: ContentExtensionPolicy::Sealed,
+        semantic: json!({
+            "schema": {"identity": "asha.rpg.item", "version": 1},
+            "tags": ["healing"],
+            "traits": ["usable"],
+            "allowedSlots": ["hand.main", "hand.off"],
+            "attributes": [{
+                "type": "boundedInteger",
+                "id": "healing",
+                "value": 7,
+                "minimum": 0,
+                "maximum": 20
+            }]
+        }),
+        presentation: json!({"label": "Greater Healing Kit"}),
+        references: Vec::new(),
+        provenance: provenance("item.greater-healing-kit", "items/healing-kits.ts"),
+        fingerprint: String::new(),
+    };
+    let mut standard_item = MaterializedContentDefinition {
+        id: "item.healing-kit".to_owned(),
+        kind: MaterializedContentDefinitionKind::Item,
+        visibility: MaterializedContentVisibility::Exported,
+        extension_policy: ContentExtensionPolicy::Sealed,
+        semantic: json!({
+            "schema": {"identity": "asha.rpg.item", "version": 1},
+            "tags": ["healing"],
+            "traits": ["usable"],
+            "allowedSlots": ["hand.main", "hand.off"],
+            "attributes": [{
+                "type": "boundedInteger",
+                "id": "healing",
+                "value": 4,
+                "minimum": 0,
+                "maximum": 20
+            }]
+        }),
+        presentation: json!({"label": "Healing Kit"}),
+        references: Vec::new(),
+        provenance: provenance("item.healing-kit", "items/healing-kits.ts"),
+        fingerprint: String::new(),
+    };
+    let mut procedure = MaterializedContentDefinition {
+        id: "procedure.item-heal".to_owned(),
+        kind: MaterializedContentDefinitionKind::ActionProcedure,
+        visibility: MaterializedContentVisibility::Support,
+        extension_policy: ContentExtensionPolicy::Sealed,
+        semantic: json!({
+            "schema": {"identity": "asha.rpg.action-procedure", "version": 1},
+            "ownerPackageId": package_id,
+            "parameters": [{
+                "type": "boundedInteger",
+                "id": "amount",
+                "minimum": 0,
+                "maximum": 20
+            }],
+            "implementation": {
+                "kind": "inline",
+                "template": {
+                    "targets": {
+                        "kind": "participant",
+                        "team": "ally",
+                        "maximumRange": 3,
+                        "maximumTargets": 1
+                    },
+                    "check": {"kind": "noRoll"},
+                    "rollScope": "none",
+                    "costs": [],
+                    "program": {
+                        "kind": "atomic",
+                        "body": {
+                            "kind": "onCheck",
+                            "noRoll": {
+                                "kind": "operation",
+                                "operation": {
+                                    "kind": "heal",
+                                    "amount": {
+                                        "kind": "constant",
+                                        "value": {
+                                            "kind": "parameter",
+                                            "parameterId": "amount",
+                                            "parameterType": "boundedInteger"
+                                        }
+                                    }
+                                }
+                            }
+                        }
+                    }
+                }
+            }
+        }),
+        presentation: json!({"label": "Item Heal Procedure"}),
+        references: Vec::new(),
+        provenance: provenance("procedure.item-heal", "procedures/item-heal.ts"),
+        fingerprint: String::new(),
+    };
+    for definition in [
+        &mut action,
+        &mut greater_item,
+        &mut standard_item,
+        &mut procedure,
+    ] {
+        definition.fingerprint = materialized_definition_fingerprint(definition).unwrap();
+    }
+    prepared.play_bundle_identity.id = "consumer.item-bundle".to_owned();
+    prepared.exported_roots = vec![
+        "action.item-heal".to_owned(),
+        "item.greater-healing-kit".to_owned(),
+        "item.healing-kit".to_owned(),
+    ];
+    prepared.materialized_definitions = vec![action, greater_item, standard_item, procedure];
+    prepared.definition_provenance = prepared
+        .materialized_definitions
+        .iter()
+        .map(|definition| definition.provenance.clone())
+        .collect();
+    prepared.relationships = prepared
+        .exported_roots
+        .iter()
+        .enumerate()
+        .map(|(order, target)| ContentRelationshipProvenance {
+            kind: ContentRelationshipKind::Exports,
+            source: format!("{package_id}@{package_version}"),
+            target: target.clone(),
+            order,
+        })
+        .collect();
+    prepared
 }
 
 fn healing_bundle() -> asha_rpg::CompiledPlayBundle {

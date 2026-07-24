@@ -12,6 +12,11 @@ import type {
   ActionProcedureParameter,
   ActionProcedureParameterReference,
   ActionProcedureParameterType,
+  ContentItemAttribute,
+  ContentItemData,
+  ContentItemDefinition,
+  EquippedItemAttributeReference,
+  EquippedItemBindingRequirement,
   PlayBundleManifest,
   ContentDefinition,
   ContentDefinitionReference,
@@ -120,10 +125,16 @@ export function defineActionInvocationDefinition<
     readonly procedure: ContentActionProcedureDefinition<Parameters>;
     readonly importAs?: string;
     readonly arguments: ActionProcedureArgumentsFor<Parameters>;
+    readonly binding?: EquippedItemBindingRequirement;
   },
 ): ContentInvokedActionDefinition {
-  const { procedure, importAs, arguments: invocationArguments, ...definition } =
-    input;
+  const {
+    procedure,
+    importAs,
+    arguments: invocationArguments,
+    binding,
+    ...definition
+  } = input;
   return immutable({
     ...definition,
     kind: 'action' as const,
@@ -134,6 +145,16 @@ export function defineActionInvocationDefinition<
       },
       procedureOwnerPackageId: procedure.ownerPackageId,
       arguments: invocationArguments,
+      ...(binding === undefined
+        ? {}
+        : {
+            binding: {
+              ...binding,
+              requiredTags: [...binding.requiredTags].sort(),
+              requiredTraits: [...binding.requiredTraits].sort(),
+              slotIds: [...binding.slotIds].sort(),
+            },
+          }),
     },
   });
 }
@@ -146,6 +167,23 @@ export function actionProcedureParameterReference<
   return immutable({
     kind: 'parameter' as const,
     parameterId: parameter.id,
+    parameterType: parameter.type,
+  });
+}
+
+export function equippedItemAttribute<
+  const Type extends ActionProcedureParameterType,
+>(
+  parameter: ActionProcedureParameter & { readonly type: Type },
+  input: {
+    readonly bindingId: string;
+    readonly attributeId: string;
+  },
+): EquippedItemAttributeReference<Type> {
+  return immutable({
+    kind: 'equippedItemAttribute' as const,
+    bindingId: input.bindingId,
+    attributeId: input.attributeId,
     parameterType: parameter.type,
   });
 }
@@ -176,6 +214,93 @@ export function defineSupportDefinition(
   return immutable({ ...input, kind: 'support' as const });
 }
 
+export function defineItemDefinition(
+  input: Omit<
+    OrdinaryDefinitionInput<ContentItemDefinition>,
+    'item'
+  > & {
+    readonly item: Omit<ContentItemData, 'schema'>;
+  },
+): ContentItemDefinition {
+  return immutable({
+    ...input,
+    kind: 'item' as const,
+    item: {
+      ...input.item,
+      schema: {
+        identity: 'asha.rpg.item' as const,
+        version: 1 as const,
+      },
+      tags: [...input.item.tags].sort(),
+      traits: [...input.item.traits].sort(),
+      allowedSlots: [...input.item.allowedSlots].sort(),
+      attributes: [...input.item.attributes].sort((left, right) =>
+        left.id.localeCompare(right.id),
+      ),
+    },
+  });
+}
+
+export function itemBoundedIntegerAttribute(input: {
+  readonly id: string;
+  readonly value: number;
+  readonly minimum: number;
+  readonly maximum: number;
+}): ContentItemAttribute {
+  return immutable({ ...input, type: 'boundedInteger' as const });
+}
+
+export function itemIdentifierAttribute(input: {
+  readonly id: string;
+  readonly valueId: string;
+}): ContentItemAttribute {
+  return immutable({ ...input, type: 'identifier' as const });
+}
+
+export function itemDiceAttribute(input: {
+  readonly id: string;
+  readonly count: number;
+  readonly sides: number;
+  readonly bonus?: number;
+}): ContentItemAttribute {
+  return immutable({
+    ...input,
+    type: 'dice' as const,
+    bonus: input.bonus ?? 0,
+  });
+}
+
+export function itemCatalogReferenceAttribute(
+  id: string,
+  reference: ContentCatalogReference<
+    import('./catalogs.js').ContentCatalogCategory,
+    string
+  >,
+): ContentItemAttribute {
+  return immutable(
+    retainCatalogOwnership(
+      { id, type: 'catalogReference' as const, value: reference },
+      [{ field: 'value', reference }],
+    ),
+  );
+}
+
+export function itemRulesetValueReferenceAttribute(
+  id: string,
+  reference: RulesetValueReference<
+    import('./play-bundle-types.js').RulesetValueKind,
+    string,
+    string
+  >,
+): ContentItemAttribute {
+  return immutable(
+    retainRulesetValueOwnership(
+      { id, type: 'rulesetValueReference' as const, value: reference },
+      [{ field: 'value', reference }],
+    ),
+  );
+}
+
 export function defineParticipantProfileDefinition(
   input: Omit<
     OrdinaryDefinitionInput<ContentSupportDefinition>,
@@ -189,7 +314,10 @@ export function defineParticipantProfileDefinition(
   return immutable({
     ...definition,
     kind: 'support' as const,
-    lowLevelReferences: [...profile.definitionReferences],
+    lowLevelReferences: [
+      ...profile.definitionReferences,
+      ...profile.items.map((item) => item.definition),
+    ],
     semantic: {
       catalog: 'participantProfile',
       id: profileId,
@@ -198,10 +326,15 @@ export function defineParticipantProfileDefinition(
   });
 }
 
-export function defineParticipantProfileData(input: Omit<
-  ContentParticipantProfileData,
-  'schema'
->): ContentParticipantProfileData {
+export function defineParticipantProfileData(
+  input: Omit<
+    ContentParticipantProfileData,
+    'schema' | 'items' | 'equipment'
+  > &
+    Partial<
+      Pick<ContentParticipantProfileData, 'items' | 'equipment'>
+    >,
+): ContentParticipantProfileData {
   return immutable({
     ...input,
     schema: {
@@ -209,6 +342,8 @@ export function defineParticipantProfileData(input: Omit<
       version: 1 as const,
     },
     definitionReferences: [...input.definitionReferences],
+    items: [...(input.items ?? [])],
+    equipment: [...(input.equipment ?? [])],
     capabilities: [...input.capabilities],
   });
 }

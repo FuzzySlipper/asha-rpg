@@ -201,13 +201,16 @@ pub struct ContentDefinitionProvenance {
 pub enum MaterializedContentDefinitionKind {
     Action,
     ActionProcedure,
+    Item,
     Support,
 }
 
 pub const ACTION_DEFINITION_IDENTITY: &str = "asha.rpg.action-definition";
 pub const ACTION_PROCEDURE_IDENTITY: &str = "asha.rpg.action-procedure";
+pub const ITEM_IDENTITY: &str = "asha.rpg.item";
 pub const ACTION_DEFINITION_VERSION: u32 = 1;
 pub const ACTION_PROCEDURE_VERSION: u32 = 1;
+pub const ITEM_VERSION: u32 = 1;
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase", deny_unknown_fields)]
@@ -233,7 +236,18 @@ pub enum MaterializedActionSemantic {
         procedure_id: String,
         procedure_owner_package_id: String,
         arguments: BTreeMap<String, Value>,
+        #[serde(default)]
+        binding: Option<EquippedItemBindingRequirement>,
     },
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase", deny_unknown_fields)]
+pub struct EquippedItemBindingRequirement {
+    pub id: String,
+    pub required_tags: Vec<String>,
+    pub required_traits: Vec<String>,
+    pub slot_ids: Vec<String>,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
@@ -342,6 +356,107 @@ pub struct MaterializedActionProcedureSemantic {
     pub implementation: ActionProcedureImplementation,
 }
 
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase", deny_unknown_fields)]
+pub struct ItemSemanticSchema {
+    pub identity: String,
+    pub version: u32,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase", deny_unknown_fields)]
+pub struct ItemCatalogReference {
+    pub definition_id: String,
+    pub category: String,
+    pub package_id: String,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase", deny_unknown_fields)]
+pub struct ItemRulesetValueReference {
+    pub kind: RulesetValueKind,
+    pub id: String,
+    pub ruleset_id: String,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(
+    tag = "type",
+    rename_all = "camelCase",
+    rename_all_fields = "camelCase",
+    deny_unknown_fields
+)]
+pub enum ItemAttribute {
+    BoundedInteger {
+        id: String,
+        value: i64,
+        minimum: i64,
+        maximum: i64,
+    },
+    Identifier {
+        id: String,
+        value_id: String,
+    },
+    Dice {
+        id: String,
+        count: u32,
+        sides: u32,
+        bonus: i32,
+    },
+    CatalogReference {
+        id: String,
+        value: ItemCatalogReference,
+    },
+    RulesetValueReference {
+        id: String,
+        value: ItemRulesetValueReference,
+    },
+}
+
+impl ItemAttribute {
+    pub fn id(&self) -> &str {
+        match self {
+            Self::BoundedInteger { id, .. }
+            | Self::Identifier { id, .. }
+            | Self::Dice { id, .. }
+            | Self::CatalogReference { id, .. }
+            | Self::RulesetValueReference { id, .. } => id,
+        }
+    }
+
+    pub const fn parameter_type(&self) -> &'static str {
+        match self {
+            Self::BoundedInteger { .. } => "boundedInteger",
+            Self::Identifier { .. } => "identifier",
+            Self::Dice { .. } => "formula",
+            Self::CatalogReference { .. } => "catalogReference",
+            Self::RulesetValueReference { .. } => "rulesetValueReference",
+        }
+    }
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase", deny_unknown_fields)]
+pub struct MaterializedItemSemantic {
+    pub schema: ItemSemanticSchema,
+    pub tags: Vec<String>,
+    pub traits: Vec<String>,
+    pub allowed_slots: Vec<String>,
+    pub attributes: Vec<ItemAttribute>,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase", deny_unknown_fields)]
+pub struct CompiledItemDefinition {
+    pub definition_id: String,
+    pub label: String,
+    pub description: Option<String>,
+    pub tags: Vec<String>,
+    pub traits: Vec<String>,
+    pub allowed_slots: Vec<String>,
+    pub attributes: Vec<ItemAttribute>,
+}
+
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
 pub enum MaterializedContentVisibility {
@@ -433,7 +548,25 @@ pub struct MaterializedParticipantProfileData {
     pub schema: ParticipantProfileSchema,
     pub role: ParticipantProfileRole,
     pub definition_ids: Vec<String>,
+    #[serde(default)]
+    pub items: Vec<ParticipantProfileItemInstance>,
+    #[serde(default)]
+    pub equipment: Vec<ParticipantProfileEquipmentSlot>,
     pub capabilities: Vec<ParticipantProfileInitialCapability>,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase", deny_unknown_fields)]
+pub struct ParticipantProfileItemInstance {
+    pub id: String,
+    pub definition_id: String,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase", deny_unknown_fields)]
+pub struct ParticipantProfileEquipmentSlot {
+    pub slot_id: String,
+    pub item_instance_id: String,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
@@ -445,6 +578,8 @@ pub struct CompiledParticipantProfile {
     pub description: Option<String>,
     pub role: ParticipantProfileRole,
     pub definition_ids: Vec<String>,
+    pub items: Vec<ParticipantProfileItemInstance>,
+    pub equipment: Vec<ParticipantProfileEquipmentSlot>,
     pub capabilities: Vec<ParticipantProfileInitialCapability>,
 }
 

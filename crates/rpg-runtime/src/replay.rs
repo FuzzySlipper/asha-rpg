@@ -22,8 +22,8 @@ use crate::{
 
 pub const RPG_CHECKPOINT_SCHEMA_ID: &str = "asha.rpg.session.checkpoint";
 pub const RPG_REPLAY_ENTRY_SCHEMA_ID: &str = "asha.rpg.session.replay-entry";
-pub const RPG_CHECKPOINT_SCHEMA_VERSION: u32 = 3;
-pub const RPG_REPLAY_ENTRY_SCHEMA_VERSION: u32 = 4;
+pub const RPG_CHECKPOINT_SCHEMA_VERSION: u32 = 4;
+pub const RPG_REPLAY_ENTRY_SCHEMA_VERSION: u32 = 5;
 pub const RPG_EVENT_SCHEMA_VERSION: u32 = 2;
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
@@ -117,7 +117,7 @@ pub enum RpgCheckpointPhase {
     Ready,
     AwaitingReaction {
         expected_revision: u64,
-        intent: rpg_core::RpgIntent,
+        intent: Box<rpg_core::RpgIntent>,
         random_values: Vec<u32>,
         pending: Box<RpgPendingReaction>,
     },
@@ -360,7 +360,7 @@ impl RpgAuthoritySession {
         restored.encounter.log = checkpoint.log;
         restored.accepted_random_values = checkpoint.accepted_random_position;
         let encounter_diagnostics =
-            validate_restored_encounter(&restored.encounter, &restored.state);
+            validate_restored_encounter(&restored.encounter, &restored.state, &restored.rules);
         if !encounter_diagnostics.is_empty() {
             return Err(RpgReplayFailure {
                 diagnostics: encounter_diagnostics
@@ -863,7 +863,7 @@ fn checkpoint_phase(session: &RpgAuthoritySession) -> RpgCheckpointPhase {
         None => RpgCheckpointPhase::Ready,
         Some(transaction) => RpgCheckpointPhase::AwaitingReaction {
             expected_revision: transaction.expected_revision,
-            intent: transaction.intent.clone(),
+            intent: Box::new(transaction.intent.clone()),
             random_values: transaction.random_values.clone(),
             pending: Box::new(transaction.pending.clone()),
         },
@@ -886,7 +886,7 @@ fn restore_phase(
             proof.pending = None;
             let outcome = proof.submit(RpgAuthorityCommand {
                 expected_revision: *expected_revision,
-                intent: intent.clone(),
+                intent: intent.as_ref().clone(),
                 random_values: random_values.clone(),
             });
             let RpgCommandOutcome::AwaitingReaction(actual) = outcome else {
@@ -1352,6 +1352,7 @@ mod tests {
                     id: "cell-2-0".to_owned(),
                     position: GridPosition { x: 2, y: 0 },
                 }],
+                item_binding: None,
             },
             random_values: Vec::new(),
         };
@@ -1578,6 +1579,8 @@ mod tests {
             team_id: Team::enemy(),
             position: GridPosition { x: 5, y: 2 },
             definition_ids: vec!["action.reactive".to_owned()],
+            items: Vec::new(),
+            equipment: Vec::new(),
             capabilities: vec![
                 crate::RpgInitialCapability::Vitality {
                     value: BoundedValue {
@@ -1621,6 +1624,7 @@ mod tests {
                     actor_id: "guardian".to_owned(),
                     target_ids: vec!["hero".to_owned()],
                     cell_targets: Vec::new(),
+                    item_binding: None,
                 },
                 random_values: vec![12],
             }),
@@ -1690,6 +1694,7 @@ mod tests {
                 actor_id: "guardian".to_owned(),
                 target_ids: vec!["hero".to_owned()],
                 cell_targets: Vec::new(),
+                item_binding: None,
             },
             random_values: vec![12],
         };
@@ -1915,6 +1920,7 @@ mod tests {
                 actor_id: "hero".to_owned(),
                 target_ids: vec!["guardian".to_owned()],
                 cell_targets: Vec::new(),
+                item_binding: None,
             },
             random_values: Vec::new(),
         }));
@@ -1932,6 +1938,7 @@ mod tests {
                     action_id: "action.reactive".to_owned(),
                     actor_id: "hero".to_owned(),
                     target_ids: vec!["guardian".to_owned()],
+                    item_binding: None,
                 },
                 &mut crate::RpgRollTapeSource::new(wrong_binding, Vec::new()),
             )
@@ -1955,6 +1962,7 @@ mod tests {
                     action_id: "action.reactive".to_owned(),
                     actor_id: "hero".to_owned(),
                     target_ids: vec!["guardian".to_owned()],
+                    item_binding: None,
                 },
                 &mut submit_tape,
             )
@@ -2446,6 +2454,8 @@ mod tests {
                     team_id: Team::ally(),
                     position: GridPosition { x: 0, y: 0 },
                     definition_ids: vec!["action.reactive".to_owned(), "action.move".to_owned()],
+                    items: Vec::new(),
+                    equipment: Vec::new(),
                     capabilities: vec![
                         crate::RpgInitialCapability::Vitality {
                             value: BoundedValue {
@@ -2471,6 +2481,8 @@ mod tests {
                     team_id: Team::enemy(),
                     position: GridPosition { x: 1, y: 1 },
                     definition_ids: vec!["action.reactive".to_owned(), "action.move".to_owned()],
+                    items: Vec::new(),
+                    equipment: Vec::new(),
                     capabilities: vec![
                         crate::RpgInitialCapability::Vitality {
                             value: BoundedValue {
@@ -2508,6 +2520,7 @@ mod tests {
                 actor_id: "hero".to_owned(),
                 target_ids: vec!["guardian".to_owned()],
                 cell_targets: Vec::new(),
+                item_binding: None,
             },
             random_values: vec![12],
         }

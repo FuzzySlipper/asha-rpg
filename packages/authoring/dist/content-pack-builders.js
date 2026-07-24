@@ -22,7 +22,7 @@ export function defineActionProcedureDefinition(input) {
     });
 }
 export function defineActionInvocationDefinition(input) {
-    const { procedure, importAs, arguments: invocationArguments, ...definition } = input;
+    const { procedure, importAs, arguments: invocationArguments, binding, ...definition } = input;
     return immutable({
         ...definition,
         kind: 'action',
@@ -33,6 +33,16 @@ export function defineActionInvocationDefinition(input) {
             },
             procedureOwnerPackageId: procedure.ownerPackageId,
             arguments: invocationArguments,
+            ...(binding === undefined
+                ? {}
+                : {
+                    binding: {
+                        ...binding,
+                        requiredTags: [...binding.requiredTags].sort(),
+                        requiredTraits: [...binding.requiredTraits].sort(),
+                        slotIds: [...binding.slotIds].sort(),
+                    },
+                }),
         },
     });
 }
@@ -40,6 +50,14 @@ export function actionProcedureParameterReference(parameter) {
     return immutable({
         kind: 'parameter',
         parameterId: parameter.id,
+        parameterType: parameter.type,
+    });
+}
+export function equippedItemAttribute(parameter, input) {
+    return immutable({
+        kind: 'equippedItemAttribute',
+        bindingId: input.bindingId,
+        attributeId: input.attributeId,
         parameterType: parameter.type,
     });
 }
@@ -59,12 +77,51 @@ export function actionProcedureInvocation(procedure, argumentsById, importAs) {
 export function defineSupportDefinition(input) {
     return immutable({ ...input, kind: 'support' });
 }
+export function defineItemDefinition(input) {
+    return immutable({
+        ...input,
+        kind: 'item',
+        item: {
+            ...input.item,
+            schema: {
+                identity: 'asha.rpg.item',
+                version: 1,
+            },
+            tags: [...input.item.tags].sort(),
+            traits: [...input.item.traits].sort(),
+            allowedSlots: [...input.item.allowedSlots].sort(),
+            attributes: [...input.item.attributes].sort((left, right) => left.id.localeCompare(right.id)),
+        },
+    });
+}
+export function itemBoundedIntegerAttribute(input) {
+    return immutable({ ...input, type: 'boundedInteger' });
+}
+export function itemIdentifierAttribute(input) {
+    return immutable({ ...input, type: 'identifier' });
+}
+export function itemDiceAttribute(input) {
+    return immutable({
+        ...input,
+        type: 'dice',
+        bonus: input.bonus ?? 0,
+    });
+}
+export function itemCatalogReferenceAttribute(id, reference) {
+    return immutable(retainCatalogOwnership({ id, type: 'catalogReference', value: reference }, [{ field: 'value', reference }]));
+}
+export function itemRulesetValueReferenceAttribute(id, reference) {
+    return immutable(retainRulesetValueOwnership({ id, type: 'rulesetValueReference', value: reference }, [{ field: 'value', reference }]));
+}
 export function defineParticipantProfileDefinition(input) {
     const { profileId, profile, ...definition } = input;
     return immutable({
         ...definition,
         kind: 'support',
-        lowLevelReferences: [...profile.definitionReferences],
+        lowLevelReferences: [
+            ...profile.definitionReferences,
+            ...profile.items.map((item) => item.definition),
+        ],
         semantic: {
             catalog: 'participantProfile',
             id: profileId,
@@ -80,6 +137,8 @@ export function defineParticipantProfileData(input) {
             version: 1,
         },
         definitionReferences: [...input.definitionReferences],
+        items: [...(input.items ?? [])],
+        equipment: [...(input.equipment ?? [])],
         capabilities: [...input.capabilities],
     });
 }

@@ -51,13 +51,21 @@ impl CompiledRpgRules {
         intent: &RpgIntent,
         reaction: Option<&RpgReactionDecision>,
     ) -> Result<RpgResolutionReceipt, RpgResolutionRejection> {
-        let action = self.action(&intent.action_id).ok_or_else(|| {
-            rejection(
-                "RPG_INTENT_ACTION_UNKNOWN",
-                "$.intent.actionId",
-                format!("unknown action {}", intent.action_id),
+        let action = self
+            .action_for_binding(
+                &intent.action_id,
+                intent
+                    .item_binding
+                    .as_ref()
+                    .map(|binding| binding.item_definition_id.as_str()),
             )
-        })?;
+            .ok_or_else(|| {
+                rejection(
+                    "RPG_INTENT_ACTION_UNKNOWN",
+                    "$.intent.actionId",
+                    format!("unknown action {}", intent.action_id),
+                )
+            })?;
         let target_ids = validate_intent(action, state, intent)?;
         let mut execution = Execution {
             action,
@@ -103,6 +111,7 @@ impl CompiledRpgRules {
             action_id: intent.action_id.clone(),
             actor_id: intent.actor_id.clone(),
             target_ids: execution.target_ids.clone(),
+            item_binding: intent.item_binding.clone(),
             events: execution.events,
             trace: execution.trace,
             random_evidence: execution.random_evidence,
@@ -119,13 +128,25 @@ impl CompiledRpgRules {
         actor_id: &str,
         action_id: &str,
     ) -> Result<Vec<String>, RpgResolutionRejection> {
-        let action = self.action(action_id).ok_or_else(|| {
-            rejection(
-                "RPG_INTENT_ACTION_UNKNOWN",
-                "$.actionId",
-                format!("unknown action {action_id}"),
-            )
-        })?;
+        self.candidate_ids_for_binding(state, actor_id, action_id, None)
+    }
+
+    pub fn candidate_ids_for_binding(
+        &self,
+        state: &RpgCapabilityState,
+        actor_id: &str,
+        action_id: &str,
+        item_definition_id: Option<&str>,
+    ) -> Result<Vec<String>, RpgResolutionRejection> {
+        let action = self
+            .action_for_binding(action_id, item_definition_id)
+            .ok_or_else(|| {
+                rejection(
+                    "RPG_INTENT_ACTION_UNKNOWN",
+                    "$.actionId",
+                    format!("unknown action {action_id}"),
+                )
+            })?;
         if action.targets.kind == RpgIrTargetKind::Cell {
             return Err(rejection(
                 "RPG_ACTION_BOARD_REQUIRED",
@@ -160,7 +181,15 @@ impl CompiledRpgRules {
     }
 
     pub fn target_kind(&self, action_id: &str) -> Result<RpgIrTargetKind, RpgResolutionRejection> {
-        self.action(action_id)
+        self.target_kind_for_binding(action_id, None)
+    }
+
+    pub fn target_kind_for_binding(
+        &self,
+        action_id: &str,
+        item_definition_id: Option<&str>,
+    ) -> Result<RpgIrTargetKind, RpgResolutionRejection> {
+        self.action_for_binding(action_id, item_definition_id)
             .map(|action| action.targets.kind)
             .ok_or_else(|| {
                 rejection(
@@ -176,13 +205,21 @@ impl CompiledRpgRules {
         state: &RpgCapabilityState,
         intent: &RpgIntent,
     ) -> Result<(), RpgResolutionRejection> {
-        let action = self.action(&intent.action_id).ok_or_else(|| {
-            rejection(
-                "RPG_INTENT_ACTION_UNKNOWN",
-                "$.intent.actionId",
-                format!("unknown action {}", intent.action_id),
+        let action = self
+            .action_for_binding(
+                &intent.action_id,
+                intent
+                    .item_binding
+                    .as_ref()
+                    .map(|binding| binding.item_definition_id.as_str()),
             )
-        })?;
+            .ok_or_else(|| {
+                rejection(
+                    "RPG_INTENT_ACTION_UNKNOWN",
+                    "$.intent.actionId",
+                    format!("unknown action {}", intent.action_id),
+                )
+            })?;
         validate_intent(action, state, intent).map(|_| ())
     }
 }

@@ -13,6 +13,7 @@ fn attack_resolution_is_deterministic_and_owner_mutated() {
         actor_id: "actor".to_owned(),
         target_ids: vec!["target".to_owned()],
         cell_targets: Vec::new(),
+        item_binding: None,
     };
 
     let mut first_state = initial_state.clone();
@@ -80,6 +81,7 @@ fn multi_target_saves_select_independent_bounded_branches() {
                 actor_id: "actor".to_owned(),
                 target_ids: vec!["target-b".to_owned(), "target-a".to_owned()],
                 cell_targets: Vec::new(),
+                item_binding: None,
             },
         )
         .unwrap();
@@ -118,6 +120,7 @@ fn movement_uses_the_position_owner_and_emits_a_replayable_event() {
                 actor_id: "actor".to_owned(),
                 target_ids: vec!["target".to_owned()],
                 cell_targets: Vec::new(),
+                item_binding: None,
             },
         )
         .unwrap();
@@ -225,6 +228,7 @@ fn late_random_failure_rolls_back_state_and_random_together() {
         actor_id: "actor".to_owned(),
         target_ids: vec!["target".to_owned()],
         cell_targets: Vec::new(),
+        item_binding: None,
     };
 
     let rejection = ruleset
@@ -244,6 +248,7 @@ fn dice_requests_preserve_declared_shape_without_a_probe_limit() {
         actor_id: "actor".to_owned(),
         target_ids: vec!["target".to_owned()],
         cell_targets: Vec::new(),
+        item_binding: None,
     };
     let mut state = single_target_state();
     let mut random = DeterministicRandomStream::new(vec![12]);
@@ -364,6 +369,7 @@ fn resource_bounds_reject_the_whole_transaction_without_misleading_events() {
                 actor_id: "actor".to_owned(),
                 target_ids: vec!["target-a".to_owned(), "target-b".to_owned()],
                 cell_targets: Vec::new(),
+                item_binding: None,
             },
         )
         .unwrap_err();
@@ -388,6 +394,7 @@ fn resource_bounds_reject_the_whole_transaction_without_misleading_events() {
                 actor_id: "actor".to_owned(),
                 target_ids: vec!["target-a".to_owned(), "target-b".to_owned()],
                 cell_targets: Vec::new(),
+                item_binding: None,
             },
         )
         .unwrap_err();

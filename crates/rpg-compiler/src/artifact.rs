@@ -1,27 +1,29 @@
 use std::collections::{BTreeMap, BTreeSet};
 
 use rpg_ir::{
-    ActionProcedureImplementation, ActionProcedureParameter, CompiledParticipantProfile,
-    CompiledPlayBundleArtifact, ContentDefinitionCommitment, ContentImpactPlane,
-    ContentMaterializationStage, ContentMaterializationValue, ContentMixinParameterCommitment,
-    ContentMixinParameterType, ContentPatch, ContentPatchChangeProvenance, ContentPatchMemberKey,
-    ContentPatchMemberSelector, ContentPatchOperation, ContentPatchPathSegment,
-    ContentPatchPosition, ContentRelationshipKind, MaterializedActionProcedureSemantic,
-    MaterializedActionSemantic, MaterializedContentDefinition, MaterializedContentDefinitionKind,
-    MaterializedContentVisibility, MaterializedParticipantProfileData, NormalizedRpgIr,
-    ParticipantProfileInitialCapability, PlayBundleArtifactSchema, PlayBundleFingerprints,
-    PreparedPlayBundle, RpgIrAction, RpgIrActionBody, RpgIrCatalogs, RpgIrCheck, RpgIrFormula,
-    RpgIrOperation, RpgIrPackage, RpgIrPredicate, RpgIrProgram, RpgIrRequirement,
-    RpgIrRequirementKind, RpgIrResourceCost, RpgIrSchema, RpgIrTargetSelector, Ruleset,
-    RulesetValueExpression, RulesetValueKind, RulesetValueSource, VersionedRpgRequirement,
+    ActionProcedureImplementation, ActionProcedureParameter, CompiledItemDefinition,
+    CompiledParticipantProfile, CompiledPlayBundleArtifact, ContentDefinitionCommitment,
+    ContentImpactPlane, ContentMaterializationStage, ContentMaterializationValue,
+    ContentMixinParameterCommitment, ContentMixinParameterType, ContentPatch,
+    ContentPatchChangeProvenance, ContentPatchMemberKey, ContentPatchMemberSelector,
+    ContentPatchOperation, ContentPatchPathSegment, ContentPatchPosition, ContentRelationshipKind,
+    ItemAttribute, MaterializedActionProcedureSemantic, MaterializedActionSemantic,
+    MaterializedContentDefinition, MaterializedContentDefinitionKind,
+    MaterializedContentVisibility, MaterializedItemSemantic, MaterializedParticipantProfileData,
+    NormalizedRpgIr, ParticipantProfileInitialCapability, PlayBundleArtifactSchema,
+    PlayBundleFingerprints, PreparedPlayBundle, RpgIrAction, RpgIrActionBody, RpgIrCatalogs,
+    RpgIrCheck, RpgIrFormula, RpgIrOperation, RpgIrPackage, RpgIrPredicate, RpgIrProgram,
+    RpgIrRequirement, RpgIrRequirementKind, RpgIrResourceCost, RpgIrSchema, RpgIrTargetSelector,
+    Ruleset, RulesetValueExpression, RulesetValueKind, RulesetValueSource, VersionedRpgRequirement,
     ACTION_DEFINITION_IDENTITY, ACTION_DEFINITION_VERSION, ACTION_PROCEDURE_IDENTITY,
-    ACTION_PROCEDURE_VERSION, COMPILED_PLAY_BUNDLE_IDENTITY, PARTICIPANT_PROFILE_IDENTITY,
-    PARTICIPANT_PROFILE_VERSION, PLAY_BUNDLE_ARTIFACT_MAJOR, PREPARED_PLAY_BUNDLE_IDENTITY,
-    RPG_IR_IDENTITY, RPG_IR_MAJOR,
+    ACTION_PROCEDURE_VERSION, COMPILED_PLAY_BUNDLE_IDENTITY, ITEM_IDENTITY, ITEM_VERSION,
+    PARTICIPANT_PROFILE_IDENTITY, PARTICIPANT_PROFILE_VERSION, PLAY_BUNDLE_ARTIFACT_MAJOR,
+    PREPARED_PLAY_BUNDLE_IDENTITY, RPG_IR_IDENTITY, RPG_IR_MAJOR,
 };
 use serde::{Deserialize, Serialize};
 use serde_json::{json, Value};
 
+use crate::compile::BoundActionRegistration;
 use crate::{
     capability_registrations, compile_normalized_rpg_ir, operation_registrations, CompiledRpgRules,
     RpgCompileFailure, RpgDiagnostic, RpgDiagnosticStage,
@@ -32,6 +34,7 @@ pub struct CompiledPlayBundle {
     artifact: CompiledPlayBundleArtifact,
     rules: CompiledRpgRules,
     value_plan: CompiledRulesetValuePlan,
+    items: Vec<CompiledItemDefinition>,
     participant_profiles: Vec<CompiledParticipantProfile>,
 }
 
@@ -50,6 +53,10 @@ impl CompiledPlayBundle {
 
     pub fn participant_profiles(&self) -> &[CompiledParticipantProfile] {
         &self.participant_profiles
+    }
+
+    pub fn items(&self) -> &[CompiledItemDefinition] {
+        &self.items
     }
 
     pub fn into_artifact(self) -> CompiledPlayBundleArtifact {
@@ -162,10 +169,13 @@ pub fn compile_prepared_play_bundle(
         return Err(RpgCompileFailure { diagnostics });
     }
 
-    let normalized_ir = normalized_ir_from_materialized(&prepared)?;
-    let rules = compile_normalized_rpg_ir(normalized_ir)?;
+    let items = compile_items(&prepared)?;
+    let (normalized_ir, bound_action_registrations) =
+        normalized_ir_from_materialized(&prepared, &items)?;
+    let mut rules = compile_normalized_rpg_ir(normalized_ir)?;
+    rules.register_bound_actions(bound_action_registrations);
     let value_plan = compile_ruleset_value_plan(&prepared.ruleset)?;
-    let participant_profiles = compile_participant_profiles(&prepared)?;
+    let participant_profiles = compile_participant_profiles(&prepared, &items)?;
     let fingerprints = fingerprints(&prepared)?;
     let artifact_schema = PlayBundleArtifactSchema {
         identity: COMPILED_PLAY_BUNDLE_IDENTITY.to_owned(),
@@ -213,6 +223,7 @@ pub fn compile_prepared_play_bundle(
         artifact,
         rules,
         value_plan,
+        items,
         participant_profiles,
     })
 }
@@ -984,8 +995,234 @@ fn evaluate_ruleset_value_expression(
     }
 }
 
+fn compile_items(
+    prepared: &PreparedPlayBundle,
+) -> Result<Vec<CompiledItemDefinition>, RpgCompileFailure> {
+    let definitions = prepared
+        .materialized_definitions
+        .iter()
+        .map(|definition| (definition.id.as_str(), definition))
+        .collect::<BTreeMap<_, _>>();
+    let mut diagnostics = Vec::new();
+    let mut items = Vec::new();
+    for (index, definition) in prepared.materialized_definitions.iter().enumerate() {
+        if definition.kind != MaterializedContentDefinitionKind::Item {
+            continue;
+        }
+        let path = format!("$.materializedDefinitions[{index}]");
+        let item =
+            match serde_json::from_value::<MaterializedItemSemantic>(definition.semantic.clone()) {
+                Ok(item) => item,
+                Err(error) => {
+                    diagnostics.push(RpgDiagnostic::error(
+                        RpgDiagnosticStage::Semantics,
+                        "ITEM_SEMANTIC_DECODE_FAILED",
+                        format!("{path}.semantic"),
+                        error.to_string(),
+                    ));
+                    continue;
+                }
+            };
+        if item.schema.identity != ITEM_IDENTITY || item.schema.version != ITEM_VERSION {
+            diagnostics.push(RpgDiagnostic::error(
+                RpgDiagnosticStage::Compatibility,
+                "ITEM_SCHEMA_UNSUPPORTED",
+                format!("{path}.semantic.schema"),
+                format!("expected {ITEM_IDENTITY}@{ITEM_VERSION}"),
+            ));
+        }
+        validate_canonical_identifiers(
+            &item.tags,
+            &format!("{path}.semantic.tags"),
+            "ITEM_TAGS_NOT_CANONICAL",
+            &mut diagnostics,
+        );
+        validate_canonical_identifiers(
+            &item.traits,
+            &format!("{path}.semantic.traits"),
+            "ITEM_TRAITS_NOT_CANONICAL",
+            &mut diagnostics,
+        );
+        validate_canonical_identifiers(
+            &item.allowed_slots,
+            &format!("{path}.semantic.allowedSlots"),
+            "ITEM_SLOTS_NOT_CANONICAL",
+            &mut diagnostics,
+        );
+        if item.allowed_slots.is_empty() {
+            diagnostics.push(RpgDiagnostic::error(
+                RpgDiagnosticStage::Semantics,
+                "ITEM_ALLOWED_SLOT_REQUIRED",
+                format!("{path}.semantic.allowedSlots"),
+                "an equipable item must allow at least one authored slot",
+            ));
+        }
+        let mut previous_attribute = None::<&str>;
+        for (attribute_index, attribute) in item.attributes.iter().enumerate() {
+            let attribute_path = format!("{path}.semantic.attributes[{attribute_index}]");
+            if !valid_identifier(attribute.id())
+                || previous_attribute.is_some_and(|previous| previous >= attribute.id())
+            {
+                diagnostics.push(RpgDiagnostic::error(
+                    RpgDiagnosticStage::Artifact,
+                    "ITEM_ATTRIBUTES_NOT_CANONICAL",
+                    format!("{attribute_path}.id"),
+                    "item attributes must have unique sorted portable identities",
+                ));
+            }
+            previous_attribute = Some(attribute.id());
+            match attribute {
+                ItemAttribute::BoundedInteger {
+                    value,
+                    minimum,
+                    maximum,
+                    ..
+                } if minimum > value || value > maximum => {
+                    diagnostics.push(RpgDiagnostic::error(
+                        RpgDiagnosticStage::Semantics,
+                        "ITEM_INTEGER_ATTRIBUTE_OUT_OF_BOUNDS",
+                        &attribute_path,
+                        "bounded item attribute value must be within its declared domain",
+                    ));
+                }
+                ItemAttribute::Identifier { value_id, .. } if !valid_identifier(value_id) => {
+                    diagnostics.push(RpgDiagnostic::error(
+                        RpgDiagnosticStage::Semantics,
+                        "ITEM_IDENTIFIER_ATTRIBUTE_INVALID",
+                        format!("{attribute_path}.valueId"),
+                        "identifier item attributes require a portable identifier",
+                    ));
+                }
+                ItemAttribute::Dice { count, sides, .. }
+                    if *count == 0 || *count > 64 || *sides < 2 || *sides > 1_000 =>
+                {
+                    diagnostics.push(RpgDiagnostic::error(
+                        RpgDiagnosticStage::Semantics,
+                        "ITEM_DICE_ATTRIBUTE_INVALID",
+                        &attribute_path,
+                        "dice item attributes require 1..=64 dice with 2..=1000 sides",
+                    ));
+                }
+                ItemAttribute::CatalogReference { value, .. } => {
+                    validate_item_catalog_reference(
+                        definition,
+                        value,
+                        &definitions,
+                        &attribute_path,
+                        &mut diagnostics,
+                    );
+                }
+                ItemAttribute::RulesetValueReference { value, .. }
+                    if value.ruleset_id != prepared.ruleset.identity.id
+                        || !prepared.ruleset.provides.values.iter().any(|candidate| {
+                            candidate.kind == value.kind && candidate.id == value.id
+                        }) =>
+                {
+                    diagnostics.push(RpgDiagnostic::error(
+                        RpgDiagnosticStage::References,
+                        "ITEM_RULESET_VALUE_REFERENCE_INVALID",
+                        format!("{attribute_path}.value"),
+                        "item Ruleset value reference must resolve in the bound Ruleset",
+                    ));
+                }
+                _ => {}
+            }
+        }
+        let label = definition
+            .presentation
+            .get("label")
+            .and_then(Value::as_str)
+            .filter(|label| !label.trim().is_empty());
+        if label.is_none() {
+            diagnostics.push(RpgDiagnostic::error(
+                RpgDiagnosticStage::Semantics,
+                "ITEM_PRESENTATION_LABEL_REQUIRED",
+                format!("{path}.presentation.label"),
+                "item definitions require a presentation label",
+            ));
+        }
+        items.push(CompiledItemDefinition {
+            definition_id: definition.id.clone(),
+            label: label.unwrap_or(&definition.id).to_owned(),
+            description: definition
+                .presentation
+                .get("description")
+                .and_then(Value::as_str)
+                .map(str::to_owned),
+            tags: item.tags,
+            traits: item.traits,
+            allowed_slots: item.allowed_slots,
+            attributes: item.attributes,
+        });
+    }
+    if diagnostics.is_empty() {
+        Ok(items)
+    } else {
+        Err(RpgCompileFailure { diagnostics })
+    }
+}
+
+fn validate_canonical_identifiers(
+    values: &[String],
+    path: &str,
+    code: &'static str,
+    diagnostics: &mut Vec<RpgDiagnostic>,
+) {
+    let mut previous = None::<&str>;
+    for value in values {
+        if !valid_identifier(value) || previous.is_some_and(|previous| previous >= value) {
+            diagnostics.push(RpgDiagnostic::error(
+                RpgDiagnosticStage::Artifact,
+                code,
+                path,
+                "identities must be unique, sorted, portable identifiers",
+            ));
+            return;
+        }
+        previous = Some(value);
+    }
+}
+
+fn validate_item_catalog_reference(
+    definition: &MaterializedContentDefinition,
+    reference: &rpg_ir::ItemCatalogReference,
+    definitions: &BTreeMap<&str, &MaterializedContentDefinition>,
+    path: &str,
+    diagnostics: &mut Vec<RpgDiagnostic>,
+) {
+    let Some(target) = definitions.get(reference.definition_id.as_str()) else {
+        diagnostics.push(RpgDiagnostic::error(
+            RpgDiagnosticStage::References,
+            "ITEM_CATALOG_REFERENCE_UNKNOWN",
+            format!("{path}.value.definitionId"),
+            format!(
+                "item catalog definition {} is not in the closed artifact",
+                reference.definition_id
+            ),
+        ));
+        return;
+    };
+    let semantic = serde_json::from_value::<CatalogDefinitionSemantic>(target.semantic.clone());
+    let valid = target.kind == MaterializedContentDefinitionKind::Support
+        && target.provenance.package_id == reference.package_id
+        && semantic.is_ok_and(|semantic| semantic.catalog == reference.category)
+        && definition
+            .references
+            .binary_search(&reference.definition_id)
+            .is_ok();
+    if !valid {
+        diagnostics.push(RpgDiagnostic::error(
+            RpgDiagnosticStage::References,
+            "ITEM_CATALOG_REFERENCE_INVALID",
+            format!("{path}.value"),
+            "item catalog references must retain owner, category, and a closed graph edge",
+        ));
+    }
+}
+
 fn compile_participant_profiles(
     prepared: &PreparedPlayBundle,
+    compiled_items: &[CompiledItemDefinition],
 ) -> Result<Vec<CompiledParticipantProfile>, RpgCompileFailure> {
     let definitions = prepared
         .materialized_definitions
@@ -1038,6 +1275,10 @@ fn compile_participant_profiles(
     let mut diagnostics = Vec::new();
     let mut profiles = Vec::new();
     let mut profile_ids = BTreeSet::new();
+    let compiled_items = compiled_items
+        .iter()
+        .map(|item| (item.definition_id.as_str(), item))
+        .collect::<BTreeMap<_, _>>();
 
     for (definition_index, definition) in prepared.materialized_definitions.iter().enumerate() {
         if definition.kind != MaterializedContentDefinitionKind::Support
@@ -1139,6 +1380,15 @@ fn compile_participant_profiles(
                 "participant profiles require at least one exported action",
             ));
         }
+        validate_profile_items(
+            &data.items,
+            &data.equipment,
+            definition,
+            &definitions,
+            &compiled_items,
+            &path,
+            &mut diagnostics,
+        );
 
         let mut vitality_count = 0;
         let mut capability_identities = BTreeSet::new();
@@ -1279,6 +1529,8 @@ fn compile_participant_profiles(
                 role: data.role,
                 definition_ids: data.definition_ids,
                 capabilities: data.capabilities,
+                items: data.items,
+                equipment: data.equipment,
             });
         }
     }
@@ -1288,6 +1540,111 @@ fn compile_participant_profiles(
         Ok(profiles)
     } else {
         Err(RpgCompileFailure { diagnostics })
+    }
+}
+
+#[allow(clippy::too_many_arguments)]
+fn validate_profile_items(
+    items: &[rpg_ir::ParticipantProfileItemInstance],
+    equipment: &[rpg_ir::ParticipantProfileEquipmentSlot],
+    profile_definition: &MaterializedContentDefinition,
+    definitions: &BTreeMap<&str, &MaterializedContentDefinition>,
+    compiled_items: &BTreeMap<&str, &CompiledItemDefinition>,
+    path: &str,
+    diagnostics: &mut Vec<RpgDiagnostic>,
+) {
+    let mut item_instances = BTreeMap::new();
+    let mut previous_item = None::<&str>;
+    for (index, item) in items.iter().enumerate() {
+        let item_path = format!("{path}.data.items[{index}]");
+        if !valid_identifier(&item.id)
+            || previous_item.is_some_and(|previous| previous >= item.id.as_str())
+            || item_instances
+                .insert(item.id.as_str(), item.definition_id.as_str())
+                .is_some()
+        {
+            diagnostics.push(RpgDiagnostic::error(
+                RpgDiagnosticStage::Artifact,
+                "PARTICIPANT_PROFILE_ITEMS_NOT_CANONICAL",
+                format!("{item_path}.id"),
+                "profile items must have unique sorted portable instance identities",
+            ));
+        }
+        previous_item = Some(&item.id);
+        let valid = definitions
+            .get(item.definition_id.as_str())
+            .is_some_and(|definition| {
+                definition.kind == MaterializedContentDefinitionKind::Item
+                    && definition.visibility == MaterializedContentVisibility::Exported
+                    && profile_definition
+                        .references
+                        .binary_search(&item.definition_id)
+                        .is_ok()
+            })
+            && compiled_items.contains_key(item.definition_id.as_str());
+        if !valid {
+            diagnostics.push(RpgDiagnostic::error(
+                RpgDiagnosticStage::References,
+                "PARTICIPANT_PROFILE_ITEM_DEFINITION_INVALID",
+                format!("{item_path}.definitionId"),
+                format!(
+                    "profile item {} must be an exported item graph edge",
+                    item.definition_id
+                ),
+            ));
+        }
+    }
+
+    let mut slots = BTreeSet::new();
+    let mut equipped_items = BTreeSet::new();
+    let mut previous_slot = None::<&str>;
+    for (index, entry) in equipment.iter().enumerate() {
+        let equipment_path = format!("{path}.data.equipment[{index}]");
+        if !valid_identifier(&entry.slot_id)
+            || previous_slot.is_some_and(|previous| previous >= entry.slot_id.as_str())
+            || !slots.insert(entry.slot_id.as_str())
+        {
+            diagnostics.push(RpgDiagnostic::error(
+                RpgDiagnosticStage::Artifact,
+                "PARTICIPANT_PROFILE_EQUIPMENT_NOT_CANONICAL",
+                format!("{equipment_path}.slotId"),
+                "profile equipment must have unique sorted portable slot identities",
+            ));
+        }
+        previous_slot = Some(&entry.slot_id);
+        if !equipped_items.insert(entry.item_instance_id.as_str()) {
+            diagnostics.push(RpgDiagnostic::error(
+                RpgDiagnosticStage::Semantics,
+                "PARTICIPANT_PROFILE_ITEM_EQUIPPED_MULTIPLE_TIMES",
+                format!("{equipment_path}.itemInstanceId"),
+                "one profile item instance may occupy only one equipment slot",
+            ));
+        }
+        let Some(definition_id) = item_instances.get(entry.item_instance_id.as_str()) else {
+            diagnostics.push(RpgDiagnostic::error(
+                RpgDiagnosticStage::References,
+                "PARTICIPANT_PROFILE_EQUIPMENT_ITEM_UNKNOWN",
+                format!("{equipment_path}.itemInstanceId"),
+                format!(
+                    "equipment references unknown item instance {}",
+                    entry.item_instance_id
+                ),
+            ));
+            continue;
+        };
+        if let Some(item) = compiled_items.get(definition_id) {
+            if item.allowed_slots.binary_search(&entry.slot_id).is_err() {
+                diagnostics.push(RpgDiagnostic::error(
+                    RpgDiagnosticStage::Semantics,
+                    "PARTICIPANT_PROFILE_EQUIPMENT_SLOT_NOT_ALLOWED",
+                    format!("{equipment_path}.slotId"),
+                    format!(
+                        "item definition {} cannot occupy slot {}",
+                        item.definition_id, entry.slot_id
+                    ),
+                ));
+            }
+        }
     }
 }
 
@@ -1941,7 +2298,8 @@ impl CatalogReferenceKind {
 
 fn normalized_ir_from_materialized(
     prepared: &PreparedPlayBundle,
-) -> Result<NormalizedRpgIr, RpgCompileFailure> {
+    items: &[CompiledItemDefinition],
+) -> Result<(NormalizedRpgIr, Vec<BoundActionRegistration>), RpgCompileFailure> {
     let definitions = prepared
         .materialized_definitions
         .iter()
@@ -1968,6 +2326,7 @@ fn normalized_ir_from_materialized(
             .collect(),
     };
     let mut actions = Vec::new();
+    let mut bound_action_registrations = Vec::new();
 
     for (index, definition) in prepared.materialized_definitions.iter().enumerate() {
         if definition.kind != MaterializedContentDefinitionKind::ActionProcedure {
@@ -2002,7 +2361,7 @@ fn normalized_ir_from_materialized(
                     continue;
                 }
             };
-        let (mut action, effective_references) = match semantic {
+        let action_variants = match semantic {
             MaterializedActionSemantic::Inline { schema, action } => {
                 if !validate_action_semantic_schema(
                     &schema,
@@ -2013,20 +2372,22 @@ fn normalized_ir_from_materialized(
                 ) {
                     continue;
                 }
-                (
+                vec![(
                     action,
                     definition
                         .references
                         .iter()
                         .cloned()
                         .collect::<BTreeSet<_>>(),
-                )
+                    None,
+                )]
             }
             MaterializedActionSemantic::Invocation {
                 schema,
                 procedure_id,
                 procedure_owner_package_id,
                 arguments,
+                binding,
             } => {
                 if !validate_action_semantic_schema(
                     &schema,
@@ -2037,26 +2398,6 @@ fn normalized_ir_from_materialized(
                 ) {
                     continue;
                 }
-                let mut effective_references = definition
-                    .references
-                    .iter()
-                    .cloned()
-                    .collect::<BTreeSet<_>>();
-                let mut visiting = Vec::new();
-                let Some(body) = expand_action_procedure(
-                    &procedure_id,
-                    &procedure_owner_package_id,
-                    &arguments,
-                    &definitions,
-                    &prepared.ruleset,
-                    &mut effective_references,
-                    &mut visiting,
-                    false,
-                    &format!("{path}.invocation"),
-                    &mut diagnostics,
-                ) else {
-                    continue;
-                };
                 let name = definition
                     .presentation
                     .get("label")
@@ -2064,44 +2405,158 @@ fn normalized_ir_from_materialized(
                     .filter(|label| !label.trim().is_empty())
                     .unwrap_or(&definition.id)
                     .to_owned();
-                (
-                    RpgIrAction {
-                        id: definition.id.clone(),
-                        name,
-                        source_path: definition.provenance.source.module.clone(),
-                        targets: body.targets,
-                        check: body.check,
-                        roll_scope: body.roll_scope,
-                        costs: body.costs,
-                        program: body.program,
-                    },
-                    effective_references,
-                )
+                if binding.as_ref().is_some_and(|binding| {
+                    !validate_equipped_item_binding(
+                        binding,
+                        &format!("{path}.binding"),
+                        &mut diagnostics,
+                    )
+                }) {
+                    continue;
+                }
+                let matched_items = match &binding {
+                    Some(binding) => matching_item_definitions(binding, items),
+                    None => Vec::new(),
+                };
+                if binding.is_some() && matched_items.is_empty() {
+                    diagnostics.push(RpgDiagnostic::error(
+                        RpgDiagnosticStage::References,
+                        "ACTION_ITEM_BINDING_NO_COMPATIBLE_DEFINITION",
+                        format!("{path}.binding"),
+                        "an item-bound action requires at least one compatible item definition in the closed PlayBundle",
+                    ));
+                    continue;
+                }
+                let invocation_variants = match &binding {
+                    Some(binding) => matched_items
+                        .into_iter()
+                        .enumerate()
+                        .filter_map(|(item_index, item)| {
+                            let variant_path =
+                                format!("{path}.invocation.itemDefinitions[{item_index}]");
+                            let materialized_arguments = materialize_equipped_item_arguments(
+                                &arguments,
+                                binding,
+                                item,
+                                &variant_path,
+                                &mut diagnostics,
+                            )?;
+                            let mut effective_references = definition
+                                .references
+                                .iter()
+                                .cloned()
+                                .collect::<BTreeSet<_>>();
+                            effective_references.insert(item.definition_id.clone());
+                            if let Some(item_definition) =
+                                definitions.get(item.definition_id.as_str())
+                            {
+                                effective_references
+                                    .extend(item_definition.references.iter().cloned());
+                            }
+                            let mut visiting = Vec::new();
+                            let body = expand_action_procedure(
+                                &procedure_id,
+                                &procedure_owner_package_id,
+                                &materialized_arguments,
+                                &definitions,
+                                &prepared.ruleset,
+                                &mut effective_references,
+                                &mut visiting,
+                                false,
+                                &variant_path,
+                                &mut diagnostics,
+                            )?;
+                            let compiled_action_id =
+                                synthetic_bound_action_id(actions.len(), item_index, &definitions);
+                            Some((
+                                RpgIrAction {
+                                    id: compiled_action_id.clone(),
+                                    name: name.clone(),
+                                    source_path: definition.provenance.source.module.clone(),
+                                    targets: body.targets,
+                                    check: body.check,
+                                    roll_scope: body.roll_scope,
+                                    costs: body.costs,
+                                    program: body.program,
+                                },
+                                effective_references,
+                                Some(BoundActionRegistration {
+                                    compiled_action_id,
+                                    action_id: definition.id.clone(),
+                                    item_definition_id: item.definition_id.clone(),
+                                    requirement: binding.clone(),
+                                }),
+                            ))
+                        })
+                        .collect::<Vec<_>>(),
+                    None => {
+                        let mut effective_references = definition
+                            .references
+                            .iter()
+                            .cloned()
+                            .collect::<BTreeSet<_>>();
+                        let mut visiting = Vec::new();
+                        let Some(body) = expand_action_procedure(
+                            &procedure_id,
+                            &procedure_owner_package_id,
+                            &arguments,
+                            &definitions,
+                            &prepared.ruleset,
+                            &mut effective_references,
+                            &mut visiting,
+                            false,
+                            &format!("{path}.invocation"),
+                            &mut diagnostics,
+                        ) else {
+                            continue;
+                        };
+                        vec![(
+                            RpgIrAction {
+                                id: definition.id.clone(),
+                                name,
+                                source_path: definition.provenance.source.module.clone(),
+                                targets: body.targets,
+                                check: body.check,
+                                roll_scope: body.roll_scope,
+                                costs: body.costs,
+                                program: body.program,
+                            },
+                            effective_references,
+                            None,
+                        )]
+                    }
+                };
+                invocation_variants
             }
         };
-        if action.id != definition.id {
-            diagnostics.push(RpgDiagnostic::error(
-                RpgDiagnosticStage::References,
-                "CONTENT_PACK_ACTION_SEMANTIC_ID_MISMATCH",
-                format!("{path}.id"),
-                format!(
-                    "materialized action {} carries semantic identity {}",
-                    definition.id, action.id
-                ),
-            ));
+        for (mut action, effective_references, registration) in action_variants {
+            if registration.is_none() && action.id != definition.id {
+                diagnostics.push(RpgDiagnostic::error(
+                    RpgDiagnosticStage::References,
+                    "CONTENT_PACK_ACTION_SEMANTIC_ID_MISMATCH",
+                    format!("{path}.id"),
+                    format!(
+                        "materialized action {} carries semantic identity {}",
+                        definition.id, action.id
+                    ),
+                ));
+            }
+            let mut effective_definition = definition.clone();
+            effective_definition.references = effective_references.into_iter().collect();
+            resolve_action_catalogs(
+                &mut action,
+                &effective_definition,
+                &definitions,
+                &ruleset_catalogs,
+                &path,
+                &mut diagnostics,
+            );
+            collect_action_catalogs(&action, &mut catalogs);
+            actions.push(action);
+            if let Some(registration) = registration {
+                bound_action_registrations.push(registration);
+            }
         }
-        let mut effective_definition = definition.clone();
-        effective_definition.references = effective_references.into_iter().collect();
-        resolve_action_catalogs(
-            &mut action,
-            &effective_definition,
-            &definitions,
-            &ruleset_catalogs,
-            &path,
-            &mut diagnostics,
-        );
-        collect_action_catalogs(&action, &mut catalogs);
-        actions.push(action);
     }
     if !diagnostics.is_empty() {
         return Err(RpgCompileFailure { diagnostics });
@@ -2129,30 +2584,248 @@ fn normalized_ir_from_materialized(
                 }),
         )
         .collect();
-    Ok(NormalizedRpgIr {
-        schema: RpgIrSchema {
-            identity: RPG_IR_IDENTITY.to_owned(),
-            major: RPG_IR_MAJOR,
+    Ok((
+        NormalizedRpgIr {
+            schema: RpgIrSchema {
+                identity: RPG_IR_IDENTITY.to_owned(),
+                major: RPG_IR_MAJOR,
+            },
+            package: RpgIrPackage {
+                id: prepared.play_bundle_identity.id.clone(),
+                version: prepared.play_bundle_identity.version.clone(),
+            },
+            catalogs: RpgIrCatalogs {
+                stats: catalogs.stats.into_iter().collect(),
+                defenses: catalogs.defenses.into_iter().collect(),
+                resources: catalogs.resources.into_iter().collect(),
+                modifiers: catalogs.modifiers.into_iter().collect(),
+                capabilities: prepared
+                    .content_requirements
+                    .capabilities
+                    .iter()
+                    .map(|requirement| requirement.id.clone())
+                    .collect(),
+            },
+            requirements,
+            actions,
         },
-        package: RpgIrPackage {
-            id: prepared.play_bundle_identity.id.clone(),
-            version: prepared.play_bundle_identity.version.clone(),
-        },
-        catalogs: RpgIrCatalogs {
-            stats: catalogs.stats.into_iter().collect(),
-            defenses: catalogs.defenses.into_iter().collect(),
-            resources: catalogs.resources.into_iter().collect(),
-            modifiers: catalogs.modifiers.into_iter().collect(),
-            capabilities: prepared
-                .content_requirements
-                .capabilities
+        bound_action_registrations,
+    ))
+}
+
+fn validate_equipped_item_binding(
+    binding: &rpg_ir::EquippedItemBindingRequirement,
+    path: &str,
+    diagnostics: &mut Vec<RpgDiagnostic>,
+) -> bool {
+    let initial_diagnostic_count = diagnostics.len();
+    if !valid_identifier(&binding.id) {
+        diagnostics.push(RpgDiagnostic::error(
+            RpgDiagnosticStage::Semantics,
+            "ACTION_ITEM_BINDING_ID_INVALID",
+            format!("{path}.id"),
+            "equipped item binding identity must be a portable identifier",
+        ));
+    }
+    validate_canonical_identifiers(
+        &binding.required_tags,
+        &format!("{path}.requiredTags"),
+        "ACTION_ITEM_BINDING_TAGS_NOT_CANONICAL",
+        diagnostics,
+    );
+    validate_canonical_identifiers(
+        &binding.required_traits,
+        &format!("{path}.requiredTraits"),
+        "ACTION_ITEM_BINDING_TRAITS_NOT_CANONICAL",
+        diagnostics,
+    );
+    validate_canonical_identifiers(
+        &binding.slot_ids,
+        &format!("{path}.slotIds"),
+        "ACTION_ITEM_BINDING_SLOTS_NOT_CANONICAL",
+        diagnostics,
+    );
+    if binding.slot_ids.is_empty() {
+        diagnostics.push(RpgDiagnostic::error(
+            RpgDiagnosticStage::Semantics,
+            "ACTION_ITEM_BINDING_SLOT_REQUIRED",
+            format!("{path}.slotIds"),
+            "equipped item bindings require at least one authored slot",
+        ));
+    }
+    diagnostics.len() == initial_diagnostic_count
+}
+
+fn synthetic_bound_action_id(
+    action_index: usize,
+    item_index: usize,
+    definitions: &BTreeMap<&str, &MaterializedContentDefinition>,
+) -> String {
+    for collision_index in 0_u64.. {
+        let candidate = format!("compiler.bound.{action_index}.{item_index}.{collision_index}");
+        if !definitions.contains_key(candidate.as_str()) {
+            return candidate;
+        }
+    }
+    unreachable!("finite materialized definition graph leaves a synthetic identity")
+}
+
+fn matching_item_definitions<'a>(
+    binding: &rpg_ir::EquippedItemBindingRequirement,
+    items: &'a [CompiledItemDefinition],
+) -> Vec<&'a CompiledItemDefinition> {
+    items
+        .iter()
+        .filter(|item| {
+            binding
+                .required_tags
                 .iter()
-                .map(|requirement| requirement.id.clone())
-                .collect(),
-        },
-        requirements,
-        actions,
-    })
+                .all(|tag| item.tags.binary_search(tag).is_ok())
+                && binding
+                    .required_traits
+                    .iter()
+                    .all(|item_trait| item.traits.binary_search(item_trait).is_ok())
+                && binding
+                    .slot_ids
+                    .iter()
+                    .any(|slot| item.allowed_slots.binary_search(slot).is_ok())
+        })
+        .collect()
+}
+
+fn materialize_equipped_item_arguments(
+    arguments: &BTreeMap<String, Value>,
+    binding: &rpg_ir::EquippedItemBindingRequirement,
+    item: &CompiledItemDefinition,
+    path: &str,
+    diagnostics: &mut Vec<RpgDiagnostic>,
+) -> Option<BTreeMap<String, Value>> {
+    arguments
+        .iter()
+        .map(|(argument_id, value)| {
+            materialize_equipped_item_value(
+                value,
+                binding,
+                item,
+                &format!("{path}.arguments.{argument_id}"),
+                diagnostics,
+            )
+            .map(|value| (argument_id.clone(), value))
+        })
+        .collect()
+}
+
+fn materialize_equipped_item_value(
+    value: &Value,
+    binding: &rpg_ir::EquippedItemBindingRequirement,
+    item: &CompiledItemDefinition,
+    path: &str,
+    diagnostics: &mut Vec<RpgDiagnostic>,
+) -> Option<Value> {
+    match value {
+        Value::Array(values) => values
+            .iter()
+            .enumerate()
+            .map(|(index, value)| {
+                materialize_equipped_item_value(
+                    value,
+                    binding,
+                    item,
+                    &format!("{path}[{index}]"),
+                    diagnostics,
+                )
+            })
+            .collect::<Option<Vec<_>>>()
+            .map(Value::Array),
+        Value::Object(object)
+            if object.get("kind").and_then(Value::as_str) == Some("equippedItemAttribute") =>
+        {
+            let binding_id = object.get("bindingId").and_then(Value::as_str);
+            let attribute_id = object.get("attributeId").and_then(Value::as_str);
+            let parameter_type = object.get("parameterType").and_then(Value::as_str);
+            if object.len() != 4
+                || binding_id != Some(binding.id.as_str())
+                || attribute_id.is_none()
+                || parameter_type.is_none()
+            {
+                diagnostics.push(RpgDiagnostic::error(
+                    RpgDiagnosticStage::Semantics,
+                    "ACTION_ITEM_ATTRIBUTE_REFERENCE_INVALID",
+                    path,
+                    format!(
+                        "item attribute markers must exactly name binding {} and one attribute",
+                        binding.id
+                    ),
+                ));
+                return None;
+            }
+            let attribute_id = attribute_id.expect("checked attribute id");
+            let Some(attribute) = item
+                .attributes
+                .iter()
+                .find(|attribute| attribute.id() == attribute_id)
+            else {
+                diagnostics.push(RpgDiagnostic::error(
+                    RpgDiagnosticStage::References,
+                    "ACTION_ITEM_ATTRIBUTE_UNKNOWN",
+                    format!("{path}.attributeId"),
+                    format!(
+                        "item definition {} has no attribute {attribute_id}",
+                        item.definition_id
+                    ),
+                ));
+                return None;
+            };
+            if parameter_type != Some(attribute.parameter_type()) {
+                diagnostics.push(RpgDiagnostic::error(
+                    RpgDiagnosticStage::Semantics,
+                    "ACTION_ITEM_ATTRIBUTE_TYPE_MISMATCH",
+                    format!("{path}.parameterType"),
+                    format!(
+                        "item attribute {attribute_id} provides {}, not {}",
+                        attribute.parameter_type(),
+                        parameter_type.expect("checked parameter type")
+                    ),
+                ));
+                return None;
+            }
+            Some(match attribute {
+                ItemAttribute::BoundedInteger { value, .. } => Value::from(*value),
+                ItemAttribute::Identifier { value_id, .. } => Value::String(value_id.clone()),
+                ItemAttribute::Dice {
+                    count,
+                    sides,
+                    bonus,
+                    ..
+                } => json!({
+                    "kind": "dice",
+                    "count": count,
+                    "sides": sides,
+                    "bonus": bonus,
+                }),
+                ItemAttribute::CatalogReference { value, .. } => {
+                    serde_json::to_value(value).expect("compiled item catalog reference serializes")
+                }
+                ItemAttribute::RulesetValueReference { value, .. } => serde_json::to_value(value)
+                    .expect("compiled item Ruleset value reference serializes"),
+            })
+        }
+        Value::Object(object) => object
+            .iter()
+            .map(|(field, value)| {
+                materialize_equipped_item_value(
+                    value,
+                    binding,
+                    item,
+                    &format!("{path}.{field}"),
+                    diagnostics,
+                )
+                .map(|value| (field.clone(), value))
+            })
+            .collect::<Option<serde_json::Map<_, _>>>()
+            .map(Value::Object),
+        _ => Some(value.clone()),
+    }
 }
 
 fn validate_action_semantic_schema(

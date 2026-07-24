@@ -8,9 +8,9 @@ consumer compiles or loads a `CompiledPlayBundle` and calls
 creating mutable authority state.
 
 The schema is `asha.rpg.scenario@1`. `playBundleId` must exactly match the
-compiled artifact. Checkpoint schema `asha.rpg.session.checkpoint@3` stores the
+compiled artifact. Checkpoint schema `asha.rpg.session.checkpoint@4` stores the
 Scenario and its `fnv1a64.rpg-scenario.v1` fingerprint. Replay entry schema
-version 4 binds before/after boundaries to that Scenario, source binding, turn,
+version 5 binds before/after boundaries to that Scenario, source binding, turn,
 revision, and state hash.
 
 ## Setup-only data
@@ -19,6 +19,7 @@ A Scenario contains only:
 
 - board extent and typed cell capabilities;
 - participants, teams, positions, and selected exported Content Pack definition ids;
+- stable item instances plus exact item-instance-to-slot equipment bindings;
 - initial vitality, named Ruleset stat/defense values, and Content Pack resource/modifier values;
 - initiative order, current actor, round, and turn;
 - random policy/source identity and versions.
@@ -27,6 +28,12 @@ Initial stat/defense ids must be provided by the selected Ruleset and their
 values must be inside the named numeric domain. Resource/modifier ids must be
 defined by the selected Content Packs. Each participant needs exactly one
 vitality value and at least one selected action.
+
+Items are immutable Content Pack data. Rust validates their portable attribute
+schemas, catalog and Ruleset ownership, exported graph closure, allowed slots,
+and every Scenario instance/equipment reference before state exists. Equipment
+is authority state embedded in the Scenario, state hash, checkpoint, and
+replay boundary; it is not a host-side presentation hint.
 
 Scenario is not an execution script. It cannot encode definitions, commands,
 targets, reactions, roll values, expected events/outcomes, or Tester settings.
@@ -41,9 +48,14 @@ A pending reaction blocks other commands until resolved. Rejections preserve
 state, log, turn, reaction, and accepted-random position.
 
 `RpgAuthoritySession::encounter_view` exposes board/cells, participant state,
-current actor and initiative, selected and legal actions plus participant or
-cell options, available turn controls, pending reaction options, accepted
-events, and encounter outcome. A cell movement option is an authority path:
+inventory/equipment, current actor and initiative, selected and legal actions
+plus participant or cell options, available turn controls, pending reaction
+options, accepted events, and encounter outcome. An item-bound action is
+projected once for each compatible equipped item instance. Its view and
+proposal carry the exact binding, and Rust rejects missing, unexpected,
+tampered, or stale bindings without mutation.
+
+A cell movement option is an authority path:
 the destination cell id, the ordered traversed cell ids excluding the origin
 and including the destination, and the total movement cost. Rust finds a
 deterministic least-cost route over orthogonally adjacent authored cells.

@@ -684,12 +684,23 @@ pub struct RpgIntentCellTarget {
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase", deny_unknown_fields)]
+pub struct RpgIntentItemBinding {
+    pub binding_id: String,
+    pub item_instance_id: String,
+    pub item_definition_id: String,
+    pub slot_id: String,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase", deny_unknown_fields)]
 pub struct RpgIntent {
     pub action_id: String,
     pub actor_id: String,
     pub target_ids: Vec<String>,
     #[serde(default)]
     pub cell_targets: Vec<RpgIntentCellTarget>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub item_binding: Option<RpgIntentItemBinding>,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -874,6 +885,8 @@ pub struct RpgResolutionReceipt {
     pub action_id: String,
     pub actor_id: String,
     pub target_ids: Vec<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub item_binding: Option<RpgIntentItemBinding>,
     pub events: Vec<RpgDomainEvent>,
     pub trace: Vec<RpgTraceStep>,
     pub random_evidence: Vec<RpgRandomEvidence>,

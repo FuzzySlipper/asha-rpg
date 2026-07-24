@@ -304,6 +304,22 @@ export interface ActionProcedureParameterReference<
   readonly parameterType: Type;
 }
 
+export interface EquippedItemAttributeReference<
+  Type extends ActionProcedureParameterType = ActionProcedureParameterType,
+> {
+  readonly kind: "equippedItemAttribute";
+  readonly bindingId: string;
+  readonly attributeId: string;
+  readonly parameterType: Type;
+}
+
+export interface EquippedItemBindingRequirement {
+  readonly id: string;
+  readonly requiredTags: readonly string[];
+  readonly requiredTraits: readonly string[];
+  readonly slotIds: readonly string[];
+}
+
 type ProcedureReferenceType<Value> =
   [Value] extends [number]
     ? "boundedInteger"
@@ -380,7 +396,8 @@ export type ActionProcedureArgumentsFor<
   Parameters extends readonly ActionProcedureParameter[],
 > = {
   readonly [Parameter in Parameters[number] as Parameter["id"]]:
-    ActionProcedureArgumentFor<Parameter>;
+    | ActionProcedureArgumentFor<Parameter>
+    | EquippedItemAttributeReference<Parameter["type"]>;
 };
 
 export type ActionProcedureCompositionArgumentsFor<
@@ -392,12 +409,22 @@ export type ActionProcedureCompositionArgumentsFor<
 };
 
 export interface ActionProcedureInvocation<
-  Arguments extends Readonly<Record<string, ActionProcedureArgument>> =
-    Readonly<Record<string, ActionProcedureArgument>>,
+  Arguments extends Readonly<
+    Record<
+      string,
+      ActionProcedureArgument | EquippedItemAttributeReference
+    >
+  > = Readonly<
+    Record<
+      string,
+      ActionProcedureArgument | EquippedItemAttributeReference
+    >
+  >,
 > {
   readonly procedure: ContentDefinitionReference;
   readonly procedureOwnerPackageId: string;
   readonly arguments: Arguments;
+  readonly binding?: EquippedItemBindingRequirement;
 }
 
 export type ActionProcedureImplementation =
@@ -439,6 +466,60 @@ export type ContentConcreteActionDefinition =
   | ContentActionDefinition
   | ContentInvokedActionDefinition;
 
+export type ItemAttributeType =
+  | "boundedInteger"
+  | "identifier"
+  | "dice"
+  | "catalogReference"
+  | "rulesetValueReference";
+
+export type ContentItemAttribute =
+  | {
+      readonly id: string;
+      readonly type: "boundedInteger";
+      readonly value: number;
+      readonly minimum: number;
+      readonly maximum: number;
+    }
+  | {
+      readonly id: string;
+      readonly type: "identifier";
+      readonly valueId: string;
+    }
+  | {
+      readonly id: string;
+      readonly type: "dice";
+      readonly count: number;
+      readonly sides: number;
+      readonly bonus: number;
+    }
+  | {
+      readonly id: string;
+      readonly type: "catalogReference";
+      readonly value: ContentCatalogReference<ContentCatalogCategory, string>;
+    }
+  | {
+      readonly id: string;
+      readonly type: "rulesetValueReference";
+      readonly value: RulesetValueReference<RulesetValueKind, string, string>;
+    };
+
+export interface ContentItemData {
+  readonly schema: {
+    readonly identity: "asha.rpg.item";
+    readonly version: 1;
+  };
+  readonly tags: readonly string[];
+  readonly traits: readonly string[];
+  readonly allowedSlots: readonly string[];
+  readonly attributes: readonly ContentItemAttribute[];
+}
+
+export interface ContentItemDefinition extends ContentDefinitionBase {
+  readonly kind: "item";
+  readonly item: ContentItemData;
+}
+
 export interface ContentSupportDefinition extends ContentDefinitionBase {
   readonly kind: "support";
   readonly semantic: {
@@ -470,6 +551,14 @@ export interface ContentParticipantProfileData {
   };
   readonly role: "player" | "creature";
   readonly definitionReferences: readonly ContentDefinitionReference[];
+  readonly items: readonly {
+    readonly id: string;
+    readonly definition: ContentDefinitionReference;
+  }[];
+  readonly equipment: readonly {
+    readonly slotId: string;
+    readonly itemInstanceId: string;
+  }[];
   readonly capabilities: readonly ContentParticipantProfileCapability[];
 }
 
@@ -481,6 +570,14 @@ export interface MaterializedParticipantProfileData {
   };
   readonly role: "player" | "creature";
   readonly definitionIds: readonly string[];
+  readonly items: readonly {
+    readonly id: string;
+    readonly definitionId: string;
+  }[];
+  readonly equipment: readonly {
+    readonly slotId: string;
+    readonly itemInstanceId: string;
+  }[];
   readonly capabilities: readonly ScenarioInitialCapability[];
 }
 
@@ -502,6 +599,7 @@ export interface ContentMixinDefinition extends ContentDefinitionBase {
 export type ContentDefinition =
   | ContentConcreteActionDefinition
   | ContentActionProcedureDefinition
+  | ContentItemDefinition
   | ContentSupportDefinition
   | ContentTemplateDefinition
   | ContentDerivedDefinition
@@ -649,7 +747,7 @@ export interface ContentPatchChangeProvenance {
 
 export interface ContentMaterializationStage {
   readonly id: string;
-  readonly kind: "action" | "actionProcedure" | "support";
+  readonly kind: "action" | "actionProcedure" | "item" | "support";
   readonly extensionPolicy: ContentExtensionPolicy;
   readonly value: {
     readonly semantic: unknown;
@@ -728,7 +826,7 @@ export interface ContentOverlayProvenance {
 
 export interface MaterializedContentDefinition {
   readonly id: string;
-  readonly kind: "action" | "actionProcedure" | "support";
+  readonly kind: "action" | "actionProcedure" | "item" | "support";
   readonly visibility: "exported" | "support";
   readonly extensionPolicy: ContentExtensionPolicy;
   readonly semantic: unknown;
@@ -832,6 +930,14 @@ export interface Scenario {
     readonly teamId: string;
     readonly position: ScenarioPosition;
     readonly definitionIds: readonly string[];
+    readonly items?: readonly {
+      readonly id: string;
+      readonly definitionId: string;
+    }[];
+    readonly equipment?: readonly {
+      readonly slotId: string;
+      readonly itemInstanceId: string;
+    }[];
     readonly capabilities: readonly ScenarioInitialCapability[];
   }[];
   readonly turn: {

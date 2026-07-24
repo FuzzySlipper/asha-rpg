@@ -21,7 +21,12 @@ import {
   defineActionProcedureDefinition,
   defineContentCatalog,
   defineContentPack,
+  defineItemDefinition,
+  equippedItemAttribute,
   hostile,
+  itemBoundedIntegerAttribute,
+  itemCatalogReferenceAttribute,
+  itemDiceAttribute,
   noRoll,
   onCheck,
   preparePlayBundle,
@@ -208,6 +213,195 @@ test('a dependent package invokes an owner-bound exported procedure and Rust exp
       (definition) => definition.id === basicAttackProcedure.id,
     ),
     true,
+  );
+});
+
+test('inert item definitions materialize distinct Rust action variants without weapon-local logic', () => {
+  const weaponBinding = {
+    id: 'weapon',
+    requiredTags: ['weapon'],
+    requiredTraits: ['melee'],
+    slotIds: ['hand.main', 'hand.off'],
+  } as const;
+  const boundAttack = defineActionInvocationDefinition({
+    id: 'action.basic-attack',
+    visibility: 'public',
+    extensionPolicy: 'sealed',
+    source: {
+      module: 'consumer/actions.ts',
+      declaration: 'basicAttack',
+    },
+    presentation: { label: 'Basic Attack' },
+    procedure: basicAttackProcedure,
+    importAs: 'foundation',
+    binding: weaponBinding,
+    arguments: {
+      'attack-bonus': constant(2),
+      damage: equippedItemAttribute(damageParameter, {
+        bindingId: weaponBinding.id,
+        attributeId: 'damage',
+      }),
+      'damage-type': equippedItemAttribute(damageTypeParameter, {
+        bindingId: weaponBinding.id,
+        attributeId: 'damage-type',
+      }),
+      defense: rulesetDefense(contractTestRuleset, 'guard'),
+      range: equippedItemAttribute(rangeParameter, {
+        bindingId: weaponBinding.id,
+        attributeId: 'range',
+      }),
+    },
+  });
+  const longsword = defineItemDefinition({
+    id: 'item.longsword',
+    visibility: 'public',
+    extensionPolicy: 'sealed',
+    source: {
+      module: 'consumer/items.ts',
+      declaration: 'longsword',
+    },
+    presentation: { label: 'Longsword' },
+    item: {
+      tags: ['weapon'],
+      traits: ['melee'],
+      allowedSlots: ['hand.main', 'hand.off'],
+      attributes: [
+        itemDiceAttribute({ id: 'damage', count: 1, sides: 8 }),
+        itemCatalogReferenceAttribute(
+          'damage-type',
+          damageCatalog.references.force,
+        ),
+        itemBoundedIntegerAttribute({
+          id: 'range',
+          value: 1,
+          minimum: 1,
+          maximum: 12,
+        }),
+      ],
+    },
+  });
+  const greatsword = defineItemDefinition({
+    ...longsword,
+    id: 'item.greatsword',
+    source: {
+      module: 'consumer/items.ts',
+      declaration: 'greatsword',
+    },
+    presentation: { label: 'Greatsword' },
+    item: {
+      ...longsword.item,
+      attributes: [
+        itemDiceAttribute({ id: 'damage', count: 2, sides: 6 }),
+        itemCatalogReferenceAttribute(
+          'damage-type',
+          damageCatalog.references.force,
+        ),
+        itemBoundedIntegerAttribute({
+          id: 'range',
+          value: 1,
+          minimum: 1,
+          maximum: 12,
+        }),
+      ],
+    },
+  });
+  const foundation = defineContentPack({
+    identity: { id: foundationId, version: '1.0.0' },
+    entry: { module: 'foundation/index.ts', declaration: 'content' },
+    definitions: [...damageCatalog.definitions, basicAttackProcedure],
+    exports: [
+      ...damageCatalog.definitions.map((definition) => definition.id),
+      basicAttackProcedure.id,
+    ],
+  });
+  const consumer = defineContentPack({
+    identity: { id: 'procedure.consumer', version: '1.0.0' },
+    entry: { module: 'consumer/index.ts', declaration: 'content' },
+    dependencies: [
+      contentPackDependency({
+        id: foundationId,
+        version: '1.0.0',
+        importAs: 'foundation',
+      }),
+    ],
+    requirements: {
+      operations: [{ id: 'operation.damage', version: 1 }],
+      capabilities: [
+        { id: 'capability.defenses', version: 1 },
+        { id: 'capability.random', version: 1 },
+        { id: 'capability.vitality', version: 1 },
+      ],
+    },
+    definitions: [boundAttack, greatsword, longsword],
+    exports: [boundAttack.id, greatsword.id, longsword.id],
+  });
+  const result = preparePlayBundle({
+    bundle: composePlayBundle({
+      identity: { id: 'procedure.item-bundle', version: '1.0.0' },
+      ruleset: contractTestRuleset,
+      base: contentPackRequest({
+        id: 'procedure.consumer',
+        version: '1.0.0',
+      }),
+      add: [],
+      overlays: [],
+      configure: {},
+    }),
+    contentPacks: [
+      contentPackSource(consumer),
+      contentPackSource(foundation),
+    ],
+  });
+  if (!result.ok) assert.fail(JSON.stringify(result.diagnostics));
+  const compilation = compilePrepared(result.prepared);
+  assert.equal(compilation.ok, true, JSON.stringify(compilation));
+  if (!compilation.ok) return;
+  const variants = compilation.compiledActions.filter(
+    (candidate) => candidate.id === boundAttack.id,
+  );
+  assert.equal(variants.length, 2);
+  assert.deepEqual(
+    variants.map((variant) => ({
+      itemDefinitionId: variant.binding?.itemDefinitionId,
+      dice: formulaDiceRequest(variant),
+    })),
+    [
+      {
+        itemDefinitionId: 'item.greatsword',
+        dice: {
+          kind: 'formulaDice',
+          count: 2,
+          sides: 6,
+          path: '$.action.program.body.hit.amount',
+        },
+      },
+      {
+        itemDefinitionId: 'item.longsword',
+        dice: {
+          kind: 'formulaDice',
+          count: 1,
+          sides: 8,
+          path: '$.action.program.body.hit.amount',
+        },
+      },
+    ],
+  );
+  assert.deepEqual(
+    compilation.compiledItems.map((item) => item.definitionId),
+    ['item.greatsword', 'item.longsword'],
+  );
+  assertRustCompilationFails(
+    rewritePreparedDefinitionSemantic(
+      result.prepared,
+      longsword.id,
+      (semantic) =>
+        updateNestedValue(
+          semantic,
+          ['attributes', '1', 'value', 'packageId'],
+          'procedure.consumer',
+        ),
+    ),
+    'ITEM_CATALOG_REFERENCE_INVALID',
   );
 });
 
@@ -1293,6 +1487,18 @@ function updateNestedValue(
   replacement: unknown,
 ): unknown {
   if (path.length === 0) return replacement;
+  if (Array.isArray(value)) {
+    const [field, ...remaining] = path;
+    const index = Number(field);
+    if (!Number.isInteger(index) || index < 0 || index >= value.length) {
+      return value;
+    }
+    return value.map((entry, candidateIndex) =>
+      candidateIndex === index
+        ? updateNestedValue(entry, remaining, replacement)
+        : entry,
+    );
+  }
   if (!isObjectRecord(value)) return value;
   const [field, ...remaining] = path;
   if (field === undefined) return replacement;
@@ -1380,6 +1586,9 @@ type CompilationResult =
   | {
       readonly ok: true;
       readonly compiledActions: readonly CompiledActionProjection[];
+      readonly compiledItems: readonly {
+        readonly definitionId: string;
+      }[];
       readonly artifact: {
         readonly artifactId: string;
         readonly materializedDefinitions: readonly {
@@ -1425,6 +1634,9 @@ type CompiledActionProjection = {
       readonly path: string;
     };
   }[];
+  readonly binding?: {
+    readonly itemDefinitionId: string;
+  };
 };
 
 function compiledAction(

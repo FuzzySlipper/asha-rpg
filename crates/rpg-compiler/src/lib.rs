@@ -18,8 +18,9 @@ pub use artifact::{
     CompiledRulesetValuePlan, RulesetValueEvaluationFailure, RulesetValueKey,
 };
 pub use compile::{
-    compile_normalized_rpg_ir, compile_normalized_rpg_json, CompiledRpgAction, CompiledRpgRules,
-    RpgRandomPlanCondition, RpgRandomPlanConditionKind, RpgRandomPlanEntry,
+    compile_normalized_rpg_ir, compile_normalized_rpg_json, CompiledEquippedItemActionBinding,
+    CompiledRpgAction, CompiledRpgRules, RpgRandomPlanCondition, RpgRandomPlanConditionKind,
+    RpgRandomPlanEntry,
 };
 pub use diagnostic::{RpgCompileFailure, RpgDiagnostic, RpgDiagnosticSeverity, RpgDiagnosticStage};
 pub use registry::{

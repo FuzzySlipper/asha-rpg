@@ -158,6 +158,51 @@ impl RpgAuthoritySession {
         &self.encounter.turn
     }
 
+    fn item_bindings_for_actor(
+        &self,
+        actor_id: &str,
+        action_id: &str,
+        item_definition_id: &str,
+    ) -> Vec<rpg_core::RpgIntentItemBinding> {
+        let Some(requirement) = self.rules.binding_requirement(action_id) else {
+            return Vec::new();
+        };
+        let Some(participant) = self
+            .encounter
+            .scenario
+            .participants
+            .iter()
+            .find(|participant| participant.id == actor_id)
+        else {
+            return Vec::new();
+        };
+        participant
+            .equipment
+            .iter()
+            .filter(|equipment| {
+                requirement
+                    .slot_ids
+                    .binary_search(&equipment.slot_id)
+                    .is_ok()
+            })
+            .filter_map(|equipment| {
+                participant
+                    .items
+                    .iter()
+                    .find(|item| {
+                        item.id == equipment.item_instance_id
+                            && item.definition_id == item_definition_id
+                    })
+                    .map(|item| rpg_core::RpgIntentItemBinding {
+                        binding_id: requirement.id.clone(),
+                        item_instance_id: item.id.clone(),
+                        item_definition_id: item.definition_id.clone(),
+                        slot_id: equipment.slot_id.clone(),
+                    })
+            })
+            .collect()
+    }
+
     pub fn encounter_view(&self) -> RpgEncounterView {
         let actor_id = self.encounter.current_actor_id();
         let action_definitions = self
@@ -170,23 +215,72 @@ impl RpgAuthoritySession {
             .rules
             .actions()
             .filter(|action| action_definitions.contains(&action.id))
-            .map(|action| {
+            .flat_map(|action| {
+                let Some(compiled_binding) = &action.binding else {
+                    return vec![(action, None, None, None)];
+                };
+                let bindings = self
+                    .item_bindings_for_actor(
+                        actor_id,
+                        &action.id,
+                        &compiled_binding.item_definition_id,
+                    )
+                    .into_iter()
+                    .map(|binding| {
+                        let label = self
+                            .encounter
+                            .item_definitions
+                            .get(&binding.item_definition_id)
+                            .map(|item| item.label.clone());
+                        (action.clone(), Some(binding), label, None)
+                    })
+                    .collect::<Vec<_>>();
+                if bindings.is_empty() {
+                    vec![(
+                        action,
+                        None,
+                        None,
+                        Some(rejection(
+                            "RPG_ACTION_ITEM_BINDING_UNAVAILABLE",
+                            "$.action.itemBinding",
+                            "the action requires a compatible equipped item",
+                        )),
+                    )]
+                } else {
+                    bindings
+                }
+            })
+            .map(|(action, item_binding, item_label, binding_unavailable)| {
                 let actor_intent = RpgIntent {
                     action_id: action.id.clone(),
                     actor_id: actor_id.to_owned(),
                     target_ids: Vec::new(),
                     cell_targets: Vec::new(),
+                    item_binding: item_binding.clone(),
                 };
-                let mut first_rejection = living_intent_rejection(&self.state, &actor_intent);
+                let mut first_rejection = binding_unavailable
+                    .or_else(|| living_intent_rejection(&self.state, &actor_intent));
                 let target_kind = self
                     .rules
-                    .target_kind(&action.id)
+                    .target_kind_for_binding(
+                        &action.id,
+                        item_binding
+                            .as_ref()
+                            .map(|binding| binding.item_definition_id.as_str()),
+                    )
                     .unwrap_or(RpgIrTargetKind::Participant);
                 let options = match target_kind {
                     RpgIrTargetKind::Participant => {
                         let legal_candidates = self
                             .rules
-                            .candidate_ids(&self.state, actor_id, &action.id)
+                            .candidate_ids_for_binding(
+                                &self.state,
+                                actor_id,
+                                &action.id,
+                                item_binding
+                                    .as_ref()
+                                    .map(|binding| binding.item_definition_id.as_str()),
+                            )
                             .unwrap_or_default()
                             .into_iter()
                             .filter(|target_id| {
@@ -195,6 +289,7 @@ impl RpgAuthoritySession {
                                     actor_id: actor_id.to_owned(),
                                     target_ids: vec![target_id.clone()],
                                     cell_targets: Vec::new(),
+                                    item_binding: item_binding.clone(),
                                 };
                                 if let Some(rejection) =
                                     living_intent_rejection(&self.state, &intent)
@@ -245,7 +340,8 @@ impl RpgAuthoritySession {
                                 else {
                                     return false;
                                 };
-                                let intent = cell_intent(&action.id, actor_id, cell);
+                                let mut intent = cell_intent(&action.id, actor_id, cell);
+                                intent.item_binding = item_binding.clone();
                                 if let Err(rejection) = self.rules.preflight(&self.state, &intent) {
                                     if first_rejection.is_none() {
                                         first_rejection = Some(rejection);
@@ -274,13 +370,31 @@ impl RpgAuthoritySession {
                         )
                     })
                 });
-                action_view(action, options, unavailable)
+                action_view(
+                    action,
+                    item_binding,
+                    item_label.as_deref(),
+                    options,
+                    unavailable,
+                )
             })
             .collect();
         let participants = self
             .state
             .entities()
             .map(|entity| {
+                let setup = self
+                    .encounter
+                    .scenario
+                    .participants
+                    .iter()
+                    .find(|participant| participant.id == entity.id());
+                let items = setup
+                    .map(|participant| participant.items.as_slice())
+                    .unwrap_or_default();
+                let equipment = setup
+                    .map(|participant| participant.equipment.as_slice())
+                    .unwrap_or_default();
                 participant_view(
                     entity,
                     self.encounter
@@ -293,6 +407,9 @@ impl RpgAuthoritySession {
                         .get(entity.id())
                         .cloned()
                         .unwrap_or_default(),
+                    items,
+                    equipment,
+                    &self.encounter.item_definitions,
                 )
             })
             .collect();
@@ -407,6 +524,9 @@ impl RpgAuthoritySession {
                 ),
             ));
         }
+        if let Some(rejection) = self.item_binding_rejection(&command.intent) {
+            return RpgCommandOutcome::Rejected(rejection);
+        }
         if let Some(rejection) = self.cell_binding_rejection(&command.intent) {
             return RpgCommandOutcome::Rejected(rejection);
         }
@@ -469,6 +589,46 @@ impl RpgAuthoritySession {
                     pending: pending.clone(),
                 });
                 RpgCommandOutcome::AwaitingReaction(pending)
+            }
+        }
+    }
+
+    fn item_binding_rejection(&self, intent: &RpgIntent) -> Option<RpgResolutionRejection> {
+        let requirement = self.rules.binding_requirement(&intent.action_id);
+        match (requirement, &intent.item_binding) {
+            (None, None) => None,
+            (None, Some(_)) => Some(rejection(
+                "RPG_ACTION_ITEM_BINDING_UNEXPECTED",
+                "$.command.intent.itemBinding",
+                "this action does not accept an equipped item binding",
+            )),
+            (Some(_), None) => Some(rejection(
+                "RPG_ACTION_ITEM_BINDING_REQUIRED",
+                "$.command.intent.itemBinding",
+                "this action requires a compatible equipped item binding",
+            )),
+            (Some(requirement), Some(binding)) if binding.binding_id != requirement.id => {
+                Some(rejection(
+                    "RPG_ACTION_ITEM_BINDING_ID_MISMATCH",
+                    "$.command.intent.itemBinding.bindingId",
+                    format!("expected item binding {}", requirement.id),
+                ))
+            }
+            (Some(_), Some(binding)) => {
+                let valid = self
+                    .item_bindings_for_actor(
+                        &intent.actor_id,
+                        &intent.action_id,
+                        &binding.item_definition_id,
+                    )
+                    .contains(binding);
+                (!valid).then(|| {
+                    rejection(
+                        "RPG_ACTION_ITEM_BINDING_STALE",
+                        "$.command.intent.itemBinding",
+                        "the submitted item binding is not the actor's current compatible equipment",
+                    )
+                })
             }
         }
     }
@@ -623,6 +783,7 @@ impl RpgAuthoritySession {
                     actor_id: proposal.actor_id.clone(),
                     target_ids: proposal.target_ids.clone(),
                     cell_targets: self.proposal_cell_targets(&proposal),
+                    item_binding: proposal.item_binding.clone(),
                 },
                 random_values: random_values.clone(),
             };
@@ -684,7 +845,14 @@ impl RpgAuthoritySession {
     }
 
     fn proposal_cell_targets(&self, proposal: &RpgActionProposal) -> Vec<RpgIntentCellTarget> {
-        if self.rules.target_kind(&proposal.action_id) != Ok(RpgIrTargetKind::Cell) {
+        if self.rules.target_kind_for_binding(
+            &proposal.action_id,
+            proposal
+                .item_binding
+                .as_ref()
+                .map(|binding| binding.item_definition_id.as_str()),
+        ) != Ok(RpgIrTargetKind::Cell)
+        {
             return Vec::new();
         }
         proposal
@@ -706,7 +874,13 @@ impl RpgAuthoritySession {
     }
 
     fn cell_binding_rejection(&self, intent: &RpgIntent) -> Option<RpgResolutionRejection> {
-        let Ok(target_kind) = self.rules.target_kind(&intent.action_id) else {
+        let Ok(target_kind) = self.rules.target_kind_for_binding(
+            &intent.action_id,
+            intent
+                .item_binding
+                .as_ref()
+                .map(|binding| binding.item_definition_id.as_str()),
+        ) else {
             return None;
         };
         if target_kind != RpgIrTargetKind::Cell {
@@ -758,7 +932,13 @@ impl RpgAuthoritySession {
     fn movement_path_rejection(&self, intent: &RpgIntent) -> Option<RpgResolutionRejection> {
         let maximum_distance = self
             .rules
-            .selected_destination_maximum_distance(&intent.action_id)?;
+            .selected_destination_maximum_distance_for_binding(
+                &intent.action_id,
+                intent
+                    .item_binding
+                    .as_ref()
+                    .map(|binding| binding.item_definition_id.as_str()),
+            )?;
         let paths = movement_paths(
             &self.encounter.scenario.board,
             &self.state,
@@ -868,6 +1048,7 @@ impl RpgAuthoritySession {
                     .iter()
                     .map(|id| (id.clone(), id.clone()))
                     .collect(),
+                item_definitions: std::collections::BTreeMap::new(),
                 log: Vec::new(),
             },
         }
@@ -883,6 +1064,7 @@ fn cell_intent(action_id: &str, actor_id: &str, cell: &crate::RpgCellSetup) -> R
             id: cell.id.clone(),
             position: cell.position,
         }],
+        item_binding: None,
     }
 }
 
@@ -1145,6 +1327,7 @@ mod tests {
                     id: cell_id.to_owned(),
                     position,
                 }],
+                item_binding: None,
             },
             random_values: Vec::new(),
         }
@@ -1194,6 +1377,7 @@ mod tests {
                 actor_id: "hero".to_owned(),
                 target_ids: vec!["guardian".to_owned()],
                 cell_targets: Vec::new(),
+                item_binding: None,
             },
             random_values: Vec::new(),
         }
