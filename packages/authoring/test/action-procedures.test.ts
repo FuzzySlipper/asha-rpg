@@ -713,6 +713,75 @@ test('uninvoked exported procedures are fully validated by TypeScript and Rust',
   }
 });
 
+test('uninvoked procedures reject interacting bounded domains that exceed semantic limits', () => {
+  const repeatParameters = ['count-a', 'count-b', 'count-c', 'count-d'].map(
+    (id) => ({
+      id,
+      type: 'boundedInteger',
+      minimum: 1,
+      maximum: 16,
+    }),
+  );
+  const repeatedDamage = repeatParameters.reduceRight<unknown>(
+    (body, parameter) => ({
+      kind: 'repeat',
+      count: {
+        kind: 'parameter',
+        parameterId: parameter.id,
+        parameterType: parameter.type,
+      },
+      body,
+    }),
+    {
+      kind: 'operation',
+      operation: {
+        kind: 'damage',
+        amount: { kind: 'constant', value: 1 },
+        damageType: actionProcedureParameterReference(damageTypeParameter),
+      },
+    },
+  );
+  const interactingProcedure = {
+    kind: 'actionProcedure',
+    id: 'procedure.interacting-bounds',
+    ownerPackageId: foundationId,
+    visibility: 'public',
+    extensionPolicy: 'sealed',
+    source: {
+      module: 'foundation/action-procedures.ts',
+      declaration: 'interactingBounds',
+    },
+    parameters: [...repeatParameters, damageTypeParameter],
+    implementation: {
+      kind: 'inline',
+      template: {
+        targets: {
+          kind: 'participant',
+          team: 'hostile',
+          maximumRange: 1,
+          maximumTargets: 1,
+        },
+        check: { kind: 'noRoll' },
+        rollScope: 'none',
+        costs: [],
+        program: {
+          kind: 'atomic',
+          body: {
+            kind: 'onCheck',
+            noRoll: repeatedDamage,
+          },
+        },
+      },
+    },
+  } as unknown as ContentDefinition;
+  const result = prepareUninvokedProcedure(interactingProcedure);
+  if (!result.ok) assert.fail(JSON.stringify(result.diagnostics));
+  assertRustCompilationFails(
+    result.prepared,
+    'RPG_IR_PROGRAM_EXPANSION_EXCEEDED',
+  );
+});
+
 test('missing, extra, wrong-typed, and wrong-owner invocation arguments fail preparation', () => {
   const cases = [
     {

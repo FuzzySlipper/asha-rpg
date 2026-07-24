@@ -2559,20 +2559,29 @@ fn validate_action_procedure_callable(
     base_references.insert(definition.id.clone());
     let base_arguments = procedure_validation_arguments(&procedure.parameters, ruleset);
     let mut variants = vec![(base_arguments.clone(), base_references.clone())];
+    let mut maximum_arguments = base_arguments.clone();
+    let mut varying_bounded_parameter_count = 0_usize;
     for parameter in &procedure.parameters {
-        if !matches!(parameter, ActionProcedureParameter::BoundedInteger { .. }) {
+        let ActionProcedureParameter::BoundedInteger {
+            minimum, maximum, ..
+        } = parameter
+        else {
             continue;
+        };
+        maximum_arguments.insert(parameter.id().to_owned(), Value::from(*maximum));
+        if minimum != maximum {
+            varying_bounded_parameter_count += 1;
         }
         let mut arguments = base_arguments.clone();
-        for candidate in &procedure.parameters {
-            if candidate.id() != parameter.id() {
-                continue;
-            }
-            if let ActionProcedureParameter::BoundedInteger { maximum, .. } = candidate {
-                arguments.insert(candidate.id().to_owned(), Value::from(*maximum));
-            }
-        }
+        arguments.insert(parameter.id().to_owned(), Value::from(*maximum));
         variants.push((arguments, base_references.clone()));
+    }
+    // Minimums expose lower-bound failures, and each independent maximum
+    // against the remaining minimums exposes relational failures. Semantic
+    // budgets such as expanded program nodes are cumulative and monotone, so
+    // they additionally require every varying bound at its maximum together.
+    if varying_bounded_parameter_count > 1 {
+        variants.push((maximum_arguments, base_references.clone()));
     }
 
     for (arguments, mut effective_references) in variants {
