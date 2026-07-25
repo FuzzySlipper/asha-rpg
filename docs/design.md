@@ -214,3 +214,12 @@ checkpoint, replay, Rust facade, and TypeScript package versions evolve
 independently. Unknown required data fails closed. Obsolete pre-split
 `ruleset package`, composition, artifact, and encounter-setup names are removed
 rather than retained as aliases.
+
+## Planned first-wave breadth
+
+The survey-selected neutral expansion is specified in
+[`first-wave-primitive-catalog.md`](first-wave-primitive-catalog.md). That
+catalog is an implementation map, not current support: every `F0` through `F6`
+family remains a non-claim until its separately reviewed task updates this
+canonical design and the corresponding code, schemas, tests, events, readbacks,
+checkpoint, and replay contracts.
