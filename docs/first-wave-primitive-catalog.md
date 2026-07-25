@@ -707,6 +707,42 @@ Pool contribution effects extend `F0` with exact tagged forms:
 `to`, count, and an explicit fallback die type when no source die remains.
 Flat scalar contributions cannot be interpreted as pool changes.
 
+Every pool contribution has runtime identity
+`(sourceDefinitionId, sourceInstanceId-or-empty, contributionId)`. Duplicate
+exact identities reject the resolution. After `F0` predicate and stacking-group
+reduction, surviving contributions are sorted by that identity inside their
+semantic phase; export, package, participant, and input enumeration order never
+participate.
+
+Pool construction and reduction use these exact phases:
+
+1. materialize the action's base die counts and base automatic axis values;
+2. group all `add-dice` contributions by die type, checked-sum their signed
+   deltas, add each sum once, and reject any negative or over-limit result;
+3. execute `replace-or-add-die` contributions sequentially by runtime identity;
+4. freeze the resulting pool and request exactly that heterogeneous evidence;
+5. map faces and checked-sum their vectors, then add base and `add-axis`
+   automatic values grouped by axis;
+6. cancel each declared disjoint axis pair and evaluate vector outcome bands.
+
+A replacement executes `count` positive unit steps. On each step, if one
+`from` die currently exists, Rust removes it and adds one `to` die; otherwise
+it adds one `fallback` die. The next unit observes that updated pool. Therefore:
+
+- replacements may consume dice introduced by the phase-2 additions;
+- a later replacement may consume `to` or fallback dice produced by an earlier
+  replacement;
+- when `fallback == from`, a later unit of the same replacement may consume the
+  newly added fallback;
+- a replacement never revisits an earlier contribution, so type-reference
+  cycles do not cause recursion and are permitted;
+- `from == to`, zero count, unknown ids, overflow, and a pool exceeding the
+  total-die bound reject before any random request.
+
+The trace records, for every unit, whether it replaced `from` or selected the
+fallback and the before/after counts. This sequential cascade is part of
+`F6@1`; an implementation may not substitute a snapshot/non-cascading pass.
+
 ### Authoring and normalized representation
 
 Ruleset authoring declares at most 64 die types, 32 axes, 32 cancellation
@@ -722,16 +758,18 @@ downstream.
 
 ### Validation and authority
 
-Rust rejects incomplete/duplicate face tables, unknown axes/dice, cancellation
-cycles or duplicate axis ownership, negative final die counts, invalid
-replacement graphs, more than 64 pool terms, more than 256 total dice, more
-than 128 reduction operations, or any possible checked-integer overflow.
+Rust rejects incomplete/duplicate face tables, unknown axes/dice, duplicate
+cancellation-axis ownership, negative final die counts, invalid self
+replacement, zero/out-of-range replacement counts, more than 64 pool terms,
+more than 256 total dice, more than 128 reduction operations, or any possible
+checked-integer overflow. Paired cancellation axes must be nonnegative before
+cancellation; their face vectors and automatic contributions therefore cannot
+declare negative values.
 
-At runtime Rust gathers `F0` sources, applies canonical pool transforms,
-constructs one exact pool, requests its evidence, evaluates every face and
-axis, performs cancellation, derives bands, chooses programs, and commits all
-consequences atomically. TypeScript and UI receive the constructed pool only as
-authority readback.
+At runtime Rust gathers `F0` sources and completes phases 1 through 3 before
+requesting any randomness. It then evaluates phases 4 through 6, chooses
+programs, and commits all consequences atomically. TypeScript and UI receive
+the constructed pool only as authority readback.
 
 ### Randomness, timing, events, and persistence
 
@@ -741,11 +779,12 @@ each die type, ordinal, sides, and value. A source must answer exactly the
 request; missing, extra, wrong-sided, or out-of-range evidence rejects without
 advancing the accepted random position.
 
-Accepted events and trace expose base pool, every applied/suppressed source,
-transformed pool, raw evidence, per-face vectors, raw axes, cancellation,
-net axes, derived bands, chosen branches, costs, and mutations. Checkpoint and
-replay persist and compare the exact heterogeneous request/evidence and all
-model versions.
+Accepted events and trace expose base pool, every applied/inapplicable/
+suppressed contribution with runtime identity, grouped die deltas, each
+replacement unit and fallback decision, frozen pool, raw evidence, per-face
+vectors, grouped automatic axes, raw axes, cancellation, net axes, derived
+bands, chosen branches, costs, and mutations. Checkpoint and replay persist and
+compare the exact heterogeneous request/evidence and all model versions.
 
 ### Witnesses and non-claims
 
@@ -753,10 +792,16 @@ model versions.
   primary success plus an independent secondary benefit or complication.
 - Separate opposing axis pairs cancel to zero independently while an uncoupled
   axis remains.
-- One upgrade replaces a die; a second uses its explicit fallback. Equivalent
-  contribution enumeration orders produce the same pool and trace.
+- Permutations of several source contributions produce the same phase/key
+  order, pool, request, and trace.
+- An added die is consumed by a replacement; one replacement's result feeds a
+  later replacement; and repeated units with `fallback == from` prove the
+  declared cascade.
+- Contention for one source die proves that the first canonical replacement
+  consumes it and the next takes fallback. A non-cascading expected result is
+  explicitly rejected by the witness.
 - Tape exhaustion, wrong die type/order, missing/extra evidence, overflow, and
-  tampered face tables fail closed.
+  tampered face tables/transforms fail closed.
 
 `F6@1` does not claim branded dice, proprietary face distributions, a
 probability calculator, user-edited authority pools, opposed/assisted check
