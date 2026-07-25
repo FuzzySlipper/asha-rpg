@@ -406,6 +406,30 @@ transition. There is no wall-clock duration. Initial stacking policies are
 `independent-by-source`, `replace`, and `refresh`; ties use source and instance
 identity, never export order.
 
+- `independent-by-source` allows one instance per target, stacking identity,
+  and exact source. Reapplication from that source preserves the instance id,
+  replaces rank/source fields with the new evaluated values, resets
+  `remainingCount`, and updates the application revision; a distinct source
+  creates a distinct instance.
+- `replace` removes every target instance with the stacking identity in
+  canonical instance order, emits their removal events, and creates one new
+  instance.
+- `refresh` maintains at most one target instance for the stacking identity.
+  Reapplication preserves its instance id, replaces its source/rank with the
+  new evaluated values, resets `remainingCount`, and updates the application
+  revision; absence creates one new instance.
+
+`remainingCount` is the number of eligible matching future boundaries before
+the instance expires. An instance is active exactly while that value is
+positive. A matching boundary decrements it once; `1 -> 0` removes the instance
+at that boundary. Each instance has exactly one anchor, so one transition can
+age it at most once:
+
+- `globalTurnTransition` matches every accepted transition to a new turn;
+- `roundTransition` matches only a transition which increments the round;
+- `sourceTurnStart` matches when the new current actor is the stored source;
+- `targetTurnStart` matches when the new current actor is the stored target.
+
 ### Authoring and normalized representation
 
 Content Packs author closed effect definitions and actions use
@@ -426,17 +450,45 @@ effect predicates that read undeclared facts.
 Rust owns a private effect-instance capability. Application evaluates rank and
 legality against staged state, creates a canonical instance identity, and makes
 its contributions visible only after the operation's defined commit point.
-Turn control ages matching instances and removes expired instances atomically.
 One action cannot observe a partially applied effect.
+
+Every accepted transition uses this single staging and event order:
+
+1. finish the outgoing action/control operations, including effect
+   apply/refresh/replace/remove events;
+2. determine and stage the new round, turn, and current actor, then append the
+   round/turn transition events;
+3. age matching effects in anchor order `globalTurnTransition`,
+   `roundTransition`, `sourceTurnStart`, `targetTurnStart`, then by target id,
+   definition id, source id, and instance id;
+4. age existing turn-bounded modifiers;
+5. reset matching `F2` activation budgets;
+6. calculate encounter outcome and project the next legal interaction view.
+
+All six steps commit atomically and no proposal or reaction can interleave.
+An instance applied or refreshed in the same accepted transaction is marked
+with that transaction revision and is ineligible for every boundary in that
+transaction; its first possible decrement is a matching boundary in a later
+accepted transaction. Expiry at step 3 removes its contributions before
+modifier aging, budget reset, outcome calculation, and next-turn action
+projection.
 
 ### Randomness, timing, events, and persistence
 
-Effect lifecycle itself is deterministic. Events report applied, refreshed,
-replaced, rank-changed, removed, aged, and expired transitions with definition,
-source, target, anchor, and remaining count. Readback exposes active instances
-and their currently applicable/suppressed `F0` contributions. Checkpoint,
-portable state, state hash, replay, and pending transactions retain exact
-instances and timing anchors.
+Effect lifecycle itself is deterministic. For `n > 1`, a matching boundary
+emits one aged event with `beforeCount=n` and `afterCount=n-1`. For `n = 1`, it
+emits one expired event with `beforeCount=1` and `afterCount=0`; it does not
+also emit an aged event. Events report definition, source, target, anchor, and
+the transaction/boundary identity. Readback exposes only still-active
+instances and their currently applicable/suppressed `F0` contributions.
+
+Checkpoint and replay represent only stable states before or after the complete
+transition sequence; there is no serializable transition-in-progress phase.
+The portable state, state hash, and pending transaction retain exact instances,
+remaining counts, application revision, and anchors. Restoring a pre-boundary
+checkpoint makes the next accepted transition age once; restoring a
+post-boundary checkpoint never ages the same boundary again. A pending reaction
+cannot advance a turn.
 
 ### Witnesses and non-claims
 
@@ -444,8 +496,12 @@ instances and timing anchors.
   boundary, and no longer appears as applied on the next resolution.
 - Two sources prove independent stacking; repeated same-source application
   proves replace versus refresh.
+- Apply and refresh during a transaction which also advances the matching
+  anchor prove that the same-transaction boundary is skipped.
 - Restore/replay at one transition before expiry produces the same events,
   ledger, and hash.
+- Adversarial pre-boundary, post-boundary, and invented transition-in-progress
+  checkpoints prove exactly-once aging and atomic restore.
 
 `F3@1` does not claim permanent effects, concentration/maintenance, wall-clock
 units, recurring damage, before/after-roll hooks, arbitrary triggers, a
@@ -461,14 +517,31 @@ bounded tags. The target's definitions and active `F3` effects may provide
 typed response records matched by damage type, tags, and explicit bypass tags.
 
 Initial response effects are `immune`, signed flat adjustment, and positive
-rational scale. Rust applies them in this fixed order per part:
+rational scale. Every response has a stable id unique within its source
+definition or effect instance. Its runtime identity is
+`(sourceDefinitionId, sourceInstanceId-or-empty, responseId)`. Duplicate exact
+runtime identities are corrupt state and reject the command; responses from
+distinct source instances remain distinct.
 
-1. match and canonically order responses;
-2. immunity sets the part to zero and suppresses later responses;
-3. apply checked signed flat adjustments and clamp at zero;
-4. apply checked rational scales in canonical source order using mathematical
-   floor after each scale;
-5. clamp to the vitality mutation domain.
+Rust evaluates every part in lexicographic part-id order and uses this exact
+pipeline:
+
+1. collect candidates and order them by response phase (`immune`, `flat`,
+   `scale`) then runtime identity;
+2. classify filter mismatches as `inapplicable` and explicit bypass matches as
+   `suppressed:bypassed`;
+3. if any eligible immunity remains, mark every eligible immunity `applied`,
+   set the part to zero, and mark every eligible flat/scale
+   `suppressed:immunity`;
+4. otherwise checked-sum every eligible signed flat value without intermediate
+   clamping, add that one sum to the original amount, and clamp once at zero;
+5. apply eligible scales in runtime-identity order, checking
+   `amount * numerator` and using mathematical floor division by denominator
+   after each scale;
+6. clamp the final packet sum to the existing vitality mutation domain.
+
+Canonical scale order is semantic because per-step floor can make scale order
+observable. Enumeration or export order never participates.
 
 Every original part remains visible even when its final amount is zero. Packet
 aggregation is presentation/readback convenience; vitality changes once for
@@ -478,10 +551,11 @@ the checked final sum.
 
 Content damage types remain inert named catalog values. Response definitions
 and packet operations are registered semantic schemas with exact versions.
-Normalized IR retains part ids, formulas, type/tag references, response source
-references, and bypass facts. A packet has at most 16 parts; a participant may
-contribute at most 64 candidate responses; each rational component is positive
-and no greater than 1000.
+Normalized IR retains part ids, formulas, type/tag references, response ids and
+source references, and bypass facts. A packet has at most 16 parts; a
+participant may contribute at most 64 candidate responses; each rational
+numerator and denominator is positive and no greater than 1000. Duplicate
+response ids inside one definition fail compilation.
 
 ### Validation and authority
 
@@ -499,10 +573,12 @@ existing vitality owner. It does not make damage types executable content.
 
 Part formulas use the existing exact random-evidence path. The packet's random
 requests retain part and target identity. The damage event contains every
-original part, every matched/applied/suppressed response with source and reason,
-the final part amounts, total requested damage, actual bounded vitality delta,
-and before/after vitality. The requested and applied amounts can therefore
-differ without a misleading event.
+original part, every candidate in canonical order with runtime identity and
+`inapplicable`/`suppressed`/`applied` reason, the flat sum and single clamp,
+each scale's before/after value and floor, final part amounts, original packet
+sum, adjusted packet sum, actual bounded vitality delta, and before/after
+vitality. The requested and applied amounts can therefore differ without a
+misleading event.
 
 Packet semantics and response definitions bind artifact/checkpoint/replay
 compatibility. Replay compares the structured per-part trace and final state.
@@ -513,7 +589,11 @@ compatibility. Replay compares the structured per-part trace and final state.
 - An explicit bypass tag suppresses one matching response.
 - Immunity, flat adjustment, scale, rounding, vitality-floor clamping, and
   requested-versus-applied event values are separately witnessed.
-- Tampered response ordering or missing definitions fail independently in Rust.
+- Permutations of two flats and two non-commuting scales prove identical
+  canonical response order and result; the trace proves one flat clamp and
+  per-scale floors.
+- Duplicate runtime identity, tampered response ordering, and missing
+  definitions fail independently in Rust.
 
 `F4@1` does not claim temporary vitality, healing responses, armor wear,
 recurring damage, critical tables, body locations, or user-selected allocation.
@@ -531,10 +611,10 @@ anchor. The first square-grid shapes are:
   up to the declared length.
 
 The action declares origin kind, shape, range to anchor, team constraint,
-living-state requirement, and maximum affected participants. The caller
-submits only the legal anchor cell. Rust derives and canonically orders the
-cells and participants; a caller cannot omit an eligible target or add an
-ineligible one.
+living-state requirement, and minimum/maximum affected participants. The
+caller selects one projected legal anchor; Rust derives and canonically orders
+the cells and participants. A caller cannot omit an eligible target or add an
+ineligible one. An empty set is legal only when the declared minimum is zero.
 
 ### Authoring and normalized representation
 
@@ -548,33 +628,57 @@ participants.
 
 The compiler limits radius/length/range to the board contract, affected cells
 to 256, and participants to the existing target ceiling. It rejects impossible
-shape parameters, cell targets combined with participant-only operations, and
-program maximums smaller than the selector maximum.
+shape parameters, a minimum greater than the maximum, cell targets combined
+with participant-only operations, and program maximums smaller than the
+selector maximum.
 
 Encounter projection lists each legal anchor with ordered affected cell and
-participant ids. Submission recomputes the same selection against current
-positions, vitality, occupancy, and cell capabilities. Stale anchors or changed
-target sets are rejected or resolved only from the current authoritative
-revision according to the proposal revision contract; submitted readback is
-never trusted. The resulting per-target programs and mutations remain one
-atomic command.
+participant ids. Every option binds the exact session binding id, artifact id,
+Scenario fingerprint, state revision, round/turn/current actor, action id,
+exact item binding, and anchor cell. Submission carries the session binding id,
+state revision, ordinary action/item identity, and anchor; it never submits the
+derived cells or participants.
+
+Any accepted command, reaction, or turn control which changes the state
+revision invalidates every older area option, even if its geometry would happen
+to be unchanged. Activation, checkpoint restore, replay restoration, or
+authority-session replacement changes the opaque session binding id, so an
+equal numeric revision cannot resurrect an old option. Refreshing readback
+without authority change does not change either identity.
+
+Under the session's exclusive authority lock, Rust first requires the submitted
+session binding and revision to equal the current values. A session-binding
+mismatch rejects with `RPG_AREA_OPTION_STALE` at
+`$.proposal.sessionBindingId`; a revision mismatch uses the same code at
+`$.proposal.authorityRevision`. Either consumes no random evidence,
+mutates/logs nothing, and returns the current interaction readback. Rust never
+reinterprets a stale anchor. If identities match, it recomputes cells and
+participants once against that same revision, revalidates minimum/maximum
+bounds, then requests evidence and executes the resulting per-target programs
+as one atomic command. A same-revision anchor which is not projectable rejects
+as `RPG_AREA_OPTION_INVALID` at `$.proposal.anchorCellId`; it cannot fall back
+to a different current target set.
 
 ### Randomness, timing, events, and persistence
 
 Target ordering fixes per-target random request order. Events and readback
 retain shape, origin, anchor, included cells, included participants, and every
-filtered participant with reason. Scenario, checkpoint, replay, and state hash
-already bind board/positions; schema versions add the shape contract and exact
+filtered participant with reason. Accepted events and replay entries also
+retain the accepted session-independent proposal revision, normal post-command
+revision, and exact derived set; the opaque live session binding is not a
+portable replay field. Scenario, checkpoint, replay, and state hash already
+bind board/positions; schema versions add the shape contract and exact
 selection trace.
 
 ### Witnesses and non-claims
 
-- Moving a participant between projection and submission cannot reinterpret an
-  old proposal silently.
+- Moving a participant, accepting an unrelated state change, restoring a
+  checkpoint with the same numeric revision, or replacing the active authority
+  between projection and submission all reject the old proposal as stale.
 - Equal-distance cells and multiple occupants use canonical cell then
   participant ordering.
-- An area action proves per-target rolls, shared rolls, empty legal areas, team
-  filtering, and maximum-bound rejection.
+- An area action proves per-target rolls, shared rolls, explicitly allowed and
+  disallowed empty areas, team filtering, and minimum/maximum-bound rejection.
 
 `F5@1` does not claim cones, arbitrary polygons, elevation, cover, line of
 effect, diagonal movement, hex grids, footprints, aura persistence, collision
@@ -716,9 +820,9 @@ The dependency order is part of the brief:
     |             |
     |             +---------------> #6200 F6 heterogeneous pools
     |
-    +--> #6198 F2 activation budgets
-    |
-    +--> #6199 F3 effect instances --> #6201 F4 damage packets/responses
+    +--> #6198 F2 activation budgets --> #6199 F3 effect instances
+                                            |
+                                            +--> #6201 F4 damage packets/responses
 ```
 
 `#6180` owns only `F0`. Each `F1` through `F6` family is a separate child under
