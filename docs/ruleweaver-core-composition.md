@@ -65,9 +65,12 @@ The follow-on is a bounded authored `sequence` under an outcome branch. It does
 not claim recursive stages, arbitrary callbacks, deferred action grants, or
 TypeScript continuation logic.
 
-The condition witness is deliberately closed. It does not claim a full
+The condition and movement witness is deliberately closed. It proves weighted
+owner-turn movement allowance, cardinal push stop policy, bounded slide choice,
+and one registered voluntary-leave-adjacency response through the same
+TypeScript-authored/public-Rust consumer boundary. It does not claim a full
 condition catalog, domination or control transfer, stealth/hearing,
 concentration, permanent or rest-based tenure, or arbitrary condition
-language. Route-cost movement allowances, forced movement, leave-adjacency
-reactions, and persistent spatial sources remain owned by other #6251
-implementation children.
+language. Pull, teleport, diagonal/hex/flying movement, general trigger
+callbacks, ready/delay, and persistent spatial sources remain owned by other
+#6251 implementation children or explicit non-claims.

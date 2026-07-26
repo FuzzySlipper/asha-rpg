@@ -8,5 +8,5 @@ default-run = "minimal-rpg-consumer"
 [workspace]
 
 [dependencies]
-asha-rpg = { git = "https://github.com/FuzzySlipper/asha-rpg.git", rev = "d9901a0c22eb2b03f18c2c316dc159c7c7873f5d" }
+asha-rpg = { git = "https://github.com/FuzzySlipper/asha-rpg.git", rev = "8a0ce0839ddcaa0fa2008f18ce1437fb3a5504a2" }
 serde_json = "1"

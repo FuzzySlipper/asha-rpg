@@ -35,6 +35,7 @@ import {
   onCheck,
   onOutcome,
   preparePlayBundle,
+  pushEntity,
   readStat,
   rulesetActivationBudget,
   rulesetCalculationSelector,
@@ -44,6 +45,7 @@ import {
   rulesetStat,
   scalarTest,
   sequence,
+  slideEntity,
   spend,
 } from '@asha-rpg/authoring';
 import {
@@ -83,7 +85,7 @@ const ruleset = defineRuleset({
       version,
     })),
     numericDomains: [
-      { id: 'budget', minimum: 0, maximum: 2 },
+      { id: 'budget', minimum: 0, maximum: 5 },
       { id: 'score', minimum: -100, maximum: 100 },
     ],
     values: [
@@ -218,6 +220,15 @@ const ruleset = defineRuleset({
         initialAmount: 1,
       },
       {
+        id: 'movement',
+        version: 1,
+        label: 'Movement',
+        numericDomainId: 'budget',
+        timing: 'action',
+        resetBoundary: 'ownerTurnStart',
+        initialAmount: 5,
+      },
+      {
         id: 'reaction',
         version: 1,
         label: 'Reaction',
@@ -236,6 +247,7 @@ const ruleset = defineRuleset({
         initialAmount: 1,
       },
     ],
+    movementAllowanceBudgetId: 'movement',
   },
 });
 
@@ -267,6 +279,7 @@ const untyped = rulesetContributionStackingGroup(ruleset, 'untyped');
 const attackProfile = rulesetScalarTestProfile(ruleset, 'attack');
 const standardBudget = rulesetActivationBudget(ruleset, 'standard');
 const bonusBudget = rulesetActivationBudget(ruleset, 'bonus');
+const reactionBudget = rulesetActivationBudget(ruleset, 'reaction');
 
 const exposedTarget = defineEffectDefinition({
   id: 'effect.exposed',
@@ -362,42 +375,6 @@ const saveEndsAuxiliary = defineEffectDefinition({
         predicate: { kind: 'always' },
       },
     ],
-  },
-});
-
-const tacticalTraining = defineCharacterFeatureDefinition({
-  id: 'feature.tactical-training',
-  visibility: 'public',
-  extensionPolicy: 'sealed',
-  source: { module: sourceModule, declaration: 'tacticalTraining' },
-  presentation: { label: 'Tactical Training' },
-  characterFeature: {
-    contributions: [
-      {
-        id: 'training',
-        selector: attackSelector,
-        stackingGroup: typedAccuracy,
-        value: { kind: 'constant', value: 2 },
-        predicate: { kind: 'always' },
-      },
-      {
-        id: 'surrounded-resolve',
-        selector: attackSelector,
-        stackingGroup: untyped,
-        value: { kind: 'constant', value: 5 },
-        predicate: { kind: 'actorSurrounded', minimumHostiles: 3 },
-      },
-    ],
-  },
-});
-const vanguardClass = defineCharacterClassDefinition({
-  id: 'class.vanguard',
-  visibility: 'public',
-  extensionPolicy: 'sealed',
-  source: { module: sourceModule, declaration: 'vanguardClass' },
-  presentation: { label: 'Vanguard' },
-  characterClass: {
-    featureDefinitions: [{ definitionId: tacticalTraining.id }],
   },
 });
 
@@ -561,6 +538,102 @@ const coreAttack = defineActionInvocationDefinition({
       bindingId: weaponBinding.id,
       attributeId: 'range',
     }),
+  },
+});
+
+const leaveResponseProcedure = defineActionProcedureDefinition({
+  id: 'procedure.leave-response',
+  ownerPackageId: packageId,
+  visibility: 'public',
+  extensionPolicy: 'sealed',
+  source: { module: sourceModule, declaration: 'leaveResponseProcedure' },
+  presentation: { label: 'Leave response procedure' },
+  parameters: [] as const,
+  implementation: {
+    kind: 'inline',
+    template: {
+      targets: hostile({ range: 1 }),
+      check: noRoll(),
+      rollScope: 'none',
+      costs: [],
+      activation: activation({
+        timing: 'reaction',
+        costs: [{ budget: reactionBudget, amount: 1 }],
+      }),
+      program: {
+        kind: 'atomic',
+        body: {
+          kind: 'onCheck',
+          noRoll: {
+            kind: 'operation',
+            operation: {
+              kind: 'heal',
+              amount: { kind: 'constant', value: 1 },
+            },
+          },
+        },
+      },
+    },
+  },
+});
+const leaveResponseDefinition = defineActionInvocationDefinition({
+  id: 'action.leave-response',
+  visibility: 'public',
+  extensionPolicy: 'sealed',
+  source: { module: sourceModule, declaration: 'leaveResponseAction' },
+  presentation: { label: 'Leave response' },
+  tags: ['reaction'],
+  procedure: leaveResponseProcedure,
+  binding: weaponBinding,
+  arguments: {},
+});
+
+const tacticalTraining = defineCharacterFeatureDefinition({
+  id: 'feature.tactical-training',
+  visibility: 'public',
+  extensionPolicy: 'sealed',
+  source: { module: sourceModule, declaration: 'tacticalTraining' },
+  presentation: { label: 'Tactical Training' },
+  characterFeature: {
+    contributions: [
+      {
+        id: 'training',
+        selector: attackSelector,
+        stackingGroup: typedAccuracy,
+        value: { kind: 'constant', value: 2 },
+        predicate: { kind: 'always' },
+      },
+      {
+        id: 'surrounded-resolve',
+        selector: attackSelector,
+        stackingGroup: untyped,
+        value: { kind: 'constant', value: 5 },
+        predicate: { kind: 'actorSurrounded', minimumHostiles: 3 },
+      },
+    ],
+    movementReactions: [
+      {
+        id: 'leave-response',
+        trigger: 'voluntaryLeavesAdjacency',
+        responseAction: { definitionId: leaveResponseDefinition.id },
+        activationBudgetId: 'reaction',
+        activationCost: 1,
+        maximumUses: 1,
+        duration: 'encounter',
+        reach: 1,
+        requiresLineOfEffect: true,
+      },
+    ],
+  },
+});
+const vanguardClass = defineCharacterClassDefinition({
+  id: 'class.vanguard',
+  visibility: 'public',
+  extensionPolicy: 'sealed',
+  source: { module: sourceModule, declaration: 'vanguardClass' },
+  presentation: { label: 'Vanguard' },
+  characterClass: {
+    featureDefinitions: [{ definitionId: tacticalTraining.id }],
   },
 });
 
@@ -787,7 +860,7 @@ const shiftAction = action({
     costs: [{ budget: standardBudget, amount: 1 }],
   }),
   program: onCheck({
-    noRoll: moveToCell({ maximumDistance: 5, provokes: false }),
+    noRoll: moveToCell({ maximumDistance: 5, provokes: true }),
   }),
 });
 const shiftDefinition = defineActionDefinition({
@@ -797,6 +870,46 @@ const shiftDefinition = defineActionDefinition({
   source: { module: sourceModule, declaration: 'shiftAction' },
   presentation: { label: shiftAction.name },
   action: shiftAction,
+});
+
+const pushAction = action({
+  id: actionId('action.push'),
+  name: 'Push',
+  sourcePath: `${sourceModule}#pushAction`,
+  targets: hostile({ range: 1 }),
+  check: noRoll(),
+  activation: activation({ timing: 'action', costs: [] }),
+  program: onCheck({
+    noRoll: pushEntity({ subject: 'target', distance: 3 }),
+  }),
+});
+const pushDefinition = defineActionDefinition({
+  id: pushAction.id,
+  visibility: 'public',
+  extensionPolicy: 'sealed',
+  source: { module: sourceModule, declaration: 'pushAction' },
+  presentation: { label: pushAction.name },
+  action: pushAction,
+});
+
+const slideAction = action({
+  id: actionId('action.slide'),
+  name: 'Slide',
+  sourcePath: `${sourceModule}#slideAction`,
+  targets: hostile({ range: 1 }),
+  check: noRoll(),
+  activation: activation({ timing: 'action', costs: [] }),
+  program: onCheck({
+    noRoll: slideEntity({ subject: 'target', maximumDistance: 2 }),
+  }),
+});
+const slideDefinition = defineActionDefinition({
+  id: slideAction.id,
+  visibility: 'public',
+  extensionPolicy: 'sealed',
+  source: { module: sourceModule, declaration: 'slideAction' },
+  presentation: { label: slideAction.name },
+  action: slideAction,
 });
 
 const rallyAction = action({
@@ -831,6 +944,9 @@ const contentPack = defineContentPack({
       { id: 'operation.applyEffect', version: 1 },
       { id: 'operation.damage', version: 2 },
       { id: 'operation.heal', version: 1 },
+      { id: 'operation.moveToCell', version: 1 },
+      { id: 'operation.push', version: 1 },
+      { id: 'operation.slide', version: 1 },
     ],
     capabilities: [
       { id: 'capability.activation-budgets', version: 1 },
@@ -852,8 +968,12 @@ const contentPack = defineContentPack({
     burstDefinition,
     conditionProbeDefinition,
     exposeDefinition,
+    leaveResponseProcedure,
+    leaveResponseDefinition,
+    pushDefinition,
     restrictedDefinition,
     shiftDefinition,
+    slideDefinition,
     rallyDefinition,
     exposedTarget,
     saveEndsAuxiliary,
@@ -870,8 +990,11 @@ const contentPack = defineContentPack({
     burstDefinition.id,
     conditionProbeDefinition.id,
     exposeDefinition.id,
+    leaveResponseDefinition.id,
+    pushDefinition.id,
     restrictedDefinition.id,
     shiftDefinition.id,
+    slideDefinition.id,
     rallyDefinition.id,
     exposedTarget.id,
     saveEndsAuxiliary.id,

@@ -7,9 +7,10 @@ use asha_rpg::{
     RpgBoardSetup, RpgBoundActionProposal, RpgCellCapabilitySetup, RpgCellCapabilityValue,
     RpgCellSetup, RpgCommandOutcome, RpgContributionDisposition, RpgDomainEvent,
     RpgEquipmentSlotSetup, RpgInitialCapability, RpgIntentItemBinding, RpgItemInstanceSetup,
-    RpgNaturalDieEffect, RpgParticipantSetup, RpgRandomRequest, RpgRandomRequestKind,
-    RpgRandomSource, RpgRandomSourceBinding, RpgRandomSourceFailure, RpgScenario, RpgTeamId,
-    RpgTurnControl, RpgTurnControlProposal, RpgTurnInitialization,
+    RpgMovementKind, RpgNaturalDieEffect, RpgParticipantSetup, RpgRandomRequest,
+    RpgRandomRequestKind, RpgRandomSource, RpgRandomSourceBinding, RpgRandomSourceFailure,
+    RpgReactionProposal, RpgScenario, RpgTeamId, RpgTurnControl, RpgTurnControlProposal,
+    RpgTurnInitialization,
     RPG_LINE_OF_EFFECT_OBSTRUCTION_ID,
     RPG_LINE_OF_EFFECT_OBSTRUCTION_VERSION,
 };
@@ -25,6 +26,7 @@ fn main() {
 
     let bundle = compile_prepared_play_bundle_json(&prepared_source)
         .expect("compile the exact TypeScript-authored prepared bundle");
+    prove_movement_allowance_forced_choices_and_reactions(bundle.clone());
     prove_line_of_effect_projection_staleness_and_atomicity(bundle.clone());
     prove_condition_lanes_tenure_restrictions_and_replay(bundle.clone());
     let scenario = scenario(&bundle, 5);
@@ -855,7 +857,7 @@ fn prove_line_of_effect_projection_staleness_and_atomicity(
         .expect_err("duplicate obstruction facts fail before session state");
     assert!(duplicate_failure.diagnostics.iter().any(|diagnostic| {
         diagnostic.code == "RPG_SCENARIO_CELL_CAPABILITY_ID_INVALID"
-            && diagnostic.path == "$.board.cells[0].capabilities[1].id"
+            && diagnostic.path == "$.board.cells[0].capabilities[2].id"
     }));
 
     let mut blocked_scenario = scenario(&bundle, 5);
@@ -1180,6 +1182,315 @@ fn prove_malformed_random_evidence_is_atomic(bundle: asha_rpg::CompiledPlayBundl
     assert_eq!(session.checkpoint().expect("unchanged checkpoint"), before);
 }
 
+fn prove_movement_allowance_forced_choices_and_reactions(
+    bundle: asha_rpg::CompiledPlayBundle,
+) {
+    let mut setup = scenario(&bundle, 5);
+    setup
+        .participants
+        .iter_mut()
+        .find(|participant| participant.id == ACTOR_ID)
+        .expect("movement actor")
+        .position = GridPosition { x: 0, y: 1 };
+    let actor_vitality = setup
+        .participants
+        .iter_mut()
+        .find(|participant| participant.id == ACTOR_ID)
+        .and_then(|participant| {
+            participant
+                .capabilities
+                .iter_mut()
+                .find_map(|capability| match capability {
+                    RpgInitialCapability::Vitality { value } => Some(value),
+                    _ => None,
+                })
+        })
+        .expect("actor vitality");
+    actor_vitality.current = 20;
+    let responder = setup
+        .participants
+        .iter_mut()
+        .find(|participant| participant.id == FIRST_TARGET_ID)
+        .expect("movement responder");
+    responder.position = GridPosition { x: 1, y: 1 };
+    responder.definition_ids = vec!["action.leave-response".to_owned()];
+    responder.class_definition_id = Some("class.vanguard".to_owned());
+    responder.feature_definition_ids = vec!["feature.tactical-training".to_owned()];
+    responder.items = vec![RpgItemInstanceSetup {
+        id: "response-blade".to_owned(),
+        definition_id: "item.short-blade".to_owned(),
+    }];
+    responder.equipment = vec![RpgEquipmentSlotSetup {
+        slot_id: "hand.main".to_owned(),
+        item_instance_id: "response-blade".to_owned(),
+    }];
+    setup
+        .participants
+        .iter_mut()
+        .find(|participant| participant.id == SECOND_TARGET_ID)
+        .expect("movement blocker")
+        .position = GridPosition { x: 4, y: 1 };
+    set_traversal(&mut setup, 0, 2, true, 2);
+    set_traversal(&mut setup, 3, 1, false, 1);
+
+    let mut movement =
+        RpgAuthoritySession::from_scenario(bundle.clone(), setup.clone()).expect("movement setup");
+    let movement_initial = movement.checkpoint().expect("movement initial checkpoint");
+    let view = movement.encounter_view();
+    let actor = view
+        .participants
+        .iter()
+        .find(|participant| participant.id == ACTOR_ID)
+        .expect("movement actor view");
+    assert_eq!(
+        actor
+            .movement_allowance
+            .as_ref()
+            .map(|allowance| allowance.remaining),
+        Some(5)
+    );
+    let shift = view
+        .actions
+        .iter()
+        .find(|action| action.definition_id == "action.shift")
+        .expect("shift readback");
+    let route = shift
+        .options
+        .cell_paths
+        .iter()
+        .find(|path| path.destination_cell_id == "cell-0-2")
+        .expect("weighted movement route");
+    assert_eq!(route.cell_ids, ["cell-0-2"]);
+    assert_eq!(route.movement_cost, 2);
+
+    let mut no_random = ScriptedSource::new(&movement, []);
+    let (pending, move_entry) = movement
+        .submit_with_random_source_recorded(
+            RpgActionProposal {
+                expected_revision: 0,
+                action_id: "action.shift".to_owned(),
+                actor_id: ACTOR_ID.to_owned(),
+                target_ids: vec!["cell-0-2".to_owned()],
+                item_binding: None,
+            },
+            &mut no_random,
+        )
+        .expect("movement submission");
+    let RpgCommandOutcome::AwaitingReaction(pending) = pending else {
+        panic!("voluntary movement should await the registered response");
+    };
+    let context = pending
+        .request
+        .movement
+        .as_ref()
+        .expect("movement reaction context");
+    assert_eq!(context.owner_id, FIRST_TARGET_ID);
+    assert_eq!(context.source_definition_id, "feature.tactical-training");
+    assert_eq!(context.response_action_id, "action.leave-response");
+    let response_binding = context
+        .response_item_binding
+        .as_ref()
+        .expect("captured response item binding");
+    assert_eq!(response_binding.item_instance_id, "response-blade");
+    assert_eq!(response_binding.item_definition_id, "item.short-blade");
+    assert_eq!(response_binding.slot_id, "hand.main");
+    assert_eq!(context.trigger_start, GridPosition { x: 0, y: 1 });
+    assert_eq!(context.trigger_end, GridPosition { x: 0, y: 2 });
+    assert_eq!(
+        movement
+            .state()
+            .entity(ACTOR_ID)
+            .expect("staged actor")
+            .position(),
+        GridPosition { x: 0, y: 1 }
+    );
+    let pending_hash = movement.state_hash().expect("pending hash");
+    let mut no_random = ScriptedSource::new(&movement, []);
+    let (responded, response_entry) = movement
+        .react_with_random_source_recorded(
+            RpgReactionProposal {
+                expected_revision: 0,
+                reaction_id: pending.request.reaction_id,
+                option_id: Some("respond".to_owned()),
+            },
+            &mut no_random,
+        )
+        .expect("movement response");
+    let response = accepted(responded);
+    assert_eq!(
+        movement
+            .state()
+            .entity(ACTOR_ID)
+            .expect("moved actor")
+            .position(),
+        GridPosition { x: 0, y: 2 }
+    );
+    assert_eq!(
+        movement
+            .state()
+            .entity(ACTOR_ID)
+            .expect("responded actor")
+            .vitality()
+            .current,
+        21
+    );
+    assert!(response.events.iter().any(|event| matches!(
+        event,
+        RpgDomainEvent::MovementTransition {
+            movement_kind: RpgMovementKind::Voluntary,
+            route_cell_ids,
+            movement_cost: 2,
+            provokes: true,
+            ..
+        } if route_cell_ids == &["cell-0-2"]
+    )));
+    assert!(response.events.iter().any(|event| matches!(
+        event,
+        RpgDomainEvent::MovementReactionResolved {
+            owner_id,
+            accepted: true,
+            response_action_id,
+            ..
+        } if owner_id == FIRST_TARGET_ID && response_action_id == "action.leave-response"
+    )));
+    assert_ne!(movement.state_hash().expect("accepted hash"), pending_hash);
+    assert_eq!(
+        movement
+            .encounter_view()
+            .participants
+            .iter()
+            .find(|participant| participant.id == ACTOR_ID)
+            .and_then(|participant| participant.movement_allowance.as_ref())
+            .map(|allowance| allowance.remaining),
+        Some(3)
+    );
+    let movement_replayed =
+        RpgAuthoritySession::replay(movement_initial, &[move_entry, response_entry])
+            .expect("movement reaction replay");
+    assert_eq!(
+        movement_replayed.state_hash().expect("replayed movement hash"),
+        movement.state_hash().expect("accepted movement hash")
+    );
+
+    let mut push =
+        RpgAuthoritySession::from_scenario(bundle.clone(), setup.clone()).expect("push setup");
+    let push_initial = push.checkpoint().expect("push initial");
+    let mut no_random = ScriptedSource::new(&push, []);
+    let (pushed, push_entry) = push
+        .submit_with_random_source_recorded(
+            RpgActionProposal {
+                expected_revision: 0,
+                action_id: "action.push".to_owned(),
+                actor_id: ACTOR_ID.to_owned(),
+                target_ids: vec![FIRST_TARGET_ID.to_owned()],
+                item_binding: None,
+            },
+            &mut no_random,
+        )
+        .expect("push submission");
+    let pushed = accepted(pushed);
+    assert_eq!(
+        push.state()
+            .entity(FIRST_TARGET_ID)
+            .expect("pushed target")
+            .position(),
+        GridPosition { x: 2, y: 1 }
+    );
+    assert!(pushed.events.iter().any(|event| matches!(
+        event,
+        RpgDomainEvent::MovementTransition {
+            movement_kind: RpgMovementKind::Push,
+            route_cell_ids,
+            provokes: false,
+            ..
+        } if route_cell_ids == &["cell-2-1"]
+    )));
+    assert!(!pushed.events.iter().any(|event| matches!(
+        event,
+        RpgDomainEvent::MovementReactionOpened { .. }
+    )));
+    let pushed_replayed =
+        RpgAuthoritySession::replay(push_initial, &[push_entry]).expect("push replay");
+    assert_eq!(
+        pushed_replayed.state_hash().expect("replayed push hash"),
+        push.state_hash().expect("push hash")
+    );
+
+    let mut slide = RpgAuthoritySession::from_scenario(bundle, setup).expect("slide setup");
+    let slide_initial = slide.checkpoint().expect("slide initial");
+    let mut no_random = ScriptedSource::new(&slide, []);
+    let (pending, slide_entry) = slide
+        .submit_with_random_source_recorded(
+            RpgActionProposal {
+                expected_revision: 0,
+                action_id: "action.slide".to_owned(),
+                actor_id: ACTOR_ID.to_owned(),
+                target_ids: vec![FIRST_TARGET_ID.to_owned()],
+                item_binding: None,
+            },
+            &mut no_random,
+        )
+        .expect("slide submission");
+    let RpgCommandOutcome::AwaitingForcedMovement(pending) = pending else {
+        panic!("slide should await an authority route choice");
+    };
+    let option = pending
+        .options
+        .iter()
+        .find(|option| option.route.destination_cell_id == "cell-1-0")
+        .cloned()
+        .expect("slide destination");
+    let pending_checkpoint = slide.checkpoint().expect("pending slide checkpoint");
+    let mut restored =
+        RpgAuthoritySession::restore_checkpoint(pending_checkpoint).expect("restore slide");
+    let restored_before = restored.state_hash().expect("restored pending hash");
+    let stale = restored
+        .resolve_forced_movement_recorded(
+            asha_rpg::RpgForcedMovementCommand {
+                option: option.clone(),
+            },
+            Vec::new(),
+        )
+        .expect("stale slide result");
+    assert!(matches!(
+        stale.0,
+        RpgCommandOutcome::Rejected(ref rejection)
+            if rejection.code == "RPG_FORCED_MOVEMENT_OPTION_STALE"
+    ));
+    assert_eq!(
+        restored.state_hash().expect("stale slide hash"),
+        restored_before
+    );
+    let mut no_random = ScriptedSource::new(&slide, []);
+    let (slid, choice_entry) = slide
+        .resolve_forced_movement_with_random_source_recorded(option, &mut no_random)
+        .expect("slide choice");
+    let slid = accepted(slid);
+    assert!(slid.events.iter().any(|event| matches!(
+        event,
+        RpgDomainEvent::MovementTransition {
+            movement_kind: RpgMovementKind::Slide,
+            provokes: false,
+            ..
+        }
+    )));
+    assert_eq!(
+        slide
+            .state()
+            .entity(FIRST_TARGET_ID)
+            .expect("slid target")
+            .position(),
+        GridPosition { x: 1, y: 0 }
+    );
+    let slide_replayed =
+        RpgAuthoritySession::replay(slide_initial, &[slide_entry, choice_entry])
+            .expect("slide replay");
+    assert_eq!(
+        slide_replayed.state_hash().expect("replayed slide hash"),
+        slide.state_hash().expect("slide hash")
+    );
+}
+
 fn accepted(outcome: RpgCommandOutcome) -> asha_rpg::RpgResolutionReceipt {
     match outcome {
         RpgCommandOutcome::Accepted(receipt) => receipt,
@@ -1249,10 +1560,47 @@ fn line_cells(width: u32, height: u32) -> Vec<RpgCellSetup> {
                     version: RPG_LINE_OF_EFFECT_OBSTRUCTION_VERSION,
                     definition_id: None,
                     value: RpgCellCapabilityValue::LineOfEffectObstruction { blocks: false },
+                }, RpgCellCapabilitySetup {
+                    id: "traversal".to_owned(),
+                    version: 1,
+                    definition_id: None,
+                    value: RpgCellCapabilityValue::Traversal {
+                        passable: true,
+                        movement_cost: 1,
+                    },
                 }],
             })
         })
         .collect()
+}
+
+fn set_traversal(
+    scenario: &mut RpgScenario,
+    x: u32,
+    y: u32,
+    passable: bool,
+    movement_cost: u32,
+) {
+    let cell = scenario
+        .board
+        .cells
+        .iter_mut()
+        .find(|cell| cell.position == GridPosition { x, y })
+        .expect("traversal cell");
+    let traversal = cell
+        .capabilities
+        .iter_mut()
+        .find(|capability| {
+            matches!(
+                capability.value,
+                RpgCellCapabilityValue::Traversal { .. }
+            )
+        })
+        .expect("traversal capability");
+    traversal.value = RpgCellCapabilityValue::Traversal {
+        passable,
+        movement_cost,
+    };
 }
 
 fn set_line_blocker(scenario: &mut RpgScenario, x: u32, y: u32, blocks: bool) {
@@ -1276,8 +1624,10 @@ fn actor(focus: i32) -> RpgParticipantSetup {
         "action.burst".to_owned(),
         "action.core-attack".to_owned(),
         "action.expose".to_owned(),
+        "action.push".to_owned(),
         "action.rally".to_owned(),
         "action.shift".to_owned(),
+        "action.slide".to_owned(),
     ];
     actor.class_definition_id = Some("class.vanguard".to_owned());
     actor.feature_definition_ids = vec!["feature.tactical-training".to_owned()];
