@@ -53,7 +53,12 @@ The independent Git consumer is
    proves canonical boundary evidence over intermediary movement cells,
    verifies application-revision suppression, and rejects shape, trigger, and
    random-procedure tampering; and
-10. replays the accepted sequences to the same state, hash, random position,
+10. runs one same-session tactical reconciliation across weighted terrain,
+    occupancy and line-of-effect projection, voluntary movement with an exact
+    item-bound leave response, forced movement that does not provoke, two
+    participants crossing one persistent source, source expiry, save-ends
+    restriction/removal, and explicit turn boundaries; and
+11. replays the accepted sequences to the same state, hash, random position,
    and log.
 
 The witness also protects the portable JSON spelling of

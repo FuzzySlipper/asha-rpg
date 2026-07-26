@@ -40,6 +40,8 @@ teleport, flying, conditional/repeated/random-composed movement, general
 trigger callbacks, ready/delay, and general cell-target semantics remain
 non-claims. Moving zones, source collisions, summons, arbitrary polygons,
 recursive spatial triggers, and a general scheduler are also non-claims. The
+same-session tactical witness composes only these closed contracts; it does
+not imply a broader event bus, callback registry, or condition scheduler. The
 legacy fixed-delta `move` operation remains available only to Rulesets that do
 not opt into a route-cost movement allowance; such artifacts retain their
 older bounded-position semantics and are not part of the authored-board route

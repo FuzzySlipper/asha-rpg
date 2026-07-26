@@ -249,6 +249,20 @@ range preserves the pending phase, state, log, revision, accepted random
 position, and state hash. Fixed-action turn models collect the same evidence
 before their automatic transition, so they cannot bypass save-ends tenure.
 
+Fixed spatial-source definitions are sealed `asha.rpg.spatial-source@1`
+content. They declare one bounded Manhattan diamond, target filter, typed fixed
+tenure, source-aware stacking policy, and a canonical set of parameterless
+action procedures for enter, start-turn, end-turn, and exit. Rust materializes
+the included authored cells and owns active identity as definition/version +
+owner + source + instance. Enter/exit consume the same canonical intermediary
+route facts as movement; start/end consume the ordinary turn transition.
+Creation, trigger mutations, tenure aging, and expiry are staged with the
+originating command. Application revision suppresses same-transaction
+self-triggering, and trigger procedures cannot request randomness. Events,
+readback, checkpoint, hash, and replay retain complete source-scoped applied,
+inapplicable, and suppressed evidence without client area or trigger
+evaluation.
+
 ## Scenario and persistence
 
 Scenario decoding denies unknown fields. Loading validates its PlayBundle id,
@@ -257,19 +271,21 @@ numeric domains, content-owned resource/modifier ids, board, occupancy,
 initiative, capability owners, and random-source binding before mutable state
 exists.
 
-Checkpoint schema version 13 embeds the exact compiled PlayBundle, Scenario and
+Checkpoint schema version 14 embeds the exact compiled PlayBundle, Scenario and
 Scenario fingerprint, portable state, turn/log, accepted random position,
 pending reaction, forced-movement choice, or turn-save phase, named effect
-instances, and canonical state hash. Replay entry schema version 14 records
+and spatial-source instances, and canonical state hash. Replay entry schema
+version 15 records
 ordinary submit/reaction/forced-movement/turn-control operations and verifies
-before/after boundaries. Accepted event schema version 12 and encounter-view
-schema version 14
+before/after boundaries. Accepted event schema version 13 and encounter-view
+schema version 15
 carry the contextual contribution ledger, character selection, activation
 budgets, accepted activation count, exact authority-derived area selections,
 weighted movement routes, forced-choice and movement-reaction identity,
 structured typed-damage packet evidence, active-effect tenure/conditions, and
-pending save requests. Prepared and compiled PlayBundle artifact schema major
-12 covers these retained semantic contracts. Replay never reruns
+pending save requests plus spatial-source identity, cells, tenure, and trigger
+evidence. Prepared and compiled PlayBundle artifact schema major 13 covers
+these retained semantic contracts. Replay never reruns
 authoring or substitutes a candidate artifact.
 
 ## TypeScript authoring

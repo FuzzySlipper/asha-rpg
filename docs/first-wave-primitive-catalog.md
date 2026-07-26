@@ -727,6 +727,33 @@ events and replay retain the exact included and filtered ordering. This does
 not claim cover, concealment, elevation, vision contests, arbitrary topology,
 hex sight, or client-computed line of sight.
 
+### Tactical lifecycle reconciliation
+
+Tasks `#6260` through `#6262` add three closed extensions over the same
+authority session rather than separate schedulers. Named effects may carry
+canonical action/movement restrictions and fixed or target-turn-end save
+tenure. Voluntary movement spends a Ruleset-owned allowance over the same
+weighted route used by push, slide, line-of-effect-bound cell projection, and
+spatial-source enter/exit detection. One registered leave-adjacency reaction
+may suspend that movement transaction; forced movement never opens it.
+
+Fixed `asha.rpg.spatial-source@1` definitions materialize a bounded Manhattan
+diamond over authored cells and bind parameterless deterministic procedures to
+enter, start-turn, end-turn, and exit. Their runtime identity is
+definition/version + owner + source + instance. Trigger order and readback
+remain source-scoped and canonical, application revision prevents immediate
+self-triggering, and ordinary turn transitions own tenure aging and expiry.
+Checkpoint, state hash, accepted events, and replay retain every condition,
+pending choice, route, source, and trigger decision.
+
+The independent public Git consumer executes these families in one session:
+weighted and occupied projection with a line-of-effect blocker, voluntary
+movement with an exact item-bound response, forced non-provocation, two
+participants crossing one fixed source, source expiry, save-ends restriction
+and removal, then exact state/log/random replay. This reconciliation does not
+add pull, teleport, moving zones, source collisions, recursive triggers,
+ready/delay, arbitrary reaction callbacks, or a general scheduler.
+
 ## F6 — Heterogeneous random pools and vector outcomes
 
 Implementation status: supported as `F6@1` by task `#6200`. The checked-in

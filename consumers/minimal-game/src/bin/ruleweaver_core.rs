@@ -26,6 +26,7 @@ fn main() {
 
     let bundle = compile_prepared_play_bundle_json(&prepared_source)
         .expect("compile the exact TypeScript-authored prepared bundle");
+    prove_tactical_authority_spine(bundle.clone());
     prove_fixed_spatial_source_lifecycle(bundle.clone());
     prove_movement_allowance_forced_choices_and_reactions(bundle.clone());
     prove_line_of_effect_projection_staleness_and_atomicity(bundle.clone());
@@ -278,6 +279,396 @@ fn main() {
         "core witness compiled, rejected tampering, resolved exact bindings and ledgers, and replayed at {}",
         session.state_hash().expect("final hash").value
     );
+}
+
+fn prove_tactical_authority_spine(bundle: asha_rpg::CompiledPlayBundle) {
+    let mut setup = scenario(&bundle, 5);
+    setup.participants[0]
+        .definition_ids
+        .push("action.apply-condition".to_owned());
+    setup.participants[0].definition_ids.sort();
+    let responder = setup
+        .participants
+        .iter_mut()
+        .find(|participant| participant.id == FIRST_TARGET_ID)
+        .expect("tactical responder");
+    responder.definition_ids = vec![
+        "action.leave-response".to_owned(),
+        "action.push".to_owned(),
+        "action.shift".to_owned(),
+    ];
+    responder.class_definition_id = Some("class.vanguard".to_owned());
+    responder.feature_definition_ids = vec!["feature.tactical-training".to_owned()];
+    responder.items = vec![RpgItemInstanceSetup {
+        id: "response-blade".to_owned(),
+        definition_id: "item.short-blade".to_owned(),
+    }];
+    responder.equipment = vec![RpgEquipmentSlotSetup {
+        slot_id: "hand.main".to_owned(),
+        item_instance_id: "response-blade".to_owned(),
+    }];
+    let second_target = setup
+        .participants
+        .iter_mut()
+        .find(|participant| participant.id == SECOND_TARGET_ID)
+        .expect("second tactical target");
+    second_target.position = GridPosition { x: 2, y: 0 };
+    second_target.definition_ids = vec![
+        "action.condition-probe".to_owned(),
+        "action.restricted".to_owned(),
+        "action.shift".to_owned(),
+    ];
+    set_traversal(&mut setup, 1, 0, true, 2);
+    set_line_blocker(&mut setup, 2, 1, true);
+
+    let mut session =
+        RpgAuthoritySession::from_scenario(bundle, setup).expect("combined tactical setup");
+    let initial = session
+        .checkpoint()
+        .expect("combined tactical initial checkpoint");
+    let mut replay_entries = Vec::new();
+
+    let initial_view = session.encounter_view();
+    let shift = initial_view
+        .actions
+        .iter()
+        .find(|action| action.definition_id == "action.shift")
+        .expect("combined movement readback");
+    let weighted_route = shift
+        .options
+        .cell_paths
+        .iter()
+        .find(|path| path.destination_cell_id == "cell-1-0")
+        .expect("weighted destination");
+    assert_eq!(weighted_route.cell_ids, ["cell-1-0"]);
+    assert_eq!(weighted_route.movement_cost, 2);
+    assert!(!shift
+        .options
+        .cell_paths
+        .iter()
+        .any(|path| path.destination_cell_id == "cell-2-1"));
+    assert!(shift.options.filtered_cells.iter().any(|candidate| {
+        candidate.cell_id == "cell-4-1"
+            && candidate.reason == "lineOfEffectBlocked"
+            && candidate.blocking_cell_ids == ["cell-2-1"]
+    }));
+
+    let mut no_random = ScriptedSource::new(&session, []);
+    let (created, created_entry) = session
+        .submit_with_random_source_recorded(
+            RpgActionProposal {
+                expected_revision: 0,
+                action_id: "action.create-fixed-hazard".to_owned(),
+                actor_id: ACTOR_ID.to_owned(),
+                target_ids: vec![ACTOR_ID.to_owned()],
+                item_binding: None,
+            },
+            &mut no_random,
+        )
+        .expect("create source in combined transaction");
+    accepted(created);
+    replay_entries.push(created_entry);
+
+    let mut no_random = ScriptedSource::new(&session, []);
+    let (pending, movement_entry) = session
+        .submit_with_random_source_recorded(
+            RpgActionProposal {
+                expected_revision: 1,
+                action_id: "action.shift".to_owned(),
+                actor_id: ACTOR_ID.to_owned(),
+                target_ids: vec!["cell-1-0".to_owned()],
+                item_binding: None,
+            },
+            &mut no_random,
+        )
+        .expect("combined voluntary movement");
+    let RpgCommandOutcome::AwaitingReaction(pending) = pending else {
+        panic!("combined movement opens the leave-adjacency response");
+    };
+    let movement_context = pending
+        .request
+        .movement
+        .as_ref()
+        .expect("combined movement reaction context");
+    assert_eq!(movement_context.owner_id, FIRST_TARGET_ID);
+    assert_eq!(
+        movement_context
+            .response_item_binding
+            .as_ref()
+            .map(|binding| binding.item_instance_id.as_str()),
+        Some("response-blade")
+    );
+    replay_entries.push(movement_entry);
+    let mut no_random = ScriptedSource::new(&session, []);
+    let (moved, reaction_entry) = session
+        .react_with_random_source_recorded(
+            RpgReactionProposal {
+                expected_revision: pending.expected_revision,
+                reaction_id: pending.request.reaction_id,
+                option_id: Some("respond".to_owned()),
+            },
+            &mut no_random,
+        )
+        .expect("accept combined leave-adjacency response");
+    let moved = accepted(moved);
+    assert!(moved.events.iter().any(|event| matches!(
+        event,
+        RpgDomainEvent::MovementTransition {
+            movement_kind: RpgMovementKind::Voluntary,
+            route_cell_ids,
+            movement_cost: 2,
+            provokes: true,
+            ..
+        } if route_cell_ids == &["cell-1-0"]
+    )));
+    replay_entries.push(reaction_entry);
+
+    let mut no_random = ScriptedSource::new(&session, []);
+    let (pushed, pushed_entry) = session
+        .submit_with_random_source_recorded(
+            RpgActionProposal {
+                expected_revision: 2,
+                action_id: "action.push".to_owned(),
+                actor_id: ACTOR_ID.to_owned(),
+                target_ids: vec![SECOND_TARGET_ID.to_owned()],
+                item_binding: None,
+            },
+            &mut no_random,
+        )
+        .expect("combined forced movement");
+    let pushed = accepted(pushed);
+    assert!(pushed.events.iter().any(|event| matches!(
+        event,
+        RpgDomainEvent::MovementTransition {
+            movement_kind: RpgMovementKind::Push,
+            moved_participant_id,
+            route_cell_ids,
+            provokes: false,
+            ..
+        } if moved_participant_id == SECOND_TARGET_ID
+            && route_cell_ids == &["cell-3-0", "cell-4-0"]
+    )));
+    assert!(!pushed.events.iter().any(|event| matches!(
+        event,
+        RpgDomainEvent::MovementReactionOpened { .. }
+    )));
+    replay_entries.push(pushed_entry);
+
+    let (actor_ended, actor_end_entry) = session
+        .control_recorded(RpgTurnControlProposal {
+            expected_revision: 3,
+            actor_id: ACTOR_ID.to_owned(),
+            control: RpgTurnControl::EndTurn,
+        })
+        .expect("advance combined actor turn");
+    let RpgCommandOutcome::ControlAccepted(actor_ended) = actor_ended else {
+        panic!("combined actor turn advances");
+    };
+    assert!(actor_ended.events.iter().any(|event| matches!(
+        event,
+        RpgDomainEvent::SpatialSourceTriggerEvaluated {
+            boundary: asha_rpg::RpgSpatialSourceBoundary::StartTurn,
+            participant_id,
+            disposition: asha_rpg::RpgSpatialSourceTriggerDisposition::Applied,
+            ..
+        } if participant_id == FIRST_TARGET_ID
+    )));
+    replay_entries.push(actor_end_entry);
+
+    let mut no_random = ScriptedSource::new(&session, []);
+    let (first_exited, first_exit_entry) = session
+        .submit_with_random_source_recorded(
+            RpgActionProposal {
+                expected_revision: 4,
+                action_id: "action.shift".to_owned(),
+                actor_id: FIRST_TARGET_ID.to_owned(),
+                target_ids: vec!["cell-3-1".to_owned()],
+                item_binding: None,
+            },
+            &mut no_random,
+        )
+        .expect("first target exits combined source");
+    let first_exited = accepted(first_exited);
+    assert!(first_exited.events.iter().any(|event| matches!(
+        event,
+        RpgDomainEvent::SpatialSourceTriggerEvaluated {
+            boundary: asha_rpg::RpgSpatialSourceBoundary::Exit,
+            participant_id,
+            disposition: asha_rpg::RpgSpatialSourceTriggerDisposition::Applied,
+            ..
+        } if participant_id == FIRST_TARGET_ID
+    )));
+    replay_entries.push(first_exit_entry);
+
+    let (first_ended, first_end_entry) = session
+        .control_recorded(RpgTurnControlProposal {
+            expected_revision: 5,
+            actor_id: FIRST_TARGET_ID.to_owned(),
+            control: RpgTurnControl::EndTurn,
+        })
+        .expect("advance first tactical target");
+    assert!(matches!(
+        first_ended,
+        RpgCommandOutcome::ControlAccepted(_)
+    ));
+    replay_entries.push(first_end_entry);
+
+    let mut no_random = ScriptedSource::new(&session, []);
+    let (second_entered, second_enter_entry) = session
+        .submit_with_random_source_recorded(
+            RpgActionProposal {
+                expected_revision: 6,
+                action_id: "action.shift".to_owned(),
+                actor_id: SECOND_TARGET_ID.to_owned(),
+                target_ids: vec!["cell-2-1".to_owned()],
+                item_binding: None,
+            },
+            &mut no_random,
+        )
+        .expect("second target enters combined source");
+    let second_entered = accepted(second_entered);
+    assert!(second_entered.events.iter().any(|event| matches!(
+        event,
+        RpgDomainEvent::SpatialSourceTriggerEvaluated {
+            boundary: asha_rpg::RpgSpatialSourceBoundary::Enter,
+            participant_id,
+            cell_id,
+            disposition: asha_rpg::RpgSpatialSourceTriggerDisposition::Applied,
+            ..
+        } if participant_id == SECOND_TARGET_ID && cell_id == "cell-2-1"
+    )));
+    replay_entries.push(second_enter_entry);
+
+    let (second_ended, second_end_entry) = session
+        .control_recorded(RpgTurnControlProposal {
+            expected_revision: 7,
+            actor_id: SECOND_TARGET_ID.to_owned(),
+            control: RpgTurnControl::EndTurn,
+        })
+        .expect("expire combined source");
+    let RpgCommandOutcome::ControlAccepted(second_ended) = second_ended else {
+        panic!("second tactical target advances");
+    };
+    assert!(second_ended.events.iter().any(|event| matches!(
+        event,
+        RpgDomainEvent::SpatialSourceExpired { instance_id, .. }
+            if instance_id == "fixed-hazard"
+    )));
+    assert!(session.encounter_view().spatial_sources.is_empty());
+    replay_entries.push(second_end_entry);
+
+    let mut no_random = ScriptedSource::new(&session, []);
+    let (conditioned, conditioned_entry) = session
+        .submit_with_random_source_recorded(
+            RpgActionProposal {
+                expected_revision: 8,
+                action_id: "action.apply-condition".to_owned(),
+                actor_id: ACTOR_ID.to_owned(),
+                target_ids: vec![SECOND_TARGET_ID.to_owned()],
+                item_binding: None,
+            },
+            &mut no_random,
+        )
+        .expect("apply condition after spatial expiry");
+    accepted(conditioned);
+    replay_entries.push(conditioned_entry);
+    let (actor_ended, actor_end_entry) = session
+        .control_recorded(RpgTurnControlProposal {
+            expected_revision: 9,
+            actor_id: ACTOR_ID.to_owned(),
+            control: RpgTurnControl::EndTurn,
+        })
+        .expect("advance to first target after condition");
+    assert!(matches!(
+        actor_ended,
+        RpgCommandOutcome::ControlAccepted(_)
+    ));
+    replay_entries.push(actor_end_entry);
+    let (first_ended, first_end_entry) = session
+        .control_recorded(RpgTurnControlProposal {
+            expected_revision: 10,
+            actor_id: FIRST_TARGET_ID.to_owned(),
+            control: RpgTurnControl::EndTurn,
+        })
+        .expect("advance to conditioned target");
+    assert!(matches!(
+        first_ended,
+        RpgCommandOutcome::ControlAccepted(_)
+    ));
+    replay_entries.push(first_end_entry);
+
+    let restricted_view = session.encounter_view();
+    for action_id in ["action.restricted", "action.shift"] {
+        let action = restricted_view
+            .actions
+            .iter()
+            .find(|action| action.definition_id == action_id)
+            .expect("conditioned action readback");
+        assert!(!action.available);
+        assert_eq!(
+            action
+                .unavailable
+                .as_ref()
+                .and_then(|reason| reason.unavailable_source.as_ref())
+                .map(|source| source.source_definition_id.as_str()),
+            Some("effect.save-ends-restricted")
+        );
+    }
+    let mut saves = ScriptedSource::new(&session, [vec![10], vec![10]]);
+    let (saved, save_entries) = session
+        .control_with_random_source_recorded(
+            RpgTurnControlProposal {
+                expected_revision: 11,
+                actor_id: SECOND_TARGET_ID.to_owned(),
+                control: RpgTurnControl::EndTurn,
+            },
+            &mut saves,
+        )
+        .expect("resolve combined save-ends boundary");
+    let RpgCommandOutcome::ControlAccepted(saved) = saved else {
+        panic!("combined saves advance the turn");
+    };
+    assert_eq!(
+        saved
+            .events
+            .iter()
+            .filter(|event| matches!(
+                event,
+                RpgDomainEvent::EffectSaveResolved {
+                    roll: 10,
+                    saved: true,
+                    ..
+                }
+            ))
+            .count(),
+        2
+    );
+    replay_entries.extend(save_entries);
+    let final_view = session.encounter_view();
+    assert!(final_view
+        .participants
+        .iter()
+        .find(|participant| participant.id == SECOND_TARGET_ID)
+        .expect("saved tactical target")
+        .effects
+        .is_empty());
+
+    let replayed = RpgAuthoritySession::replay(initial, &replay_entries)
+        .expect("combined tactical replay");
+    let recorded = session
+        .checkpoint()
+        .expect("combined tactical final checkpoint");
+    let replayed_checkpoint = replayed
+        .checkpoint()
+        .expect("combined tactical replay checkpoint");
+    assert_eq!(replayed_checkpoint.state, recorded.state);
+    assert_eq!(replayed_checkpoint.turn, recorded.turn);
+    assert_eq!(replayed_checkpoint.log, recorded.log);
+    assert_eq!(
+        replayed_checkpoint.accepted_random_position,
+        recorded.accepted_random_position
+    );
+    assert_eq!(replayed_checkpoint.state_hash, recorded.state_hash);
 }
 
 fn prove_condition_lanes_tenure_restrictions_and_replay(

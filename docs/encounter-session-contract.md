@@ -8,16 +8,17 @@ consumer compiles or loads a `CompiledPlayBundle` and calls
 creating mutable authority state.
 
 The schema is `asha.rpg.scenario@3`. `playBundleId` must exactly match the
-compiled artifact. Checkpoint schema `asha.rpg.session.checkpoint@13` stores the
+compiled artifact. Checkpoint schema `asha.rpg.session.checkpoint@14` stores the
 Scenario and its `fnv1a64.rpg-scenario.v1` fingerprint. Replay entry schema
-version 14 binds before/after boundaries to that Scenario, source binding,
-turn, revision, and state hash. Accepted event schema version 12 carries the
+version 15 binds before/after boundaries to that Scenario, source binding,
+turn, revision, and state hash. Accepted event schema version 13 carries the
 contextual contribution ledger, activation transitions, and exact
 authority-derived area selections plus structured typed-damage packet
-resolution. Encounter-view schema version 14 exposes
+resolution and spatial-source transitions. Encounter-view schema version 15 exposes
 that event history plus explicit class/feature selection, active named effects,
 movement allowance, activation-budget readback, and session-bound area and
-forced-movement options.
+forced-movement options plus active source cells, tenure, and source-scoped
+trigger evidence.
 
 ## Setup-only data
 
@@ -74,6 +75,16 @@ revision exactly.
 A pending reaction, forced-movement destination choice, or turn save blocks
 other commands until resolved. Rejections preserve the complete pending phase,
 state, log, turn, and accepted-random position.
+
+Fixed spatial sources are also created only by a typed artifact operation.
+Rust derives their included cells from the authored board and retains exact
+definition/version, owner, source, instance, origin, stacking, tenure, and
+application revision. Enter/exit use accepted intermediary movement routes;
+start/end use the ordinary turn transition. Trigger evidence is keyed by that
+complete source identity, so independent sources may reuse an instance id
+without sharing history. Source creation, deterministic trigger procedures,
+aging, expiry, and their ordinary mutations remain one atomic authority
+transaction.
 
 Attack and generic scalar-test resolution report an authoritative scalar
 contribution ledger as structured event data. It includes the base value, final
