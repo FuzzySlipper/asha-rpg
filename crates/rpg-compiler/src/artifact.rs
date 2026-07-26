@@ -224,6 +224,7 @@ pub fn compile_prepared_play_bundle(
         &items,
         &character_features,
         &effects,
+        &bound_action_registrations,
     )?;
     let mut rules = compile_normalized_rpg_ir_with_ruleset(normalized_ir, Some(&prepared.ruleset))?;
     rules.register_bound_actions(bound_action_registrations);
@@ -3253,6 +3254,7 @@ fn validate_action_contribution_contracts(
     items: &[CompiledItemDefinition],
     features: &[CompiledCharacterFeature],
     effects: &[CompiledEffectDefinition],
+    bound_actions: &[BoundActionRegistration],
 ) -> Result<(), RpgCompileFailure> {
     let variable_activation_model = matches!(
         &ruleset.models.action_economy,
@@ -3290,8 +3292,22 @@ fn validate_action_contribution_contracts(
                 .map(|reaction| (reaction.response_action_id.as_str(), reaction))
         })
         .collect::<BTreeMap<_, _>>();
+    let authored_action_ids = bound_actions
+        .iter()
+        .map(|registration| {
+            (
+                registration.compiled_action_id.as_str(),
+                registration.action_id.as_str(),
+            )
+        })
+        .collect::<BTreeMap<_, _>>();
     let mut diagnostics = Vec::new();
     for (index, action) in normalized.actions.iter().enumerate() {
+        let authored_action_id = authored_action_ids
+            .get(action.id.as_str())
+            .copied()
+            .unwrap_or(action.id.as_str());
+        let movement_response = movement_responses.get(authored_action_id);
         let forced_movement_count = program_forced_movement_count(&action.program);
         if forced_movement_count > 0
             && (forced_movement_count != 1
@@ -3327,7 +3343,7 @@ fn validate_action_contribution_contracts(
         }
         validate_activation_contract(
             action.activation.as_ref(),
-            if movement_responses.contains_key(action.id.as_str()) {
+            if movement_response.is_some() {
                 rpg_ir::RpgIrActivationTiming::Reaction
             } else {
                 rpg_ir::RpgIrActivationTiming::Action
@@ -3338,7 +3354,7 @@ fn validate_action_contribution_contracts(
             &format!("$.actions[{index}].activation"),
             &mut diagnostics,
         );
-        if let Some(reaction) = movement_responses.get(action.id.as_str()) {
+        if let Some(reaction) = movement_response {
             let exact_activation = action.activation.as_ref().is_some_and(|activation| {
                 activation.timing == rpg_ir::RpgIrActivationTiming::Reaction
                     && activation.costs.len() == 1
