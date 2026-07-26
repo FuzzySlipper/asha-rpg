@@ -1263,10 +1263,7 @@ fn extend_random_values(
             ),
         )));
     }
-    if values
-        .iter()
-        .any(|value| *value == 0 || *value > request.sides)
-    {
+    if random_values_out_of_range(request, &values) {
         return Err(RpgAutomaticCommandFailure::RandomSource(random_failure(
             "RPG_RANDOM_SOURCE_VALUE_OUT_OF_RANGE",
             &request.path,
@@ -1275,6 +1272,27 @@ fn extend_random_values(
     }
     random_values.extend(values);
     Ok(())
+}
+
+fn random_values_out_of_range(request: &rpg_core::RpgRandomRequest, values: &[u32]) -> bool {
+    if request.heterogeneous_terms.is_empty() {
+        return values
+            .iter()
+            .any(|value| *value == 0 || *value > request.sides);
+    }
+    let mut offset = 0_usize;
+    for term in &request.heterogeneous_terms {
+        for _ in 0..term.count {
+            let Some(value) = values.get(offset) else {
+                return true;
+            };
+            if *value == 0 || *value > term.sides {
+                return true;
+            }
+            offset = offset.saturating_add(1);
+        }
+    }
+    offset != values.len()
 }
 
 fn revision_rejection(expected: u64, actual: u64) -> RpgResolutionRejection {

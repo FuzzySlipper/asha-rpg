@@ -37,6 +37,7 @@ import type {
   ContentPolicyBinding,
   ContentReservedRelationship,
   ContentOutcomeBandShift,
+  ContentPoolContribution,
   ContentScalarContribution,
   ContentSupportDefinition,
   ContentTemplateDefinition,
@@ -229,10 +230,11 @@ export function defineItemDefinition(
   > & {
     readonly item: Omit<
       ContentItemData,
-      'schema' | 'contributions' | 'outcomeBandShifts'
+      'schema' | 'contributions' | 'outcomeBandShifts' | 'poolContributions'
     > & {
       readonly contributions?: readonly Omit<ContentScalarContribution, 'schema'>[];
       readonly outcomeBandShifts?: readonly Omit<ContentOutcomeBandShift, 'schema'>[];
+      readonly poolContributions?: readonly Omit<ContentPoolContribution, 'schema'>[];
     };
   },
 ): ContentItemDefinition {
@@ -243,7 +245,7 @@ export function defineItemDefinition(
       ...input.item,
       schema: {
         identity: 'asha.rpg.item' as const,
-        version: 3 as const,
+        version: 4 as const,
       },
       tags: [...input.item.tags].sort(),
       traits: [...input.item.traits].sort(),
@@ -254,6 +256,9 @@ export function defineItemDefinition(
       contributions: normalizeScalarContributions(input.item.contributions ?? []),
       outcomeBandShifts: normalizeOutcomeBandShifts(
         input.item.outcomeBandShifts ?? [],
+      ),
+      poolContributions: normalizePoolContributions(
+        input.item.poolContributions ?? [],
       ),
     },
   });
@@ -267,6 +272,7 @@ export function defineCharacterFeatureDefinition(
     readonly characterFeature: {
       readonly contributions?: readonly Omit<ContentScalarContribution, 'schema'>[];
       readonly outcomeBandShifts?: readonly Omit<ContentOutcomeBandShift, 'schema'>[];
+      readonly poolContributions?: readonly Omit<ContentPoolContribution, 'schema'>[];
     };
   },
 ): ContentCharacterFeatureDefinition {
@@ -276,13 +282,16 @@ export function defineCharacterFeatureDefinition(
     characterFeature: {
       schema: {
         identity: 'asha.rpg.character-feature' as const,
-        version: 3 as const,
+        version: 4 as const,
       },
       contributions: normalizeScalarContributions(
         input.characterFeature.contributions ?? [],
       ),
       outcomeBandShifts: normalizeOutcomeBandShifts(
         input.characterFeature.outcomeBandShifts ?? [],
+      ),
+      poolContributions: normalizePoolContributions(
+        input.characterFeature.poolContributions ?? [],
       ),
     },
   });
@@ -296,6 +305,20 @@ function normalizeOutcomeBandShifts(
       ...shift,
       schema: {
         identity: 'asha.rpg.outcome-band-shift' as const,
+        version: 1 as const,
+      },
+    }))
+    .sort((left, right) => left.id.localeCompare(right.id));
+}
+
+function normalizePoolContributions(
+  contributions: readonly Omit<ContentPoolContribution, 'schema'>[],
+): readonly ContentPoolContribution[] {
+  return contributions
+    .map((contribution) => ({
+      ...contribution,
+      schema: {
+        identity: 'asha.rpg.pool-contribution' as const,
         version: 1 as const,
       },
     }))

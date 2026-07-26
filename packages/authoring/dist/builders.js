@@ -123,6 +123,14 @@ export function scalarTest(options) {
         },
     }, 'difficulty.defenseId', options.difficulty.defense);
 }
+export function heterogeneousPool(options) {
+    return frozen({
+        kind: 'heterogeneousPool',
+        profile: options.profile,
+        baseDice: [...options.baseDice].sort((left, right) => left.dieTypeId.localeCompare(right.dieTypeId)),
+        automaticAxes: [...(options.automaticAxes ?? [])].sort((left, right) => left.axisId.localeCompare(right.axisId)),
+    });
+}
 export function spend(resource, amount) {
     return frozenWithCatalogOwnership({ resourceId: catalogDefinitionId(resource), amount }, 'resourceId', resource);
 }

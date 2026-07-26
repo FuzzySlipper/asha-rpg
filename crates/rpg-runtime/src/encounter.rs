@@ -18,7 +18,7 @@ use serde::{Deserialize, Serialize};
 pub const RPG_SCENARIO_SCHEMA_ID: &str = "asha.rpg.scenario";
 pub const RPG_SCENARIO_SCHEMA_VERSION: u32 = 2;
 pub const RPG_ENCOUNTER_VIEW_SCHEMA_ID: &str = "asha.rpg.encounter.view";
-pub const RPG_ENCOUNTER_VIEW_SCHEMA_VERSION: u32 = 7;
+pub const RPG_ENCOUNTER_VIEW_SCHEMA_VERSION: u32 = 8;
 pub const RPG_END_TURN_CONTROL_ID: &str = "control.end-turn";
 
 const MAXIMUM_BOARD_EXTENT: u32 = 1_024;
@@ -495,8 +495,8 @@ impl RpgRandomSource for RpgRollTapeSource {
                 "RPG_RANDOM_TAPE_EXHAUSTED",
                 &request.path,
                 format!(
-                    "authority requested {}d{}, but the bounded roll tape is exhausted",
-                    request.count, request.sides
+                    "authority requested {} bounded value(s), but the roll tape is exhausted",
+                    request.count
                 ),
             ));
         };
@@ -537,19 +537,12 @@ impl RpgRandomSource for RpgRollTapeSource {
                 ),
             ));
         }
-        if let Some((index, value)) = entry
-            .values
-            .iter()
-            .enumerate()
-            .find(|(_, value)| **value == 0 || **value > request.sides)
+        if let Some((index, value, sides)) = first_random_value_out_of_range(request, &entry.values)
         {
             return Err(random_failure(
                 "RPG_RANDOM_TAPE_VALUE_OUT_OF_RANGE",
                 &request.path,
-                format!(
-                    "roll-tape value {value} at offset {index} is outside 1..={}",
-                    request.sides
-                ),
+                format!("roll-tape value {value} at offset {index} is outside 1..={sides}"),
             ));
         }
         let entry = self
@@ -562,6 +555,31 @@ impl RpgRandomSource for RpgRollTapeSource {
             .saturating_add(u64::from(request.count));
         Ok(entry.values)
     }
+}
+
+fn first_random_value_out_of_range(
+    request: &RpgRandomRequest,
+    values: &[u32],
+) -> Option<(usize, u32, u32)> {
+    if request.heterogeneous_terms.is_empty() {
+        return values
+            .iter()
+            .copied()
+            .enumerate()
+            .find(|(_, value)| *value == 0 || *value > request.sides)
+            .map(|(index, value)| (index, value, request.sides));
+    }
+    let mut offset = 0_usize;
+    for term in &request.heterogeneous_terms {
+        for _ in 0..term.count {
+            let value = values.get(offset).copied().unwrap_or(0);
+            if value == 0 || value > term.sides {
+                return Some((offset, value, term.sides));
+            }
+            offset = offset.saturating_add(1);
+        }
+    }
+    None
 }
 
 #[derive(Debug, Clone)]

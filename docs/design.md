@@ -14,9 +14,9 @@ ruleset:
 
 | Contract | Owns | Must not contain |
 | --- | --- | --- |
-| `Ruleset` (`asha.rpg.ruleset@1`) | language compatibility, Rust-bound operation and capability provisions, named stat/defense contracts, numeric domains, scalar calculation selectors, contribution stacking groups | actions, spells, classes, creatures, items, conditions, presentation, setup |
+| `Ruleset` (`asha.rpg.ruleset@1`) | language compatibility, Rust-bound operation and capability provisions, named stat/defense contracts, numeric domains, scalar calculation selectors, contribution stacking groups, scalar-test profiles, heterogeneous-pool profiles | actions, spells, classes, creatures, items, conditions, presentation, setup |
 | `ContentPack` | authored definitions, presentation, dependencies, derivation, mixins, overlays | Rust execution callbacks, board/participants, commands or expected outcomes |
-| `PlayBundle` (`asha.rpg.play-bundle.prepared@5` / `.compiled@5`) | one Ruleset plus an exact compatible Content Pack closure and fingerprints | ambient discovery, executable TypeScript, scenario scripts |
+| `PlayBundle` (`asha.rpg.play-bundle.prepared@6` / `.compiled@6`) | one Ruleset plus an exact compatible Content Pack closure and fingerprints | ambient discovery, executable TypeScript, scenario scripts |
 | `Scenario` (`asha.rpg.scenario@2`) | board, participants, selected definitions, initial values, initiative, and random-source policy for one PlayBundle | definitions, commands, targets, reactions, rolls, expected events/outcomes, Tester configuration |
 
 A Tester is a caller of the same accessible interaction surface as a person;
@@ -115,7 +115,7 @@ portable state hash, and replay boundary. A command cannot submit or replace
 feature semantics.
 
 Rulesets own versioned scalar calculation selectors, their numeric domains, and
-versioned stacking groups. Item and character-feature schema version 3 may
+versioned stacking groups. Item and character-feature schema version 4 may
 declare `asha.rpg.scalar-contribution@1` records. Each retains a stable
 contribution id, source definition id and label, owned selector and stacking
 group references, a signed bounded value expression, and a bounded typed
@@ -142,29 +142,50 @@ inapplicable entry carries the failed typed-fact reason; a suppressed entry
 names the policy and canonical retained sources. The ledger owns no mutable
 state and consumes no randomness.
 
-One source may declare at most 32 contributions, one evaluation may gather at
+The same item and feature schemas may separately declare
+`asha.rpg.pool-contribution@1` records for a Ruleset-owned heterogeneous-pool
+profile. Their closed effects add a die count, add an automatic result-axis
+value, or replace one die at a time with an explicit fallback. They reuse the
+typed predicate and stacking contracts, but never pass through the scalar
+selector ledger.
+
+One source may declare at most 32 contributions of each typed family, one
+evaluation may gather at
 most 256, predicates allow depth 16 and 128 nodes, and value expressions use
 the existing formula depth/node bounds. Unknown owners, selectors, groups,
 facts, tags, versions, duplicates, overflow, and out-of-domain values fail
 closed. Classes and features remain sealed. Levels, prerequisites, runtime
-feature choice, diagonal flanking, arbitrary auras, pool/category effects, and
-selectors for damage, healing, or defenses remain separate work.
+feature choice, diagonal flanking, arbitrary auras, arbitrary pool/category
+scripts, and selectors for damage, healing, or defenses remain separate work.
 
 ## Rust semantic profile
 
 The initial closed operation vocabulary supports damage, healing, resource
 change, fixed-delta and selected-cell grid movement, turn-bounded modifiers,
 and a typed reaction window.
-Checks support attack, saving throw, generic Ruleset-owned scalar tests, and
-no-roll flows. Scalar profiles own one d2..d100 primary die, a checked numeric
+Checks support attack, saving throw, generic Ruleset-owned scalar tests,
+Ruleset-owned heterogeneous pools, and no-roll flows. Scalar profiles own one
+d2..d100 primary die, a checked numeric
 domain, complete margin classification, ordered bands, disjoint natural rules,
-and an optional scalar contribution selector. Item/feature schema version 3 may
+and an optional scalar contribution selector. Item/feature schema version 4 may
 also declare typed contextual band shifts. Rust resolves margin, natural rule,
 then each canonical contextual shift with per-step end clamping and emits the
 complete ledger before selecting one known band branch or its required default.
 The scalar base and explicit difficulty use the non-random subset of the
 formula AST (constants, named stat reads, addition, and halving), so the
 profile's primary die is the check's only random evidence.
+
+Heterogeneous-pool profiles own canonical d2..d100 die types with complete
+face-to-vector tables, result axes, disjoint cancellation pairs, and ordered
+vector-outcome rules with a required default band. Actions provide canonical
+base die counts and automatic axes. Rust gathers applicable item and selected
+feature pool contributions, performs grouped additions and sequential
+replacement-or-fallback units, then freezes the exact die-type/count/sides
+request before reading evidence. Accepted evidence retains every die type,
+ordinal, side count, and face value. Events and trace retain the source ledger,
+replacement decisions, frozen pool, raw and automatic axes, cancellation, net
+axes, and selected outcome branch. TypeScript only authors and validates the
+retained declarations.
 Programs support one atomic root containing bounded sequence, predicate branch,
 repeat, per-target, check-outcome, and scalar-outcome branches. Unknown
 operations, capabilities, references, or versions fail closed.
@@ -185,11 +206,11 @@ numeric domains, content-owned resource/modifier ids, board, occupancy,
 initiative, capability owners, and random-source binding before mutable state
 exists.
 
-Checkpoint schema version 6 embeds the exact compiled PlayBundle, Scenario and
+Checkpoint schema version 7 embeds the exact compiled PlayBundle, Scenario and
 Scenario fingerprint, portable state, turn/log, accepted random position,
-pending phase, and canonical state hash. Replay entry schema version 7 records
+pending phase, and canonical state hash. Replay entry schema version 8 records
 ordinary submit/reaction/turn-control operations and verifies before/after
-boundaries. Accepted event schema version 5 and encounter-view schema version 7
+boundaries. Accepted event schema version 6 and encounter-view schema version 8
 carry the contextual contribution ledger, character selection, activation
 budgets, and accepted activation count. Replay never reruns
 authoring or substitutes a candidate artifact.
@@ -250,8 +271,8 @@ rather than retained as aliases.
 The survey-selected neutral expansion is specified in
 [`first-wave-primitive-catalog.md`](first-wave-primitive-catalog.md). That
 catalog is an implementation map. `F0@1`, the contextual contribution ledger,
-and `F1@1`, generic scalar tests and ordered outcomes, and `F2@1`, variable
-activation budgets, are implemented as described above. `F3` through `F6` remain non-claims until
-their separately reviewed tasks update this canonical design and the
-corresponding code, schemas, tests, events, readbacks, checkpoint, and replay
-contracts.
+`F1@1`, generic scalar tests and ordered outcomes, `F2@1`, variable activation
+budgets, and `F6@1`, heterogeneous pools and vector outcomes, are implemented
+as described above. `F3` through `F5` remain non-claims until their separately
+reviewed tasks update this canonical design and the corresponding code,
+schemas, tests, events, readbacks, checkpoint, and replay contracts.

@@ -140,6 +140,58 @@ export interface RulesetScalarTestProfile {
   readonly naturalDieRules: readonly RulesetNaturalDieRule[];
 }
 
+export interface RulesetPoolAxisValue {
+  readonly axisId: string;
+  readonly value: number;
+}
+
+export interface RulesetPoolFace {
+  readonly value: number;
+  readonly vector: readonly RulesetPoolAxisValue[];
+}
+
+export interface RulesetPoolDieType {
+  readonly id: string;
+  readonly label: string;
+  readonly sides: number;
+  readonly faces: readonly RulesetPoolFace[];
+}
+
+export interface RulesetPoolResultAxis {
+  readonly id: string;
+  readonly label: string;
+}
+
+export interface RulesetPoolCancellation {
+  readonly id: string;
+  readonly positiveAxisId: string;
+  readonly negativeAxisId: string;
+}
+
+export interface RulesetVectorOutcomeRequirement {
+  readonly axisId: string;
+  readonly minimum: number | null;
+  readonly maximum: number | null;
+}
+
+export interface RulesetVectorOutcomeRule {
+  readonly id: string;
+  readonly bandId: string;
+  readonly requirements: readonly RulesetVectorOutcomeRequirement[];
+}
+
+export interface RulesetHeterogeneousPoolProfile {
+  readonly id: string;
+  readonly version: 1;
+  readonly label: string;
+  readonly dieTypes: readonly RulesetPoolDieType[];
+  readonly axes: readonly RulesetPoolResultAxis[];
+  readonly cancellations: readonly RulesetPoolCancellation[];
+  readonly bands: readonly RulesetOutcomeBand[];
+  readonly outcomeRules: readonly RulesetVectorOutcomeRule[];
+  readonly defaultBandId: string;
+}
+
 export type RulesetActivationTiming = "action" | "reaction";
 export type RulesetActivationBudgetResetBoundary =
   | "ownerTurnStart"
@@ -169,6 +221,7 @@ export interface RulesetProvisions {
   readonly contributionStackingGroups: readonly RulesetContributionStackingGroupContract[];
   readonly scalarTestProfiles: readonly RulesetScalarTestProfile[];
   readonly activationBudgets: readonly RulesetActivationBudget[];
+  readonly heterogeneousPoolProfiles: readonly RulesetHeterogeneousPoolProfile[];
 }
 
 export type RulesetActionEconomyModel =
@@ -600,7 +653,7 @@ export type ContentItemAttribute =
 export interface ContentItemData {
   readonly schema: {
     readonly identity: "asha.rpg.item";
-    readonly version: 3;
+    readonly version: 4;
   };
   readonly tags: readonly string[];
   readonly traits: readonly string[];
@@ -608,6 +661,7 @@ export interface ContentItemData {
   readonly attributes: readonly ContentItemAttribute[];
   readonly contributions: readonly ContentScalarContribution[];
   readonly outcomeBandShifts: readonly ContentOutcomeBandShift[];
+  readonly poolContributions: readonly ContentPoolContribution[];
 }
 
 export interface ContentItemDefinition extends ContentDefinitionBase {
@@ -733,6 +787,37 @@ export interface ContentOutcomeBandShift {
   readonly predicate: ContentContributionPredicate;
 }
 
+export type ContentPoolContributionEffect =
+  | {
+      readonly kind: "addDice";
+      readonly dieTypeId: string;
+      readonly delta: number;
+    }
+  | {
+      readonly kind: "addAxis";
+      readonly axisId: string;
+      readonly value: number;
+    }
+  | {
+      readonly kind: "replaceOrAddDie";
+      readonly fromDieTypeId: string;
+      readonly toDieTypeId: string;
+      readonly count: number;
+      readonly fallbackDieTypeId: string;
+    };
+
+export interface ContentPoolContribution {
+  readonly schema: {
+    readonly identity: "asha.rpg.pool-contribution";
+    readonly version: 1;
+  };
+  readonly id: string;
+  readonly profile: ContentOwnedRulesetReference;
+  readonly stackingGroup: ContentOwnedRulesetReference;
+  readonly effect: ContentPoolContributionEffect;
+  readonly predicate: ContentContributionPredicate;
+}
+
 export interface ContentCharacterClassData {
   readonly schema: {
     readonly identity: "asha.rpg.character-class";
@@ -749,10 +834,11 @@ export interface ContentCharacterClassDefinition extends ContentDefinitionBase {
 export interface ContentCharacterFeatureData {
   readonly schema: {
     readonly identity: "asha.rpg.character-feature";
-    readonly version: 3;
+    readonly version: 4;
   };
   readonly contributions: readonly ContentScalarContribution[];
   readonly outcomeBandShifts: readonly ContentOutcomeBandShift[];
+  readonly poolContributions: readonly ContentPoolContribution[];
 }
 
 export interface ContentCharacterFeatureDefinition extends ContentDefinitionBase {
@@ -1097,7 +1183,7 @@ export interface MaterializedContentDefinition {
 export interface PreparedPlayBundle {
   readonly schema: {
     readonly identity: "asha.rpg.play-bundle.prepared";
-    readonly major: 5;
+    readonly major: 6;
   };
   readonly playBundleIdentity: PlayBundleIdentity;
   readonly ruleset: Ruleset;

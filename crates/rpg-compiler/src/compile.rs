@@ -9,8 +9,8 @@ use rpg_ir::{
     NormalizedRpgIr, RpgIrAction, RpgIrActivation, RpgIrActivationTiming, RpgIrCheck, RpgIrFormula,
     RpgIrOperation, RpgIrPredicate, RpgIrProgram, RpgIrRequirementKind, RpgIrResourceCost,
     RpgIrRollScope, RpgIrScalarTestDifficulty, RpgIrSubject, RpgIrTargetKind, RpgIrTargetSelector,
-    RpgIrTeamConstraint, Ruleset, RulesetActivationBudget, RulesetScalarTestProfile,
-    RPG_IR_IDENTITY, RPG_IR_MAJOR,
+    RpgIrTeamConstraint, Ruleset, RulesetActivationBudget, RulesetHeterogeneousPoolProfile,
+    RulesetScalarTestProfile, RPG_IR_IDENTITY, RPG_IR_MAJOR,
 };
 use serde::Serialize;
 
@@ -75,6 +75,7 @@ enum CheckKind {
     Attack,
     SavingThrow,
     ScalarTest,
+    HeterogeneousPool,
 }
 
 #[derive(Debug, Clone)]
@@ -90,6 +91,7 @@ pub struct CompiledRpgRules {
     calculation_selectors: BTreeMap<String, CompiledCalculationSelector>,
     contribution_stacking_groups: BTreeMap<String, RpgContributionStackingPolicy>,
     scalar_test_profiles: BTreeMap<String, CompiledScalarTestProfile>,
+    heterogeneous_pool_profiles: BTreeMap<String, RulesetHeterogeneousPoolProfile>,
     activation_budgets: BTreeMap<String, RulesetActivationBudget>,
     accepted_activation_ceiling: Option<u32>,
 }
@@ -286,6 +288,13 @@ impl CompiledRpgRules {
                     })
             })
             .collect();
+        self.heterogeneous_pool_profiles = ruleset
+            .provides
+            .heterogeneous_pool_profiles
+            .iter()
+            .cloned()
+            .map(|profile| (profile.id.clone(), profile))
+            .collect();
     }
 
     pub(crate) fn character_feature(
@@ -318,6 +327,13 @@ impl CompiledRpgRules {
         profile_id: &str,
     ) -> Option<&CompiledScalarTestProfile> {
         self.scalar_test_profiles.get(profile_id)
+    }
+
+    pub(crate) fn heterogeneous_pool_profile(
+        &self,
+        profile_id: &str,
+    ) -> Option<&RulesetHeterogeneousPoolProfile> {
+        self.heterogeneous_pool_profiles.get(profile_id)
     }
 
     pub fn uses_variable_activation_budgets(&self) -> bool {
@@ -629,6 +645,7 @@ pub(crate) fn compile_normalized_rpg_ir_with_ruleset(
         calculation_selectors: BTreeMap::new(),
         contribution_stacking_groups: BTreeMap::new(),
         scalar_test_profiles: BTreeMap::new(),
+        heterogeneous_pool_profiles: BTreeMap::new(),
         activation_budgets: BTreeMap::new(),
         accepted_activation_ceiling: None,
     })
@@ -656,10 +673,54 @@ fn collect_action_random_plan(
 ) -> Vec<RpgRandomPlanEntry> {
     let mut plan = Vec::new();
     if !matches!(action.check, RpgIrCheck::NoRoll) {
+        if let RpgIrCheck::HeterogeneousPool {
+            profile, base_dice, ..
+        } = &action.check
+        {
+            let profile = ruleset.and_then(|ruleset| {
+                ruleset
+                    .provides
+                    .heterogeneous_pool_profiles
+                    .iter()
+                    .find(|candidate| candidate.id == profile.id)
+            });
+            let heterogeneous_terms = base_dice
+                .iter()
+                .filter_map(|term| {
+                    profile.and_then(|profile| {
+                        profile
+                            .die_types
+                            .iter()
+                            .find(|die| die.id == term.die_type_id)
+                            .map(|die| rpg_core::RpgHeterogeneousRandomTerm {
+                                die_type_id: term.die_type_id.clone(),
+                                count: term.count,
+                                sides: die.sides,
+                            })
+                    })
+                })
+                .collect::<Vec<_>>();
+            let count = heterogeneous_terms
+                .iter()
+                .fold(0_u32, |total, term| total.saturating_add(term.count));
+            plan.push(RpgRandomPlanEntry {
+                request: RpgRandomRequest {
+                    kind: RpgRandomRequestKind::HeterogeneousPool,
+                    count,
+                    sides: 0,
+                    path: "$.action.check".to_owned(),
+                    heterogeneous_terms,
+                },
+                conditions: Vec::new(),
+            });
+            collect_program_random_plan(&action.program, "$.action.program", &[], &mut plan);
+            return plan;
+        }
         let kind = match action.check {
             RpgIrCheck::Attack { .. } => RpgRandomRequestKind::AttackCheck,
             RpgIrCheck::SavingThrow { .. } => RpgRandomRequestKind::SavingThrowCheck,
             RpgIrCheck::ScalarTest { .. } => RpgRandomRequestKind::ScalarTest,
+            RpgIrCheck::HeterogeneousPool { .. } => unreachable!(),
             RpgIrCheck::NoRoll => unreachable!(),
         };
         let sides = match &action.check {
@@ -672,6 +733,7 @@ fn collect_action_random_plan(
                         .find(|candidate| candidate.id == profile.id)
                 })
                 .map_or(0, |profile| profile.die_sides),
+            RpgIrCheck::HeterogeneousPool { .. } => unreachable!(),
             _ => 20,
         };
         let count = match action.roll_scope {
@@ -685,6 +747,7 @@ fn collect_action_random_plan(
                 count,
                 sides,
                 path: "$.action.check".to_owned(),
+                heterogeneous_terms: Vec::new(),
             },
             conditions: Vec::new(),
         });
@@ -891,6 +954,7 @@ fn collect_formula_random_plan(
                 count: *count,
                 sides: *sides,
                 path: path.to_owned(),
+                heterogeneous_terms: Vec::new(),
             },
             conditions: conditions.to_vec(),
         }),
@@ -1224,6 +1288,7 @@ impl<'a> Validator<'a> {
                     RpgIrCheck::Attack { .. } => CheckKind::Attack,
                     RpgIrCheck::SavingThrow { .. } => CheckKind::SavingThrow,
                     RpgIrCheck::ScalarTest { .. } => CheckKind::ScalarTest,
+                    RpgIrCheck::HeterogeneousPool { .. } => CheckKind::HeterogeneousPool,
                 },
                 outcome_branch_count: 0,
             };
@@ -1235,13 +1300,16 @@ impl<'a> Validator<'a> {
                 false,
                 &mut program_state,
             );
-            let scalar_test_selected = matches!(program_state.check_kind, CheckKind::ScalarTest);
-            if scalar_test_selected != (program_state.outcome_branch_count == 1) {
+            let outcome_check_selected = matches!(
+                program_state.check_kind,
+                CheckKind::ScalarTest | CheckKind::HeterogeneousPool
+            );
+            if outcome_check_selected != (program_state.outcome_branch_count == 1) {
                 self.error(
                     RpgDiagnosticStage::Semantics,
                     "RPG_IR_OUTCOME_BRANCH_COUNT_INVALID",
                     format!("{path}.program"),
-                    "a scalar test requires exactly one on-outcome branch and other checks forbid it",
+                    "a scalar or heterogeneous-pool test requires exactly one on-outcome branch and other checks forbid it",
                 );
             }
             if action.targets.kind == RpgIrTargetKind::Cell
@@ -1347,6 +1415,74 @@ impl<'a> Validator<'a> {
                         );
                     }
                 }
+            }
+            RpgIrCheck::HeterogeneousPool {
+                profile,
+                base_dice,
+                automatic_axes,
+            } => {
+                if action.roll_scope == RpgIrRollScope::None {
+                    self.error(
+                        RpgDiagnosticStage::Semantics,
+                        "RPG_IR_ROLL_SCOPE_INVALID",
+                        format!("{path}.rollScope"),
+                        "a heterogeneous pool requires shared or per-target roll scope",
+                    );
+                }
+                if profile.ruleset_id.trim().is_empty() || profile.id.trim().is_empty() {
+                    self.error(
+                        RpgDiagnosticStage::References,
+                        "RPG_IR_HETEROGENEOUS_POOL_PROFILE_INVALID",
+                        format!("{path}.check.profile"),
+                        "a heterogeneous pool requires an owned Ruleset profile reference",
+                    );
+                }
+                if base_dice.is_empty() || base_dice.len() > 64 {
+                    self.error(
+                        RpgDiagnosticStage::Semantics,
+                        "RPG_IR_HETEROGENEOUS_POOL_TERMS_INVALID",
+                        format!("{path}.check.baseDice"),
+                        "a heterogeneous pool requires 1..=64 base die terms",
+                    );
+                }
+                let mut previous_die = None::<&str>;
+                let mut total_dice = 0_u32;
+                for (index, term) in base_dice.iter().enumerate() {
+                    if term.count == 0
+                        || previous_die
+                            .is_some_and(|previous| previous >= term.die_type_id.as_str())
+                    {
+                        self.error(
+                            RpgDiagnosticStage::Semantics,
+                            "RPG_IR_HETEROGENEOUS_POOL_TERM_INVALID",
+                            format!("{path}.check.baseDice[{index}]"),
+                            "base die terms require unique sorted ids and positive counts",
+                        );
+                    }
+                    total_dice = total_dice.saturating_add(term.count);
+                    previous_die = Some(term.die_type_id.as_str());
+                }
+                if total_dice > 256 {
+                    self.error(
+                        RpgDiagnosticStage::Semantics,
+                        "RPG_IR_HETEROGENEOUS_POOL_DICE_LIMIT_EXCEEDED",
+                        format!("{path}.check.baseDice"),
+                        "a heterogeneous pool may contain at most 256 base dice",
+                    );
+                }
+                let mut previous_axis = None::<&str>;
+                for (index, axis) in automatic_axes.iter().enumerate() {
+                    if previous_axis.is_some_and(|previous| previous >= axis.axis_id.as_str()) {
+                        self.error(
+                            RpgDiagnosticStage::Semantics,
+                            "RPG_IR_HETEROGENEOUS_POOL_AXIS_INVALID",
+                            format!("{path}.check.automaticAxes[{index}]"),
+                            "automatic axis entries require unique sorted ids",
+                        );
+                    }
+                    previous_axis = Some(axis.axis_id.as_str());
+                }
+                self.require_capability("capability.random", &format!("{path}.check"));
             }
         }
     }
@@ -1505,7 +1641,7 @@ impl<'a> Validator<'a> {
                     }
                     CheckKind::Attack => saved.is_some() || failed.is_some() || no_roll.is_some(),
                     CheckKind::SavingThrow => hit.is_some() || miss.is_some() || no_roll.is_some(),
-                    CheckKind::ScalarTest => true,
+                    CheckKind::ScalarTest | CheckKind::HeterogeneousPool => true,
                 };
                 if has_incompatible_branch {
                     self.error(
@@ -1539,12 +1675,15 @@ impl<'a> Validator<'a> {
             }
             RpgIrProgram::OnOutcome { branches, default } => {
                 state.outcome_branch_count = state.outcome_branch_count.saturating_add(1);
-                if !matches!(state.check_kind, CheckKind::ScalarTest) {
+                if !matches!(
+                    state.check_kind,
+                    CheckKind::ScalarTest | CheckKind::HeterogeneousPool
+                ) {
                     self.error(
                         RpgDiagnosticStage::Semantics,
                         "RPG_IR_OUTCOME_BRANCH_INCOMPATIBLE",
                         path,
-                        "on-outcome is available only to scalar-test actions",
+                        "on-outcome is available only to scalar or heterogeneous-pool actions",
                     );
                 }
                 if state.action_target_maximum > 1 && !target_bound {

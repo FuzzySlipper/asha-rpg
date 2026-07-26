@@ -8,12 +8,12 @@ consumer compiles or loads a `CompiledPlayBundle` and calls
 creating mutable authority state.
 
 The schema is `asha.rpg.scenario@2`. `playBundleId` must exactly match the
-compiled artifact. Checkpoint schema `asha.rpg.session.checkpoint@6` stores the
+compiled artifact. Checkpoint schema `asha.rpg.session.checkpoint@7` stores the
 Scenario and its `fnv1a64.rpg-scenario.v1` fingerprint. Replay entry schema
-version 7 binds before/after boundaries to that Scenario, source binding, turn,
-revision, and state hash. Accepted event schema version 5 carries the
+version 8 binds before/after boundaries to that Scenario, source binding, turn,
+revision, and state hash. Accepted event schema version 6 carries the
 contextual contribution ledger and activation transitions, and encounter-view
-schema version 7 exposes that event history plus explicit class/feature
+schema version 8 exposes that event history plus explicit class/feature
 selection and activation-budget readback.
 
 ## Setup-only data

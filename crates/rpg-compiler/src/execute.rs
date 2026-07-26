@@ -5,19 +5,22 @@ use rpg_core::{
     RpgCapabilityState, RpgCapabilityWorkspace, RpgContributionComparison,
     RpgContributionDisposition, RpgContributionPredicate, RpgContributionStackingPolicy,
     RpgContributionSubject, RpgContributionTeamRelation, RpgContributionValueExpression,
-    RpgDomainEvent, RpgIntent, RpgModifierStackingPolicy, RpgNaturalDieEffect,
-    RpgNaturalDieResolution, RpgOutcomeBandShiftDecision, RpgOutcomeBandShiftDefinition,
-    RpgOutcomeBandShiftDisposition, RpgOutcomeBandShiftLedger, RpgRandomEvidence, RpgRandomRequest,
-    RpgRandomRequestKind, RpgReactionActivationBudgetCost, RpgReactionDecision, RpgReactionOption,
-    RpgReactionRequest, RpgReactionUnavailable, RpgResolutionContext, RpgResolutionReceipt,
-    RpgResolutionRejection, RpgRulesetValueKind, RpgScalarContributionDecision,
-    RpgScalarContributionDefinition, RpgScalarContributionLedger, RpgTraceStep,
+    RpgDomainEvent, RpgHeterogeneousRandomTerm, RpgHeterogeneousRandomValue, RpgIntent,
+    RpgModifierStackingPolicy, RpgNaturalDieEffect, RpgNaturalDieResolution,
+    RpgOutcomeBandShiftDecision, RpgOutcomeBandShiftDefinition, RpgOutcomeBandShiftDisposition,
+    RpgOutcomeBandShiftLedger, RpgPoolCancellationResult, RpgPoolContributionDecision,
+    RpgPoolContributionDefinition, RpgPoolContributionEffect, RpgPoolContributionLedger,
+    RpgPoolReplacementUnit, RpgRandomEvidence, RpgRandomRequest, RpgRandomRequestKind,
+    RpgReactionActivationBudgetCost, RpgReactionDecision, RpgReactionOption, RpgReactionRequest,
+    RpgReactionUnavailable, RpgResolutionContext, RpgResolutionReceipt, RpgResolutionRejection,
+    RpgRulesetValueKind, RpgScalarContributionDecision, RpgScalarContributionDefinition,
+    RpgScalarContributionLedger, RpgTraceStep,
 };
 use rpg_ir::{
     CompiledCharacterFeature, CompiledItemDefinition, RpgIrActivation, RpgIrCheck, RpgIrComparison,
     RpgIrFormula, RpgIrOperation, RpgIrPredicate, RpgIrRollScope, RpgIrScalarTestDifficulty,
-    RpgIrSubject, RpgIrTargetKind, RpgIrTeamConstraint, RulesetMarginBandRule,
-    RulesetNaturalDieRule, RulesetOutcomeBand,
+    RpgIrSubject, RpgIrTargetKind, RpgIrTeamConstraint, RulesetHeterogeneousPoolProfile,
+    RulesetMarginBandRule, RulesetNaturalDieRule, RulesetOutcomeBand,
 };
 
 use crate::compile::{CompiledAction, CompiledOperation, CompiledProgram};
@@ -31,6 +34,7 @@ enum CheckOutcome {
     Failed,
     NoRoll,
     Scalar { profile_id: String, band_id: String },
+    Vector { profile_id: String, band_id: String },
 }
 
 impl CompiledRpgRules {
@@ -602,8 +606,10 @@ impl Execution<'_> {
 
     fn resolve_checks(&mut self) -> Result<(), RpgResolutionRejection> {
         let shared_roll = if self.action.roll_scope == RpgIrRollScope::Shared
-            && !matches!(self.action.check, RpgIrCheck::NoRoll)
-        {
+            && !matches!(
+                self.action.check,
+                RpgIrCheck::NoRoll | RpgIrCheck::HeterogeneousPool { .. }
+            ) {
             let (kind, sides) = self.check_random_request("$.action.check")?;
             Some(self.take_random(kind, sides, "$.action.check.sharedRoll")?)
         } else {
@@ -817,6 +823,37 @@ impl Execution<'_> {
                         band_id: final_band_id,
                     }
                 }
+                RpgIrCheck::HeterogeneousPool {
+                    profile,
+                    base_dice,
+                    automatic_axes,
+                } => {
+                    let profile_definition = self
+                        .rules
+                        .heterogeneous_pool_profile(&profile.id)
+                        .cloned()
+                        .ok_or_else(|| {
+                            self.fail(
+                                "RPG_RUNTIME_HETEROGENEOUS_POOL_PROFILE_UNKNOWN",
+                                &format!("{path}.profile"),
+                                format!(
+                                    "compiled heterogeneous-pool profile {} is unavailable",
+                                    profile.id
+                                ),
+                            )
+                        })?;
+                    let final_band_id = self.resolve_heterogeneous_pool(
+                        &profile_definition,
+                        base_dice,
+                        automatic_axes,
+                        &target_id,
+                        &path,
+                    )?;
+                    CheckOutcome::Vector {
+                        profile_id: profile_definition.id,
+                        band_id: final_band_id,
+                    }
+                }
             };
             self.outcomes.insert(target_id.clone(), outcome.clone());
             self.trace.push(RpgTraceStep {
@@ -852,12 +889,568 @@ impl Execution<'_> {
                         format!("compiled scalar-test profile {} is unavailable", profile.id),
                     )
                 }),
+            RpgIrCheck::HeterogeneousPool { .. } => Err(self.fail(
+                "RPG_RUNTIME_RANDOM_REQUEST_INVALID",
+                path,
+                "heterogeneous pool checks use an exact typed random request",
+            )),
             RpgIrCheck::NoRoll => Err(self.fail(
                 "RPG_RUNTIME_RANDOM_REQUEST_INVALID",
                 path,
                 "a no-roll action cannot request check randomness",
             )),
         }
+    }
+
+    fn resolve_heterogeneous_pool(
+        &mut self,
+        profile: &RulesetHeterogeneousPoolProfile,
+        base_terms: &[rpg_ir::RpgIrPoolDieTerm],
+        base_automatic_axes: &[rpg_ir::RpgIrPoolAxisValue],
+        target_id: &str,
+        path: &str,
+    ) -> Result<String, RpgResolutionRejection> {
+        let die_types = profile
+            .die_types
+            .iter()
+            .map(|die| (die.id.as_str(), die))
+            .collect::<BTreeMap<_, _>>();
+        let axis_ids = profile
+            .axes
+            .iter()
+            .map(|axis| axis.id.as_str())
+            .collect::<BTreeSet<_>>();
+        let mut base_dice = BTreeMap::<String, u32>::new();
+        for (index, term) in base_terms.iter().enumerate() {
+            if !die_types.contains_key(term.die_type_id.as_str()) {
+                return Err(self.fail(
+                    "RPG_RUNTIME_POOL_DIE_TYPE_UNKNOWN",
+                    &format!("{path}.baseDice[{index}].dieTypeId"),
+                    format!("unknown pool die type {}", term.die_type_id),
+                ));
+            }
+            base_dice.insert(term.die_type_id.clone(), term.count);
+        }
+        let mut pending = Vec::<PendingPoolContribution>::new();
+        for feature in &self.character_features {
+            for contribution in &feature.pool_contributions {
+                if contribution.profile.id == profile.id {
+                    pending.push(PendingPoolContribution {
+                        source_definition_id: feature.definition_id.clone(),
+                        source_instance_id: None,
+                        source_label: feature.label.clone(),
+                        definition: contribution.clone(),
+                    });
+                }
+            }
+        }
+        if let (Some(item), Some(binding)) = (self.bound_item, self.intent.item_binding.as_ref()) {
+            for contribution in &item.pool_contributions {
+                if contribution.profile.id == profile.id {
+                    pending.push(PendingPoolContribution {
+                        source_definition_id: item.definition_id.clone(),
+                        source_instance_id: Some(binding.item_instance_id.clone()),
+                        source_label: item.label.clone(),
+                        definition: contribution.clone(),
+                    });
+                }
+            }
+        }
+        pending.sort_by(|left, right| left.canonical_key().cmp(&right.canonical_key()));
+        if pending.len() > 256 {
+            return Err(self.fail(
+                "RPG_RUNTIME_POOL_CONTRIBUTION_LIMIT_EXCEEDED",
+                &format!("{path}.contributionLedger"),
+                "one pool evaluation may consider at most 256 contributions",
+            ));
+        }
+        for adjacent in pending.windows(2) {
+            if adjacent[0].canonical_key() == adjacent[1].canonical_key() {
+                return Err(self.fail(
+                    "RPG_RUNTIME_POOL_CONTRIBUTION_IDENTITY_DUPLICATE",
+                    &format!("{path}.contributionLedger"),
+                    format!(
+                        "duplicate pool contribution identity {}",
+                        adjacent[0].display_key()
+                    ),
+                ));
+            }
+        }
+
+        let mut decisions = Vec::<RpgPoolContributionDecision>::with_capacity(pending.len());
+        for (index, candidate) in pending.iter().enumerate() {
+            let candidate_path = format!("{path}.contributionLedger.candidates[{index}]");
+            let inapplicable_reason = self.evaluate_contribution_predicate(
+                &candidate.definition.predicate,
+                target_id,
+                &candidate_path,
+            )?;
+            decisions.push(RpgPoolContributionDecision {
+                source_definition_id: candidate.source_definition_id.clone(),
+                source_instance_id: candidate.source_instance_id.clone(),
+                source_label: candidate.source_label.clone(),
+                contribution_id: candidate.definition.id.clone(),
+                profile_id: profile.id.clone(),
+                stacking_group_id: candidate.definition.stacking_group.id.clone(),
+                effect: candidate.definition.effect.clone(),
+                disposition: if let Some(reason) = inapplicable_reason {
+                    RpgContributionDisposition::Inapplicable { reason }
+                } else {
+                    RpgContributionDisposition::Applied
+                },
+            });
+        }
+        let mut group_indices = BTreeMap::<String, Vec<usize>>::new();
+        for (index, decision) in decisions.iter().enumerate() {
+            if matches!(decision.disposition, RpgContributionDisposition::Applied) {
+                group_indices
+                    .entry(decision.stacking_group_id.clone())
+                    .or_default()
+                    .push(index);
+            }
+        }
+        for (group_id, indices) in group_indices {
+            let policy = self
+                .rules
+                .contribution_stacking_policy(&group_id)
+                .ok_or_else(|| {
+                    self.fail(
+                        "RPG_RUNTIME_POOL_CONTRIBUTION_GROUP_UNKNOWN",
+                        &format!("{path}.contributionLedger"),
+                        format!("compiled stacking group {group_id} is unavailable"),
+                    )
+                })?;
+            let retained = retained_pool_contribution_indices(policy, &indices, &decisions);
+            let retained_keys = retained
+                .iter()
+                .map(|index| pool_decision_key(&decisions[*index]))
+                .collect::<Vec<_>>();
+            let retained_set = retained.into_iter().collect::<BTreeSet<_>>();
+            for index in indices {
+                if !retained_set.contains(&index) {
+                    decisions[index].disposition = RpgContributionDisposition::Suppressed {
+                        policy,
+                        retained_contribution_ids: retained_keys.clone(),
+                    };
+                }
+            }
+        }
+
+        let mut grouped_die_deltas = BTreeMap::<String, i32>::new();
+        let mut grouped_axis_values = BTreeMap::<String, i32>::new();
+        let mut replacements = Vec::<usize>::new();
+        let mut reduction_operations = 0_u32;
+        for (index, decision) in decisions.iter().enumerate() {
+            if !matches!(decision.disposition, RpgContributionDisposition::Applied) {
+                continue;
+            }
+            match &decision.effect {
+                RpgPoolContributionEffect::AddDice { die_type_id, delta } => {
+                    if !die_types.contains_key(die_type_id.as_str()) {
+                        return Err(self.fail(
+                            "RPG_RUNTIME_POOL_DIE_TYPE_UNKNOWN",
+                            &format!("{path}.contributionLedger.candidates[{index}].effect"),
+                            format!("unknown pool die type {die_type_id}"),
+                        ));
+                    }
+                    let total = grouped_die_deltas.entry(die_type_id.clone()).or_default();
+                    *total = total.checked_add(*delta).ok_or_else(|| {
+                        self.fail(
+                            "RPG_RUNTIME_POOL_DIE_DELTA_OVERFLOW",
+                            &format!("{path}.contributionLedger.groupedDieDeltas"),
+                            "grouped pool die deltas exceeded the runtime integer domain",
+                        )
+                    })?;
+                    reduction_operations = reduction_operations.saturating_add(1);
+                }
+                RpgPoolContributionEffect::AddAxis { axis_id, value } => {
+                    if !axis_ids.contains(axis_id.as_str()) {
+                        return Err(self.fail(
+                            "RPG_RUNTIME_POOL_AXIS_UNKNOWN",
+                            &format!("{path}.contributionLedger.candidates[{index}].effect"),
+                            format!("unknown pool result axis {axis_id}"),
+                        ));
+                    }
+                    let total = grouped_axis_values.entry(axis_id.clone()).or_default();
+                    *total = total.checked_add(*value).ok_or_else(|| {
+                        self.fail(
+                            "RPG_RUNTIME_POOL_AXIS_OVERFLOW",
+                            &format!("{path}.contributionLedger.groupedAxisValues"),
+                            "grouped automatic axis values exceeded the runtime integer domain",
+                        )
+                    })?;
+                    reduction_operations = reduction_operations.saturating_add(1);
+                }
+                RpgPoolContributionEffect::ReplaceOrAddDie {
+                    from_die_type_id,
+                    to_die_type_id,
+                    count,
+                    fallback_die_type_id,
+                } => {
+                    if from_die_type_id == to_die_type_id
+                        || *count == 0
+                        || !die_types.contains_key(from_die_type_id.as_str())
+                        || !die_types.contains_key(to_die_type_id.as_str())
+                        || !die_types.contains_key(fallback_die_type_id.as_str())
+                    {
+                        return Err(self.fail(
+                            "RPG_RUNTIME_POOL_REPLACEMENT_INVALID",
+                            &format!("{path}.contributionLedger.candidates[{index}].effect"),
+                            "pool replacement requires known ids, positive count, and distinct from/to ids",
+                        ));
+                    }
+                    reduction_operations = reduction_operations.saturating_add(*count);
+                    replacements.push(index);
+                }
+            }
+        }
+        if reduction_operations > 128 {
+            return Err(self.fail(
+                "RPG_RUNTIME_POOL_REDUCTION_LIMIT_EXCEEDED",
+                &format!("{path}.contributionLedger"),
+                "pool reduction requires more than 128 operations",
+            ));
+        }
+
+        let mut frozen_dice = base_dice.clone();
+        for (die_type_id, delta) in &grouped_die_deltas {
+            let previous = i64::from(*frozen_dice.get(die_type_id).unwrap_or(&0));
+            let current = previous.checked_add(i64::from(*delta)).ok_or_else(|| {
+                self.fail(
+                    "RPG_RUNTIME_POOL_DIE_COUNT_OVERFLOW",
+                    &format!("{path}.contributionLedger.groupedDieDeltas.{die_type_id}"),
+                    "pool die count exceeded the runtime integer domain",
+                )
+            })?;
+            if !(0..=256).contains(&current) {
+                return Err(self.fail(
+                    "RPG_RUNTIME_POOL_DIE_COUNT_INVALID",
+                    &format!("{path}.contributionLedger.groupedDieDeltas.{die_type_id}"),
+                    format!("pool die count {current} is outside 0..=256"),
+                ));
+            }
+            frozen_dice.insert(die_type_id.clone(), current as u32);
+        }
+        ensure_pool_total_bound(&frozen_dice, path, self)?;
+        let mut replacement_units = Vec::new();
+        for decision_index in replacements {
+            let decision = &decisions[decision_index];
+            let RpgPoolContributionEffect::ReplaceOrAddDie {
+                from_die_type_id,
+                to_die_type_id,
+                count,
+                fallback_die_type_id,
+            } = &decision.effect
+            else {
+                unreachable!("replacement indices contain only replacement effects");
+            };
+            for unit in 1..=*count {
+                let before_from_count = *frozen_dice.get(from_die_type_id).unwrap_or(&0);
+                let used_fallback = before_from_count == 0;
+                let added_die_type_id = if used_fallback {
+                    fallback_die_type_id
+                } else {
+                    frozen_dice.insert(from_die_type_id.clone(), before_from_count - 1);
+                    to_die_type_id
+                };
+                let after_added_count = frozen_dice
+                    .get(added_die_type_id)
+                    .copied()
+                    .unwrap_or(0)
+                    .checked_add(1)
+                    .ok_or_else(|| {
+                        self.fail(
+                            "RPG_RUNTIME_POOL_DIE_COUNT_OVERFLOW",
+                            &format!("{path}.contributionLedger.replacementUnits"),
+                            "pool replacement exceeded the die-count domain",
+                        )
+                    })?;
+                frozen_dice.insert(added_die_type_id.clone(), after_added_count);
+                ensure_pool_total_bound(&frozen_dice, path, self)?;
+                let after_from_count = *frozen_dice.get(from_die_type_id).unwrap_or(&0);
+                replacement_units.push(RpgPoolReplacementUnit {
+                    contribution_id: pool_decision_key(decision),
+                    unit,
+                    from_die_type_id: from_die_type_id.clone(),
+                    added_die_type_id: added_die_type_id.clone(),
+                    used_fallback,
+                    before_from_count,
+                    after_from_count,
+                    after_added_count,
+                });
+                self.trace.push(RpgTraceStep {
+                    path: format!(
+                        "{path}.contributionLedger.replacementUnits[{}]",
+                        replacement_units.len() - 1
+                    ),
+                    code: "RPG_POOL_REPLACEMENT_UNIT_APPLIED".to_owned(),
+                    detail: format!(
+                        "{} unit {unit}: from {from_die_type_id} {before_from_count}->{after_from_count}, added {added_die_type_id} -> {after_added_count}, fallback {used_fallback}",
+                        pool_decision_key(decision)
+                    ),
+                });
+            }
+        }
+        frozen_dice.retain(|_, count| *count > 0);
+        let request_terms = frozen_dice
+            .iter()
+            .map(|(die_type_id, count)| RpgHeterogeneousRandomTerm {
+                die_type_id: die_type_id.clone(),
+                count: *count,
+                sides: die_types
+                    .get(die_type_id.as_str())
+                    .expect("validated frozen die type exists")
+                    .sides,
+            })
+            .collect::<Vec<_>>();
+        let (request, values, typed_values) =
+            self.take_heterogeneous_random(&request_terms, &format!("{path}.pool"))?;
+
+        let mut raw_axes = profile
+            .axes
+            .iter()
+            .map(|axis| (axis.id.clone(), 0_i32))
+            .collect::<BTreeMap<_, _>>();
+        for typed in &typed_values {
+            let die = die_types
+                .get(typed.die_type_id.as_str())
+                .expect("validated random die type exists");
+            let face = die
+                .faces
+                .get((typed.value - 1) as usize)
+                .expect("validated complete face table contains drawn face");
+            for axis in &face.vector {
+                let total = raw_axes.get_mut(&axis.axis_id).ok_or_else(|| {
+                    self.fail(
+                        "RPG_RUNTIME_POOL_AXIS_UNKNOWN",
+                        &format!("{path}.pool.faceVector"),
+                        format!("face table references unknown axis {}", axis.axis_id),
+                    )
+                })?;
+                *total = total.checked_add(axis.value).ok_or_else(|| {
+                    self.fail(
+                        "RPG_RUNTIME_POOL_AXIS_OVERFLOW",
+                        &format!("{path}.pool.rawAxes.{}", axis.axis_id),
+                        "face-vector aggregation exceeded the runtime integer domain",
+                    )
+                })?;
+            }
+        }
+        let mut automatic_axes = BTreeMap::<String, i32>::new();
+        for (index, axis) in base_automatic_axes.iter().enumerate() {
+            if !axis_ids.contains(axis.axis_id.as_str()) {
+                return Err(self.fail(
+                    "RPG_RUNTIME_POOL_AXIS_UNKNOWN",
+                    &format!("{path}.automaticAxes[{index}].axisId"),
+                    format!("unknown pool result axis {}", axis.axis_id),
+                ));
+            }
+            automatic_axes.insert(axis.axis_id.clone(), axis.value);
+        }
+        for (axis_id, value) in &grouped_axis_values {
+            let total = automatic_axes.entry(axis_id.clone()).or_default();
+            *total = total.checked_add(*value).ok_or_else(|| {
+                self.fail(
+                    "RPG_RUNTIME_POOL_AXIS_OVERFLOW",
+                    &format!("{path}.pool.automaticAxes.{axis_id}"),
+                    "automatic axis aggregation exceeded the runtime integer domain",
+                )
+            })?;
+        }
+        let mut net_axes = raw_axes.clone();
+        for (axis_id, value) in &automatic_axes {
+            let total = net_axes.get_mut(axis_id).ok_or_else(|| {
+                self.fail(
+                    "RPG_RUNTIME_POOL_AXIS_UNKNOWN",
+                    &format!("{path}.pool.automaticAxes.{axis_id}"),
+                    format!("unknown pool result axis {axis_id}"),
+                )
+            })?;
+            *total = total.checked_add(*value).ok_or_else(|| {
+                self.fail(
+                    "RPG_RUNTIME_POOL_AXIS_OVERFLOW",
+                    &format!("{path}.pool.netAxes.{axis_id}"),
+                    "raw and automatic axes exceeded the runtime integer domain",
+                )
+            })?;
+        }
+        let mut cancellations = Vec::with_capacity(profile.cancellations.len());
+        for cancellation in &profile.cancellations {
+            let positive = *net_axes
+                .get(&cancellation.positive_axis_id)
+                .expect("validated cancellation positive axis exists");
+            let negative = *net_axes
+                .get(&cancellation.negative_axis_id)
+                .expect("validated cancellation negative axis exists");
+            if positive < 0 || negative < 0 {
+                return Err(self.fail(
+                    "RPG_RUNTIME_POOL_CANCELLATION_AXIS_NEGATIVE",
+                    &format!("{path}.pool.cancellations.{}", cancellation.id),
+                    "paired cancellation axes must be non-negative before cancellation",
+                ));
+            }
+            let cancelled = positive.min(negative);
+            let positive_remaining = positive - cancelled;
+            let negative_remaining = negative - cancelled;
+            net_axes.insert(cancellation.positive_axis_id.clone(), positive_remaining);
+            net_axes.insert(cancellation.negative_axis_id.clone(), negative_remaining);
+            cancellations.push(RpgPoolCancellationResult {
+                cancellation_id: cancellation.id.clone(),
+                positive_axis_id: cancellation.positive_axis_id.clone(),
+                negative_axis_id: cancellation.negative_axis_id.clone(),
+                cancelled,
+                positive_remaining,
+                negative_remaining,
+            });
+        }
+        let final_band_id = profile
+            .outcome_rules
+            .iter()
+            .find(|rule| {
+                rule.requirements.iter().all(|requirement| {
+                    let value = net_axes.get(&requirement.axis_id).copied().unwrap_or(0);
+                    requirement.minimum.is_none_or(|minimum| value >= minimum)
+                        && requirement.maximum.is_none_or(|maximum| value <= maximum)
+                })
+            })
+            .map_or_else(
+                || profile.default_band_id.clone(),
+                |rule| rule.band_id.clone(),
+            );
+        let contribution_ledger = RpgPoolContributionLedger {
+            profile_id: profile.id.clone(),
+            candidates: decisions,
+            grouped_die_deltas,
+            grouped_axis_values,
+            replacement_units,
+        };
+        for (index, decision) in contribution_ledger.candidates.iter().enumerate() {
+            self.trace.push(RpgTraceStep {
+                path: format!("{path}.contributionLedger.candidates[{index}]"),
+                code: "RPG_POOL_CONTRIBUTION_EVALUATED".to_owned(),
+                detail: format!(
+                    "{} effect {:?} status {:?}",
+                    pool_decision_key(decision),
+                    decision.effect,
+                    decision.disposition
+                ),
+            });
+        }
+        self.trace.push(RpgTraceStep {
+            path: format!("{path}.pool"),
+            code: "RPG_HETEROGENEOUS_POOL_RESOLVED".to_owned(),
+            detail: format!(
+                "profile {} request {:?} net {:?} band {}",
+                profile.id, request.heterogeneous_terms, net_axes, final_band_id
+            ),
+        });
+        self.events.push(RpgDomainEvent::HeterogeneousPoolResolved {
+            actor_id: self.intent.actor_id.clone(),
+            target_id: target_id.to_owned(),
+            profile_id: profile.id.clone(),
+            base_dice,
+            contribution_ledger: Box::new(contribution_ledger),
+            frozen_dice,
+            evidence: typed_values,
+            raw_axes,
+            automatic_axes,
+            cancellations,
+            net_axes,
+            final_band_id: final_band_id.clone(),
+        });
+        debug_assert_eq!(request.count as usize, values.len());
+        Ok(final_band_id)
+    }
+
+    fn take_heterogeneous_random(
+        &mut self,
+        terms: &[RpgHeterogeneousRandomTerm],
+        path: &str,
+    ) -> Result<
+        (RpgRandomRequest, Vec<u32>, Vec<RpgHeterogeneousRandomValue>),
+        RpgResolutionRejection,
+    > {
+        let count = terms.iter().try_fold(0_u32, |total, term| {
+            total.checked_add(term.count).ok_or_else(|| {
+                self.fail(
+                    "RPG_RUNTIME_POOL_DIE_COUNT_OVERFLOW",
+                    path,
+                    "heterogeneous request count exceeded the runtime integer domain",
+                )
+            })
+        })?;
+        if count == 0 || count > 256 {
+            return Err(self.fail(
+                "RPG_RUNTIME_POOL_DIE_COUNT_INVALID",
+                path,
+                "a heterogeneous request requires 1..=256 total dice",
+            ));
+        }
+        let request = RpgRandomRequest {
+            kind: RpgRandomRequestKind::HeterogeneousPool,
+            count,
+            sides: 0,
+            path: path.to_owned(),
+            heterogeneous_terms: terms.to_vec(),
+        };
+        let available = u32::try_from(self.workspace.random_remaining()).unwrap_or(u32::MAX);
+        if available < count {
+            if available != 0 {
+                return Err(self.fail(
+                    "RPG_RANDOM_HETEROGENEOUS_EVIDENCE_PARTIAL",
+                    path,
+                    "heterogeneous evidence must be supplied as one exact complete request",
+                ));
+            }
+            let mut rejection = self.fail(
+                "RPG_RANDOM_EXHAUSTED",
+                path,
+                "deterministic random stream is exhausted",
+            );
+            rejection.random_request = Some(Box::new(request));
+            return Err(rejection);
+        }
+        let mut values = Vec::with_capacity(count as usize);
+        let mut typed_values = Vec::with_capacity(count as usize);
+        for term in terms {
+            for ordinal in 1..=term.count {
+                let value = self.workspace.random_owner().take().ok_or_else(|| {
+                    self.fail(
+                        "RPG_RANDOM_HETEROGENEOUS_EVIDENCE_PARTIAL",
+                        path,
+                        "heterogeneous evidence ended inside an exact request",
+                    )
+                })?;
+                if value == 0 || value > term.sides {
+                    return Err(self.fail(
+                        "RPG_RANDOM_VALUE_OUT_OF_RANGE",
+                        path,
+                        format!(
+                            "{} ordinal {ordinal} value {value} is outside 1..={}",
+                            term.die_type_id, term.sides
+                        ),
+                    ));
+                }
+                values.push(value);
+                typed_values.push(RpgHeterogeneousRandomValue {
+                    die_type_id: term.die_type_id.clone(),
+                    ordinal,
+                    sides: term.sides,
+                    value,
+                });
+                self.trace.push(RpgTraceStep {
+                    path: format!("{path}.{}.{}", term.die_type_id, ordinal),
+                    code: "RPG_RANDOM_CONSUMED".to_owned(),
+                    detail: format!("{} d{}={value}", term.die_type_id, term.sides),
+                });
+            }
+        }
+        self.random_evidence.push(RpgRandomEvidence {
+            request: request.clone(),
+            values: values.clone(),
+            heterogeneous_values: typed_values.clone(),
+        });
+        Ok((request, values, typed_values))
     }
 
     fn resolve_ordered_scalar(
@@ -1708,6 +2301,13 @@ impl Execution<'_> {
                             "a scalar-test outcome cannot select an on-check branch",
                         ));
                     }
+                    CheckOutcome::Vector { .. } => {
+                        return Err(self.fail(
+                            "RPG_RUNTIME_CHECK_BRANCH_INCOMPATIBLE",
+                            path,
+                            "a heterogeneous-pool outcome cannot select an on-check branch",
+                        ));
+                    }
                 };
                 self.trace.push(RpgTraceStep {
                     path: path.to_owned(),
@@ -1721,16 +2321,22 @@ impl Execution<'_> {
             }
             CompiledProgram::OnOutcome { branches, default } => {
                 let outcome = self.current_outcome(path)?;
-                let CheckOutcome::Scalar {
-                    profile_id,
-                    band_id,
-                } = outcome
-                else {
-                    return Err(self.fail(
-                        "RPG_RUNTIME_OUTCOME_BRANCH_INCOMPATIBLE",
-                        path,
-                        "on-outcome requires a scalar-test result",
-                    ));
+                let (profile_id, band_id, vector) = match outcome {
+                    CheckOutcome::Scalar {
+                        profile_id,
+                        band_id,
+                    } => (profile_id, band_id, false),
+                    CheckOutcome::Vector {
+                        profile_id,
+                        band_id,
+                    } => (profile_id, band_id, true),
+                    _ => {
+                        return Err(self.fail(
+                            "RPG_RUNTIME_OUTCOME_BRANCH_INCOMPATIBLE",
+                            path,
+                            "on-outcome requires a scalar or heterogeneous-pool result",
+                        ));
+                    }
                 };
                 let (selected_branch_id, selected) = if let Some(selected) = branches.get(&band_id)
                 {
@@ -1739,13 +2345,22 @@ impl Execution<'_> {
                     ("default".to_owned(), default.as_ref())
                 };
                 let target_id = self.target_id(path)?;
-                self.events
-                    .push(RpgDomainEvent::ScalarOutcomeBranchSelected {
+                let branch_event = if vector {
+                    RpgDomainEvent::VectorOutcomeBranchSelected {
                         target_id,
                         profile_id,
                         final_band_id: band_id,
                         selected_branch_id: selected_branch_id.clone(),
-                    });
+                    }
+                } else {
+                    RpgDomainEvent::ScalarOutcomeBranchSelected {
+                        target_id,
+                        profile_id,
+                        final_band_id: band_id,
+                        selected_branch_id: selected_branch_id.clone(),
+                    }
+                };
+                self.events.push(branch_event);
                 self.trace.push(RpgTraceStep {
                     path: path.to_owned(),
                     code: "RPG_OUTCOME_BRANCH_SELECTED".to_owned(),
@@ -2279,8 +2894,10 @@ impl Execution<'_> {
                 count: 1,
                 sides,
                 path: path.to_owned(),
+                heterogeneous_terms: Vec::new(),
             },
             values: vec![value],
+            heterogeneous_values: Vec::new(),
         });
         Ok(value)
     }
@@ -2302,6 +2919,7 @@ impl Execution<'_> {
             count,
             sides,
             path: path.to_owned(),
+            heterogeneous_terms: Vec::new(),
         }));
         rejection
     }
@@ -2576,6 +3194,33 @@ struct PendingContribution {
     definition: RpgScalarContributionDefinition,
 }
 
+#[derive(Debug, Clone)]
+struct PendingPoolContribution {
+    source_definition_id: String,
+    source_instance_id: Option<String>,
+    source_label: String,
+    definition: RpgPoolContributionDefinition,
+}
+
+impl PendingPoolContribution {
+    fn canonical_key(&self) -> (&str, &str, &str) {
+        (
+            self.source_definition_id.as_str(),
+            self.source_instance_id.as_deref().unwrap_or(""),
+            self.definition.id.as_str(),
+        )
+    }
+
+    fn display_key(&self) -> String {
+        format!(
+            "{}#{}:{}",
+            self.source_definition_id,
+            self.source_instance_id.as_deref().unwrap_or("-"),
+            self.definition.id
+        )
+    }
+}
+
 impl PendingContribution {
     fn canonical_key(&self) -> (&str, &str, &str) {
         (
@@ -2664,6 +3309,101 @@ fn decision_key(decision: &RpgScalarContributionDecision) -> String {
         decision.source_instance_id.as_deref().unwrap_or("-"),
         decision.contribution_id
     )
+}
+
+fn retained_pool_contribution_indices(
+    policy: RpgContributionStackingPolicy,
+    indices: &[usize],
+    decisions: &[RpgPoolContributionDecision],
+) -> Vec<usize> {
+    match policy {
+        RpgContributionStackingPolicy::Sum => indices.to_vec(),
+        RpgContributionStackingPolicy::Greatest => {
+            select_first_pool_extreme(indices, decisions, |candidate, selected| {
+                candidate > selected
+            })
+            .into_iter()
+            .collect()
+        }
+        RpgContributionStackingPolicy::Least => {
+            select_first_pool_extreme(indices, decisions, |candidate, selected| {
+                candidate < selected
+            })
+            .into_iter()
+            .collect()
+        }
+        RpgContributionStackingPolicy::SignedExtremes => {
+            let positive_indices = indices
+                .iter()
+                .copied()
+                .filter(|index| decisions[*index].effect.stacking_value() > 0)
+                .collect::<Vec<_>>();
+            let negative_indices = indices
+                .iter()
+                .copied()
+                .filter(|index| decisions[*index].effect.stacking_value() < 0)
+                .collect::<Vec<_>>();
+            let positive =
+                select_first_pool_extreme(&positive_indices, decisions, |candidate, selected| {
+                    candidate > selected
+                });
+            let negative =
+                select_first_pool_extreme(&negative_indices, decisions, |candidate, selected| {
+                    candidate < selected
+                });
+            positive.into_iter().chain(negative).collect()
+        }
+    }
+}
+
+fn select_first_pool_extreme(
+    indices: &[usize],
+    decisions: &[RpgPoolContributionDecision],
+    replaces: impl Fn(i32, i32) -> bool,
+) -> Option<usize> {
+    let mut selected = indices.first().copied()?;
+    for index in indices.iter().copied().skip(1) {
+        if replaces(
+            decisions[index].effect.stacking_value(),
+            decisions[selected].effect.stacking_value(),
+        ) {
+            selected = index;
+        }
+    }
+    Some(selected)
+}
+
+fn pool_decision_key(decision: &RpgPoolContributionDecision) -> String {
+    format!(
+        "{}#{}:{}",
+        decision.source_definition_id,
+        decision.source_instance_id.as_deref().unwrap_or("-"),
+        decision.contribution_id
+    )
+}
+
+fn ensure_pool_total_bound(
+    dice: &BTreeMap<String, u32>,
+    path: &str,
+    execution: &Execution<'_>,
+) -> Result<(), RpgResolutionRejection> {
+    let total = dice.values().try_fold(0_u32, |total, count| {
+        total.checked_add(*count).ok_or_else(|| {
+            execution.fail(
+                "RPG_RUNTIME_POOL_DIE_COUNT_OVERFLOW",
+                path,
+                "pool total die count exceeded the runtime integer domain",
+            )
+        })
+    })?;
+    if total == 0 || total > 256 {
+        return Err(execution.fail(
+            "RPG_RUNTIME_POOL_DIE_COUNT_INVALID",
+            path,
+            format!("pool total die count {total} is outside 1..=256"),
+        ));
+    }
+    Ok(())
 }
 
 fn compare_i64(left: i64, comparison: RpgContributionComparison, right: i64) -> bool {

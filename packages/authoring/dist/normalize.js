@@ -308,7 +308,8 @@ function validateProgram(program, path, depth, checkKind, diagnostics, sourcePat
                     (program.hit !== undefined ||
                         program.miss !== undefined ||
                         program.noRoll !== undefined)) ||
-                checkKind === 'scalarTest';
+                checkKind === 'scalarTest' ||
+                checkKind === 'heterogeneousPool';
             if (hasIncompatibleBranch) {
                 diagnostics.push(diagnostic('normalization.checkBranchIncompatible', path, 'check branch contains an outcome unavailable to the selected check', sourcePath));
             }
@@ -324,8 +325,9 @@ function validateProgram(program, path, depth, checkKind, diagnostics, sourcePat
             return;
         }
         case 'onOutcome': {
-            if (checkKind !== 'scalarTest') {
-                diagnostics.push(diagnostic('normalization.outcomeBranchIncompatible', path, 'onOutcome is available only to scalar tests', sourcePath));
+            if (checkKind !== 'scalarTest' &&
+                checkKind !== 'heterogeneousPool') {
+                diagnostics.push(diagnostic('normalization.outcomeBranchIncompatible', path, 'onOutcome is available only to scalar tests and heterogeneous pools', sourcePath));
             }
             for (const [id, branch] of Object.entries(program.branches)) {
                 requireText(id, `${path}.branches.${id}`, 'outcome band id', diagnostics, sourcePath);

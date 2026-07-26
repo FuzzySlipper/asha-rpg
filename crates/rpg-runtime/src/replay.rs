@@ -22,9 +22,9 @@ use crate::{
 
 pub const RPG_CHECKPOINT_SCHEMA_ID: &str = "asha.rpg.session.checkpoint";
 pub const RPG_REPLAY_ENTRY_SCHEMA_ID: &str = "asha.rpg.session.replay-entry";
-pub const RPG_CHECKPOINT_SCHEMA_VERSION: u32 = 6;
-pub const RPG_REPLAY_ENTRY_SCHEMA_VERSION: u32 = 7;
-pub const RPG_EVENT_SCHEMA_VERSION: u32 = 5;
+pub const RPG_CHECKPOINT_SCHEMA_VERSION: u32 = 7;
+pub const RPG_REPLAY_ENTRY_SCHEMA_VERSION: u32 = 8;
+pub const RPG_EVENT_SCHEMA_VERSION: u32 = 6;
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase", deny_unknown_fields)]
@@ -2065,6 +2065,7 @@ mod tests {
             count: 2,
             sides: 6,
             path: "$.damage".to_owned(),
+            heterogeneous_terms: Vec::new(),
         };
         let exhausted = crate::RpgRollTapeSource::new(binding.clone(), Vec::new())
             .draw(&request)
@@ -2694,6 +2695,7 @@ mod tests {
                     contribution_stacking_groups: Vec::new(),
                     scalar_test_profiles: Vec::new(),
                     activation_budgets: Vec::new(),
+                    heterogeneous_pool_profiles: Vec::new(),
                 },
             },
             content_packs: vec![ResolvedContentPack {

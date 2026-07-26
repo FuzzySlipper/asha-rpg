@@ -86,7 +86,7 @@ export function defineItemDefinition(input) {
             ...input.item,
             schema: {
                 identity: 'asha.rpg.item',
-                version: 3,
+                version: 4,
             },
             tags: [...input.item.tags].sort(),
             traits: [...input.item.traits].sort(),
@@ -94,6 +94,7 @@ export function defineItemDefinition(input) {
             attributes: [...input.item.attributes].sort((left, right) => left.id.localeCompare(right.id)),
             contributions: normalizeScalarContributions(input.item.contributions ?? []),
             outcomeBandShifts: normalizeOutcomeBandShifts(input.item.outcomeBandShifts ?? []),
+            poolContributions: normalizePoolContributions(input.item.poolContributions ?? []),
         },
     });
 }
@@ -104,10 +105,11 @@ export function defineCharacterFeatureDefinition(input) {
         characterFeature: {
             schema: {
                 identity: 'asha.rpg.character-feature',
-                version: 3,
+                version: 4,
             },
             contributions: normalizeScalarContributions(input.characterFeature.contributions ?? []),
             outcomeBandShifts: normalizeOutcomeBandShifts(input.characterFeature.outcomeBandShifts ?? []),
+            poolContributions: normalizePoolContributions(input.characterFeature.poolContributions ?? []),
         },
     });
 }
@@ -117,6 +119,17 @@ function normalizeOutcomeBandShifts(shifts) {
         ...shift,
         schema: {
             identity: 'asha.rpg.outcome-band-shift',
+            version: 1,
+        },
+    }))
+        .sort((left, right) => left.id.localeCompare(right.id));
+}
+function normalizePoolContributions(contributions) {
+    return contributions
+        .map((contribution) => ({
+        ...contribution,
+        schema: {
+            identity: 'asha.rpg.pool-contribution',
             version: 1,
         },
     }))

@@ -5,6 +5,7 @@ const rulesetCalculationSelectorReferenceBrand = Symbol('asha-rpg.calculation-se
 const rulesetContributionStackingGroupReferenceBrand = Symbol('asha-rpg.contribution-stacking-group-reference');
 const rulesetScalarTestProfileReferenceBrand = Symbol('asha-rpg.scalar-test-profile-reference');
 const rulesetActivationBudgetReferenceBrand = Symbol('asha-rpg.activation-budget-reference');
+const rulesetHeterogeneousPoolProfileReferenceBrand = Symbol('asha-rpg.heterogeneous-pool-profile-reference');
 export function defineRuleset(input) {
     return immutable({
         ...input,
@@ -25,6 +26,9 @@ export function defineRuleset(input) {
             ].sort((left, right) => left.id.localeCompare(right.id)),
             scalarTestProfiles: [...(input.provides.scalarTestProfiles ?? [])].sort((left, right) => left.id.localeCompare(right.id)),
             activationBudgets: [...(input.provides.activationBudgets ?? [])].sort((left, right) => left.id.localeCompare(right.id)),
+            heterogeneousPoolProfiles: [
+                ...(input.provides.heterogeneousPoolProfiles ?? []),
+            ].sort((left, right) => left.id.localeCompare(right.id)),
         },
     });
 }
@@ -104,6 +108,16 @@ export function rulesetActivationBudget(ruleset, id) {
         rulesetId: ruleset.identity.id,
         id,
         [rulesetActivationBudgetReferenceBrand]: true,
+    });
+}
+export function rulesetHeterogeneousPoolProfile(ruleset, id) {
+    if (!ruleset.provides.heterogeneousPoolProfiles.some((candidate) => candidate.id === id)) {
+        throw new Error(`ruleset ${ruleset.identity.id}@${ruleset.identity.version} does not provide heterogeneous pool profile ${id}`);
+    }
+    return immutable({
+        rulesetId: ruleset.identity.id,
+        id,
+        [rulesetHeterogeneousPoolProfileReferenceBrand]: true,
     });
 }
 export function rulesetValueId(reference) {

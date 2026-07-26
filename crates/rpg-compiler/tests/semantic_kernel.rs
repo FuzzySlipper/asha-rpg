@@ -263,6 +263,7 @@ fn dice_requests_preserve_declared_shape_without_a_probe_limit() {
             count: 2,
             sides: 6,
             path: "$.action.program.body.selected.steps[0].amount".to_owned(),
+            heterogeneous_terms: Vec::new(),
         }))
     );
 
@@ -283,6 +284,7 @@ fn dice_requests_preserve_declared_shape_without_a_probe_limit() {
             count: 5,
             sides: 4,
             path: "$.action.program.body.selected.steps[0].amount".to_owned(),
+            heterogeneous_terms: Vec::new(),
         }))
     );
 }

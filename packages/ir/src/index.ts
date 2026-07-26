@@ -125,7 +125,26 @@ export type RpgIrCheck =
       };
       readonly base: RpgIrScalarExpression;
       readonly difficulty: RpgIrScalarTestDifficulty;
+    }
+  | {
+      readonly kind: 'heterogeneousPool';
+      readonly profile: {
+        readonly rulesetId: string;
+        readonly id: string;
+      };
+      readonly baseDice: readonly RpgIrPoolDieTerm[];
+      readonly automaticAxes: readonly RpgIrPoolAxisValue[];
     };
+
+export interface RpgIrPoolDieTerm {
+  readonly dieTypeId: string;
+  readonly count: number;
+}
+
+export interface RpgIrPoolAxisValue {
+  readonly axisId: string;
+  readonly value: number;
+}
 
 export type RpgIrScalarTestDifficulty =
   | { readonly kind: 'explicit'; readonly value: RpgIrScalarExpression }

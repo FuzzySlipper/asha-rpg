@@ -193,6 +193,25 @@ pub enum RpgIrCheck {
         base: RpgIrFormula,
         difficulty: RpgIrScalarTestDifficulty,
     },
+    HeterogeneousPool {
+        profile: rpg_core::RpgOwnedRulesetReference,
+        base_dice: Vec<RpgIrPoolDieTerm>,
+        automatic_axes: Vec<RpgIrPoolAxisValue>,
+    },
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, PartialOrd, Ord, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase", deny_unknown_fields)]
+pub struct RpgIrPoolDieTerm {
+    pub die_type_id: String,
+    pub count: u32,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, PartialOrd, Ord, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase", deny_unknown_fields)]
+pub struct RpgIrPoolAxisValue {
+    pub axis_id: String,
+    pub value: i32,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]

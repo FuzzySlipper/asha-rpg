@@ -4,6 +4,8 @@ import type {
   RpgIrActivationTiming,
   RpgIrComparison,
   RpgIrFormula,
+  RpgIrPoolAxisValue,
+  RpgIrPoolDieTerm,
   RpgIrPredicate,
   RpgIrResourceCost,
   RpgIrScalarExpression,
@@ -38,6 +40,7 @@ import {
 import type {
   RulesetCalculationSelectorReference,
   RulesetActivationBudgetReference,
+  RulesetHeterogeneousPoolProfileReference,
   RulesetScalarTestProfileReference,
   RulesetValueReference,
 } from './ruleset-builders.js';
@@ -256,6 +259,23 @@ export function scalarTest(options: {
     'difficulty.defenseId',
     options.difficulty.defense,
   );
+}
+
+export function heterogeneousPool(options: {
+  readonly profile: RulesetHeterogeneousPoolProfileReference<string, string>;
+  readonly baseDice: readonly RpgIrPoolDieTerm[];
+  readonly automaticAxes?: readonly RpgIrPoolAxisValue[];
+}): Extract<import('@asha-rpg/ir').RpgIrCheck, { kind: 'heterogeneousPool' }> {
+  return frozen({
+    kind: 'heterogeneousPool',
+    profile: options.profile,
+    baseDice: [...options.baseDice].sort((left, right) =>
+      left.dieTypeId.localeCompare(right.dieTypeId),
+    ),
+    automaticAxes: [...(options.automaticAxes ?? [])].sort((left, right) =>
+      left.axisId.localeCompare(right.axisId),
+    ),
+  });
 }
 
 export function spend(

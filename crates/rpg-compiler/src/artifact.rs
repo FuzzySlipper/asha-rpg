@@ -2,7 +2,8 @@ use std::collections::{BTreeMap, BTreeSet};
 
 use rpg_core::{
     RpgContributionPredicate, RpgContributionValueExpression, RpgNaturalDieEffect,
-    RpgOutcomeBandShiftDefinition, RpgRulesetValueKind, RpgScalarContributionDefinition,
+    RpgOutcomeBandShiftDefinition, RpgPoolContributionDefinition, RpgPoolContributionEffect,
+    RpgRulesetValueKind, RpgScalarContributionDefinition,
 };
 use rpg_ir::{
     ActionProcedureImplementation, ActionProcedureParameter, CompiledCharacterClass,
@@ -95,6 +96,8 @@ const SCALAR_CONTRIBUTION_IDENTITY: &str = "asha.rpg.scalar-contribution";
 const SCALAR_CONTRIBUTION_VERSION: u32 = 1;
 const OUTCOME_BAND_SHIFT_IDENTITY: &str = "asha.rpg.outcome-band-shift";
 const OUTCOME_BAND_SHIFT_VERSION: u32 = 1;
+const POOL_CONTRIBUTION_IDENTITY: &str = "asha.rpg.pool-contribution";
+const POOL_CONTRIBUTION_VERSION: u32 = 1;
 
 #[derive(Debug, Clone, PartialEq, Eq, PartialOrd, Ord)]
 pub struct RulesetValueKey {
@@ -989,6 +992,189 @@ fn validate_ruleset(prepared: &PreparedPlayBundle, diagnostics: &mut Vec<RpgDiag
             previous_natural_maximum = rule.maximum;
         }
     }
+    validate_heterogeneous_pool_profiles(ruleset, diagnostics);
+}
+
+fn validate_heterogeneous_pool_profiles(ruleset: &Ruleset, diagnostics: &mut Vec<RpgDiagnostic>) {
+    let profiles = &ruleset.provides.heterogeneous_pool_profiles;
+    if profiles.len() > 16 {
+        diagnostics.push(RpgDiagnostic::error(
+            RpgDiagnosticStage::Semantics,
+            "RULESET_HETEROGENEOUS_POOL_PROFILE_LIMIT_EXCEEDED",
+            "$.ruleset.provides.heterogeneousPoolProfiles",
+            "a Ruleset may declare at most 16 heterogeneous pool profiles",
+        ));
+    }
+    let mut previous_profile_id = None::<&str>;
+    for (profile_index, profile) in profiles.iter().enumerate() {
+        let path = format!("$.ruleset.provides.heterogeneousPoolProfiles[{profile_index}]");
+        if !valid_identifier(&profile.id)
+            || previous_profile_id.is_some_and(|previous| previous >= profile.id.as_str())
+            || profile.version != 1
+            || profile.label.trim().is_empty()
+            || !(1..=64).contains(&profile.die_types.len())
+            || !(1..=32).contains(&profile.axes.len())
+            || profile.cancellations.len() > 32
+            || !(2..=16).contains(&profile.bands.len())
+            || profile.outcome_rules.len() > 32
+        {
+            diagnostics.push(RpgDiagnostic::error(
+                RpgDiagnosticStage::Artifact,
+                "RULESET_HETEROGENEOUS_POOL_PROFILE_INVALID",
+                &path,
+                "pool profiles require canonical version-1 ids, 1..=64 die types, 1..=32 axes, at most 32 cancellations, and 2..=16 bands",
+            ));
+        }
+        previous_profile_id = Some(profile.id.as_str());
+        let mut axis_ids = BTreeSet::new();
+        let mut previous_axis_id = None::<&str>;
+        for (axis_index, axis) in profile.axes.iter().enumerate() {
+            if !valid_identifier(&axis.id)
+                || axis.label.trim().is_empty()
+                || !axis_ids.insert(axis.id.as_str())
+                || previous_axis_id.is_some_and(|previous| previous >= axis.id.as_str())
+            {
+                diagnostics.push(RpgDiagnostic::error(
+                    RpgDiagnosticStage::Artifact,
+                    "RULESET_POOL_AXIS_INVALID",
+                    format!("{path}.axes[{axis_index}]"),
+                    "pool axes require unique sorted portable ids and labels",
+                ));
+            }
+            previous_axis_id = Some(axis.id.as_str());
+        }
+        let mut cancellation_axis_ids = BTreeSet::new();
+        let mut previous_cancellation_id = None::<&str>;
+        for (cancellation_index, cancellation) in profile.cancellations.iter().enumerate() {
+            if !valid_identifier(&cancellation.id)
+                || previous_cancellation_id
+                    .is_some_and(|previous| previous >= cancellation.id.as_str())
+                || cancellation.positive_axis_id == cancellation.negative_axis_id
+                || !axis_ids.contains(cancellation.positive_axis_id.as_str())
+                || !axis_ids.contains(cancellation.negative_axis_id.as_str())
+                || !cancellation_axis_ids.insert(cancellation.positive_axis_id.as_str())
+                || !cancellation_axis_ids.insert(cancellation.negative_axis_id.as_str())
+            {
+                diagnostics.push(RpgDiagnostic::error(
+                    RpgDiagnosticStage::Artifact,
+                    "RULESET_POOL_CANCELLATION_INVALID",
+                    format!("{path}.cancellations[{cancellation_index}]"),
+                    "cancellation pairs require sorted ids and two known axes not owned by another pair",
+                ));
+            }
+            previous_cancellation_id = Some(cancellation.id.as_str());
+        }
+        let mut die_ids = BTreeSet::new();
+        let mut previous_die_id = None::<&str>;
+        for (die_index, die) in profile.die_types.iter().enumerate() {
+            if !valid_identifier(&die.id)
+                || die.label.trim().is_empty()
+                || !die_ids.insert(die.id.as_str())
+                || previous_die_id.is_some_and(|previous| previous >= die.id.as_str())
+                || !(2..=100).contains(&die.sides)
+                || die.faces.len() != die.sides as usize
+            {
+                diagnostics.push(RpgDiagnostic::error(
+                    RpgDiagnosticStage::Artifact,
+                    "RULESET_POOL_DIE_TYPE_INVALID",
+                    format!("{path}.dieTypes[{die_index}]"),
+                    "pool die types require unique sorted ids, d2..d100 sides, and one face record per side",
+                ));
+            }
+            previous_die_id = Some(die.id.as_str());
+            for (face_index, face) in die.faces.iter().enumerate() {
+                if face.value as usize != face_index + 1 || face.vector.len() > profile.axes.len() {
+                    diagnostics.push(RpgDiagnostic::error(
+                        RpgDiagnosticStage::Artifact,
+                        "RULESET_POOL_FACE_TABLE_INVALID",
+                        format!("{path}.dieTypes[{die_index}].faces[{face_index}]"),
+                        "face tables must be complete and ordered by exact face value",
+                    ));
+                }
+                let mut previous_face_axis = None::<&str>;
+                for (vector_index, vector) in face.vector.iter().enumerate() {
+                    if !axis_ids.contains(vector.axis_id.as_str())
+                        || previous_face_axis
+                            .is_some_and(|previous| previous >= vector.axis_id.as_str())
+                        || !(-1_000_000..=1_000_000).contains(&vector.value)
+                        || (cancellation_axis_ids.contains(vector.axis_id.as_str())
+                            && vector.value < 0)
+                    {
+                        diagnostics.push(RpgDiagnostic::error(
+                            RpgDiagnosticStage::Artifact,
+                            "RULESET_POOL_FACE_VECTOR_INVALID",
+                            format!(
+                                "{path}.dieTypes[{die_index}].faces[{face_index}].vector[{vector_index}]"
+                            ),
+                            "face vectors require unique sorted known axes, bounded values, and nonnegative paired-axis values",
+                        ));
+                    }
+                    previous_face_axis = Some(vector.axis_id.as_str());
+                }
+            }
+        }
+        let mut band_ids = BTreeSet::new();
+        let mut previous_band_id = None::<&str>;
+        for (band_index, band) in profile.bands.iter().enumerate() {
+            if !valid_identifier(&band.id)
+                || band.label.trim().is_empty()
+                || !band_ids.insert(band.id.as_str())
+                || previous_band_id.is_some_and(|previous| previous >= band.id.as_str())
+            {
+                diagnostics.push(RpgDiagnostic::error(
+                    RpgDiagnosticStage::Artifact,
+                    "RULESET_POOL_OUTCOME_BAND_INVALID",
+                    format!("{path}.bands[{band_index}]"),
+                    "pool outcome bands require unique sorted portable ids and labels",
+                ));
+            }
+            previous_band_id = Some(band.id.as_str());
+        }
+        if !band_ids.contains(profile.default_band_id.as_str()) {
+            diagnostics.push(RpgDiagnostic::error(
+                RpgDiagnosticStage::References,
+                "RULESET_POOL_DEFAULT_BAND_INVALID",
+                format!("{path}.defaultBandId"),
+                "the pool default outcome must reference one declared band",
+            ));
+        }
+        let mut previous_rule_id = None::<&str>;
+        for (rule_index, rule) in profile.outcome_rules.iter().enumerate() {
+            let rule_path = format!("{path}.outcomeRules[{rule_index}]");
+            if !valid_identifier(&rule.id)
+                || previous_rule_id.is_some_and(|previous| previous >= rule.id.as_str())
+                || !band_ids.contains(rule.band_id.as_str())
+                || !(1..=32).contains(&rule.requirements.len())
+            {
+                diagnostics.push(RpgDiagnostic::error(
+                    RpgDiagnosticStage::Artifact,
+                    "RULESET_POOL_OUTCOME_RULE_INVALID",
+                    &rule_path,
+                    "vector outcome rules require sorted ids, one known band, and 1..=32 axis requirements",
+                ));
+            }
+            previous_rule_id = Some(rule.id.as_str());
+            let mut previous_requirement_axis = None::<&str>;
+            for (requirement_index, requirement) in rule.requirements.iter().enumerate() {
+                if !axis_ids.contains(requirement.axis_id.as_str())
+                    || previous_requirement_axis
+                        .is_some_and(|previous| previous >= requirement.axis_id.as_str())
+                    || requirement
+                        .minimum
+                        .zip(requirement.maximum)
+                        .is_some_and(|(minimum, maximum)| minimum > maximum)
+                {
+                    diagnostics.push(RpgDiagnostic::error(
+                        RpgDiagnosticStage::Artifact,
+                        "RULESET_POOL_OUTCOME_REQUIREMENT_INVALID",
+                        format!("{rule_path}.requirements[{requirement_index}]"),
+                        "outcome requirements require unique sorted known axes and ordered integer bounds",
+                    ));
+                }
+                previous_requirement_axis = Some(requirement.axis_id.as_str());
+            }
+        }
+    }
 }
 
 fn compile_ruleset_value_plan(
@@ -1438,6 +1624,13 @@ fn compile_items(
             &format!("{path}.semantic.outcomeBandShifts"),
             &mut diagnostics,
         );
+        validate_pool_contributions(
+            &item.pool_contributions,
+            prepared,
+            definition,
+            &format!("{path}.semantic.poolContributions"),
+            &mut diagnostics,
+        );
         let label = definition
             .presentation
             .get("label")
@@ -1465,6 +1658,7 @@ fn compile_items(
             attributes: item.attributes,
             contributions: item.contributions,
             outcome_band_shifts: item.outcome_band_shifts,
+            pool_contributions: item.pool_contributions,
         });
     }
     if diagnostics.is_empty() {
@@ -1518,7 +1712,11 @@ fn compile_character_features(
         }
         if feature.contributions.len() > MAX_CHARACTER_FEATURE_CONTRIBUTIONS
             || feature.outcome_band_shifts.len() > MAX_CHARACTER_FEATURE_CONTRIBUTIONS
-            || feature.contributions.len() + feature.outcome_band_shifts.len() == 0
+            || feature.pool_contributions.len() > MAX_CHARACTER_FEATURE_CONTRIBUTIONS
+            || feature.contributions.len()
+                + feature.outcome_band_shifts.len()
+                + feature.pool_contributions.len()
+                == 0
         {
             diagnostics.push(RpgDiagnostic::error(
                 RpgDiagnosticStage::Semantics,
@@ -1543,6 +1741,13 @@ fn compile_character_features(
             &format!("{path}.semantic.outcomeBandShifts"),
             &mut diagnostics,
         );
+        validate_pool_contributions(
+            &feature.pool_contributions,
+            prepared,
+            definition,
+            &format!("{path}.semantic.poolContributions"),
+            &mut diagnostics,
+        );
         let label = required_definition_label(
             definition,
             definition_index,
@@ -1560,6 +1765,7 @@ fn compile_character_features(
                 .map(str::to_owned),
             contributions: feature.contributions,
             outcome_band_shifts: feature.outcome_band_shifts,
+            pool_contributions: feature.pool_contributions,
         });
     }
     if diagnostics.is_empty() {
@@ -1833,6 +2039,161 @@ fn validate_scalar_contributions(
                     format!(
                         "contribution possible range {minimum}..={maximum} exceeds selector domain {domain_minimum}..={domain_maximum}"
                     ),
+                ));
+            }
+        }
+        let mut predicate_nodes = 0;
+        validate_contribution_predicate(
+            &contribution.predicate,
+            prepared,
+            source_definition,
+            1,
+            &mut predicate_nodes,
+            &format!("{contribution_path}.predicate"),
+            diagnostics,
+        );
+    }
+}
+
+fn validate_pool_contributions(
+    contributions: &[RpgPoolContributionDefinition],
+    prepared: &PreparedPlayBundle,
+    source_definition: &MaterializedContentDefinition,
+    path: &str,
+    diagnostics: &mut Vec<RpgDiagnostic>,
+) {
+    if contributions.len() > MAX_CHARACTER_FEATURE_CONTRIBUTIONS {
+        diagnostics.push(RpgDiagnostic::error(
+            RpgDiagnosticStage::Semantics,
+            "POOL_CONTRIBUTION_SOURCE_LIMIT_EXCEEDED",
+            path,
+            format!(
+                "one source may declare at most {MAX_CHARACTER_FEATURE_CONTRIBUTIONS} pool contributions"
+            ),
+        ));
+    }
+    let profiles = prepared
+        .ruleset
+        .provides
+        .heterogeneous_pool_profiles
+        .iter()
+        .map(|profile| (profile.id.as_str(), profile))
+        .collect::<BTreeMap<_, _>>();
+    let groups = prepared
+        .ruleset
+        .provides
+        .contribution_stacking_groups
+        .iter()
+        .map(|group| group.id.as_str())
+        .collect::<BTreeSet<_>>();
+    let mut previous_id = None::<&str>;
+    for (index, contribution) in contributions.iter().enumerate() {
+        let contribution_path = format!("{path}[{index}]");
+        if contribution.schema.identity != POOL_CONTRIBUTION_IDENTITY
+            || contribution.schema.version != POOL_CONTRIBUTION_VERSION
+        {
+            diagnostics.push(RpgDiagnostic::error(
+                RpgDiagnosticStage::Compatibility,
+                "POOL_CONTRIBUTION_SCHEMA_UNSUPPORTED",
+                format!("{contribution_path}.schema"),
+                format!("expected {POOL_CONTRIBUTION_IDENTITY}@{POOL_CONTRIBUTION_VERSION}"),
+            ));
+        }
+        if !valid_identifier(&contribution.id)
+            || previous_id.is_some_and(|previous| previous >= contribution.id.as_str())
+        {
+            diagnostics.push(RpgDiagnostic::error(
+                RpgDiagnosticStage::Artifact,
+                "POOL_CONTRIBUTIONS_NOT_CANONICAL",
+                format!("{contribution_path}.id"),
+                "pool contribution identities must be unique sorted portable identifiers",
+            ));
+        }
+        previous_id = Some(&contribution.id);
+        let profile = if contribution.profile.ruleset_id != prepared.ruleset.identity.id {
+            diagnostics.push(RpgDiagnostic::error(
+                RpgDiagnosticStage::References,
+                "POOL_CONTRIBUTION_PROFILE_OWNER_MISMATCH",
+                format!("{contribution_path}.profile.rulesetId"),
+                "pool contribution profile belongs to a different Ruleset",
+            ));
+            None
+        } else {
+            profiles.get(contribution.profile.id.as_str()).copied()
+        };
+        if profile.is_none() {
+            diagnostics.push(RpgDiagnostic::error(
+                RpgDiagnosticStage::References,
+                "POOL_CONTRIBUTION_PROFILE_UNKNOWN",
+                format!("{contribution_path}.profile.id"),
+                format!(
+                    "unknown heterogeneous pool profile {}",
+                    contribution.profile.id
+                ),
+            ));
+        }
+        if contribution.stacking_group.ruleset_id != prepared.ruleset.identity.id
+            || !groups.contains(contribution.stacking_group.id.as_str())
+        {
+            diagnostics.push(RpgDiagnostic::error(
+                RpgDiagnosticStage::References,
+                "POOL_CONTRIBUTION_STACKING_GROUP_INVALID",
+                format!("{contribution_path}.stackingGroup"),
+                "pool contribution stacking group must resolve in the selected Ruleset",
+            ));
+        }
+        if let Some(profile) = profile {
+            let die_ids = profile
+                .die_types
+                .iter()
+                .map(|die| die.id.as_str())
+                .collect::<BTreeSet<_>>();
+            let axis_ids = profile
+                .axes
+                .iter()
+                .map(|axis| axis.id.as_str())
+                .collect::<BTreeSet<_>>();
+            let paired_axis_ids = profile
+                .cancellations
+                .iter()
+                .flat_map(|cancellation| {
+                    [
+                        cancellation.positive_axis_id.as_str(),
+                        cancellation.negative_axis_id.as_str(),
+                    ]
+                })
+                .collect::<BTreeSet<_>>();
+            let effect_valid = match &contribution.effect {
+                RpgPoolContributionEffect::AddDice { die_type_id, delta } => {
+                    die_ids.contains(die_type_id.as_str())
+                        && *delta != 0
+                        && (-256..=256).contains(delta)
+                }
+                RpgPoolContributionEffect::AddAxis { axis_id, value } => {
+                    axis_ids.contains(axis_id.as_str())
+                        && *value != 0
+                        && (-1_000_000..=1_000_000).contains(value)
+                        && (!paired_axis_ids.contains(axis_id.as_str()) || *value >= 0)
+                }
+                RpgPoolContributionEffect::ReplaceOrAddDie {
+                    from_die_type_id,
+                    to_die_type_id,
+                    count,
+                    fallback_die_type_id,
+                } => {
+                    from_die_type_id != to_die_type_id
+                        && (1..=128).contains(count)
+                        && die_ids.contains(from_die_type_id.as_str())
+                        && die_ids.contains(to_die_type_id.as_str())
+                        && die_ids.contains(fallback_die_type_id.as_str())
+                }
+            };
+            if !effect_valid {
+                diagnostics.push(RpgDiagnostic::error(
+                    RpgDiagnosticStage::Semantics,
+                    "POOL_CONTRIBUTION_EFFECT_INVALID",
+                    format!("{contribution_path}.effect"),
+                    "pool effects require known ids and bounded nonzero add-dice, add-axis, or replace-or-add values",
                 ));
             }
         }
@@ -2421,6 +2782,111 @@ fn validate_action_contribution_contracts(
                     }
                 }
             }
+            RpgIrCheck::HeterogeneousPool {
+                profile,
+                base_dice,
+                automatic_axes,
+            } => {
+                let profile_definition = ruleset
+                    .provides
+                    .heterogeneous_pool_profiles
+                    .iter()
+                    .find(|candidate| candidate.id == profile.id);
+                if profile.ruleset_id != ruleset.identity.id || profile_definition.is_none() {
+                    diagnostics.push(RpgDiagnostic::error(
+                        RpgDiagnosticStage::References,
+                        "ACTION_HETEROGENEOUS_POOL_PROFILE_INVALID",
+                        format!("$.actions[{index}].check.profile"),
+                        format!(
+                            "heterogeneous-pool profile {} must resolve in Ruleset {}",
+                            profile.id, ruleset.identity.id
+                        ),
+                    ));
+                }
+                if let Some(profile_definition) = profile_definition {
+                    let die_ids = profile_definition
+                        .die_types
+                        .iter()
+                        .map(|die| die.id.as_str())
+                        .collect::<BTreeSet<_>>();
+                    let axis_ids = profile_definition
+                        .axes
+                        .iter()
+                        .map(|axis| axis.id.as_str())
+                        .collect::<BTreeSet<_>>();
+                    let paired_axes = profile_definition
+                        .cancellations
+                        .iter()
+                        .flat_map(|cancellation| {
+                            [
+                                cancellation.positive_axis_id.as_str(),
+                                cancellation.negative_axis_id.as_str(),
+                            ]
+                        })
+                        .collect::<BTreeSet<_>>();
+                    let total = base_dice
+                        .iter()
+                        .try_fold(0_u32, |total, term| total.checked_add(term.count));
+                    let canonical_dice = base_dice
+                        .windows(2)
+                        .all(|pair| pair[0].die_type_id < pair[1].die_type_id);
+                    let canonical_axes = automatic_axes
+                        .windows(2)
+                        .all(|pair| pair[0].axis_id < pair[1].axis_id);
+                    if action.targets.maximum_targets != 1
+                        || action.roll_scope != rpg_ir::RpgIrRollScope::Shared
+                        || base_dice.is_empty()
+                        || base_dice.len() > 64
+                        || total.is_none_or(|total| total > 256)
+                        || !canonical_dice
+                        || base_dice.iter().any(|term| {
+                            term.count == 0 || !die_ids.contains(term.die_type_id.as_str())
+                        })
+                        || !canonical_axes
+                        || automatic_axes.iter().any(|axis| {
+                            !axis_ids.contains(axis.axis_id.as_str())
+                                || !(-1_000_000..=1_000_000).contains(&axis.value)
+                                || (paired_axes.contains(axis.axis_id.as_str()) && axis.value < 0)
+                        })
+                    {
+                        diagnostics.push(RpgDiagnostic::error(
+                            RpgDiagnosticStage::Semantics,
+                            "ACTION_HETEROGENEOUS_POOL_INVALID",
+                            format!("$.actions[{index}].check"),
+                            "pool checks currently require one target, shared scope, 1..=64 canonical known die terms, at most 256 dice, and canonical bounded automatic axes",
+                        ));
+                    }
+                    let mut outcome_programs = Vec::new();
+                    collect_outcome_programs(&action.program, &mut outcome_programs);
+                    let known_bands = profile_definition
+                        .bands
+                        .iter()
+                        .map(|band| band.id.as_str())
+                        .collect::<BTreeSet<_>>();
+                    if outcome_programs.len() != 1 {
+                        diagnostics.push(RpgDiagnostic::error(
+                            RpgDiagnosticStage::Semantics,
+                            "ACTION_HETEROGENEOUS_POOL_OUTCOME_BRANCH_COUNT_INVALID",
+                            format!("$.actions[{index}].program"),
+                            "a heterogeneous-pool action requires exactly one on-outcome program",
+                        ));
+                    } else {
+                        let branches = outcome_programs[0];
+                        if branches.len() >= known_bands.len()
+                            || branches
+                                .keys()
+                                .any(|band_id| !known_bands.contains(band_id.as_str()))
+                        {
+                            diagnostics.push(RpgDiagnostic::error(
+                                RpgDiagnosticStage::References,
+                                "ACTION_HETEROGENEOUS_POOL_OUTCOME_BAND_INVALID",
+                                format!("$.actions[{index}].program"),
+                                "on-outcome branches must reference known pool bands and leave one band for default",
+                            ));
+                        }
+                    }
+                }
+            }
             _ => {}
         }
     }
@@ -2475,6 +2941,34 @@ fn validate_action_contribution_contracts(
                 &action_tags,
                 &format!(
                     "$.compiledOutcomeBandShifts.{source_kind}.{source_id}[{shift_index}].predicate"
+                ),
+                &mut diagnostics,
+            );
+        }
+    }
+    for (source_kind, source_id, contributions) in items
+        .iter()
+        .map(|item| {
+            (
+                "items",
+                item.definition_id.as_str(),
+                item.pool_contributions.as_slice(),
+            )
+        })
+        .chain(features.iter().map(|feature| {
+            (
+                "characterFeatures",
+                feature.definition_id.as_str(),
+                feature.pool_contributions.as_slice(),
+            )
+        }))
+    {
+        for (contribution_index, contribution) in contributions.iter().enumerate() {
+            validate_contribution_action_tag_references(
+                &contribution.predicate,
+                &action_tags,
+                &format!(
+                    "$.compiledPoolContributions.{source_kind}.{source_id}[{contribution_index}].predicate"
                 ),
                 &mut diagnostics,
             );
@@ -5636,6 +6130,7 @@ fn resolve_action_catalogs(
                 }
             }
         }
+        RpgIrCheck::HeterogeneousPool { .. } => {}
     }
     resolve_program_catalogs(
         &mut action.program,
@@ -6112,6 +6607,7 @@ fn collect_action_catalogs(action: &RpgIrAction, catalogs: &mut DerivedCatalogs)
                 }
             }
         }
+        RpgIrCheck::HeterogeneousPool { .. } => {}
     }
     collect_program_catalogs(&action.program, catalogs);
 }

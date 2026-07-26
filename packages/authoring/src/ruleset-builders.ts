@@ -28,6 +28,9 @@ const rulesetScalarTestProfileReferenceBrand: unique symbol = Symbol(
 const rulesetActivationBudgetReferenceBrand: unique symbol = Symbol(
   'asha-rpg.activation-budget-reference',
 );
+const rulesetHeterogeneousPoolProfileReferenceBrand: unique symbol = Symbol(
+  'asha-rpg.heterogeneous-pool-profile-reference',
+);
 
 export interface AuthoredRulesetValueOwnership {
   readonly field: string;
@@ -91,6 +94,15 @@ export type RulesetActivationBudgetReference<
   readonly [rulesetActivationBudgetReferenceBrand]: true;
 }>;
 
+export type RulesetHeterogeneousPoolProfileReference<
+  RulesetId extends string,
+  ProfileId extends string,
+> = Readonly<{
+  readonly rulesetId: RulesetId;
+  readonly id: ProfileId;
+  readonly [rulesetHeterogeneousPoolProfileReferenceBrand]: true;
+}>;
+
 type RulesetInput = Omit<Ruleset, 'provides'> & {
   readonly provides: Omit<
     Ruleset['provides'],
@@ -99,12 +111,14 @@ type RulesetInput = Omit<Ruleset, 'provides'> & {
     | 'contributionStackingGroups'
     | 'scalarTestProfiles'
     | 'activationBudgets'
+    | 'heterogeneousPoolProfiles'
   > & {
     readonly values: readonly RulesetValueInput[];
     readonly calculationSelectors?: Ruleset['provides']['calculationSelectors'];
     readonly contributionStackingGroups?: Ruleset['provides']['contributionStackingGroups'];
     readonly scalarTestProfiles?: Ruleset['provides']['scalarTestProfiles'];
     readonly activationBudgets?: Ruleset['provides']['activationBudgets'];
+    readonly heterogeneousPoolProfiles?: Ruleset['provides']['heterogeneousPoolProfiles'];
   };
 };
 
@@ -139,6 +153,9 @@ export function defineRuleset(input: RulesetInput): Ruleset {
       activationBudgets: [...(input.provides.activationBudgets ?? [])].sort(
         (left, right) => left.id.localeCompare(right.id),
       ),
+      heterogeneousPoolProfiles: [
+        ...(input.provides.heterogeneousPoolProfiles ?? []),
+      ].sort((left, right) => left.id.localeCompare(right.id)),
     },
   });
 }
@@ -307,6 +324,31 @@ export function rulesetActivationBudget<
     rulesetId: ruleset.identity.id,
     id,
     [rulesetActivationBudgetReferenceBrand]: true as const,
+  });
+}
+
+export function rulesetHeterogeneousPoolProfile<
+  const RulesetId extends string,
+  const ProfileId extends string,
+>(
+  ruleset: Ruleset & {
+    readonly identity: RulesetIdentity & { readonly id: RulesetId };
+  },
+  id: ProfileId,
+): RulesetHeterogeneousPoolProfileReference<RulesetId, ProfileId> {
+  if (
+    !ruleset.provides.heterogeneousPoolProfiles.some(
+      (candidate) => candidate.id === id,
+    )
+  ) {
+    throw new Error(
+      `ruleset ${ruleset.identity.id}@${ruleset.identity.version} does not provide heterogeneous pool profile ${id}`,
+    );
+  }
+  return immutable({
+    rulesetId: ruleset.identity.id,
+    id,
+    [rulesetHeterogeneousPoolProfileReferenceBrand]: true as const,
   });
 }
 

@@ -100,7 +100,7 @@ export function preparePlayBundle(options) {
         })),
     ].sort(compareRelationship);
     const prepared = immutable({
-        schema: { identity: 'asha.rpg.play-bundle.prepared', major: 5 },
+        schema: { identity: 'asha.rpg.play-bundle.prepared', major: 6 },
         playBundleIdentity: options.bundle.identity,
         ruleset: options.bundle.ruleset,
         contentPacks: [...context.selected.values()]
@@ -353,6 +353,133 @@ function validateRuleset(ruleset, target, diagnostics) {
                 diagnostics.push(diagnostic('source', 'RULESET_SCALAR_TEST_NATURAL_RULE_INVALID', `${path}.naturalDieRules[${ruleIndex}]`, 'natural-die rules must have unique portable ids, ordered disjoint ranges within the primary die, and a known set-band or bounded nonzero shift'));
             }
             previousNaturalMaximum = rule.maximum;
+        }
+    }
+    if (ruleset.provides.heterogeneousPoolProfiles.length > 16) {
+        diagnostics.push(diagnostic('source', 'RULESET_HETEROGENEOUS_POOL_PROFILE_LIMIT_EXCEEDED', '$.bundle.ruleset.provides.heterogeneousPoolProfiles', 'a Ruleset may declare at most 16 heterogeneous pool profiles'));
+    }
+    let previousPoolProfileId;
+    for (const [profileIndex, profile] of ruleset.provides.heterogeneousPoolProfiles.entries()) {
+        const path = `$.bundle.ruleset.provides.heterogeneousPoolProfiles[${profileIndex}]`;
+        if (!validPortableIdentifier(profile.id) ||
+            (previousPoolProfileId !== undefined &&
+                previousPoolProfileId >= profile.id) ||
+            profile.version !== 1 ||
+            profile.label.trim().length === 0 ||
+            profile.dieTypes.length === 0 ||
+            profile.dieTypes.length > 64 ||
+            profile.axes.length === 0 ||
+            profile.axes.length > 32 ||
+            profile.cancellations.length > 32 ||
+            profile.bands.length < 2 ||
+            profile.bands.length > 16 ||
+            profile.outcomeRules.length > 32) {
+            diagnostics.push(diagnostic('source', 'RULESET_HETEROGENEOUS_POOL_PROFILE_INVALID', path, 'pool profiles require canonical version-1 ids, 1..=64 die types, 1..=32 axes, at most 32 cancellations, and 2..=16 bands'));
+        }
+        previousPoolProfileId = profile.id;
+        const axisIds = new Set();
+        let previousAxisId;
+        for (const [axisIndex, axis] of profile.axes.entries()) {
+            if (!validPortableIdentifier(axis.id) ||
+                axis.label.trim().length === 0 ||
+                !axisIds.add(axis.id) ||
+                (previousAxisId !== undefined && previousAxisId >= axis.id)) {
+                diagnostics.push(diagnostic('source', 'RULESET_POOL_AXIS_INVALID', `${path}.axes[${axisIndex}]`, 'pool axes require unique sorted portable ids and labels'));
+            }
+            previousAxisId = axis.id;
+        }
+        const cancellationAxisIds = new Set();
+        let previousCancellationId;
+        for (const [cancellationIndex, cancellation] of profile.cancellations.entries()) {
+            if (!validPortableIdentifier(cancellation.id) ||
+                (previousCancellationId !== undefined &&
+                    previousCancellationId >= cancellation.id) ||
+                cancellation.positiveAxisId === cancellation.negativeAxisId ||
+                !axisIds.has(cancellation.positiveAxisId) ||
+                !axisIds.has(cancellation.negativeAxisId) ||
+                !cancellationAxisIds.add(cancellation.positiveAxisId) ||
+                !cancellationAxisIds.add(cancellation.negativeAxisId)) {
+                diagnostics.push(diagnostic('source', 'RULESET_POOL_CANCELLATION_INVALID', `${path}.cancellations[${cancellationIndex}]`, 'cancellation pairs require sorted ids and two known axes not owned by another pair'));
+            }
+            previousCancellationId = cancellation.id;
+        }
+        const dieTypeIds = new Set();
+        let previousDieTypeId;
+        for (const [dieIndex, die] of profile.dieTypes.entries()) {
+            if (!validPortableIdentifier(die.id) ||
+                die.label.trim().length === 0 ||
+                !dieTypeIds.add(die.id) ||
+                (previousDieTypeId !== undefined && previousDieTypeId >= die.id) ||
+                !Number.isSafeInteger(die.sides) ||
+                die.sides < 2 ||
+                die.sides > 100 ||
+                die.faces.length !== die.sides) {
+                diagnostics.push(diagnostic('source', 'RULESET_POOL_DIE_TYPE_INVALID', `${path}.dieTypes[${dieIndex}]`, 'pool die types require unique sorted ids, d2..d100 sides, and one face record per side'));
+            }
+            previousDieTypeId = die.id;
+            for (const [faceIndex, face] of die.faces.entries()) {
+                let previousFaceAxisId;
+                const faceAxisIds = new Set();
+                if (face.value !== faceIndex + 1 ||
+                    face.vector.length > profile.axes.length) {
+                    diagnostics.push(diagnostic('source', 'RULESET_POOL_FACE_TABLE_INVALID', `${path}.dieTypes[${dieIndex}].faces[${faceIndex}]`, 'face tables must be complete and ordered by exact face value'));
+                }
+                for (const [vectorIndex, vector] of face.vector.entries()) {
+                    if (!axisIds.has(vector.axisId) ||
+                        !faceAxisIds.add(vector.axisId) ||
+                        (previousFaceAxisId !== undefined &&
+                            previousFaceAxisId >= vector.axisId) ||
+                        !Number.isSafeInteger(vector.value) ||
+                        vector.value < -1_000_000 ||
+                        vector.value > 1_000_000 ||
+                        (cancellationAxisIds.has(vector.axisId) && vector.value < 0)) {
+                        diagnostics.push(diagnostic('source', 'RULESET_POOL_FACE_VECTOR_INVALID', `${path}.dieTypes[${dieIndex}].faces[${faceIndex}].vector[${vectorIndex}]`, 'face vectors require unique sorted known axes, bounded values, and nonnegative paired-axis values'));
+                    }
+                    previousFaceAxisId = vector.axisId;
+                }
+            }
+        }
+        const bandIds = new Set();
+        let previousBandId;
+        for (const [bandIndex, band] of profile.bands.entries()) {
+            if (!validPortableIdentifier(band.id) ||
+                band.label.trim().length === 0 ||
+                !bandIds.add(band.id) ||
+                (previousBandId !== undefined && previousBandId >= band.id)) {
+                diagnostics.push(diagnostic('source', 'RULESET_POOL_OUTCOME_BAND_INVALID', `${path}.bands[${bandIndex}]`, 'pool outcome bands require unique sorted portable ids and labels'));
+            }
+            previousBandId = band.id;
+        }
+        if (!bandIds.has(profile.defaultBandId)) {
+            diagnostics.push(diagnostic('source', 'RULESET_POOL_DEFAULT_BAND_INVALID', `${path}.defaultBandId`, 'the pool default outcome must reference one declared band'));
+        }
+        let previousRuleId;
+        for (const [ruleIndex, rule] of profile.outcomeRules.entries()) {
+            const rulePath = `${path}.outcomeRules[${ruleIndex}]`;
+            if (!validPortableIdentifier(rule.id) ||
+                (previousRuleId !== undefined && previousRuleId >= rule.id) ||
+                !bandIds.has(rule.bandId) ||
+                rule.requirements.length === 0 ||
+                rule.requirements.length > 32) {
+                diagnostics.push(diagnostic('source', 'RULESET_POOL_OUTCOME_RULE_INVALID', rulePath, 'vector outcome rules require sorted ids, one known band, and 1..=32 axis requirements'));
+            }
+            previousRuleId = rule.id;
+            let previousRequirementAxisId;
+            for (const [requirementIndex, requirement] of rule.requirements.entries()) {
+                if (!axisIds.has(requirement.axisId) ||
+                    (previousRequirementAxisId !== undefined &&
+                        previousRequirementAxisId >= requirement.axisId) ||
+                    (requirement.minimum !== null &&
+                        !Number.isSafeInteger(requirement.minimum)) ||
+                    (requirement.maximum !== null &&
+                        !Number.isSafeInteger(requirement.maximum)) ||
+                    (requirement.minimum !== null &&
+                        requirement.maximum !== null &&
+                        requirement.minimum > requirement.maximum)) {
+                    diagnostics.push(diagnostic('source', 'RULESET_POOL_OUTCOME_REQUIREMENT_INVALID', `${rulePath}.requirements[${requirementIndex}]`, 'outcome requirements require unique sorted known axes and ordered integer bounds'));
+                }
+                previousRequirementAxisId = requirement.axisId;
+            }
         }
     }
 }
@@ -1491,6 +1618,7 @@ function materializedItemData(item) {
         ...item,
         contributions: materializedScalarContributions(item.contributions),
         outcomeBandShifts: materializedOutcomeBandShifts(item.outcomeBandShifts),
+        poolContributions: materializedPoolContributions(item.poolContributions),
     };
 }
 function materializedCharacterFeatureData(feature) {
@@ -1498,6 +1626,7 @@ function materializedCharacterFeatureData(feature) {
         ...feature,
         contributions: materializedScalarContributions(feature.contributions),
         outcomeBandShifts: materializedOutcomeBandShifts(feature.outcomeBandShifts),
+        poolContributions: materializedPoolContributions(feature.poolContributions),
     };
 }
 function materializedOutcomeBandShifts(shifts) {
@@ -1509,6 +1638,20 @@ function materializedOutcomeBandShifts(shifts) {
 function materializedScalarContributions(contributions) {
     return contributions.map((contribution) => ({
         ...contribution,
+        predicate: materializedContributionPredicate(contribution.predicate),
+    }));
+}
+function materializedPoolContributions(contributions) {
+    return contributions.map((contribution) => ({
+        ...contribution,
+        profile: {
+            rulesetId: contribution.profile.rulesetId,
+            id: contribution.profile.id,
+        },
+        stackingGroup: {
+            rulesetId: contribution.stackingGroup.rulesetId,
+            id: contribution.stackingGroup.id,
+        },
         predicate: materializedContributionPredicate(contribution.predicate),
     }));
 }
@@ -1658,12 +1801,20 @@ function authoredContributionDefinitionReferences(definition) {
         : definition.kind === 'characterFeature'
             ? definition.characterFeature.outcomeBandShifts
             : [];
+    const poolContributions = definition.kind === 'item'
+        ? definition.item.poolContributions
+        : definition.kind === 'characterFeature'
+            ? definition.characterFeature.poolContributions
+            : [];
     const references = [];
     for (const contribution of contributions) {
         collectContributionPredicateDefinitionReferences(contribution.predicate, references);
     }
     for (const shift of shifts) {
         collectContributionPredicateDefinitionReferences(shift.predicate, references);
+    }
+    for (const contribution of poolContributions) {
+        collectContributionPredicateDefinitionReferences(contribution.predicate, references);
     }
     return references;
 }
@@ -2279,7 +2430,9 @@ function isStructurallyValidActionBody(value) {
         isRecord(check) &&
         (check['kind'] === 'noRoll' ||
             check['kind'] === 'attack' ||
-            check['kind'] === 'savingThrow') &&
+            check['kind'] === 'savingThrow' ||
+            check['kind'] === 'scalarTest' ||
+            check['kind'] === 'heterogeneousPool') &&
         (value['rollScope'] === 'shared' ||
             value['rollScope'] === 'perTarget' ||
             value['rollScope'] === 'none') &&
@@ -2356,7 +2509,9 @@ function procedureArgumentMatches(value, parameter, outerParameters, ruleset) {
             return (isRecord(value) &&
                 (value['kind'] === 'noRoll' ||
                     value['kind'] === 'attack' ||
-                    value['kind'] === 'savingThrow'));
+                    value['kind'] === 'savingThrow' ||
+                    value['kind'] === 'scalarTest' ||
+                    value['kind'] === 'heterogeneousPool'));
         case 'costs':
             return Array.isArray(value);
         case 'program':
@@ -2407,6 +2562,7 @@ function isProgramKind(value) {
         value === 'repeat' ||
         value === 'forEachTarget' ||
         value === 'onCheck' ||
+        value === 'onOutcome' ||
         value === 'atomic');
 }
 function validPortableIdentifier(value) {
@@ -2431,12 +2587,12 @@ function validateItemDefinitions(records, resolvedReferences, ruleset, diagnosti
         const item = record.definition.item;
         const path = `$.packages[${record.package.key}].definitions.${record.definition.id}.item`;
         if (item.schema.identity !== 'asha.rpg.item' ||
-            item.schema.version !== 3) {
-            diagnostics.push(diagnostic('compatibility', 'ITEM_SCHEMA_UNSUPPORTED', `${path}.schema`, 'items require asha.rpg.item@3', profileDiagnosticContext(record)));
+            item.schema.version !== 4) {
+            diagnostics.push(diagnostic('compatibility', 'ITEM_SCHEMA_UNSUPPORTED', `${path}.schema`, 'items require asha.rpg.item@4', profileDiagnosticContext(record)));
         }
         if (Object.keys(item).sort().join(',') !==
-            'allowedSlots,attributes,contributions,outcomeBandShifts,schema,tags,traits') {
-            diagnostics.push(diagnostic('source', 'ITEM_EXECUTABLE_OR_UNKNOWN_FIELD_FORBIDDEN', path, 'items may contain only schema, tags, traits, allowedSlots, typed attributes, scalar contributions, and outcome-band shifts', profileDiagnosticContext(record)));
+            'allowedSlots,attributes,contributions,outcomeBandShifts,poolContributions,schema,tags,traits') {
+            diagnostics.push(diagnostic('source', 'ITEM_EXECUTABLE_OR_UNKNOWN_FIELD_FORBIDDEN', path, 'items may contain only schema, tags, traits, allowedSlots, typed attributes, and the closed typed contribution families', profileDiagnosticContext(record)));
         }
         for (const [field, values] of [
             ['tags', item.tags],
@@ -2454,6 +2610,8 @@ function validateItemDefinitions(records, resolvedReferences, ruleset, diagnosti
         validateContributionDefinitionTargets(record, item.contributions, `${path}.contributions`, resolvedReferences, recordsByGlobalId, diagnostics);
         validateOutcomeBandShifts(item.outcomeBandShifts, `${path}.outcomeBandShifts`, record, ruleset, diagnostics);
         validateContributionDefinitionTargets(record, item.outcomeBandShifts, `${path}.outcomeBandShifts`, resolvedReferences, recordsByGlobalId, diagnostics);
+        validatePoolContributions(item.poolContributions, `${path}.poolContributions`, record, ruleset, diagnostics);
+        validateContributionDefinitionTargets(record, item.poolContributions, `${path}.poolContributions`, resolvedReferences, recordsByGlobalId, diagnostics);
         if (!identifiersAreCanonical(item.attributes.map((attribute) => attribute.id))) {
             diagnostics.push(diagnostic('source', 'ITEM_ATTRIBUTES_NOT_CANONICAL', `${path}.attributes`, 'item attributes must have unique sorted portable identities', profileDiagnosticContext(record)));
         }
@@ -2562,6 +2720,50 @@ function normalizeMaterializedActions(bundle, graph, diagnostics) {
             if (branchIds.length >= bandIds.size ||
                 branchIds.some((id) => !bandIds.has(id))) {
                 diagnostics.push(diagnostic('source', 'ACTION_SCALAR_OUTCOME_BRANCHES_INVALID', `$.actions[${index}].program`, 'onOutcome branches must be unique known profile bands and leave at least one band for the required default'));
+            }
+            continue;
+        }
+        if (action.check.kind === 'heterogeneousPool') {
+            const poolCheck = action.check;
+            const profile = poolCheck.profile.rulesetId === bundle.ruleset.identity.id
+                ? bundle.ruleset.provides.heterogeneousPoolProfiles.find((candidate) => candidate.id === poolCheck.profile.id)
+                : undefined;
+            if (profile === undefined) {
+                diagnostics.push(diagnostic('compatibility', 'ACTION_HETEROGENEOUS_POOL_PROFILE_INVALID', `$.actions[${index}].check.profile`, 'heterogeneous pool checks must reference a profile owned by the selected Ruleset'));
+                continue;
+            }
+            const dieTypeIds = new Set(profile.dieTypes.map((die) => die.id));
+            const axisIds = new Set(profile.axes.map((axis) => axis.id));
+            const pairedAxisIds = new Set(profile.cancellations.flatMap((cancellation) => [
+                cancellation.positiveAxisId,
+                cancellation.negativeAxisId,
+            ]));
+            const baseTotal = poolCheck.baseDice.reduce((total, term) => total + term.count, 0);
+            if (action.targets.maximumTargets !== 1 ||
+                action.rollScope !== 'shared' ||
+                poolCheck.baseDice.length === 0 ||
+                poolCheck.baseDice.length > 64 ||
+                baseTotal > 256 ||
+                !identifiersAreCanonical(poolCheck.baseDice.map((term) => term.dieTypeId)) ||
+                poolCheck.baseDice.some((term) => !dieTypeIds.has(term.dieTypeId) ||
+                    !Number.isSafeInteger(term.count) ||
+                    term.count < 1) ||
+                !identifiersAreCanonical(poolCheck.automaticAxes.map((axis) => axis.axisId)) ||
+                poolCheck.automaticAxes.some((axis) => !axisIds.has(axis.axisId) ||
+                    !Number.isSafeInteger(axis.value) ||
+                    axis.value < -1_000_000 ||
+                    axis.value > 1_000_000 ||
+                    (pairedAxisIds.has(axis.axisId) && axis.value < 0))) {
+                diagnostics.push(diagnostic('source', 'ACTION_HETEROGENEOUS_POOL_INVALID', `$.actions[${index}].check`, 'pool checks currently require one target, shared scope, 1..=64 canonical known die terms, at most 256 dice, and canonical bounded automatic axes'));
+            }
+            const outcomePrograms = collectOutcomePrograms(action.program);
+            const bandIds = new Set(profile.bands.map((band) => band.id));
+            const [outcome] = outcomePrograms;
+            const branchIds = Object.keys(outcome?.branches ?? {});
+            if (outcomePrograms.length !== 1 ||
+                branchIds.length >= bandIds.size ||
+                branchIds.some((id) => !bandIds.has(id))) {
+                diagnostics.push(diagnostic('source', 'ACTION_HETEROGENEOUS_POOL_BRANCHES_INVALID', `$.actions[${index}].program`, 'pool checks require exactly one onOutcome program whose explicit branches are known bands and leave at least one band for default'));
             }
         }
     }
@@ -2794,16 +2996,22 @@ function validateCharacterDefinitions(materialized, resolvedReferences, ruleset,
             diagnostics.push(diagnostic('compatibility', 'CHARACTER_FEATURE_EXTENSION_POLICY_UNSUPPORTED', `$.packages[${record.package.key}].definitions.${record.definition.id}.extensionPolicy`, 'character features are sealed in the current semantic contract', { definitionId: record.definition.id, source: record.definition.source }));
         }
         if (data.schema.identity !== 'asha.rpg.character-feature' ||
-            data.schema.version !== 3) {
-            diagnostics.push(diagnostic('compatibility', 'CHARACTER_FEATURE_SCHEMA_UNSUPPORTED', `${path}.schema`, 'character features require asha.rpg.character-feature@3', { definitionId: record.definition.id, source: record.definition.source }));
+            data.schema.version !== 4) {
+            diagnostics.push(diagnostic('compatibility', 'CHARACTER_FEATURE_SCHEMA_UNSUPPORTED', `${path}.schema`, 'character features require asha.rpg.character-feature@4', { definitionId: record.definition.id, source: record.definition.source }));
         }
         if (data.contributions.length > 32 ||
             data.outcomeBandShifts.length > 32 ||
-            data.contributions.length + data.outcomeBandShifts.length === 0) {
+            data.poolContributions.length > 32 ||
+            data.contributions.length +
+                data.outcomeBandShifts.length +
+                data.poolContributions.length ===
+                0) {
             diagnostics.push(diagnostic('source', 'CHARACTER_FEATURE_CONTRIBUTIONS_INVALID', path, 'character features require at least one and at most 32 entries in each typed contribution family', { definitionId: record.definition.id, source: record.definition.source }));
         }
         validateScalarContributions(data.contributions, `${path}.contributions`, record, ruleset, diagnostics);
         validateContributionDefinitionTargets(record, data.contributions, `${path}.contributions`, resolvedReferences, recordsByGlobalId, diagnostics);
+        validatePoolContributions(data.poolContributions, `${path}.poolContributions`, record, ruleset, diagnostics);
+        validateContributionDefinitionTargets(record, data.poolContributions, `${path}.poolContributions`, resolvedReferences, recordsByGlobalId, diagnostics);
         validateOutcomeBandShifts(data.outcomeBandShifts, `${path}.outcomeBandShifts`, record, ruleset, diagnostics);
         validateContributionDefinitionTargets(record, data.outcomeBandShifts, `${path}.outcomeBandShifts`, resolvedReferences, recordsByGlobalId, diagnostics);
     }
@@ -2855,6 +3063,61 @@ function validateScalarContributions(contributions, path, record, ruleset, diagn
         }
         const expressionNodes = { value: 0 };
         validateContributionValueExpression(contribution.value, 1, expressionNodes, `${contributionPath}.value`, record, ruleset, diagnostics);
+        const predicateNodes = { value: 0 };
+        validateContributionPredicate(contribution.predicate, 1, predicateNodes, `${contributionPath}.predicate`, record, ruleset, diagnostics);
+    }
+}
+function validatePoolContributions(contributions, path, record, ruleset, diagnostics) {
+    let previousId;
+    for (const [index, contribution] of contributions.entries()) {
+        const contributionPath = `${path}[${index}]`;
+        const profile = contribution.profile.rulesetId === ruleset.identity.id
+            ? ruleset.provides.heterogeneousPoolProfiles.find((candidate) => candidate.id === contribution.profile.id)
+            : undefined;
+        if (contribution.schema.identity !== 'asha.rpg.pool-contribution' ||
+            contribution.schema.version !== 1) {
+            diagnostics.push(diagnostic('compatibility', 'POOL_CONTRIBUTION_SCHEMA_UNSUPPORTED', `${contributionPath}.schema`, 'pool contributions require asha.rpg.pool-contribution@1', profileDiagnosticContext(record)));
+        }
+        if (!validPortableIdentifier(contribution.id) ||
+            (previousId !== undefined && previousId >= contribution.id) ||
+            profile === undefined ||
+            contribution.stackingGroup.rulesetId !== ruleset.identity.id ||
+            !ruleset.provides.contributionStackingGroups.some((group) => group.id === contribution.stackingGroup.id)) {
+            diagnostics.push(diagnostic('graph', 'POOL_CONTRIBUTION_CONTRACT_INVALID', contributionPath, 'pool contributions require canonical ids and owner-local profile and stacking-group references', profileDiagnosticContext(record)));
+        }
+        previousId = contribution.id;
+        if (profile !== undefined) {
+            const dieTypeIds = new Set(profile.dieTypes.map((die) => die.id));
+            const axisIds = new Set(profile.axes.map((axis) => axis.id));
+            const pairedAxisIds = new Set(profile.cancellations.flatMap((cancellation) => [
+                cancellation.positiveAxisId,
+                cancellation.negativeAxisId,
+            ]));
+            const effect = contribution.effect;
+            const effectValid = effect.kind === 'addDice'
+                ? dieTypeIds.has(effect.dieTypeId) &&
+                    Number.isSafeInteger(effect.delta) &&
+                    effect.delta !== 0 &&
+                    effect.delta >= -256 &&
+                    effect.delta <= 256
+                : effect.kind === 'addAxis'
+                    ? axisIds.has(effect.axisId) &&
+                        Number.isSafeInteger(effect.value) &&
+                        effect.value !== 0 &&
+                        effect.value >= -1_000_000 &&
+                        effect.value <= 1_000_000 &&
+                        (!pairedAxisIds.has(effect.axisId) || effect.value >= 0)
+                    : dieTypeIds.has(effect.fromDieTypeId) &&
+                        dieTypeIds.has(effect.toDieTypeId) &&
+                        dieTypeIds.has(effect.fallbackDieTypeId) &&
+                        effect.fromDieTypeId !== effect.toDieTypeId &&
+                        Number.isSafeInteger(effect.count) &&
+                        effect.count >= 1 &&
+                        effect.count <= 128;
+            if (!effectValid) {
+                diagnostics.push(diagnostic('source', 'POOL_CONTRIBUTION_EFFECT_INVALID', `${contributionPath}.effect`, 'pool effects require known ids and bounded nonzero add-dice, add-axis, or replace-or-add values', profileDiagnosticContext(record)));
+            }
+        }
         const predicateNodes = { value: 0 };
         validateContributionPredicate(contribution.predicate, 1, predicateNodes, `${contributionPath}.predicate`, record, ruleset, diagnostics);
     }

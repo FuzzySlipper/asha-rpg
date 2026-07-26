@@ -26,6 +26,7 @@ import {
   instantiateScenarioTemplate,
   heal,
   half,
+  heterogeneousPool,
   hostile,
   onCheck,
   noRoll,
@@ -38,6 +39,7 @@ import {
   rulesetDefense,
   rulesetCalculationSelector,
   rulesetContributionStackingGroup,
+  rulesetHeterogeneousPoolProfile,
   rulesetScalarTestProfile,
   rulesetActivationBudget,
   rulesetStat,
@@ -298,7 +300,7 @@ test("Ruleset scalar profiles author canonical ordered outcomes and reject gaps"
     result.ok ? "expected scalar profile" : JSON.stringify(result.diagnostics),
   );
   if (!result.ok) return;
-  assert.equal(result.prepared.schema.major, 5);
+  assert.equal(result.prepared.schema.major, 6);
   assert.deepEqual(
     result.prepared.ruleset.provides.scalarTestProfiles.map(
       (profile) => profile.id,
@@ -434,6 +436,227 @@ test("Ruleset scalar profiles author canonical ordered outcomes and reject gaps"
         diagnostic.code === "RULESET_SCALAR_TEST_DOMAIN_OVERFLOW",
     ),
   );
+});
+
+test("Heterogeneous pool profiles and content contributions retain typed owner-bound contracts", () => {
+  const poolRuleset = defineRuleset({
+    ...semanticRuleset,
+    provides: {
+      ...semanticRuleset.provides,
+      operations: [{ id: "operation.heal", version: 1 }],
+      capabilities: [
+        { id: "capability.random", version: 1 },
+        { id: "capability.vitality", version: 1 },
+      ],
+      contributionStackingGroups: [
+        {
+          id: "pool-sum",
+          version: 1,
+          label: "Pool sum",
+          policy: "sum",
+        },
+      ],
+      heterogeneousPoolProfiles: [
+        {
+          id: "story",
+          version: 1,
+          label: "Story pool",
+          dieTypes: [
+            {
+              id: "boost",
+              label: "Boost",
+              sides: 4,
+              faces: [
+                { value: 1, vector: [] },
+                {
+                  value: 2,
+                  vector: [{ axisId: "success", value: 1 }],
+                },
+                {
+                  value: 3,
+                  vector: [{ axisId: "success", value: 1 }],
+                },
+                {
+                  value: 4,
+                  vector: [{ axisId: "success", value: 2 }],
+                },
+              ],
+            },
+          ],
+          axes: [{ id: "success", label: "Success" }],
+          cancellations: [],
+          bands: [
+            { id: "failure", label: "Failure" },
+            { id: "success", label: "Success" },
+          ],
+          outcomeRules: [
+            {
+              id: "success",
+              bandId: "success",
+              requirements: [
+                { axisId: "success", minimum: 1, maximum: null },
+              ],
+            },
+          ],
+          defaultBandId: "failure",
+        },
+      ],
+    },
+  });
+  const profile = rulesetHeterogeneousPoolProfile(poolRuleset, "story");
+  const group = rulesetContributionStackingGroup(poolRuleset, "pool-sum");
+  const authoredAction = action({
+    id: actionId("contract.pool-action"),
+    name: "Pool action",
+    sourcePath: "contract/pool.ts#poolAction",
+    targets: hostile({ range: 1 }),
+    check: heterogeneousPool({
+      profile,
+      baseDice: [{ dieTypeId: "boost", count: 1 }],
+      automaticAxes: [],
+    }),
+    rollScope: "shared",
+    program: onOutcome({
+      branches: { success: heal({ amount: constant(2) }) },
+      default: heal({ amount: constant(1) }),
+    }),
+  });
+  const actionDefinition = defineActionDefinition({
+    id: authoredAction.id,
+    visibility: "public",
+    extensionPolicy: "sealed",
+    source: { module: "contract/pool.ts", declaration: "poolAction" },
+    action: authoredAction,
+  });
+  const poolFeature = defineCharacterFeatureDefinition({
+    id: "feature.pool",
+    visibility: "public",
+    extensionPolicy: "sealed",
+    source: { module: "contract/pool.ts", declaration: "poolFeature" },
+    presentation: { label: "Pool feature" },
+    characterFeature: {
+      poolContributions: [
+        {
+          id: "z-add-success",
+          profile,
+          stackingGroup: group,
+          effect: { kind: "addAxis", axisId: "success", value: 1 },
+          predicate: { kind: "always" },
+        },
+        {
+          id: "add-boost",
+          profile,
+          stackingGroup: group,
+          effect: { kind: "addDice", dieTypeId: "boost", delta: 1 },
+          predicate: { kind: "always" },
+        },
+      ],
+    },
+  });
+  const contentPack = defineContentPack({
+    identity: { id: "contract.pool-content", version: "1.0.0" },
+    entry: { module: "contract/pool.ts", declaration: "content" },
+    definitions: [actionDefinition, poolFeature],
+  });
+  const prepare = (ruleset: typeof poolRuleset) =>
+    preparePlayBundle({
+      bundle: composePlayBundle({
+        identity: { id: "contract.pool-bundle", version: "1.0.0" },
+        ruleset,
+        base: contentPackRequest({
+          id: contentPack.identity.id,
+          version: contentPack.identity.version,
+        }),
+        add: [],
+        overlays: [],
+        configure: {},
+      }),
+      contentPacks: [contentPackSource(contentPack)],
+    });
+  const accepted = prepare(poolRuleset);
+  assert.equal(
+    accepted.ok,
+    true,
+    accepted.ok
+      ? "expected heterogeneous pool contract"
+      : JSON.stringify(accepted.diagnostics),
+  );
+  if (!accepted.ok) return;
+  const materializedFeature = accepted.prepared.materializedDefinitions.find(
+    (definition) => definition.id === poolFeature.id,
+  );
+  assert.deepEqual(
+    (
+      materializedFeature?.semantic as {
+        poolContributions?: readonly {
+          profile: { rulesetId: string; id: string };
+          effect: { kind: string; dieTypeId: string; delta: number };
+        }[];
+      }
+    ).poolContributions,
+    [
+      {
+        schema: { identity: "asha.rpg.pool-contribution", version: 1 },
+        id: "add-boost",
+        profile: { rulesetId: poolRuleset.identity.id, id: "story" },
+        stackingGroup: {
+          rulesetId: poolRuleset.identity.id,
+          id: "pool-sum",
+        },
+        effect: { kind: "addDice", dieTypeId: "boost", delta: 1 },
+        predicate: { kind: "always" },
+      },
+      {
+        schema: { identity: "asha.rpg.pool-contribution", version: 1 },
+        id: "z-add-success",
+        profile: { rulesetId: poolRuleset.identity.id, id: "story" },
+        stackingGroup: {
+          rulesetId: poolRuleset.identity.id,
+          id: "pool-sum",
+        },
+        effect: { kind: "addAxis", axisId: "success", value: 1 },
+        predicate: { kind: "always" },
+      },
+    ],
+  );
+
+  const profileDefinition =
+    poolRuleset.provides.heterogeneousPoolProfiles[0];
+  if (profileDefinition === undefined) {
+    throw new Error("expected heterogeneous pool profile fixture");
+  }
+  const dieType = profileDefinition.dieTypes[0];
+  if (dieType === undefined) {
+    throw new Error("expected heterogeneous pool die fixture");
+  }
+  const malformed = prepare(
+    defineRuleset({
+      ...poolRuleset,
+      provides: {
+        ...poolRuleset.provides,
+        heterogeneousPoolProfiles: [
+          {
+            ...profileDefinition,
+            dieTypes: [
+              {
+                ...dieType,
+                faces: dieType.faces.slice(0, 3),
+              },
+            ],
+          },
+        ],
+      },
+    }),
+  );
+  assert.equal(malformed.ok, false);
+  if (!malformed.ok) {
+    assert.ok(
+      malformed.diagnostics.some(
+        (diagnostic) =>
+          diagnostic.code === "RULESET_POOL_DIE_TYPE_INVALID",
+      ),
+    );
+  }
 });
 
 test("Content Pack requirements are checked directly against Ruleset provisions", () => {

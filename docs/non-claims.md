@@ -43,10 +43,13 @@ Rust compilation remains authoritative.
 The contextual contribution ledger and ordered scalar-test profile are closed
 contracts, not a generic modifier or scripting facility. They do not provide
 arbitrary option bags,
-mutable toggles, user-authored predicates, pool/category transformations,
+mutable toggles, user-authored predicates, arbitrary pool/category
+transformations,
 probability previews, or calculation owners beyond the currently bound attack
-modifier and scalar-test profiles. `F3` through `F6` in the first-wave catalog
-remain implementation non-claims.
+modifier and scalar-test profiles. The separate heterogeneous-pool contract
+supports only its named die-count, automatic-axis, and sequential
+replace-or-fallback effects. `F3` through `F5` in the first-wave catalog remain
+implementation non-claims.
 
 The implemented variable activation-budget model is deliberately turn-relative:
 Rulesets may declare action and reaction budgets with owner-turn-start or
@@ -56,4 +59,7 @@ initiative-derived budget calculator, borrowing model, or delay/ready system.
 
 Scalar-test base and explicit-difficulty expressions cannot request formula
 dice. The profile's one primary die is their complete random surface;
-additional or heterogeneous dice belong to the deferred pool contract.
+heterogeneous dice use the separately typed pool request and vector-outcome
+contract. Exploding dice, rerolls, keep/drop, opposed or assisted workflows,
+probability calculators, proprietary symbol tables, and arbitrary pool
+reduction scripts remain non-claims.

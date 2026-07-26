@@ -907,6 +907,15 @@ pub enum RpgRandomRequestKind {
     SavingThrowCheck,
     ScalarTest,
     FormulaDice,
+    HeterogeneousPool,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, PartialOrd, Ord, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase", deny_unknown_fields)]
+pub struct RpgHeterogeneousRandomTerm {
+    pub die_type_id: String,
+    pub count: u32,
+    pub sides: u32,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
@@ -916,6 +925,17 @@ pub struct RpgRandomRequest {
     pub count: u32,
     pub sides: u32,
     pub path: String,
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub heterogeneous_terms: Vec<RpgHeterogeneousRandomTerm>,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase", deny_unknown_fields)]
+pub struct RpgHeterogeneousRandomValue {
+    pub die_type_id: String,
+    pub ordinal: u32,
+    pub sides: u32,
+    pub value: u32,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
@@ -923,6 +943,8 @@ pub struct RpgRandomRequest {
 pub struct RpgRandomEvidence {
     pub request: RpgRandomRequest,
     pub values: Vec<u32>,
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub heterogeneous_values: Vec<RpgHeterogeneousRandomValue>,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
@@ -1158,6 +1180,106 @@ pub struct RpgScalarContributionLedger {
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase", deny_unknown_fields)]
+pub struct RpgPoolContributionSchema {
+    pub identity: String,
+    pub version: u32,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(
+    tag = "kind",
+    rename_all = "camelCase",
+    rename_all_fields = "camelCase",
+    deny_unknown_fields
+)]
+pub enum RpgPoolContributionEffect {
+    AddDice {
+        die_type_id: String,
+        delta: i32,
+    },
+    AddAxis {
+        axis_id: String,
+        value: i32,
+    },
+    ReplaceOrAddDie {
+        from_die_type_id: String,
+        to_die_type_id: String,
+        count: u32,
+        fallback_die_type_id: String,
+    },
+}
+
+impl RpgPoolContributionEffect {
+    pub fn stacking_value(&self) -> i32 {
+        match self {
+            Self::AddDice { delta, .. } => *delta,
+            Self::AddAxis { value, .. } => *value,
+            Self::ReplaceOrAddDie { count, .. } => i32::try_from(*count).unwrap_or(i32::MAX),
+        }
+    }
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase", deny_unknown_fields)]
+pub struct RpgPoolContributionDefinition {
+    pub schema: RpgPoolContributionSchema,
+    pub id: String,
+    pub profile: RpgOwnedRulesetReference,
+    pub stacking_group: RpgOwnedRulesetReference,
+    pub effect: RpgPoolContributionEffect,
+    pub predicate: RpgContributionPredicate,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase", deny_unknown_fields)]
+pub struct RpgPoolContributionDecision {
+    pub source_definition_id: String,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub source_instance_id: Option<String>,
+    pub source_label: String,
+    pub contribution_id: String,
+    pub profile_id: String,
+    pub stacking_group_id: String,
+    pub effect: RpgPoolContributionEffect,
+    pub disposition: RpgContributionDisposition,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase", deny_unknown_fields)]
+pub struct RpgPoolReplacementUnit {
+    pub contribution_id: String,
+    pub unit: u32,
+    pub from_die_type_id: String,
+    pub added_die_type_id: String,
+    pub used_fallback: bool,
+    pub before_from_count: u32,
+    pub after_from_count: u32,
+    pub after_added_count: u32,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase", deny_unknown_fields)]
+pub struct RpgPoolContributionLedger {
+    pub profile_id: String,
+    pub candidates: Vec<RpgPoolContributionDecision>,
+    pub grouped_die_deltas: BTreeMap<String, i32>,
+    pub grouped_axis_values: BTreeMap<String, i32>,
+    pub replacement_units: Vec<RpgPoolReplacementUnit>,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase", deny_unknown_fields)]
+pub struct RpgPoolCancellationResult {
+    pub cancellation_id: String,
+    pub positive_axis_id: String,
+    pub negative_axis_id: String,
+    pub cancelled: i32,
+    pub positive_remaining: i32,
+    pub negative_remaining: i32,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase", deny_unknown_fields)]
 pub struct RpgOutcomeBandShiftSchema {
     pub identity: String,
     pub version: u32,
@@ -1298,6 +1420,26 @@ pub enum RpgDomainEvent {
         final_band_id: String,
     },
     ScalarOutcomeBranchSelected {
+        target_id: String,
+        profile_id: String,
+        final_band_id: String,
+        selected_branch_id: String,
+    },
+    HeterogeneousPoolResolved {
+        actor_id: String,
+        target_id: String,
+        profile_id: String,
+        base_dice: BTreeMap<String, u32>,
+        contribution_ledger: Box<RpgPoolContributionLedger>,
+        frozen_dice: BTreeMap<String, u32>,
+        evidence: Vec<RpgHeterogeneousRandomValue>,
+        raw_axes: BTreeMap<String, i32>,
+        automatic_axes: BTreeMap<String, i32>,
+        cancellations: Vec<RpgPoolCancellationResult>,
+        net_axes: BTreeMap<String, i32>,
+        final_band_id: String,
+    },
+    VectorOutcomeBranchSelected {
         target_id: String,
         profile_id: String,
         final_band_id: String,

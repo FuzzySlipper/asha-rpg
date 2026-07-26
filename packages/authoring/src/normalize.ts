@@ -609,7 +609,8 @@ function validateProgram(
           (program.hit !== undefined ||
             program.miss !== undefined ||
             program.noRoll !== undefined)) ||
-        checkKind === 'scalarTest';
+        checkKind === 'scalarTest' ||
+        checkKind === 'heterogeneousPool';
       if (hasIncompatibleBranch) {
         diagnostics.push(
           diagnostic(
@@ -646,12 +647,15 @@ function validateProgram(
       return;
     }
     case 'onOutcome': {
-      if (checkKind !== 'scalarTest') {
+      if (
+        checkKind !== 'scalarTest' &&
+        checkKind !== 'heterogeneousPool'
+      ) {
         diagnostics.push(
           diagnostic(
             'normalization.outcomeBranchIncompatible',
             path,
-            'onOutcome is available only to scalar tests',
+            'onOutcome is available only to scalar tests and heterogeneous pools',
             sourcePath,
           ),
         );

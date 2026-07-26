@@ -13,11 +13,14 @@ use asha_rpg::{
     RpgTurnControl, RpgTurnControlProposal, RpgTurnInitialization, RpgVersionedIdentity, Ruleset,
     RulesetActionEconomyModel, RulesetActivationBudget, RulesetActivationBudgetResetBoundary,
     RulesetActivationTiming, RulesetCalculationSelectorContract,
-    RulesetContributionStackingGroupContract, RulesetMarginBandRule, RulesetModels,
-    RulesetNaturalDieRule, RulesetNumericDomain, RulesetOutcomeBand, RulesetProvisions,
-    RulesetScalarTestProfile, RulesetSchema, RulesetValueContract, RulesetValueExpression,
-    RulesetValueFormula, RulesetValueFormulaSchema, RulesetValueKind, RulesetValueSource,
-    VersionedRpgRequirement, PLAY_BUNDLE_ARTIFACT_MAJOR, PREPARED_PLAY_BUNDLE_IDENTITY,
+    RulesetContributionStackingGroupContract, RulesetHeterogeneousPoolProfile,
+    RulesetMarginBandRule, RulesetModels, RulesetNaturalDieRule, RulesetNumericDomain,
+    RulesetOutcomeBand, RulesetPoolAxisValue, RulesetPoolCancellation, RulesetPoolDieType,
+    RulesetPoolFace, RulesetPoolResultAxis, RulesetProvisions, RulesetScalarTestProfile,
+    RulesetSchema, RulesetValueContract, RulesetValueExpression, RulesetValueFormula,
+    RulesetValueFormulaSchema, RulesetValueKind, RulesetValueSource,
+    RulesetVectorOutcomeRequirement, RulesetVectorOutcomeRule, VersionedRpgRequirement,
+    PLAY_BUNDLE_ARTIFACT_MAJOR, PREPARED_PLAY_BUNDLE_IDENTITY,
 };
 use serde_json::json;
 
@@ -839,6 +842,7 @@ fn scalar_test_profiles_resolve_ordered_outcomes_naturals_context_and_replay() {
             count: 1,
             sides: 20,
             path: "$.action.check".to_owned(),
+            heterogeneous_terms: Vec::new(),
         }
     );
     assert_eq!(
@@ -857,6 +861,7 @@ fn scalar_test_profiles_resolve_ordered_outcomes_naturals_context_and_replay() {
                     count: 1,
                     sides: 20,
                     path: "$.action.check.targets[0].roll".to_owned(),
+                    heterogeneous_terms: Vec::new(),
                 },
                 values: vec![13],
             }],
@@ -869,6 +874,7 @@ fn scalar_test_profiles_resolve_ordered_outcomes_naturals_context_and_replay() {
                     count: 1,
                     sides: 20,
                     path: "$.action.check.targets[0].roll".to_owned(),
+                    heterogeneous_terms: Vec::new(),
                 },
                 values: vec![13, 14],
             }],
@@ -1187,6 +1193,441 @@ fn scalar_test_profiles_resolve_ordered_outcomes_naturals_context_and_replay() {
         .diagnostics
         .iter()
         .any(|diagnostic| diagnostic.code == "RULESET_SCALAR_TEST_NATURAL_RULE_INVALID"));
+}
+
+#[test]
+fn heterogeneous_pools_freeze_cascading_replacements_typed_evidence_and_vector_outcomes() {
+    let mut invalid_contribution = heterogeneous_pool_prepared();
+    let feature = invalid_contribution
+        .materialized_definitions
+        .iter_mut()
+        .find(|definition| definition.id == "feature.flanking")
+        .unwrap();
+    feature.semantic["poolContributions"][0]["effect"]["dieTypeId"] = json!("unknown");
+    feature.fingerprint = materialized_definition_fingerprint(feature).unwrap();
+    let invalid_contribution_failure =
+        compile_prepared_play_bundle(invalid_contribution).unwrap_err();
+    assert!(invalid_contribution_failure
+        .diagnostics
+        .iter()
+        .any(|diagnostic| diagnostic.code == "POOL_CONTRIBUTION_EFFECT_INVALID"));
+
+    let prepared = heterogeneous_pool_prepared();
+    let bundle = compile_prepared_play_bundle(prepared).unwrap();
+    let mut tampered_face_table = bundle.artifact().clone();
+    tampered_face_table
+        .ruleset
+        .provides
+        .heterogeneous_pool_profiles[0]
+        .die_types[0]
+        .faces[0]
+        .vector[0]
+        .axis_id = "unknown".to_owned();
+    let tampered_face_failure = load_compiled_play_bundle(tampered_face_table).unwrap_err();
+    assert!(tampered_face_failure
+        .diagnostics
+        .iter()
+        .any(|diagnostic| diagnostic.code == "RULESET_POOL_FACE_VECTOR_INVALID"));
+
+    let action = bundle
+        .rules()
+        .actions()
+        .find(|action| action.id == "action.strike")
+        .unwrap();
+    assert_eq!(
+        action.random_plan[0].request,
+        RpgRandomRequest {
+            kind: RpgRandomRequestKind::HeterogeneousPool,
+            count: 2,
+            sides: 0,
+            path: "$.action.check".to_owned(),
+            heterogeneous_terms: vec![
+                asha_rpg::RpgHeterogeneousRandomTerm {
+                    die_type_id: "boost".to_owned(),
+                    count: 1,
+                    sides: 4,
+                },
+                asha_rpg::RpgHeterogeneousRandomTerm {
+                    die_type_id: "challenge".to_owned(),
+                    count: 1,
+                    sides: 6,
+                },
+            ],
+        }
+    );
+
+    let scenario = conditional_feature_scenario(&bundle);
+    let exact_request = RpgRandomRequest {
+        kind: RpgRandomRequestKind::HeterogeneousPool,
+        count: 5,
+        sides: 0,
+        path: "$.action.check.targets[0].pool".to_owned(),
+        heterogeneous_terms: vec![
+            asha_rpg::RpgHeterogeneousRandomTerm {
+                die_type_id: "boost".to_owned(),
+                count: 3,
+                sides: 4,
+            },
+            asha_rpg::RpgHeterogeneousRandomTerm {
+                die_type_id: "challenge".to_owned(),
+                count: 2,
+                sides: 6,
+            },
+        ],
+    };
+    let mut wrong_sides = exact_request.clone();
+    wrong_sides.heterogeneous_terms[0].sides = 6;
+    for (entries, expected_code) in [
+        (Vec::new(), "RPG_RANDOM_TAPE_EXHAUSTED"),
+        (
+            vec![RpgRollTapeEntry {
+                request: wrong_sides,
+                values: vec![2, 3, 4, 1, 2],
+            }],
+            "RPG_RANDOM_TAPE_REQUEST_ORDER_MISMATCH",
+        ),
+        (
+            vec![RpgRollTapeEntry {
+                request: exact_request.clone(),
+                values: vec![2, 3, 4, 1],
+            }],
+            "RPG_RANDOM_TAPE_EXHAUSTED",
+        ),
+        (
+            vec![RpgRollTapeEntry {
+                request: exact_request.clone(),
+                values: vec![2, 3, 4, 1, 2, 3],
+            }],
+            "RPG_RANDOM_TAPE_UNUSED_EVIDENCE",
+        ),
+        (
+            vec![RpgRollTapeEntry {
+                request: exact_request.clone(),
+                values: vec![2, 3, 5, 1, 2],
+            }],
+            "RPG_RANDOM_TAPE_VALUE_OUT_OF_RANGE",
+        ),
+    ] {
+        let mut rejected_session =
+            RpgAuthoritySession::from_scenario(bundle.clone(), scenario.clone()).unwrap();
+        let baseline_hash = rejected_session.state_hash();
+        let mut rejected_source =
+            RpgRollTapeSource::new(rejected_session.scenario().random_source.clone(), entries);
+        let failure = rejected_session
+            .submit_with_random_source_recorded(
+                RpgActionProposal {
+                    expected_revision: 0,
+                    action_id: "action.strike".to_owned(),
+                    actor_id: "actor".to_owned(),
+                    target_ids: vec!["target".to_owned()],
+                    item_binding: None,
+                },
+                &mut rejected_source,
+            )
+            .unwrap_err();
+        assert!(matches!(
+            failure,
+            RpgAutomaticCommandFailure::RandomSource(ref failure)
+                if failure.code == expected_code
+        ));
+        assert_eq!(rejected_session.state_hash(), baseline_hash);
+        assert_eq!(rejected_session.accepted_random_values(), 0);
+    }
+
+    let mut session = RpgAuthoritySession::from_scenario(bundle, scenario).unwrap();
+    let initial = session.checkpoint().unwrap();
+    let mut source = RpgRollTapeSource::new(
+        session.scenario().random_source.clone(),
+        vec![RpgRollTapeEntry {
+            request: exact_request.clone(),
+            values: vec![2, 3, 4, 1, 2],
+        }],
+    );
+    let (outcome, entry) = session
+        .submit_with_random_source_recorded(
+            RpgActionProposal {
+                expected_revision: 0,
+                action_id: "action.strike".to_owned(),
+                actor_id: "actor".to_owned(),
+                target_ids: vec!["target".to_owned()],
+                item_binding: None,
+            },
+            &mut source,
+        )
+        .unwrap();
+    let RpgCommandOutcome::Accepted(receipt) = outcome else {
+        panic!("heterogeneous pool should be accepted: {outcome:?}");
+    };
+    assert_eq!(session.accepted_random_values(), 5);
+    assert_eq!(receipt.random_evidence.len(), 1);
+    assert_eq!(receipt.random_evidence[0].request, exact_request);
+    assert_eq!(
+        receipt.random_evidence[0]
+            .heterogeneous_values
+            .iter()
+            .map(|value| (
+                value.die_type_id.as_str(),
+                value.ordinal,
+                value.sides,
+                value.value,
+            ))
+            .collect::<Vec<_>>(),
+        vec![
+            ("boost", 1, 4, 2),
+            ("boost", 2, 4, 3),
+            ("boost", 3, 4, 4),
+            ("challenge", 1, 6, 1),
+            ("challenge", 2, 6, 2),
+        ]
+    );
+    let pool = receipt
+        .events
+        .iter()
+        .find_map(|event| match event {
+            RpgDomainEvent::HeterogeneousPoolResolved {
+                base_dice,
+                contribution_ledger,
+                frozen_dice,
+                raw_axes,
+                automatic_axes,
+                cancellations,
+                net_axes,
+                final_band_id,
+                ..
+            } => Some((
+                base_dice,
+                contribution_ledger,
+                frozen_dice,
+                raw_axes,
+                automatic_axes,
+                cancellations,
+                net_axes,
+                final_band_id,
+            )),
+            _ => None,
+        })
+        .expect("pool event retains complete authority evidence");
+    assert_eq!(
+        pool.0,
+        &std::collections::BTreeMap::from([("boost".to_owned(), 1), ("challenge".to_owned(), 1),])
+    );
+    assert_eq!(
+        pool.2,
+        &std::collections::BTreeMap::from([("boost".to_owned(), 3), ("challenge".to_owned(), 2),])
+    );
+    assert_eq!(
+        pool.1
+            .candidates
+            .iter()
+            .map(|candidate| candidate.contribution_id.as_str())
+            .collect::<Vec<_>>(),
+        vec![
+            "a-add-source",
+            "b-replace-source",
+            "c-replace-upgrade",
+            "d-fallback-self",
+            "e-contention",
+            "f-complication",
+        ]
+    );
+    assert!(pool
+        .1
+        .candidates
+        .iter()
+        .all(|candidate| matches!(candidate.disposition, RpgContributionDisposition::Applied)));
+    assert_eq!(
+        pool.1
+            .replacement_units
+            .iter()
+            .map(|unit| (
+                unit.contribution_id.rsplit(':').next().unwrap(),
+                unit.unit,
+                unit.added_die_type_id.as_str(),
+                unit.used_fallback,
+            ))
+            .collect::<Vec<_>>(),
+        vec![
+            ("b-replace-source", 1, "upgrade", false),
+            ("c-replace-upgrade", 1, "boost", false),
+            ("d-fallback-self", 1, "source", true),
+            ("d-fallback-self", 2, "upgrade", false),
+            ("e-contention", 1, "boost", false),
+            ("e-contention", 2, "challenge", true),
+        ]
+    );
+    assert_eq!(
+        pool.3,
+        &std::collections::BTreeMap::from([
+            ("advantage".to_owned(), 1),
+            ("complication".to_owned(), 1),
+            ("pressure".to_owned(), 1),
+            ("success".to_owned(), 3),
+            ("threat".to_owned(), 1),
+        ])
+    );
+    assert_eq!(
+        pool.4,
+        &std::collections::BTreeMap::from([("complication".to_owned(), 1)])
+    );
+    assert_eq!(
+        pool.5
+            .iter()
+            .map(|cancellation| (
+                cancellation.cancellation_id.as_str(),
+                cancellation.cancelled
+            ))
+            .collect::<Vec<_>>(),
+        vec![("advantage-pressure", 1), ("success-threat", 1)]
+    );
+    assert_eq!(
+        pool.6,
+        &std::collections::BTreeMap::from([
+            ("advantage".to_owned(), 0),
+            ("complication".to_owned(), 2),
+            ("pressure".to_owned(), 0),
+            ("success".to_owned(), 2),
+            ("threat".to_owned(), 0),
+        ])
+    );
+    assert_eq!(pool.7, "success-benefit");
+    assert!(receipt.events.iter().any(|event| matches!(
+        event,
+        RpgDomainEvent::VectorOutcomeBranchSelected {
+            final_band_id,
+            selected_branch_id,
+            ..
+        } if final_band_id == "success-benefit" && selected_branch_id == "success-benefit"
+    )));
+    assert_eq!(
+        session.state().entity("target").unwrap().vitality().current,
+        14
+    );
+    let replayed =
+        RpgAuthoritySession::replay(initial.clone(), std::slice::from_ref(&entry)).unwrap();
+    assert_eq!(replayed.state_hash(), session.state_hash());
+    let mut tampered_checkpoint = session.checkpoint().unwrap();
+    tampered_checkpoint.accepted_random_position += 1;
+    let checkpoint_failure =
+        RpgAuthoritySession::restore_checkpoint(tampered_checkpoint).unwrap_err();
+    assert!(checkpoint_failure
+        .diagnostics
+        .iter()
+        .any(|diagnostic| diagnostic.code == "RPG_CHECKPOINT_STATE_HASH_MISMATCH"));
+    let mut tampered_entry = entry;
+    let asha_rpg::RpgReplayOperation::Submit { command } = &mut tampered_entry.operation else {
+        panic!("recorded pool action must be a submit operation");
+    };
+    command.random_values[2] = 5;
+    let replay_failure = RpgAuthoritySession::replay(initial, &[tampered_entry]).unwrap_err();
+    assert!(replay_failure
+        .diagnostics
+        .iter()
+        .any(|diagnostic| diagnostic.code.starts_with("RPG_REPLAY_")));
+}
+
+#[test]
+fn heterogeneous_pool_reduction_combines_selected_feature_and_exact_bound_item_sources() {
+    let bundle = compile_prepared_play_bundle(item_pool_prepared()).unwrap();
+    let mut scenario = item_bound_scenario(&bundle);
+    let actor = scenario
+        .participants
+        .iter_mut()
+        .find(|participant| participant.id == "actor")
+        .unwrap();
+    actor.class_definition_id = Some("class.pool-user".to_owned());
+    actor.feature_definition_ids = vec!["feature.pool-training".to_owned()];
+    let mut session = RpgAuthoritySession::from_scenario(bundle, scenario).unwrap();
+    let item_binding = session
+        .encounter_view()
+        .actions
+        .iter()
+        .filter_map(|action| action.item_binding.as_ref())
+        .find(|binding| binding.item_definition_id == "item.greater-healing-kit")
+        .cloned()
+        .unwrap();
+    let request = RpgRandomRequest {
+        kind: RpgRandomRequestKind::HeterogeneousPool,
+        count: 2,
+        sides: 0,
+        path: "$.action.check.targets[0].pool".to_owned(),
+        heterogeneous_terms: vec![asha_rpg::RpgHeterogeneousRandomTerm {
+            die_type_id: "boost".to_owned(),
+            count: 2,
+            sides: 4,
+        }],
+    };
+    let initial = session.checkpoint().unwrap();
+    let mut source = RpgRollTapeSource::new(
+        session.scenario().random_source.clone(),
+        vec![RpgRollTapeEntry {
+            request,
+            values: vec![2, 4],
+        }],
+    );
+    let (outcome, entry) = session
+        .submit_with_random_source_recorded(
+            RpgActionProposal {
+                expected_revision: 0,
+                action_id: "action.item-heal".to_owned(),
+                actor_id: "actor".to_owned(),
+                target_ids: vec!["target".to_owned()],
+                item_binding: Some(item_binding),
+            },
+            &mut source,
+        )
+        .unwrap();
+    let RpgCommandOutcome::Accepted(receipt) = outcome else {
+        panic!("bound-item pool should be accepted: {outcome:?}");
+    };
+    let ledger = receipt
+        .events
+        .iter()
+        .find_map(|event| match event {
+            RpgDomainEvent::HeterogeneousPoolResolved {
+                contribution_ledger,
+                frozen_dice,
+                final_band_id,
+                ..
+            } => Some((contribution_ledger, frozen_dice, final_band_id)),
+            _ => None,
+        })
+        .expect("bound-item pool exposes the canonical source ledger");
+    assert_eq!(
+        ledger
+            .0
+            .candidates
+            .iter()
+            .map(|candidate| (
+                candidate.source_definition_id.as_str(),
+                candidate.source_instance_id.as_deref(),
+                candidate.contribution_id.as_str(),
+            ))
+            .collect::<Vec<_>>(),
+        vec![
+            ("feature.pool-training", None, "a-add-challenge"),
+            (
+                "item.greater-healing-kit",
+                Some("kit.greater"),
+                "a-replace-challenge",
+            ),
+            (
+                "item.greater-healing-kit",
+                Some("kit.greater"),
+                "b-complication",
+            ),
+        ]
+    );
+    assert_eq!(
+        ledger.1,
+        &std::collections::BTreeMap::from([("boost".to_owned(), 2)])
+    );
+    assert_eq!(ledger.2, "success-benefit");
+    assert_eq!(
+        session.state().entity("target").unwrap().vitality().current,
+        17
+    );
+    let replayed = RpgAuthoritySession::replay(initial, &[entry]).unwrap();
+    assert_eq!(replayed.state_hash(), session.state_hash());
 }
 
 #[test]
@@ -1746,7 +2187,7 @@ fn conditional_feature_prepared() -> PreparedPlayBundle {
         visibility: MaterializedContentVisibility::Exported,
         extension_policy: ContentExtensionPolicy::Sealed,
         semantic: json!({
-            "schema": {"identity": "asha.rpg.character-feature", "version": 3},
+            "schema": {"identity": "asha.rpg.character-feature", "version": 4},
             "contributions": [
                 {
                     "schema": {"identity": "asha.rpg.scalar-contribution", "version": 1},
@@ -1841,7 +2282,8 @@ fn conditional_feature_prepared() -> PreparedPlayBundle {
                     "predicate": {"kind": "always"}
                 }
             ],
-            "outcomeBandShifts": []
+            "outcomeBandShifts": [],
+            "poolContributions": []
         }),
         presentation: json!({"label": "Flanking Discipline"}),
         references: vec!["terrain.high-ground".to_owned()],
@@ -1854,7 +2296,7 @@ fn conditional_feature_prepared() -> PreparedPlayBundle {
         visibility: MaterializedContentVisibility::Exported,
         extension_policy: ContentExtensionPolicy::Sealed,
         semantic: json!({
-            "schema": {"identity": "asha.rpg.character-feature", "version": 3},
+            "schema": {"identity": "asha.rpg.character-feature", "version": 4},
             "contributions": [
                 {
                     "schema": {"identity": "asha.rpg.scalar-contribution", "version": 1},
@@ -1884,7 +2326,8 @@ fn conditional_feature_prepared() -> PreparedPlayBundle {
                     }
                 }
             ],
-            "outcomeBandShifts": []
+            "outcomeBandShifts": [],
+            "poolContributions": []
         }),
         presentation: json!({"label": "Against the Press"}),
         references: Vec::new(),
@@ -2241,6 +2684,294 @@ fn scalar_test_prepared() -> PreparedPlayBundle {
     prepared
 }
 
+fn heterogeneous_pool_prepared() -> PreparedPlayBundle {
+    fn axis(axis_id: &str, value: i32) -> RulesetPoolAxisValue {
+        RulesetPoolAxisValue {
+            axis_id: axis_id.to_owned(),
+            value,
+        }
+    }
+
+    fn faces(vectors: Vec<Vec<RulesetPoolAxisValue>>) -> Vec<RulesetPoolFace> {
+        vectors
+            .into_iter()
+            .enumerate()
+            .map(|(index, vector)| RulesetPoolFace {
+                value: u32::try_from(index + 1).unwrap(),
+                vector,
+            })
+            .collect()
+    }
+
+    let mut prepared = scalar_test_prepared();
+    prepared.ruleset.provides.heterogeneous_pool_profiles = vec![RulesetHeterogeneousPoolProfile {
+        id: "narrative-pool".to_owned(),
+        version: 1,
+        label: "Narrative pool".to_owned(),
+        die_types: vec![
+            RulesetPoolDieType {
+                id: "boost".to_owned(),
+                label: "Boost".to_owned(),
+                sides: 4,
+                faces: faces(vec![
+                    vec![axis("advantage", 1)],
+                    vec![axis("success", 1)],
+                    vec![axis("advantage", 1), axis("success", 1)],
+                    vec![axis("complication", 1), axis("success", 1)],
+                ]),
+            },
+            RulesetPoolDieType {
+                id: "challenge".to_owned(),
+                label: "Challenge".to_owned(),
+                sides: 6,
+                faces: faces(vec![
+                    vec![axis("threat", 1)],
+                    vec![axis("pressure", 1)],
+                    vec![axis("pressure", 1), axis("threat", 1)],
+                    Vec::new(),
+                    vec![axis("complication", 1), axis("threat", 1)],
+                    vec![axis("pressure", 1)],
+                ]),
+            },
+            RulesetPoolDieType {
+                id: "source".to_owned(),
+                label: "Source".to_owned(),
+                sides: 6,
+                faces: faces(vec![
+                    Vec::new(),
+                    vec![axis("success", 1)],
+                    Vec::new(),
+                    vec![axis("success", 1)],
+                    Vec::new(),
+                    vec![axis("success", 1)],
+                ]),
+            },
+            RulesetPoolDieType {
+                id: "upgrade".to_owned(),
+                label: "Upgrade".to_owned(),
+                sides: 8,
+                faces: faces(vec![
+                    vec![axis("success", 1)],
+                    vec![axis("success", 1)],
+                    vec![axis("success", 1)],
+                    vec![axis("success", 1)],
+                    vec![axis("success", 1)],
+                    vec![axis("success", 1)],
+                    vec![axis("success", 1)],
+                    vec![axis("success", 1)],
+                ]),
+            },
+        ],
+        axes: vec![
+            RulesetPoolResultAxis {
+                id: "advantage".to_owned(),
+                label: "Advantage".to_owned(),
+            },
+            RulesetPoolResultAxis {
+                id: "complication".to_owned(),
+                label: "Complication".to_owned(),
+            },
+            RulesetPoolResultAxis {
+                id: "pressure".to_owned(),
+                label: "Pressure".to_owned(),
+            },
+            RulesetPoolResultAxis {
+                id: "success".to_owned(),
+                label: "Success".to_owned(),
+            },
+            RulesetPoolResultAxis {
+                id: "threat".to_owned(),
+                label: "Threat".to_owned(),
+            },
+        ],
+        cancellations: vec![
+            RulesetPoolCancellation {
+                id: "advantage-pressure".to_owned(),
+                positive_axis_id: "advantage".to_owned(),
+                negative_axis_id: "pressure".to_owned(),
+            },
+            RulesetPoolCancellation {
+                id: "success-threat".to_owned(),
+                positive_axis_id: "success".to_owned(),
+                negative_axis_id: "threat".to_owned(),
+            },
+        ],
+        bands: vec![
+            RulesetOutcomeBand {
+                id: "failure".to_owned(),
+                label: "Failure".to_owned(),
+            },
+            RulesetOutcomeBand {
+                id: "success".to_owned(),
+                label: "Success".to_owned(),
+            },
+            RulesetOutcomeBand {
+                id: "success-benefit".to_owned(),
+                label: "Success with benefit".to_owned(),
+            },
+        ],
+        outcome_rules: vec![
+            RulesetVectorOutcomeRule {
+                id: "a-success-benefit".to_owned(),
+                band_id: "success-benefit".to_owned(),
+                requirements: vec![
+                    RulesetVectorOutcomeRequirement {
+                        axis_id: "complication".to_owned(),
+                        minimum: Some(1),
+                        maximum: None,
+                    },
+                    RulesetVectorOutcomeRequirement {
+                        axis_id: "success".to_owned(),
+                        minimum: Some(2),
+                        maximum: None,
+                    },
+                ],
+            },
+            RulesetVectorOutcomeRule {
+                id: "b-success".to_owned(),
+                band_id: "success".to_owned(),
+                requirements: vec![RulesetVectorOutcomeRequirement {
+                    axis_id: "success".to_owned(),
+                    minimum: Some(1),
+                    maximum: None,
+                }],
+            },
+        ],
+        default_band_id: "failure".to_owned(),
+    }];
+    let action = prepared
+        .materialized_definitions
+        .iter_mut()
+        .find(|definition| definition.id == "action.strike")
+        .unwrap();
+    action.semantic["action"]["check"] = json!({
+        "kind": "heterogeneousPool",
+        "profile": {"rulesetId": "consumer.rules", "id": "narrative-pool"},
+        "baseDice": [
+            {"dieTypeId": "boost", "count": 1},
+            {"dieTypeId": "challenge", "count": 1}
+        ],
+        "automaticAxes": []
+    });
+    action.semantic["action"]["rollScope"] = json!("shared");
+    action.semantic["action"]["program"] = json!({
+        "kind": "atomic",
+        "body": {
+            "kind": "onOutcome",
+            "branches": {
+                "success": {
+                    "kind": "operation",
+                    "operation": {
+                        "kind": "heal",
+                        "amount": {"kind": "constant", "value": 3}
+                    }
+                },
+                "success-benefit": {
+                    "kind": "operation",
+                    "operation": {
+                        "kind": "heal",
+                        "amount": {"kind": "constant", "value": 4}
+                    }
+                }
+            },
+            "default": {
+                "kind": "operation",
+                "operation": {
+                    "kind": "heal",
+                    "amount": {"kind": "constant", "value": 1}
+                }
+            }
+        }
+    });
+    action.fingerprint = materialized_definition_fingerprint(action).unwrap();
+    let flanking = prepared
+        .materialized_definitions
+        .iter_mut()
+        .find(|definition| definition.id == "feature.flanking")
+        .unwrap();
+    flanking.semantic["poolContributions"] = json!([
+        {
+            "schema": {"identity": "asha.rpg.pool-contribution", "version": 1},
+            "id": "a-add-source",
+            "profile": {"rulesetId": "consumer.rules", "id": "narrative-pool"},
+            "stackingGroup": {"rulesetId": "consumer.rules", "id": "circumstance"},
+            "effect": {"kind": "addDice", "dieTypeId": "source", "delta": 1},
+            "predicate": {"kind": "always"}
+        },
+        {
+            "schema": {"identity": "asha.rpg.pool-contribution", "version": 1},
+            "id": "b-replace-source",
+            "profile": {"rulesetId": "consumer.rules", "id": "narrative-pool"},
+            "stackingGroup": {"rulesetId": "consumer.rules", "id": "circumstance"},
+            "effect": {
+                "kind": "replaceOrAddDie",
+                "fromDieTypeId": "source",
+                "toDieTypeId": "upgrade",
+                "count": 1,
+                "fallbackDieTypeId": "challenge"
+            },
+            "predicate": {"kind": "always"}
+        },
+        {
+            "schema": {"identity": "asha.rpg.pool-contribution", "version": 1},
+            "id": "c-replace-upgrade",
+            "profile": {"rulesetId": "consumer.rules", "id": "narrative-pool"},
+            "stackingGroup": {"rulesetId": "consumer.rules", "id": "circumstance"},
+            "effect": {
+                "kind": "replaceOrAddDie",
+                "fromDieTypeId": "upgrade",
+                "toDieTypeId": "boost",
+                "count": 1,
+                "fallbackDieTypeId": "source"
+            },
+            "predicate": {"kind": "always"}
+        },
+        {
+            "schema": {"identity": "asha.rpg.pool-contribution", "version": 1},
+            "id": "d-fallback-self",
+            "profile": {"rulesetId": "consumer.rules", "id": "narrative-pool"},
+            "stackingGroup": {"rulesetId": "consumer.rules", "id": "circumstance"},
+            "effect": {
+                "kind": "replaceOrAddDie",
+                "fromDieTypeId": "source",
+                "toDieTypeId": "upgrade",
+                "count": 2,
+                "fallbackDieTypeId": "source"
+            },
+            "predicate": {"kind": "always"}
+        },
+        {
+            "schema": {"identity": "asha.rpg.pool-contribution", "version": 1},
+            "id": "e-contention",
+            "profile": {"rulesetId": "consumer.rules", "id": "narrative-pool"},
+            "stackingGroup": {"rulesetId": "consumer.rules", "id": "circumstance"},
+            "effect": {
+                "kind": "replaceOrAddDie",
+                "fromDieTypeId": "upgrade",
+                "toDieTypeId": "boost",
+                "count": 2,
+                "fallbackDieTypeId": "challenge"
+            },
+            "predicate": {"kind": "always"}
+        },
+        {
+            "schema": {"identity": "asha.rpg.pool-contribution", "version": 1},
+            "id": "f-complication",
+            "profile": {"rulesetId": "consumer.rules", "id": "narrative-pool"},
+            "stackingGroup": {"rulesetId": "consumer.rules", "id": "circumstance"},
+            "effect": {"kind": "addAxis", "axisId": "complication", "value": 1},
+            "predicate": {"kind": "always"}
+        }
+    ]);
+    flanking.fingerprint = materialized_definition_fingerprint(flanking).unwrap();
+    prepared.definition_provenance = prepared
+        .materialized_definitions
+        .iter()
+        .map(|definition| definition.provenance.clone())
+        .collect();
+    prepared
+}
+
 fn conditional_feature_scenario(bundle: &asha_rpg::CompiledPlayBundle) -> RpgScenario {
     let mut actor = participant("actor", "Actor", RpgTeamId::ally(), 1, 20);
     actor.position = GridPosition { x: 1, y: 1 };
@@ -2332,6 +3063,7 @@ fn scalar_roll_source(session: &RpgAuthoritySession, roll: u32) -> RpgRollTapeSo
                 count: 1,
                 sides: 20,
                 path: "$.action.check.targets[0].roll".to_owned(),
+                heterogeneous_terms: Vec::new(),
             },
             values: vec![roll],
         }],
@@ -2388,6 +3120,7 @@ fn attack_roll_source(session: &RpgAuthoritySession, roll: u32) -> RpgRollTapeSo
                 count: 1,
                 sides: 20,
                 path: "$.action.check.targets[0].roll".to_owned(),
+                heterogeneous_terms: Vec::new(),
             },
             values: vec![roll],
         }],
@@ -2557,7 +3290,7 @@ fn item_bound_prepared() -> PreparedPlayBundle {
         visibility: MaterializedContentVisibility::Exported,
         extension_policy: ContentExtensionPolicy::Sealed,
         semantic: json!({
-            "schema": {"identity": "asha.rpg.item", "version": 3},
+            "schema": {"identity": "asha.rpg.item", "version": 4},
             "tags": ["healing"],
             "traits": ["usable"],
             "allowedSlots": ["hand.main", "hand.off"],
@@ -2569,7 +3302,8 @@ fn item_bound_prepared() -> PreparedPlayBundle {
                 "maximum": 20
             }],
             "contributions": [],
-            "outcomeBandShifts": []
+            "outcomeBandShifts": [],
+            "poolContributions": []
         }),
         presentation: json!({"label": "Greater Healing Kit"}),
         references: Vec::new(),
@@ -2582,7 +3316,7 @@ fn item_bound_prepared() -> PreparedPlayBundle {
         visibility: MaterializedContentVisibility::Exported,
         extension_policy: ContentExtensionPolicy::Sealed,
         semantic: json!({
-            "schema": {"identity": "asha.rpg.item", "version": 3},
+            "schema": {"identity": "asha.rpg.item", "version": 4},
             "tags": ["healing"],
             "traits": ["usable"],
             "allowedSlots": ["hand.main", "hand.off"],
@@ -2594,7 +3328,8 @@ fn item_bound_prepared() -> PreparedPlayBundle {
                 "maximum": 20
             }],
             "contributions": [],
-            "outcomeBandShifts": []
+            "outcomeBandShifts": [],
+            "poolContributions": []
         }),
         presentation: json!({"label": "Healing Kit"}),
         references: Vec::new(),
@@ -2682,6 +3417,187 @@ fn item_bound_prepared() -> PreparedPlayBundle {
         .map(|(order, target)| ContentRelationshipProvenance {
             kind: ContentRelationshipKind::Exports,
             source: format!("{package_id}@{package_version}"),
+            target: target.clone(),
+            order,
+        })
+        .collect();
+    prepared
+}
+
+fn item_pool_prepared() -> PreparedPlayBundle {
+    let mut prepared = item_bound_prepared();
+    prepared.play_bundle_identity.id = "consumer.item-pool-bundle".to_owned();
+    let random_capability = VersionedRpgRequirement {
+        id: "capability.random".to_owned(),
+        version: 1,
+    };
+    prepared
+        .ruleset
+        .provides
+        .capabilities
+        .push(random_capability.clone());
+    prepared
+        .ruleset
+        .provides
+        .capabilities
+        .sort_by(|left, right| left.id.cmp(&right.id));
+    prepared
+        .content_requirements
+        .capabilities
+        .push(random_capability);
+    prepared
+        .content_requirements
+        .capabilities
+        .sort_by(|left, right| left.id.cmp(&right.id));
+    prepared.ruleset.provides.contribution_stacking_groups =
+        vec![RulesetContributionStackingGroupContract {
+            id: "circumstance".to_owned(),
+            version: 1,
+            label: "Circumstance".to_owned(),
+            policy: RpgContributionStackingPolicy::Sum,
+        }];
+    prepared.ruleset.provides.heterogeneous_pool_profiles = heterogeneous_pool_prepared()
+        .ruleset
+        .provides
+        .heterogeneous_pool_profiles;
+
+    let procedure = prepared
+        .materialized_definitions
+        .iter_mut()
+        .find(|definition| definition.id == "procedure.item-heal")
+        .unwrap();
+    let template = &mut procedure.semantic["implementation"]["template"];
+    template["check"] = json!({
+        "kind": "heterogeneousPool",
+        "profile": {"rulesetId": "consumer.rules", "id": "narrative-pool"},
+        "baseDice": [{"dieTypeId": "boost", "count": 1}],
+        "automaticAxes": []
+    });
+    template["rollScope"] = json!("shared");
+    let heal_from_bound_item = json!({
+        "kind": "operation",
+        "operation": {
+            "kind": "heal",
+            "amount": {
+                "kind": "constant",
+                "value": {
+                    "kind": "parameter",
+                    "parameterId": "amount",
+                    "parameterType": "boundedInteger"
+                }
+            }
+        }
+    });
+    template["program"]["body"] = json!({
+        "kind": "onOutcome",
+        "branches": {
+            "success": heal_from_bound_item.clone(),
+            "success-benefit": heal_from_bound_item.clone()
+        },
+        "default": heal_from_bound_item
+    });
+
+    for item in prepared
+        .materialized_definitions
+        .iter_mut()
+        .filter(|definition| definition.kind == MaterializedContentDefinitionKind::Item)
+    {
+        item.semantic["poolContributions"] = json!([
+            {
+                "schema": {"identity": "asha.rpg.pool-contribution", "version": 1},
+                "id": "a-replace-challenge",
+                "profile": {"rulesetId": "consumer.rules", "id": "narrative-pool"},
+                "stackingGroup": {"rulesetId": "consumer.rules", "id": "circumstance"},
+                "effect": {
+                    "kind": "replaceOrAddDie",
+                    "fromDieTypeId": "challenge",
+                    "toDieTypeId": "boost",
+                    "count": 1,
+                    "fallbackDieTypeId": "challenge"
+                },
+                "predicate": {"kind": "always"}
+            },
+            {
+                "schema": {"identity": "asha.rpg.pool-contribution", "version": 1},
+                "id": "b-complication",
+                "profile": {"rulesetId": "consumer.rules", "id": "narrative-pool"},
+                "stackingGroup": {"rulesetId": "consumer.rules", "id": "circumstance"},
+                "effect": {"kind": "addAxis", "axisId": "complication", "value": 1},
+                "predicate": {"kind": "always"}
+            }
+        ]);
+    }
+
+    let provenance = |definition_id: &str, module: &str| ContentDefinitionProvenance {
+        definition_id: definition_id.to_owned(),
+        package_id: "consumer.package".to_owned(),
+        package_version: "1.0.0".to_owned(),
+        source: ContentSourceLocation {
+            module: module.to_owned(),
+            declaration: definition_id.replace('.', "_"),
+        },
+    };
+    let feature = MaterializedContentDefinition {
+        id: "feature.pool-training".to_owned(),
+        kind: MaterializedContentDefinitionKind::CharacterFeature,
+        visibility: MaterializedContentVisibility::Exported,
+        extension_policy: ContentExtensionPolicy::Sealed,
+        semantic: json!({
+            "schema": {"identity": "asha.rpg.character-feature", "version": 4},
+            "contributions": [],
+            "outcomeBandShifts": [],
+            "poolContributions": [{
+                "schema": {"identity": "asha.rpg.pool-contribution", "version": 1},
+                "id": "a-add-challenge",
+                "profile": {"rulesetId": "consumer.rules", "id": "narrative-pool"},
+                "stackingGroup": {"rulesetId": "consumer.rules", "id": "circumstance"},
+                "effect": {"kind": "addDice", "dieTypeId": "challenge", "delta": 1},
+                "predicate": {"kind": "always"}
+            }]
+        }),
+        presentation: json!({"label": "Pool Training"}),
+        references: Vec::new(),
+        provenance: provenance("feature.pool-training", "features/pool-training.ts"),
+        fingerprint: String::new(),
+    };
+    let class = MaterializedContentDefinition {
+        id: "class.pool-user".to_owned(),
+        kind: MaterializedContentDefinitionKind::CharacterClass,
+        visibility: MaterializedContentVisibility::Exported,
+        extension_policy: ContentExtensionPolicy::Sealed,
+        semantic: json!({
+            "schema": {"identity": "asha.rpg.character-class", "version": 1},
+            "featureDefinitionIds": ["feature.pool-training"]
+        }),
+        presentation: json!({"label": "Pool User"}),
+        references: vec!["feature.pool-training".to_owned()],
+        provenance: provenance("class.pool-user", "classes/pool-user.ts"),
+        fingerprint: String::new(),
+    };
+    prepared.materialized_definitions.extend([class, feature]);
+    prepared
+        .materialized_definitions
+        .sort_by(|left, right| left.id.cmp(&right.id));
+    prepared.exported_roots.extend([
+        "class.pool-user".to_owned(),
+        "feature.pool-training".to_owned(),
+    ]);
+    prepared.exported_roots.sort();
+    for definition in &mut prepared.materialized_definitions {
+        definition.fingerprint = materialized_definition_fingerprint(definition).unwrap();
+    }
+    prepared.definition_provenance = prepared
+        .materialized_definitions
+        .iter()
+        .map(|definition| definition.provenance.clone())
+        .collect();
+    prepared.relationships = prepared
+        .exported_roots
+        .iter()
+        .enumerate()
+        .map(|(order, target)| ContentRelationshipProvenance {
+            kind: ContentRelationshipKind::Exports,
+            source: "consumer.package@1.0.0".to_owned(),
             target: target.clone(),
             order,
         })
@@ -3067,6 +3983,7 @@ fn healing_prepared() -> PreparedPlayBundle {
                 contribution_stacking_groups: Vec::new(),
                 scalar_test_profiles: Vec::new(),
                 activation_budgets: Vec::new(),
+                heterogeneous_pool_profiles: Vec::new(),
             },
         },
         content_packs: vec![ResolvedContentPack {

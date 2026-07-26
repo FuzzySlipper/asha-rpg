@@ -5,8 +5,9 @@
 This document is the architecture brief produced by Den task `#6179`. It
 selects the smallest coherent semantic expansion needed for three independently
 authored representative kits. It is a versioned implementation map. `F0@1` and
-`F1@1`, and `F2@1` are implemented by tasks `#6180`, `#6197`, and `#6198`;
-`F3` through `F6` remain planned and are not support claims. Current support remains exactly what `design.md`,
+`F1@1`, `F2@1`, and `F6@1` are implemented by tasks `#6180`, `#6197`,
+`#6198`, and `#6200`; `F3` through `F5` remain planned and are not support
+claims. Current support remains exactly what `design.md`,
 `non-claims.md`, and the checked-in code say.
 
 The catalog is intentionally not a Foundry adapter, a source-system
@@ -81,7 +82,7 @@ the neutral families `F0` through `F6`.
 | named effect instances with bounded authority-relative expiry | `P10`, `P11`, `PFX-E07`, `FFG-E07` effect subset | `F3`: requires a new primitive |
 | typed damage packets and qualified responses | `P06`, `P07`, `PFX-I06`, `P16` damage trace subset | `F4`: needs generalization |
 | bounded area selection and spatial legality | `P05`, `PFX-S08` | `F5`: requires a new primitive |
-| heterogeneous random pools and vector outcomes | `FFG-A01`, `FFG-A02`, `FFG-A03`, `FFG-A04`, `FFG-M05` | `F6`: requires a new primitive |
+| heterogeneous random pools and vector outcomes | `FFG-A01`, `FFG-A02`, `FFG-A03`, `FFG-A04`, `FFG-M05` | `F6@1`: implemented by `#6200` |
 
 No interpreted candidate is accepted as a TypeScript-only content policy:
 catalog nouns and balance stay downstream, but every selected meaning above
@@ -697,6 +698,11 @@ volumes, or client-rendered template authority.
 
 ## F6 — Heterogeneous random pools and vector outcomes
 
+Implementation status: supported as `F6@1` by task `#6200`. The checked-in
+authoring, prepared/compiled artifact, Rust execution, typed random evidence,
+event/trace, checkpoint, and replay contracts are the implementation truth for
+this section.
+
 ### Semantic and version boundary
 
 `F6@1` adds a Ruleset-owned pool model whose die types have independent side
@@ -759,8 +765,10 @@ fallback and the before/after counts. This sequential cascade is part of
 Ruleset authoring declares at most 64 die types, 32 axes, 32 cancellation
 pairs, and 16 derived outcome bands. Die sides are `2..=100`; every face has an
 explicit bounded vector. Actions select a pool profile and declare bounded base
-terms and difficulty terms. Actor, item, feature, and active-effect sources add
-typed `F0` pool contributions.
+die terms and automatic axis values. Bound items and selected character
+features add typed pool contributions. Actor- or active-effect-owned pool
+contribution sources await a concrete first-wave source contract rather than
+being inferred from untyped state.
 
 Normalized IR retains the complete face tables, axis contracts, contribution
 forms, canonical reduction order, and profile version in the compiled
@@ -793,9 +801,10 @@ advancing the accepted random position.
 Accepted events and trace expose base pool, every applied/inapplicable/
 suppressed contribution with runtime identity, grouped die deltas, each
 replacement unit and fallback decision, frozen pool, raw evidence, per-face
-vectors, grouped automatic axes, raw axes, cancellation, net axes, derived
-bands, chosen branches, costs, and mutations. Checkpoint and replay persist and
-compare the exact heterogeneous request/evidence and all model versions.
+mapping through the retained Ruleset profile, grouped automatic axes, raw axes,
+cancellation, net axes, derived bands, chosen branches, costs, and mutations.
+Checkpoint and replay persist and compare the exact heterogeneous
+request/evidence and all model versions.
 
 ### Witnesses and non-claims
 

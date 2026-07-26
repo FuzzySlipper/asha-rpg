@@ -1,7 +1,7 @@
-import type { RpgActionId, RpgIrActivation, RpgIrActivationTiming, RpgIrComparison, RpgIrFormula, RpgIrPredicate, RpgIrResourceCost, RpgIrScalarExpression, RpgIrSubject, RpgIrTargetSelector, RpgReactionId, RpgReactionOptionId, RpgStackingGroup } from '@asha-rpg/ir';
+import type { RpgActionId, RpgIrActivation, RpgIrActivationTiming, RpgIrComparison, RpgIrFormula, RpgIrPoolAxisValue, RpgIrPoolDieTerm, RpgIrPredicate, RpgIrResourceCost, RpgIrScalarExpression, RpgIrSubject, RpgIrTargetSelector, RpgReactionId, RpgReactionOptionId, RpgStackingGroup } from '@asha-rpg/ir';
 import type { ActionInput, AuthoredAction, AuthoredActionSource, AuthoredPackage, AuthoringDuration, AuthoringProgram, AuthoringStacking, AuthoringTiming, CheckBranchInput, OutcomeBranchInput } from './types.js';
 import type { ContentCatalogReference } from './catalogs.js';
-import type { RulesetCalculationSelectorReference, RulesetActivationBudgetReference, RulesetScalarTestProfileReference, RulesetValueReference } from './ruleset-builders.js';
+import type { RulesetCalculationSelectorReference, RulesetActivationBudgetReference, RulesetHeterogeneousPoolProfileReference, RulesetScalarTestProfileReference, RulesetValueReference } from './ruleset-builders.js';
 type AuthoredStatReference = ContentCatalogReference<'stat', string> | RulesetValueReference<'stat', string, string>;
 type AuthoredDefenseReference = ContentCatalogReference<'defense', string> | RulesetValueReference<'defense', string, string>;
 export declare function actionId(value: string): RpgActionId;
@@ -68,6 +68,13 @@ export declare function scalarTest(options: {
     };
 }): Extract<import('@asha-rpg/ir').RpgIrCheck, {
     kind: 'scalarTest';
+}>;
+export declare function heterogeneousPool(options: {
+    readonly profile: RulesetHeterogeneousPoolProfileReference<string, string>;
+    readonly baseDice: readonly RpgIrPoolDieTerm[];
+    readonly automaticAxes?: readonly RpgIrPoolAxisValue[];
+}): Extract<import('@asha-rpg/ir').RpgIrCheck, {
+    kind: 'heterogeneousPool';
 }>;
 export declare function spend(resource: ContentCatalogReference<'resource', string>, amount: number): RpgIrResourceCost;
 export declare function activation(options: {
