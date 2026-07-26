@@ -56,11 +56,14 @@ events, and the next living initiative participant.
 A pending reaction blocks other commands until resolved. Rejections preserve
 state, log, turn, reaction, and accepted-random position.
 
-Attack resolution reports an authoritative scalar contribution ledger as
-structured event data. It includes the base modifier, final checked modifier,
-and every item or selected-feature candidate in canonical source-definition and
-contribution-id order. Candidates are `applied`, `inapplicable` with the exact
-failed typed-fact reason, or `suppressed` with their stacking policy and retained
+Attack and generic scalar-test resolution report an authoritative scalar
+contribution ledger as structured event data. It includes the base value, final
+checked value, and every item or selected-feature candidate in canonical
+source-definition and contribution-id order. Generic scalar events additionally
+retain difficulty, total, margin, base band, matching natural rule, contextual
+band-shift ledger, and final band before a separate event records the selected
+branch. Candidates are `applied`, `inapplicable` with the exact failed
+typed-fact reason, or `suppressed` with their stacking policy and retained
 source identities. Rust evaluates actor/target state, named values, distance,
 flanking/surrounding, exact item binding/tags, action tags, and current cell
 support capabilities from one staged revision. Defeated, repositioned, or
@@ -107,5 +110,6 @@ randomness, or reapplies events.
 The initial board authority does not claim diagonal or hex topology,
 jumping/flying/teleport movement, opportunity attacks, per-step effects,
 area-target semantics, campaign persistence, scripted runners, AI control,
-Tester configuration, class levels or prerequisites, non-attack calculation
-owners, a general condition language, or Rulebench product protocols.
+Tester configuration, class levels or prerequisites, calculation owners beyond
+attack and scalar-test profiles, a general condition language, or Rulebench
+product protocols.

@@ -1,7 +1,7 @@
 import type { RpgActionId, RpgIrComparison, RpgIrFormula, RpgIrPredicate, RpgIrResourceCost, RpgIrSubject, RpgIrTargetSelector, RpgReactionId, RpgReactionOptionId, RpgStackingGroup } from '@asha-rpg/ir';
-import type { ActionInput, AuthoredAction, AuthoredActionSource, AuthoredPackage, AuthoringDuration, AuthoringProgram, AuthoringStacking, AuthoringTiming, CheckBranchInput } from './types.js';
+import type { ActionInput, AuthoredAction, AuthoredActionSource, AuthoredPackage, AuthoringDuration, AuthoringProgram, AuthoringStacking, AuthoringTiming, CheckBranchInput, OutcomeBranchInput } from './types.js';
 import type { ContentCatalogReference } from './catalogs.js';
-import type { RulesetCalculationSelectorReference, RulesetValueReference } from './ruleset-builders.js';
+import type { RulesetCalculationSelectorReference, RulesetScalarTestProfileReference, RulesetValueReference } from './ruleset-builders.js';
 type AuthoredStatReference = ContentCatalogReference<'stat', string> | RulesetValueReference<'stat', string, string>;
 type AuthoredDefenseReference = ContentCatalogReference<'defense', string> | RulesetValueReference<'defense', string, string>;
 export declare function actionId(value: string): RpgActionId;
@@ -53,6 +53,19 @@ export declare function savingThrow(options: {
     readonly defense: AuthoredDefenseReference;
 }): Extract<import('@asha-rpg/ir').RpgIrCheck, {
     kind: 'savingThrow';
+}>;
+export declare function scalarTest(options: {
+    readonly profile: RulesetScalarTestProfileReference<string, string>;
+    readonly base: RpgIrFormula;
+    readonly difficulty: {
+        readonly kind: 'explicit';
+        readonly value: RpgIrFormula;
+    } | {
+        readonly kind: 'targetDefense';
+        readonly defense: AuthoredDefenseReference;
+    };
+}): Extract<import('@asha-rpg/ir').RpgIrCheck, {
+    kind: 'scalarTest';
 }>;
 export declare function spend(resource: ContentCatalogReference<'resource', string>, amount: number): RpgIrResourceCost;
 export declare function immediate(): AuthoringTiming;
@@ -108,6 +121,7 @@ export declare function when(predicate: RpgIrPredicate, then: AuthoringProgram, 
 export declare function repeat(count: number, body: AuthoringProgram): AuthoringProgram;
 export declare function forEachTarget(maximum: number, body: AuthoringProgram): AuthoringProgram;
 export declare function onCheck(branches: CheckBranchInput): AuthoringProgram;
+export declare function onOutcome(branches: OutcomeBranchInput): AuthoringProgram;
 export declare function action(input: ActionInput): AuthoredAction;
 export declare function defineActions(id: string, actions: readonly AuthoredAction[]): AuthoredActionSource;
 export declare function defineArchetype(id: string, actions: readonly AuthoredAction[]): AuthoredActionSource;

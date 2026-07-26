@@ -112,7 +112,7 @@ portable state hash, and replay boundary. A command cannot submit or replace
 feature semantics.
 
 Rulesets own versioned scalar calculation selectors, their numeric domains, and
-versioned stacking groups. Item and character-feature schema version 2 may
+versioned stacking groups. Item and character-feature schema version 3 may
 declare `asha.rpg.scalar-contribution@1` records. Each retains a stable
 contribution id, source definition id and label, owned selector and stacking
 group references, a signed bounded value expression, and a bounded typed
@@ -131,9 +131,10 @@ living-participant cardinal-grid definitions.
 Rust gathers feature candidates plus contributions from the exact bound item
 after target and item validation. It evaluates every candidate against one
 staged revision, reduces groups canonically, checks arithmetic and the
-selector's final numeric domain, and supplies the final modifier to the attack
-calculation. `AttackResolved.contributionLedger` and trace retain the base and
-final values plus every applied, inapplicable, and suppressed candidate. An
+selector's final numeric domain, and supplies the final value to an attack or
+generic scalar-test calculation. `AttackResolved.contributionLedger`,
+`ScalarTestResolved.contributionLedger`, and trace retain the base and final
+values plus every applied, inapplicable, and suppressed candidate. An
 inapplicable entry carries the failed typed-fact reason; a suppressed entry
 names the policy and canonical retained sources. The ledger owns no mutable
 state and consumes no randomness.
@@ -144,17 +145,23 @@ the existing formula depth/node bounds. Unknown owners, selectors, groups,
 facts, tags, versions, duplicates, overflow, and out-of-domain values fail
 closed. Classes and features remain sealed. Levels, prerequisites, runtime
 feature choice, diagonal flanking, arbitrary auras, pool/category effects, and
-selectors for saves, damage, healing, or defenses remain separate work.
+selectors for damage, healing, or defenses remain separate work.
 
 ## Rust semantic profile
 
 The initial closed operation vocabulary supports damage, healing, resource
 change, fixed-delta and selected-cell grid movement, turn-bounded modifiers,
 and a typed reaction window.
-Checks support attack, saving throw, and no-roll flows. Programs support one
-atomic root containing bounded sequence, predicate branch, repeat, per-target,
-and check-outcome branches. Unknown operations, capabilities, references, or
-versions fail closed.
+Checks support attack, saving throw, generic Ruleset-owned scalar tests, and
+no-roll flows. Scalar profiles own one d2..d100 primary die, a checked numeric
+domain, complete margin classification, ordered bands, disjoint natural rules,
+and an optional scalar contribution selector. Item/feature schema version 3 may
+also declare typed contextual band shifts. Rust resolves margin, natural rule,
+then each canonical contextual shift with per-step end clamping and emits the
+complete ledger before selecting one known band branch or its required default.
+Programs support one atomic root containing bounded sequence, predicate branch,
+repeat, per-target, check-outcome, and scalar-outcome branches. Unknown
+operations, capabilities, references, or versions fail closed.
 
 Every rejected command is atomic. A reaction suspends the same transaction and
 revision. Random requests preserve their exact count/sides and target order.
@@ -233,7 +240,8 @@ rather than retained as aliases.
 The survey-selected neutral expansion is specified in
 [`first-wave-primitive-catalog.md`](first-wave-primitive-catalog.md). That
 catalog is an implementation map. `F0@1`, the contextual contribution ledger,
-is implemented as described above. `F1` through `F6` remain non-claims until
+and `F1@1`, generic scalar tests and ordered outcomes, are implemented as
+described above. `F2` through `F6` remain non-claims until
 their separately reviewed tasks update this canonical design and the
 corresponding code, schemas, tests, events, readbacks, checkpoint, and replay
 contracts.

@@ -4,9 +4,9 @@
 
 This document is the architecture brief produced by Den task `#6179`. It
 selects the smallest coherent semantic expansion needed for three independently
-authored representative kits. It is a versioned implementation map. `F0@1` is
-implemented by task `#6180`; `F1` through `F6` remain planned and are not
-support claims. Current support remains exactly what `design.md`,
+authored representative kits. It is a versioned implementation map. `F0@1` and
+`F1@1` are implemented by tasks `#6180` and `#6197`; `F2` through `F6` remain
+planned and are not support claims. Current support remains exactly what `design.md`,
 `non-claims.md`, and the checked-in code say.
 
 The catalog is intentionally not a Foundry adapter, a source-system
@@ -71,12 +71,12 @@ the neutral families `F0` through `F6`.
 | Neutral concern | Source candidates | Decision |
 | --- | --- | --- |
 | typed action envelope and reusable equipment binding | `P01`, `P13` | `S0`: already supported |
-| participant/cell target, team, range, cardinality, and check/DC relation | `P02` subset, `P04` subset, `PFX-D05`, `FFG-C10` | `S1`: supported through composition; generic scalar tests move to `F1` |
+| participant/cell target, team, range, cardinality, and check/DC relation | `P02` subset, `P04` subset, `PFX-D05`, `FFG-C10` | `S1` plus implemented `F1`: supported through composition and generic scalar profiles |
 | sequenced damage/healing, fixed resource costs, and multiple bounded resource tracks | `P06` subset, `P08` subset, `FFG-R06` subset | `S2`: supported through composition; per-part interaction moves to `F4` |
 | selected-cell movement, one before-damage reaction, and turn-bounded modifier aging | `P10` subset, `P12` subset, `P14` subset | `S3`: already supported |
 | sealed class/feature selection and attack contribution provenance | `P15` subset, `P16` subset, `PFX-P09` subset | `S4`: already supported; generalized through implemented `F0` |
 | typed contextual contributions and deterministic suppression | `P16`, `PFX-M03`, `PFX-C04`, `FFG-M05` | `F0@1`: implemented by `#6180` |
-| generic scalar tests, ordered outcome bands, critical policy, and band adjustment | `P02`, `P03`, `PFX-O02`, `PFX-D05`, `FFG-E07` outcome subset, `FFG-C10` | `F1`: needs generalization |
+| generic scalar tests, ordered outcome bands, critical policy, and band adjustment | `P02`, `P03`, `PFX-O02`, `PFX-D05`, `FFG-E07` outcome subset, `FFG-C10` | `F1`: implemented |
 | variable activation budgets | `P12` economy subset, `PFX-A01` | `F2`: needs generalization |
 | named effect instances with bounded authority-relative expiry | `P10`, `P11`, `PFX-E07`, `FFG-E07` effect subset | `F3`: requires a new primitive |
 | typed damage packets and qualified responses | `P06`, `P07`, `PFX-I06`, `P16` damage trace subset | `F4`: needs generalization |
@@ -148,9 +148,9 @@ acceptance; they are not permission to add parallel abstractions.
 - `S3`: selected-destination pathfinding, one typed before-damage reaction, and
   modifier aging already have authority, event, checkpoint, replay, and
   readback coverage. The kits reuse those exact paths.
-- `S4`: Scenario-bound classes/features and source-labelled attack
-  contributions are authoritative. `F0` replaces the attack-only restriction;
-  it does not create another character-feature runtime.
+- `S4`: Scenario-bound classes/features and source-labelled scalar
+  contributions are authoritative. `F0` and `F1` replace the attack-only
+  restriction without creating another character-feature runtime.
 
 ## Common extension contract
 
@@ -279,8 +279,9 @@ contribute, and an ordered closed set of outcome-band ids.
 The profile first maps the checked total-versus-difficulty margin through a
 complete, disjoint threshold table into a base band. It may then apply
 disjoint natural-die rules which set a named band or shift by a bounded number
-of bands. Finally, applicable contextual band shifts move through the declared
-ordering and clamp at its ends. An action branches on exact band ids. A profile
+of bands. Finally, applicable contextual band shifts move one at a time in
+canonical source order through the declared ordering and clamp after each
+shift at its ends. An action branches on exact band ids. A profile
 may map old attack/save vocabulary to bands, but the normalized contract does
 not reserve source-system outcome names.
 
@@ -312,9 +313,11 @@ tests support actor statistic versus explicit difficulty or target named
 defense. Contested actor-versus-actor roll pairs remain deferred.
 
 At runtime Rust gathers `F0` contributions, requests the exact scalar evidence,
-computes base/difficulty/total with checked arithmetic, selects the base band,
-applies canonical band-shift contributions, selects one program branch, and
-stages its mutations in the existing atomic root.
+computes base/difficulty/total/margin with checked arithmetic, selects the base
+band, applies the matching natural rule, then applies canonical contextual
+band-shift contributions, selects one program branch, and stages its mutations
+in the existing atomic root. Legacy attack and save checks use the same ordered
+scalar resolver with their existing two-band projections and events.
 
 ### Randomness, timing, events, and persistence
 
@@ -331,8 +334,8 @@ versions participate in artifact identity and compatibility.
 
 ### Witnesses and non-claims
 
-- One profile produces two bands; another produces four, including natural
-  edge rules and a margin threshold.
+- The committed public-facade witnesses exercise a four-band profile, natural
+  set/shift rules, and the legacy two-band attack/save projections.
 - Positive and negative shifts prove ordering, clamping, source visibility,
   and independence from numeric modifiers.
 - A malformed overlapping profile, unknown band, overflow, extra branch, or

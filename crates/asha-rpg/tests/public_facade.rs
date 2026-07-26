@@ -4,17 +4,19 @@ use asha_rpg::{
     ContentRelationshipKind, ContentRelationshipProvenance, ContentSourceLocation,
     ContentValueRequirement, GridPosition, MaterializedContentDefinition,
     MaterializedContentDefinitionKind, MaterializedContentVisibility, PlayBundleArtifactSchema,
-    PreparedPlayBundle, ResolvedContentPack, RpgActionProposal, RpgAuthoritySession, RpgBoardSetup,
-    RpgCellCapabilitySetup, RpgCellCapabilityValue, RpgCellSetup, RpgCommandOutcome,
-    RpgContributionDisposition, RpgContributionStackingPolicy, RpgDomainEvent,
-    RpgInitialCapability, RpgParticipantSetup, RpgRandomRequest, RpgRandomRequestKind,
-    RpgRandomSourceBinding, RpgRollTapeEntry, RpgRollTapeSource, RpgScalarContributionLedger,
-    RpgScenario, RpgTeamId, RpgTurnControl, RpgTurnControlProposal, RpgTurnInitialization,
-    RpgVersionedIdentity, Ruleset, RulesetCalculationSelectorContract,
-    RulesetContributionStackingGroupContract, RulesetModels, RulesetNumericDomain,
-    RulesetProvisions, RulesetSchema, RulesetValueContract, RulesetValueExpression,
-    RulesetValueFormula, RulesetValueFormulaSchema, RulesetValueKind, RulesetValueSource,
-    VersionedRpgRequirement, PLAY_BUNDLE_ARTIFACT_MAJOR, PREPARED_PLAY_BUNDLE_IDENTITY,
+    PreparedPlayBundle, ResolvedContentPack, RpgActionProposal, RpgAuthoritySession,
+    RpgAutomaticCommandFailure, RpgBoardSetup, RpgCellCapabilitySetup, RpgCellCapabilityValue,
+    RpgCellSetup, RpgCommandOutcome, RpgContributionDisposition, RpgContributionStackingPolicy,
+    RpgDomainEvent, RpgInitialCapability, RpgNaturalDieEffect, RpgOutcomeBandShiftDisposition,
+    RpgParticipantSetup, RpgRandomRequest, RpgRandomRequestKind, RpgRandomSourceBinding,
+    RpgRollTapeEntry, RpgRollTapeSource, RpgScalarContributionLedger, RpgScenario, RpgTeamId,
+    RpgTurnControl, RpgTurnControlProposal, RpgTurnInitialization, RpgVersionedIdentity, Ruleset,
+    RulesetCalculationSelectorContract, RulesetContributionStackingGroupContract,
+    RulesetMarginBandRule, RulesetModels, RulesetNaturalDieRule, RulesetNumericDomain,
+    RulesetOutcomeBand, RulesetProvisions, RulesetScalarTestProfile, RulesetSchema,
+    RulesetValueContract, RulesetValueExpression, RulesetValueFormula, RulesetValueFormulaSchema,
+    RulesetValueKind, RulesetValueSource, VersionedRpgRequirement, PLAY_BUNDLE_ARTIFACT_MAJOR,
+    PREPARED_PLAY_BUNDLE_IDENTITY,
 };
 use serde_json::json;
 
@@ -612,6 +614,301 @@ fn character_features_resolve_multiple_spatial_roll_contributions_and_replay() {
 }
 
 #[test]
+fn scalar_test_profiles_resolve_ordered_outcomes_naturals_context_and_replay() {
+    let prepared = scalar_test_prepared();
+    let bundle = compile_prepared_play_bundle(prepared.clone()).unwrap();
+    let action = bundle
+        .rules()
+        .actions()
+        .find(|action| action.id == "action.strike")
+        .unwrap();
+    assert_eq!(
+        action.random_plan[0].request,
+        RpgRandomRequest {
+            kind: RpgRandomRequestKind::ScalarTest,
+            count: 1,
+            sides: 20,
+            path: "$.action.check".to_owned(),
+        }
+    );
+
+    let scenario = conditional_feature_scenario(&bundle);
+    for (entries, expected_code) in [
+        (Vec::new(), "RPG_RANDOM_TAPE_EXHAUSTED"),
+        (
+            vec![RpgRollTapeEntry {
+                request: RpgRandomRequest {
+                    kind: RpgRandomRequestKind::AttackCheck,
+                    count: 1,
+                    sides: 20,
+                    path: "$.action.check.targets[0].roll".to_owned(),
+                },
+                values: vec![13],
+            }],
+            "RPG_RANDOM_TAPE_REQUEST_ORDER_MISMATCH",
+        ),
+        (
+            vec![RpgRollTapeEntry {
+                request: RpgRandomRequest {
+                    kind: RpgRandomRequestKind::ScalarTest,
+                    count: 1,
+                    sides: 20,
+                    path: "$.action.check.targets[0].roll".to_owned(),
+                },
+                values: vec![13, 14],
+            }],
+            "RPG_RANDOM_TAPE_UNUSED_EVIDENCE",
+        ),
+    ] {
+        let mut rejected_session =
+            RpgAuthoritySession::from_scenario(bundle.clone(), scenario.clone()).unwrap();
+        let baseline_hash = rejected_session.state_hash();
+        let mut rejected_source =
+            RpgRollTapeSource::new(rejected_session.scenario().random_source.clone(), entries);
+        let failure = rejected_session
+            .submit_with_random_source_recorded(
+                RpgActionProposal {
+                    expected_revision: 0,
+                    action_id: "action.strike".to_owned(),
+                    actor_id: "actor".to_owned(),
+                    target_ids: vec!["target".to_owned()],
+                    item_binding: None,
+                },
+                &mut rejected_source,
+            )
+            .unwrap_err();
+        let RpgAutomaticCommandFailure::RandomSource(failure) = failure else {
+            panic!("expected random source failure");
+        };
+        assert_eq!(failure.code, expected_code);
+        assert_eq!(rejected_session.state_hash(), baseline_hash);
+        assert_eq!(rejected_session.accepted_random_values(), 0);
+    }
+    let mut stale_session =
+        RpgAuthoritySession::from_scenario(bundle.clone(), scenario.clone()).unwrap();
+    let baseline_hash = stale_session.state_hash();
+    let mut stale_source = scalar_roll_source(&stale_session, 13);
+    let (stale_outcome, _) = stale_session
+        .submit_with_random_source_recorded(
+            RpgActionProposal {
+                expected_revision: 0,
+                action_id: "action.strike".to_owned(),
+                actor_id: "actor".to_owned(),
+                target_ids: vec!["missing".to_owned()],
+                item_binding: None,
+            },
+            &mut stale_source,
+        )
+        .unwrap();
+    assert!(matches!(
+        stale_outcome,
+        RpgCommandOutcome::Rejected(ref rejection)
+            if rejection.code == "RPG_INTENT_TARGET_UNKNOWN"
+    ));
+    assert_eq!(stale_session.state_hash(), baseline_hash);
+    assert_eq!(stale_session.accepted_random_values(), 0);
+
+    let mut session = RpgAuthoritySession::from_scenario(bundle.clone(), scenario).unwrap();
+    let initial = session.checkpoint().unwrap();
+    let mut source = scalar_roll_source(&session, 13);
+    let (outcome, entry) = session
+        .submit_with_random_source_recorded(
+            RpgActionProposal {
+                expected_revision: 0,
+                action_id: "action.strike".to_owned(),
+                actor_id: "actor".to_owned(),
+                target_ids: vec!["target".to_owned()],
+                item_binding: None,
+            },
+            &mut source,
+        )
+        .unwrap();
+    let RpgCommandOutcome::Accepted(receipt) = outcome else {
+        panic!("scalar test should be accepted: {outcome:?}");
+    };
+    let scalar = receipt
+        .events
+        .iter()
+        .find_map(|event| match event {
+            RpgDomainEvent::ScalarTestResolved {
+                total,
+                margin,
+                base_band_id,
+                natural_die_resolution,
+                band_shift_ledger,
+                final_band_id,
+                ..
+            } => Some((
+                *total,
+                *margin,
+                base_band_id,
+                natural_die_resolution,
+                band_shift_ledger,
+                final_band_id,
+            )),
+            _ => None,
+        })
+        .expect("scalar event retains complete authority evidence");
+    assert_eq!(scalar.0, 15);
+    assert_eq!(scalar.1, 5);
+    assert_eq!(scalar.2, "success");
+    assert_eq!(scalar.3, &None);
+    assert_eq!(scalar.4.total_shift, 0);
+    assert_eq!(
+        scalar
+            .4
+            .candidates
+            .iter()
+            .map(|candidate| (
+                candidate.source_definition_id.as_str(),
+                candidate.applied_shift,
+                candidate.disposition.clone(),
+                candidate.resulting_band_id.as_str(),
+            ))
+            .collect::<Vec<_>>(),
+        vec![
+            (
+                "feature.flanking",
+                1,
+                RpgOutcomeBandShiftDisposition::Applied,
+                "critical",
+            ),
+            (
+                "feature.surrounded",
+                -1,
+                RpgOutcomeBandShiftDisposition::Applied,
+                "success",
+            ),
+        ]
+    );
+    assert_eq!(scalar.5, "success");
+    assert!(receipt.events.iter().any(|event| matches!(
+        event,
+        RpgDomainEvent::ScalarOutcomeBranchSelected {
+            final_band_id,
+            selected_branch_id,
+            ..
+        } if final_band_id == "success" && selected_branch_id == "success"
+    )));
+    assert_eq!(
+        session.state().entity("target").unwrap().vitality().current,
+        13
+    );
+    let replayed = RpgAuthoritySession::replay(initial, &[entry]).unwrap();
+    assert_eq!(replayed.state_hash(), session.state_hash());
+
+    let mut positive_scenario = conditional_feature_scenario(&bundle);
+    positive_scenario
+        .participants
+        .iter_mut()
+        .find(|participant| participant.id == "hostile-two")
+        .unwrap()
+        .position = GridPosition { x: 4, y: 0 };
+    let positive_band = scalar_final_band(bundle.clone(), positive_scenario, 13);
+    assert_eq!(positive_band, "critical");
+    let mut positive_clamp_scenario = conditional_feature_scenario(&bundle);
+    positive_clamp_scenario
+        .participants
+        .iter_mut()
+        .find(|participant| participant.id == "hostile-two")
+        .unwrap()
+        .position = GridPosition { x: 4, y: 0 };
+    assert_eq!(
+        scalar_final_band(bundle.clone(), positive_clamp_scenario, 20),
+        "critical"
+    );
+
+    let mut negative_scenario = conditional_feature_scenario(&bundle);
+    negative_scenario
+        .participants
+        .iter_mut()
+        .find(|participant| participant.id == "ally")
+        .unwrap()
+        .position = GridPosition { x: 4, y: 2 };
+    let negative_band = scalar_final_band(bundle.clone(), negative_scenario, 13);
+    assert_eq!(negative_band, "mixed");
+
+    let natural_set_band =
+        scalar_final_band(bundle.clone(), conditional_feature_scenario(&bundle), 20);
+    assert_eq!(natural_set_band, "success");
+    let natural_shift_band =
+        scalar_final_band(bundle.clone(), conditional_feature_scenario(&bundle), 1);
+    assert_eq!(natural_shift_band, "mixed");
+
+    let mut binary_scenario = conditional_feature_scenario(&bundle);
+    binary_scenario
+        .participants
+        .iter_mut()
+        .find(|participant| participant.id == "actor")
+        .unwrap()
+        .definition_ids = vec!["action.binary".to_owned(), "action.strike".to_owned()];
+    assert_eq!(
+        scalar_final_band_for_action(bundle.clone(), binary_scenario, "action.binary", 13,),
+        "success"
+    );
+
+    let mut explicit_difficulty = prepared.clone();
+    let action = explicit_difficulty
+        .materialized_definitions
+        .iter_mut()
+        .find(|definition| definition.id == "action.strike")
+        .unwrap();
+    action.semantic["action"]["check"]["difficulty"] = json!({
+        "kind": "explicit",
+        "value": {"kind": "constant", "value": 10}
+    });
+    action.fingerprint = materialized_definition_fingerprint(action).unwrap();
+    let explicit_bundle = compile_prepared_play_bundle(explicit_difficulty).unwrap();
+    assert_eq!(
+        scalar_final_band(
+            explicit_bundle.clone(),
+            conditional_feature_scenario(&explicit_bundle),
+            13,
+        ),
+        "success"
+    );
+
+    let mut malformed = prepared.clone();
+    malformed.ruleset.provides.scalar_test_profiles[0].margin_rules[1].minimum = Some(1);
+    let failure = compile_prepared_play_bundle(malformed).unwrap_err();
+    assert!(failure
+        .diagnostics
+        .iter()
+        .any(|diagnostic| diagnostic.code == "RULESET_SCALAR_TEST_MARGIN_RULE_INVALID"));
+
+    let mut overflow = prepared.clone();
+    overflow.ruleset.provides.numeric_domains[0].maximum = i64::from(i32::MAX);
+    let failure = compile_prepared_play_bundle(overflow).unwrap_err();
+    assert!(failure
+        .diagnostics
+        .iter()
+        .any(|diagnostic| diagnostic.code == "RULESET_SCALAR_TEST_DOMAIN_OVERFLOW"));
+
+    let mut unknown_branch = prepared.clone();
+    let action = unknown_branch
+        .materialized_definitions
+        .iter_mut()
+        .find(|definition| definition.id == "action.strike")
+        .unwrap();
+    action.semantic["action"]["program"]["body"]["branches"]["unknown"] =
+        action.semantic["action"]["program"]["body"]["branches"]["success"].clone();
+    action.fingerprint = materialized_definition_fingerprint(action).unwrap();
+    let failure = compile_prepared_play_bundle(unknown_branch).unwrap_err();
+    assert!(failure
+        .diagnostics
+        .iter()
+        .any(|diagnostic| { diagnostic.code == "ACTION_SCALAR_TEST_OUTCOME_BAND_UNKNOWN" }));
+
+    let mut tampered = bundle.artifact().clone();
+    tampered.ruleset.provides.scalar_test_profiles[1].natural_die_rules[1].minimum = 1;
+    let failure = load_compiled_play_bundle(tampered).unwrap_err();
+    assert!(failure
+        .diagnostics
+        .iter()
+        .any(|diagnostic| diagnostic.code == "RULESET_SCALAR_TEST_NATURAL_RULE_INVALID"));
+}
+
+#[test]
 fn public_facade_rejects_noncanonical_value_and_numeric_domain_requirements() {
     let mut duplicated = healing_prepared();
     duplicated.content_requirements.values = vec![
@@ -1168,7 +1465,7 @@ fn conditional_feature_prepared() -> PreparedPlayBundle {
         visibility: MaterializedContentVisibility::Exported,
         extension_policy: ContentExtensionPolicy::Sealed,
         semantic: json!({
-            "schema": {"identity": "asha.rpg.character-feature", "version": 2},
+            "schema": {"identity": "asha.rpg.character-feature", "version": 3},
             "contributions": [
                 {
                     "schema": {"identity": "asha.rpg.scalar-contribution", "version": 1},
@@ -1262,7 +1559,8 @@ fn conditional_feature_prepared() -> PreparedPlayBundle {
                     "value": {"kind": "constant", "value": -1},
                     "predicate": {"kind": "always"}
                 }
-            ]
+            ],
+            "outcomeBandShifts": []
         }),
         presentation: json!({"label": "Flanking Discipline"}),
         references: vec!["terrain.high-ground".to_owned()],
@@ -1275,7 +1573,7 @@ fn conditional_feature_prepared() -> PreparedPlayBundle {
         visibility: MaterializedContentVisibility::Exported,
         extension_policy: ContentExtensionPolicy::Sealed,
         semantic: json!({
-            "schema": {"identity": "asha.rpg.character-feature", "version": 2},
+            "schema": {"identity": "asha.rpg.character-feature", "version": 3},
             "contributions": [
                 {
                     "schema": {"identity": "asha.rpg.scalar-contribution", "version": 1},
@@ -1304,7 +1602,8 @@ fn conditional_feature_prepared() -> PreparedPlayBundle {
                         "minimumHostiles": 2
                     }
                 }
-            ]
+            ],
+            "outcomeBandShifts": []
         }),
         presentation: json!({"label": "Against the Press"}),
         references: Vec::new(),
@@ -1433,6 +1732,234 @@ fn conditional_feature_prepared() -> PreparedPlayBundle {
     prepared
 }
 
+fn scalar_test_prepared() -> PreparedPlayBundle {
+    let mut prepared = conditional_feature_prepared();
+    prepared.ruleset.provides.scalar_test_profiles = vec![
+        RulesetScalarTestProfile {
+            id: "binary-check".to_owned(),
+            version: 1,
+            label: "Binary check".to_owned(),
+            numeric_domain_id: "check-total".to_owned(),
+            die_sides: 20,
+            contribution_selector_id: None,
+            bands: vec![
+                RulesetOutcomeBand {
+                    id: "failure".to_owned(),
+                    label: "Failure".to_owned(),
+                },
+                RulesetOutcomeBand {
+                    id: "success".to_owned(),
+                    label: "Success".to_owned(),
+                },
+            ],
+            margin_rules: vec![
+                RulesetMarginBandRule {
+                    minimum: None,
+                    maximum: Some(-1),
+                    band_id: "failure".to_owned(),
+                },
+                RulesetMarginBandRule {
+                    minimum: Some(0),
+                    maximum: None,
+                    band_id: "success".to_owned(),
+                },
+            ],
+            natural_die_rules: Vec::new(),
+        },
+        RulesetScalarTestProfile {
+            id: "graded-check".to_owned(),
+            version: 1,
+            label: "Graded check".to_owned(),
+            numeric_domain_id: "check-total".to_owned(),
+            die_sides: 20,
+            contribution_selector_id: None,
+            bands: vec![
+                RulesetOutcomeBand {
+                    id: "failure".to_owned(),
+                    label: "Failure".to_owned(),
+                },
+                RulesetOutcomeBand {
+                    id: "mixed".to_owned(),
+                    label: "Mixed".to_owned(),
+                },
+                RulesetOutcomeBand {
+                    id: "success".to_owned(),
+                    label: "Success".to_owned(),
+                },
+                RulesetOutcomeBand {
+                    id: "critical".to_owned(),
+                    label: "Critical".to_owned(),
+                },
+            ],
+            margin_rules: vec![
+                RulesetMarginBandRule {
+                    minimum: None,
+                    maximum: Some(-1),
+                    band_id: "failure".to_owned(),
+                },
+                RulesetMarginBandRule {
+                    minimum: Some(0),
+                    maximum: Some(4),
+                    band_id: "mixed".to_owned(),
+                },
+                RulesetMarginBandRule {
+                    minimum: Some(5),
+                    maximum: Some(9),
+                    band_id: "success".to_owned(),
+                },
+                RulesetMarginBandRule {
+                    minimum: Some(10),
+                    maximum: None,
+                    band_id: "critical".to_owned(),
+                },
+            ],
+            natural_die_rules: vec![
+                RulesetNaturalDieRule {
+                    id: "natural-low".to_owned(),
+                    minimum: 1,
+                    maximum: 1,
+                    effect: RpgNaturalDieEffect::Shift { amount: 1 },
+                },
+                RulesetNaturalDieRule {
+                    id: "natural-high".to_owned(),
+                    minimum: 20,
+                    maximum: 20,
+                    effect: RpgNaturalDieEffect::SetBand {
+                        band_id: "critical".to_owned(),
+                    },
+                },
+            ],
+        },
+    ];
+    let action = prepared
+        .materialized_definitions
+        .iter_mut()
+        .find(|definition| definition.id == "action.strike")
+        .unwrap();
+    action.semantic["action"]["check"] = json!({
+        "kind": "scalarTest",
+        "profile": {"rulesetId": "consumer.rules", "id": "graded-check"},
+        "base": {"kind": "readStat", "subject": "actor", "statId": "power"},
+        "difficulty": {"kind": "targetDefense", "defenseId": "guard"}
+    });
+    action.semantic["action"]["program"] = json!({
+        "kind": "atomic",
+        "body": {
+            "kind": "onOutcome",
+            "branches": {
+                "critical": {
+                    "kind": "operation",
+                    "operation": {
+                        "kind": "heal",
+                        "amount": {"kind": "constant", "value": 4}
+                    }
+                },
+                "mixed": {
+                    "kind": "operation",
+                    "operation": {
+                        "kind": "heal",
+                        "amount": {"kind": "constant", "value": 2}
+                    }
+                },
+                "success": {
+                    "kind": "operation",
+                    "operation": {
+                        "kind": "heal",
+                        "amount": {"kind": "constant", "value": 3}
+                    }
+                }
+            },
+            "default": {
+                "kind": "operation",
+                "operation": {
+                    "kind": "heal",
+                    "amount": {"kind": "constant", "value": 1}
+                }
+            }
+        }
+    });
+    action.fingerprint = materialized_definition_fingerprint(action).unwrap();
+    let mut binary_action = action.clone();
+    binary_action.id = "action.binary".to_owned();
+    binary_action.semantic["action"]["id"] = json!("action.binary");
+    binary_action.semantic["action"]["name"] = json!("Binary test");
+    binary_action.semantic["action"]["sourcePath"] = json!("actions/binary.ts#binary");
+    binary_action.semantic["action"]["check"]["profile"]["id"] = json!("binary-check");
+    binary_action.semantic["action"]["program"]["body"] = json!({
+        "kind": "onOutcome",
+        "branches": {
+            "success": {
+                "kind": "operation",
+                "operation": {
+                    "kind": "heal",
+                    "amount": {"kind": "constant", "value": 2}
+                }
+            }
+        },
+        "default": {
+            "kind": "operation",
+            "operation": {
+                "kind": "heal",
+                "amount": {"kind": "constant", "value": 1}
+            }
+        }
+    });
+    binary_action.presentation = json!({"label": "Binary test"});
+    binary_action.provenance.definition_id = "action.binary".to_owned();
+    binary_action.provenance.source.module = "actions/binary.ts".to_owned();
+    binary_action.provenance.source.declaration = "action_binary".to_owned();
+    binary_action.fingerprint = materialized_definition_fingerprint(&binary_action).unwrap();
+    let flanking = prepared
+        .materialized_definitions
+        .iter_mut()
+        .find(|definition| definition.id == "feature.flanking")
+        .unwrap();
+    flanking.semantic["outcomeBandShifts"] = json!([{
+        "schema": {"identity": "asha.rpg.outcome-band-shift", "version": 1},
+        "id": "flanking-up",
+        "profile": {"rulesetId": "consumer.rules", "id": "graded-check"},
+        "shift": 1,
+        "predicate": {"kind": "actorFlanksTarget"}
+    }]);
+    flanking.fingerprint = materialized_definition_fingerprint(flanking).unwrap();
+    let surrounded = prepared
+        .materialized_definitions
+        .iter_mut()
+        .find(|definition| definition.id == "feature.surrounded")
+        .unwrap();
+    surrounded.semantic["outcomeBandShifts"] = json!([{
+        "schema": {"identity": "asha.rpg.outcome-band-shift", "version": 1},
+        "id": "surrounded-down",
+        "profile": {"rulesetId": "consumer.rules", "id": "graded-check"},
+        "shift": -1,
+        "predicate": {"kind": "actorSurrounded", "minimumHostiles": 2}
+    }]);
+    surrounded.fingerprint = materialized_definition_fingerprint(surrounded).unwrap();
+    prepared.materialized_definitions.push(binary_action);
+    prepared
+        .materialized_definitions
+        .sort_by(|left, right| left.id.cmp(&right.id));
+    prepared.exported_roots.push("action.binary".to_owned());
+    prepared.exported_roots.sort();
+    prepared.definition_provenance = prepared
+        .materialized_definitions
+        .iter()
+        .map(|definition| definition.provenance.clone())
+        .collect();
+    prepared.relationships = prepared
+        .exported_roots
+        .iter()
+        .enumerate()
+        .map(|(order, target)| ContentRelationshipProvenance {
+            kind: ContentRelationshipKind::Exports,
+            source: "consumer.package@1.0.0".to_owned(),
+            target: target.clone(),
+            order,
+        })
+        .collect();
+    prepared
+}
+
 fn conditional_feature_scenario(bundle: &asha_rpg::CompiledPlayBundle) -> RpgScenario {
     let mut actor = participant("actor", "Actor", RpgTeamId::ally(), 1, 20);
     actor.position = GridPosition { x: 1, y: 1 };
@@ -1513,6 +2040,62 @@ fn conditional_feature_scenario(bundle: &asha_rpg::CompiledPlayBundle) -> RpgSce
             source_version: 1,
         },
     }
+}
+
+fn scalar_roll_source(session: &RpgAuthoritySession, roll: u32) -> RpgRollTapeSource {
+    RpgRollTapeSource::new(
+        session.scenario().random_source.clone(),
+        [RpgRollTapeEntry {
+            request: RpgRandomRequest {
+                kind: RpgRandomRequestKind::ScalarTest,
+                count: 1,
+                sides: 20,
+                path: "$.action.check.targets[0].roll".to_owned(),
+            },
+            values: vec![roll],
+        }],
+    )
+}
+
+fn scalar_final_band(
+    bundle: asha_rpg::CompiledPlayBundle,
+    scenario: RpgScenario,
+    roll: u32,
+) -> String {
+    scalar_final_band_for_action(bundle, scenario, "action.strike", roll)
+}
+
+fn scalar_final_band_for_action(
+    bundle: asha_rpg::CompiledPlayBundle,
+    scenario: RpgScenario,
+    action_id: &str,
+    roll: u32,
+) -> String {
+    let mut session = RpgAuthoritySession::from_scenario(bundle, scenario).unwrap();
+    let mut source = scalar_roll_source(&session, roll);
+    let (outcome, _) = session
+        .submit_with_random_source_recorded(
+            RpgActionProposal {
+                expected_revision: 0,
+                action_id: action_id.to_owned(),
+                actor_id: "actor".to_owned(),
+                target_ids: vec!["target".to_owned()],
+                item_binding: None,
+            },
+            &mut source,
+        )
+        .unwrap();
+    let RpgCommandOutcome::Accepted(receipt) = outcome else {
+        panic!("scalar test should be accepted: {outcome:?}");
+    };
+    receipt
+        .events
+        .iter()
+        .find_map(|event| match event {
+            RpgDomainEvent::ScalarTestResolved { final_band_id, .. } => Some(final_band_id.clone()),
+            _ => None,
+        })
+        .unwrap()
 }
 
 fn attack_roll_source(session: &RpgAuthoritySession, roll: u32) -> RpgRollTapeSource {
@@ -1693,7 +2276,7 @@ fn item_bound_prepared() -> PreparedPlayBundle {
         visibility: MaterializedContentVisibility::Exported,
         extension_policy: ContentExtensionPolicy::Sealed,
         semantic: json!({
-            "schema": {"identity": "asha.rpg.item", "version": 2},
+            "schema": {"identity": "asha.rpg.item", "version": 3},
             "tags": ["healing"],
             "traits": ["usable"],
             "allowedSlots": ["hand.main", "hand.off"],
@@ -1704,7 +2287,8 @@ fn item_bound_prepared() -> PreparedPlayBundle {
                 "minimum": 0,
                 "maximum": 20
             }],
-            "contributions": []
+            "contributions": [],
+            "outcomeBandShifts": []
         }),
         presentation: json!({"label": "Greater Healing Kit"}),
         references: Vec::new(),
@@ -1717,7 +2301,7 @@ fn item_bound_prepared() -> PreparedPlayBundle {
         visibility: MaterializedContentVisibility::Exported,
         extension_policy: ContentExtensionPolicy::Sealed,
         semantic: json!({
-            "schema": {"identity": "asha.rpg.item", "version": 2},
+            "schema": {"identity": "asha.rpg.item", "version": 3},
             "tags": ["healing"],
             "traits": ["usable"],
             "allowedSlots": ["hand.main", "hand.off"],
@@ -1728,7 +2312,8 @@ fn item_bound_prepared() -> PreparedPlayBundle {
                 "minimum": 0,
                 "maximum": 20
             }],
-            "contributions": []
+            "contributions": [],
+            "outcomeBandShifts": []
         }),
         presentation: json!({"label": "Healing Kit"}),
         references: Vec::new(),
@@ -2094,6 +2679,7 @@ fn healing_prepared() -> PreparedPlayBundle {
                 numeric_domains: Vec::new(),
                 calculation_selectors: Vec::new(),
                 contribution_stacking_groups: Vec::new(),
+                scalar_test_profiles: Vec::new(),
             },
         },
         content_packs: vec![ResolvedContentPack {

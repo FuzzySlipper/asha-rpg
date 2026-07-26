@@ -5,7 +5,9 @@ use rpg_core::{
     RpgCapabilityState, RpgCapabilityWorkspace, RpgContributionComparison,
     RpgContributionDisposition, RpgContributionPredicate, RpgContributionStackingPolicy,
     RpgContributionSubject, RpgContributionTeamRelation, RpgContributionValueExpression,
-    RpgDomainEvent, RpgIntent, RpgModifierStackingPolicy, RpgRandomEvidence, RpgRandomRequest,
+    RpgDomainEvent, RpgIntent, RpgModifierStackingPolicy, RpgNaturalDieEffect,
+    RpgNaturalDieResolution, RpgOutcomeBandShiftDecision, RpgOutcomeBandShiftDefinition,
+    RpgOutcomeBandShiftDisposition, RpgOutcomeBandShiftLedger, RpgRandomEvidence, RpgRandomRequest,
     RpgRandomRequestKind, RpgReactionDecision, RpgReactionOption, RpgReactionRequest,
     RpgResolutionContext, RpgResolutionReceipt, RpgResolutionRejection, RpgRulesetValueKind,
     RpgScalarContributionDecision, RpgScalarContributionDefinition, RpgScalarContributionLedger,
@@ -13,20 +15,22 @@ use rpg_core::{
 };
 use rpg_ir::{
     CompiledCharacterFeature, CompiledItemDefinition, RpgIrCheck, RpgIrComparison, RpgIrFormula,
-    RpgIrOperation, RpgIrPredicate, RpgIrRollScope, RpgIrSubject, RpgIrTargetKind,
-    RpgIrTeamConstraint,
+    RpgIrOperation, RpgIrPredicate, RpgIrRollScope, RpgIrScalarTestDifficulty, RpgIrSubject,
+    RpgIrTargetKind, RpgIrTeamConstraint, RulesetMarginBandRule, RulesetNaturalDieRule,
+    RulesetOutcomeBand,
 };
 
 use crate::compile::{CompiledAction, CompiledOperation, CompiledProgram};
 use crate::CompiledRpgRules;
 
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[derive(Debug, Clone, PartialEq, Eq)]
 enum CheckOutcome {
     Hit,
     Miss,
     Saved,
     Failed,
     NoRoll,
+    Scalar { profile_id: String, band_id: String },
 }
 
 impl CompiledRpgRules {
@@ -486,12 +490,8 @@ impl Execution<'_> {
         let shared_roll = if self.action.roll_scope == RpgIrRollScope::Shared
             && !matches!(self.action.check, RpgIrCheck::NoRoll)
         {
-            let kind = match self.action.check {
-                RpgIrCheck::Attack { .. } => RpgRandomRequestKind::AttackCheck,
-                RpgIrCheck::SavingThrow { .. } => RpgRandomRequestKind::SavingThrowCheck,
-                RpgIrCheck::NoRoll => unreachable!("no-roll check excluded above"),
-            };
-            Some(self.take_random(kind, 20, "$.action.check.sharedRoll")?)
+            let (kind, sides) = self.check_random_request("$.action.check")?;
+            Some(self.take_random(kind, sides, "$.action.check.sharedRoll")?)
         } else {
             None
         };
@@ -515,24 +515,6 @@ impl Execution<'_> {
                         )?,
                     };
                     let base_modifier = self.eval_formula(modifier, &format!("{path}.modifier"))?;
-                    let contribution_ledger = self.evaluate_contribution_ledger(
-                        contribution_selector
-                            .as_ref()
-                            .map(|selector| selector.id.as_str()),
-                        base_modifier,
-                        &target_id,
-                        &format!("{path}.contributionLedger"),
-                    )?;
-                    let total = i32::try_from(roll)
-                        .unwrap_or(i32::MAX)
-                        .checked_add(contribution_ledger.final_value)
-                        .ok_or_else(|| {
-                            self.fail(
-                                "RPG_RUNTIME_ROLL_TOTAL_OVERFLOW",
-                                &format!("{path}.contributionLedger.finalValue"),
-                                "roll and contribution total exceeded the runtime integer domain",
-                            )
-                        })?;
                     let defense = self
                         .workspace
                         .state()
@@ -545,16 +527,35 @@ impl Execution<'_> {
                                 format!("target {target_id} has no defense {defense_id}"),
                             )
                         })?;
-                    let hit = total >= defense;
+                    let resolved = self.resolve_ordered_scalar(
+                        ScalarResolutionRequest {
+                            profile_id: "legacy.attack",
+                            bands: &legacy_attack_bands(),
+                            margin_rules: &legacy_attack_margin_rules(),
+                            natural_die_rules: &[],
+                            contribution_selector_id: contribution_selector
+                                .as_ref()
+                                .map(|selector| selector.id.as_str()),
+                            domain_minimum: i64::from(i32::MIN),
+                            domain_maximum: i64::from(i32::MAX),
+                            apply_contextual_shifts: false,
+                            roll,
+                            base_value: base_modifier,
+                            difficulty: defense,
+                        },
+                        &target_id,
+                        &path,
+                    )?;
+                    let hit = resolved.final_band_id == "hit";
                     self.events.push(RpgDomainEvent::AttackResolved {
                         actor_id: self.intent.actor_id.clone(),
                         target_id: target_id.clone(),
                         roll,
-                        total,
+                        total: resolved.total,
                         defense_id: defense_id.clone(),
                         defense,
                         hit,
-                        contribution_ledger,
+                        contribution_ledger: resolved.contribution_ledger,
                     });
                     if hit {
                         CheckOutcome::Hit
@@ -588,14 +589,28 @@ impl Execution<'_> {
                                 format!("target {target_id} has no defense {defense_id}"),
                             )
                         })?;
-                    let total = i32::try_from(roll)
-                        .unwrap_or(i32::MAX)
-                        .saturating_add(defense);
-                    let saved = total >= difficulty;
+                    let resolved = self.resolve_ordered_scalar(
+                        ScalarResolutionRequest {
+                            profile_id: "legacy.save",
+                            bands: &legacy_save_bands(),
+                            margin_rules: &legacy_save_margin_rules(),
+                            natural_die_rules: &[],
+                            contribution_selector_id: None,
+                            domain_minimum: i64::from(i32::MIN),
+                            domain_maximum: i64::from(i32::MAX),
+                            apply_contextual_shifts: false,
+                            roll,
+                            base_value: defense,
+                            difficulty,
+                        },
+                        &target_id,
+                        &path,
+                    )?;
+                    let saved = resolved.final_band_id == "saved";
                     self.events.push(RpgDomainEvent::SavingThrowResolved {
                         target_id: target_id.clone(),
                         roll,
-                        total,
+                        total: resolved.total,
                         difficulty,
                         saved,
                     });
@@ -605,8 +620,91 @@ impl Execution<'_> {
                         CheckOutcome::Failed
                     }
                 }
+                RpgIrCheck::ScalarTest {
+                    profile,
+                    base,
+                    difficulty,
+                } => {
+                    let profile_definition = self
+                        .rules
+                        .scalar_test_profile(&profile.id)
+                        .cloned()
+                        .ok_or_else(|| {
+                        self.fail(
+                            "RPG_RUNTIME_SCALAR_TEST_PROFILE_UNKNOWN",
+                            &format!("{path}.profile"),
+                            format!("compiled scalar-test profile {} is unavailable", profile.id),
+                        )
+                    })?;
+                    let roll = match shared_roll {
+                        Some(value) => value,
+                        None => self.take_random(
+                            RpgRandomRequestKind::ScalarTest,
+                            profile_definition.definition.die_sides,
+                            &format!("{path}.roll"),
+                        )?,
+                    };
+                    let base_value = self.eval_formula(base, &format!("{path}.base"))?;
+                    let difficulty = match difficulty {
+                        RpgIrScalarTestDifficulty::Explicit { value } => {
+                            self.eval_formula(value, &format!("{path}.difficulty.value"))?
+                        }
+                        RpgIrScalarTestDifficulty::TargetDefense { defense_id } => self
+                            .workspace
+                            .state()
+                            .entity(&target_id)
+                            .and_then(|target| target.defense(defense_id))
+                            .ok_or_else(|| {
+                                self.fail(
+                                    "RPG_RUNTIME_DEFENSE_MISSING",
+                                    &format!("{path}.difficulty.defense"),
+                                    format!("target {target_id} has no defense {defense_id}"),
+                                )
+                            })?,
+                    };
+                    let resolved = self.resolve_ordered_scalar(
+                        ScalarResolutionRequest {
+                            profile_id: &profile_definition.definition.id,
+                            bands: &profile_definition.definition.bands,
+                            margin_rules: &profile_definition.definition.margin_rules,
+                            natural_die_rules: &profile_definition.definition.natural_die_rules,
+                            contribution_selector_id: profile_definition
+                                .definition
+                                .contribution_selector_id
+                                .as_deref(),
+                            domain_minimum: profile_definition.minimum,
+                            domain_maximum: profile_definition.maximum,
+                            apply_contextual_shifts: true,
+                            roll,
+                            base_value,
+                            difficulty,
+                        },
+                        &target_id,
+                        &path,
+                    )?;
+                    let final_band_id = resolved.final_band_id.clone();
+                    self.events.push(RpgDomainEvent::ScalarTestResolved {
+                        actor_id: self.intent.actor_id.clone(),
+                        target_id: target_id.clone(),
+                        profile_id: profile_definition.definition.id.clone(),
+                        roll,
+                        base_value,
+                        contribution_ledger: resolved.contribution_ledger,
+                        difficulty,
+                        total: resolved.total,
+                        margin: resolved.margin,
+                        base_band_id: resolved.base_band_id,
+                        natural_die_resolution: resolved.natural_die_resolution,
+                        band_shift_ledger: Box::new(resolved.band_shift_ledger),
+                        final_band_id: final_band_id.clone(),
+                    });
+                    CheckOutcome::Scalar {
+                        profile_id: profile_definition.definition.id,
+                        band_id: final_band_id,
+                    }
+                }
             };
-            self.outcomes.insert(target_id.clone(), outcome);
+            self.outcomes.insert(target_id.clone(), outcome.clone());
             self.trace.push(RpgTraceStep {
                 path,
                 code: "RPG_CHECK_RESOLVED".to_owned(),
@@ -615,6 +713,288 @@ impl Execution<'_> {
         }
         self.current_target = None;
         Ok(())
+    }
+
+    fn check_random_request(
+        &self,
+        path: &str,
+    ) -> Result<(RpgRandomRequestKind, u32), RpgResolutionRejection> {
+        match &self.action.check {
+            RpgIrCheck::Attack { .. } => Ok((RpgRandomRequestKind::AttackCheck, 20)),
+            RpgIrCheck::SavingThrow { .. } => Ok((RpgRandomRequestKind::SavingThrowCheck, 20)),
+            RpgIrCheck::ScalarTest { profile, .. } => self
+                .rules
+                .scalar_test_profile(&profile.id)
+                .map(|compiled| {
+                    (
+                        RpgRandomRequestKind::ScalarTest,
+                        compiled.definition.die_sides,
+                    )
+                })
+                .ok_or_else(|| {
+                    self.fail(
+                        "RPG_RUNTIME_SCALAR_TEST_PROFILE_UNKNOWN",
+                        path,
+                        format!("compiled scalar-test profile {} is unavailable", profile.id),
+                    )
+                }),
+            RpgIrCheck::NoRoll => Err(self.fail(
+                "RPG_RUNTIME_RANDOM_REQUEST_INVALID",
+                path,
+                "a no-roll action cannot request check randomness",
+            )),
+        }
+    }
+
+    fn resolve_ordered_scalar(
+        &mut self,
+        request: ScalarResolutionRequest<'_>,
+        target_id: &str,
+        path: &str,
+    ) -> Result<ResolvedScalar, RpgResolutionRejection> {
+        ensure_scalar_domain(
+            request.base_value,
+            request.domain_minimum,
+            request.domain_maximum,
+            &format!("{path}.baseValue"),
+            self,
+        )?;
+        ensure_scalar_domain(
+            request.difficulty,
+            request.domain_minimum,
+            request.domain_maximum,
+            &format!("{path}.difficulty"),
+            self,
+        )?;
+        let contribution_ledger = self.evaluate_contribution_ledger(
+            request.contribution_selector_id,
+            request.base_value,
+            target_id,
+            &format!("{path}.contributionLedger"),
+        )?;
+        let total = i32::try_from(request.roll)
+            .unwrap_or(i32::MAX)
+            .checked_add(contribution_ledger.final_value)
+            .ok_or_else(|| {
+                self.fail(
+                    "RPG_RUNTIME_ROLL_TOTAL_OVERFLOW",
+                    &format!("{path}.total"),
+                    "roll and resolved scalar base exceeded the runtime integer domain",
+                )
+            })?;
+        let margin = total.checked_sub(request.difficulty).ok_or_else(|| {
+            self.fail(
+                "RPG_RUNTIME_SCALAR_MARGIN_OVERFLOW",
+                &format!("{path}.margin"),
+                "scalar-test total minus difficulty exceeded the runtime integer domain",
+            )
+        })?;
+        let base_band_id = request
+            .margin_rules
+            .iter()
+            .find(|rule| {
+                rule.minimum
+                    .is_none_or(|minimum| i64::from(margin) >= minimum)
+                    && rule
+                        .maximum
+                        .is_none_or(|maximum| i64::from(margin) <= maximum)
+            })
+            .map(|rule| rule.band_id.clone())
+            .ok_or_else(|| {
+                self.fail(
+                    "RPG_RUNTIME_SCALAR_MARGIN_UNCLASSIFIED",
+                    &format!("{path}.margin"),
+                    format!("margin {margin} has no outcome band"),
+                )
+            })?;
+        let base_index = band_index(request.bands, &base_band_id).ok_or_else(|| {
+            self.fail(
+                "RPG_RUNTIME_SCALAR_BAND_UNKNOWN",
+                &format!("{path}.baseBandId"),
+                format!("margin selected unknown band {base_band_id}"),
+            )
+        })?;
+        let natural_rule = request
+            .natural_die_rules
+            .iter()
+            .find(|rule| request.roll >= rule.minimum && request.roll <= rule.maximum);
+        let (natural_index, natural_die_resolution) = if let Some(rule) = natural_rule {
+            let resulting_index = match &rule.effect {
+                RpgNaturalDieEffect::SetBand { band_id } => band_index(request.bands, band_id)
+                    .ok_or_else(|| {
+                        self.fail(
+                            "RPG_RUNTIME_SCALAR_BAND_UNKNOWN",
+                            &format!("{path}.naturalDieRule"),
+                            format!("natural-die rule selected unknown band {band_id}"),
+                        )
+                    })?,
+                RpgNaturalDieEffect::Shift { amount } => {
+                    shifted_band_index(base_index, *amount, request.bands.len())
+                }
+            };
+            (
+                resulting_index,
+                Some(RpgNaturalDieResolution {
+                    rule_id: rule.id.clone(),
+                    effect: rule.effect.clone(),
+                    resulting_band_id: request.bands[resulting_index].id.clone(),
+                }),
+            )
+        } else {
+            (base_index, None)
+        };
+        let (band_shift_ledger, final_index) = if request.apply_contextual_shifts {
+            self.evaluate_outcome_band_shift_ledger(
+                request.profile_id,
+                target_id,
+                request.bands,
+                natural_index,
+                &format!("{path}.bandShiftLedger"),
+            )?
+        } else {
+            (
+                RpgOutcomeBandShiftLedger {
+                    profile_id: request.profile_id.to_owned(),
+                    starting_band_id: request.bands[natural_index].id.clone(),
+                    candidates: Vec::new(),
+                    total_shift: 0,
+                    final_band_id: request.bands[natural_index].id.clone(),
+                },
+                natural_index,
+            )
+        };
+        Ok(ResolvedScalar {
+            contribution_ledger,
+            total,
+            margin,
+            base_band_id,
+            natural_die_resolution,
+            band_shift_ledger,
+            final_band_id: request.bands[final_index].id.clone(),
+        })
+    }
+
+    fn evaluate_outcome_band_shift_ledger(
+        &mut self,
+        profile_id: &str,
+        target_id: &str,
+        bands: &[RulesetOutcomeBand],
+        starting_index: usize,
+        path: &str,
+    ) -> Result<(RpgOutcomeBandShiftLedger, usize), RpgResolutionRejection> {
+        let mut pending = Vec::<PendingOutcomeBandShift>::new();
+        for feature in &self.character_features {
+            for shift in &feature.outcome_band_shifts {
+                if shift.profile.id == profile_id {
+                    pending.push(PendingOutcomeBandShift {
+                        source_definition_id: feature.definition_id.clone(),
+                        source_instance_id: None,
+                        source_label: feature.label.clone(),
+                        definition: shift.clone(),
+                    });
+                }
+            }
+        }
+        if let (Some(item), Some(binding)) = (self.bound_item, self.intent.item_binding.as_ref()) {
+            for shift in &item.outcome_band_shifts {
+                if shift.profile.id == profile_id {
+                    pending.push(PendingOutcomeBandShift {
+                        source_definition_id: item.definition_id.clone(),
+                        source_instance_id: Some(binding.item_instance_id.clone()),
+                        source_label: item.label.clone(),
+                        definition: shift.clone(),
+                    });
+                }
+            }
+        }
+        pending.sort_by(|left, right| left.canonical_key().cmp(&right.canonical_key()));
+        if pending.len() > 256 {
+            return Err(self.fail(
+                "RPG_RUNTIME_OUTCOME_BAND_SHIFT_LIMIT_EXCEEDED",
+                path,
+                "one scalar evaluation may consider at most 256 outcome-band shifts",
+            ));
+        }
+        for adjacent in pending.windows(2) {
+            if adjacent[0].canonical_key() == adjacent[1].canonical_key() {
+                return Err(self.fail(
+                    "RPG_RUNTIME_OUTCOME_BAND_SHIFT_IDENTITY_DUPLICATE",
+                    path,
+                    format!(
+                        "duplicate outcome-band shift identity {}",
+                        adjacent[0].display_key()
+                    ),
+                ));
+            }
+        }
+        let mut candidates = Vec::with_capacity(pending.len());
+        let mut total_shift = 0_i32;
+        let mut current_index = starting_index;
+        for (index, candidate) in pending.iter().enumerate() {
+            let candidate_path = format!("{path}.candidates[{index}]");
+            let inapplicable_reason = self.evaluate_contribution_predicate(
+                &candidate.definition.predicate,
+                target_id,
+                &candidate_path,
+            )?;
+            let applied_shift = if inapplicable_reason.is_none() {
+                candidate.definition.shift
+            } else {
+                0
+            };
+            total_shift = total_shift.checked_add(applied_shift).ok_or_else(|| {
+                self.fail(
+                    "RPG_RUNTIME_OUTCOME_BAND_SHIFT_OVERFLOW",
+                    path,
+                    "outcome-band shifts exceeded the runtime integer domain",
+                )
+            })?;
+            current_index = shifted_band_index(current_index, applied_shift, bands.len());
+            let disposition = if let Some(reason) = inapplicable_reason {
+                RpgOutcomeBandShiftDisposition::Inapplicable { reason }
+            } else {
+                RpgOutcomeBandShiftDisposition::Applied
+            };
+            let decision = RpgOutcomeBandShiftDecision {
+                source_definition_id: candidate.source_definition_id.clone(),
+                source_instance_id: candidate.source_instance_id.clone(),
+                source_label: candidate.source_label.clone(),
+                shift_id: candidate.definition.id.clone(),
+                profile_id: profile_id.to_owned(),
+                declared_shift: candidate.definition.shift,
+                applied_shift,
+                disposition,
+                resulting_band_id: bands[current_index].id.clone(),
+            };
+            self.trace.push(RpgTraceStep {
+                path: candidate_path,
+                code: "RPG_OUTCOME_BAND_SHIFT_EVALUATED".to_owned(),
+                detail: format!(
+                    "{} declared {} applied {} status {:?} resulting band {}",
+                    candidate.display_key(),
+                    decision.declared_shift,
+                    decision.applied_shift,
+                    decision.disposition,
+                    decision.resulting_band_id,
+                ),
+            });
+            candidates.push(decision);
+        }
+        self.trace.push(RpgTraceStep {
+            path: path.to_owned(),
+            code: "RPG_OUTCOME_BAND_SHIFT_LEDGER_RESOLVED".to_owned(),
+            detail: format!("profile {profile_id} total shift {total_shift}"),
+        });
+        Ok((
+            RpgOutcomeBandShiftLedger {
+                profile_id: profile_id.to_owned(),
+                starting_band_id: bands[starting_index].id.clone(),
+                candidates,
+                total_shift,
+                final_band_id: bands[current_index].id.clone(),
+            },
+            current_index,
+        ))
     }
 
     fn evaluate_contribution_ledger(
@@ -1207,6 +1587,13 @@ impl Execution<'_> {
                     CheckOutcome::Saved => saved,
                     CheckOutcome::Failed => failed,
                     CheckOutcome::NoRoll => no_roll,
+                    CheckOutcome::Scalar { .. } => {
+                        return Err(self.fail(
+                            "RPG_RUNTIME_CHECK_BRANCH_INCOMPATIBLE",
+                            path,
+                            "a scalar-test outcome cannot select an on-check branch",
+                        ));
+                    }
                 };
                 self.trace.push(RpgTraceStep {
                     path: path.to_owned(),
@@ -1217,6 +1604,40 @@ impl Execution<'_> {
                     self.execute_program(selected, &format!("{path}.selected"))?;
                 }
                 Ok(())
+            }
+            CompiledProgram::OnOutcome { branches, default } => {
+                let outcome = self.current_outcome(path)?;
+                let CheckOutcome::Scalar {
+                    profile_id,
+                    band_id,
+                } = outcome
+                else {
+                    return Err(self.fail(
+                        "RPG_RUNTIME_OUTCOME_BRANCH_INCOMPATIBLE",
+                        path,
+                        "on-outcome requires a scalar-test result",
+                    ));
+                };
+                let (selected_branch_id, selected) = if let Some(selected) = branches.get(&band_id)
+                {
+                    (band_id.clone(), selected.as_ref())
+                } else {
+                    ("default".to_owned(), default.as_ref())
+                };
+                let target_id = self.target_id(path)?;
+                self.events
+                    .push(RpgDomainEvent::ScalarOutcomeBranchSelected {
+                        target_id,
+                        profile_id,
+                        final_band_id: band_id,
+                        selected_branch_id: selected_branch_id.clone(),
+                    });
+                self.trace.push(RpgTraceStep {
+                    path: path.to_owned(),
+                    code: "RPG_OUTCOME_BRANCH_SELECTED".to_owned(),
+                    detail: format!("branch {selected_branch_id}"),
+                });
+                self.execute_program(selected, &format!("{path}.{selected_branch_id}"))
             }
             CompiledProgram::Atomic(body) => {
                 self.trace.push(RpgTraceStep {
@@ -1730,7 +2151,7 @@ impl Execution<'_> {
 
     fn current_outcome(&self, path: &str) -> Result<CheckOutcome, RpgResolutionRejection> {
         let target_id = self.target_id(path)?;
-        self.outcomes.get(&target_id).copied().ok_or_else(|| {
+        self.outcomes.get(&target_id).cloned().ok_or_else(|| {
             self.fail(
                 "RPG_RUNTIME_CHECK_OUTCOME_MISSING",
                 path,
@@ -1838,6 +2259,144 @@ fn positions_are_opposite(first: GridPosition, center: GridPosition, second: Gri
             && second.x == center.x
             && u64::from(first.y).saturating_add(u64::from(second.y))
                 == u64::from(center.y).saturating_mul(2))
+}
+
+struct ScalarResolutionRequest<'a> {
+    profile_id: &'a str,
+    bands: &'a [RulesetOutcomeBand],
+    margin_rules: &'a [RulesetMarginBandRule],
+    natural_die_rules: &'a [RulesetNaturalDieRule],
+    contribution_selector_id: Option<&'a str>,
+    domain_minimum: i64,
+    domain_maximum: i64,
+    apply_contextual_shifts: bool,
+    roll: u32,
+    base_value: i32,
+    difficulty: i32,
+}
+
+struct ResolvedScalar {
+    contribution_ledger: RpgScalarContributionLedger,
+    total: i32,
+    margin: i32,
+    base_band_id: String,
+    natural_die_resolution: Option<RpgNaturalDieResolution>,
+    band_shift_ledger: RpgOutcomeBandShiftLedger,
+    final_band_id: String,
+}
+
+fn legacy_attack_bands() -> Vec<RulesetOutcomeBand> {
+    vec![
+        RulesetOutcomeBand {
+            id: "miss".to_owned(),
+            label: "Miss".to_owned(),
+        },
+        RulesetOutcomeBand {
+            id: "hit".to_owned(),
+            label: "Hit".to_owned(),
+        },
+    ]
+}
+
+fn legacy_attack_margin_rules() -> Vec<RulesetMarginBandRule> {
+    vec![
+        RulesetMarginBandRule {
+            minimum: None,
+            maximum: Some(-1),
+            band_id: "miss".to_owned(),
+        },
+        RulesetMarginBandRule {
+            minimum: Some(0),
+            maximum: None,
+            band_id: "hit".to_owned(),
+        },
+    ]
+}
+
+fn legacy_save_bands() -> Vec<RulesetOutcomeBand> {
+    vec![
+        RulesetOutcomeBand {
+            id: "failed".to_owned(),
+            label: "Failed".to_owned(),
+        },
+        RulesetOutcomeBand {
+            id: "saved".to_owned(),
+            label: "Saved".to_owned(),
+        },
+    ]
+}
+
+fn legacy_save_margin_rules() -> Vec<RulesetMarginBandRule> {
+    vec![
+        RulesetMarginBandRule {
+            minimum: None,
+            maximum: Some(-1),
+            band_id: "failed".to_owned(),
+        },
+        RulesetMarginBandRule {
+            minimum: Some(0),
+            maximum: None,
+            band_id: "saved".to_owned(),
+        },
+    ]
+}
+
+fn band_index(bands: &[RulesetOutcomeBand], band_id: &str) -> Option<usize> {
+    bands.iter().position(|band| band.id == band_id)
+}
+
+fn shifted_band_index(current: usize, shift: i32, band_count: usize) -> usize {
+    let maximum = i64::try_from(band_count.saturating_sub(1)).unwrap_or(i64::MAX);
+    let shifted = i64::try_from(current)
+        .unwrap_or(i64::MAX)
+        .saturating_add(i64::from(shift))
+        .clamp(0, maximum);
+    usize::try_from(shifted).unwrap_or(band_count.saturating_sub(1))
+}
+
+fn ensure_scalar_domain(
+    value: i32,
+    minimum: i64,
+    maximum: i64,
+    path: &str,
+    execution: &Execution<'_>,
+) -> Result<(), RpgResolutionRejection> {
+    let value = i64::from(value);
+    if value < minimum || value > maximum {
+        return Err(execution.fail(
+            "RPG_RUNTIME_SCALAR_DOMAIN_EXCEEDED",
+            path,
+            format!("scalar value {value} is outside profile domain {minimum}..={maximum}"),
+        ));
+    }
+    Ok(())
+}
+
+#[derive(Debug, Clone)]
+struct PendingOutcomeBandShift {
+    source_definition_id: String,
+    source_instance_id: Option<String>,
+    source_label: String,
+    definition: RpgOutcomeBandShiftDefinition,
+}
+
+impl PendingOutcomeBandShift {
+    fn canonical_key(&self) -> (&str, &str, &str) {
+        (
+            self.source_definition_id.as_str(),
+            self.definition.id.as_str(),
+            self.source_instance_id.as_deref().unwrap_or(""),
+        )
+    }
+
+    fn display_key(&self) -> String {
+        format!(
+            "{}#{}:{}",
+            self.source_definition_id,
+            self.source_instance_id.as_deref().unwrap_or("-"),
+            self.definition.id
+        )
+    }
 }
 
 #[derive(Debug, Clone)]

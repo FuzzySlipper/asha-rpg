@@ -1,3 +1,5 @@
+use std::collections::BTreeMap;
+
 use serde::{Deserialize, Serialize};
 
 pub const RPG_IR_IDENTITY: &str = "asha.rpg.ir";
@@ -159,6 +161,23 @@ pub enum RpgIrCheck {
         difficulty: RpgIrFormula,
         defense_id: String,
     },
+    ScalarTest {
+        profile: rpg_core::RpgOwnedRulesetReference,
+        base: RpgIrFormula,
+        difficulty: RpgIrScalarTestDifficulty,
+    },
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(
+    tag = "kind",
+    rename_all = "camelCase",
+    rename_all_fields = "camelCase",
+    deny_unknown_fields
+)]
+pub enum RpgIrScalarTestDifficulty {
+    Explicit { value: RpgIrFormula },
+    TargetDefense { defense_id: String },
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
@@ -329,6 +348,10 @@ pub enum RpgIrProgram {
         failed: Option<Box<RpgIrProgram>>,
         #[serde(default)]
         no_roll: Option<Box<RpgIrProgram>>,
+    },
+    OnOutcome {
+        branches: BTreeMap<String, Box<RpgIrProgram>>,
+        default: Box<RpgIrProgram>,
     },
     Atomic {
         body: Box<RpgIrProgram>,

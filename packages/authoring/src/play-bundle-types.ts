@@ -99,6 +99,46 @@ export interface RulesetContributionStackingGroupContract {
   readonly policy: RulesetContributionStackingPolicy;
 }
 
+export interface RulesetOutcomeBand {
+  readonly id: string;
+  readonly label: string;
+}
+
+export interface RulesetMarginBandRule {
+  readonly minimum: number | null;
+  readonly maximum: number | null;
+  readonly bandId: string;
+}
+
+export type RulesetNaturalDieEffect =
+  | {
+      readonly kind: "setBand";
+      readonly bandId: string;
+    }
+  | {
+      readonly kind: "shift";
+      readonly amount: number;
+    };
+
+export interface RulesetNaturalDieRule {
+  readonly id: string;
+  readonly minimum: number;
+  readonly maximum: number;
+  readonly effect: RulesetNaturalDieEffect;
+}
+
+export interface RulesetScalarTestProfile {
+  readonly id: string;
+  readonly version: 1;
+  readonly label: string;
+  readonly numericDomainId: string;
+  readonly dieSides: number;
+  readonly contributionSelectorId: string | null;
+  readonly bands: readonly RulesetOutcomeBand[];
+  readonly marginRules: readonly RulesetMarginBandRule[];
+  readonly naturalDieRules: readonly RulesetNaturalDieRule[];
+}
+
 export interface VersionedRpgRequirement {
   readonly id: string;
   readonly version: number;
@@ -111,6 +151,7 @@ export interface RulesetProvisions {
   readonly numericDomains: readonly RulesetNumericDomain[];
   readonly calculationSelectors: readonly RulesetCalculationSelectorContract[];
   readonly contributionStackingGroups: readonly RulesetContributionStackingGroupContract[];
+  readonly scalarTestProfiles: readonly RulesetScalarTestProfile[];
 }
 
 export interface RulesetModels {
@@ -530,13 +571,14 @@ export type ContentItemAttribute =
 export interface ContentItemData {
   readonly schema: {
     readonly identity: "asha.rpg.item";
-    readonly version: 2;
+    readonly version: 3;
   };
   readonly tags: readonly string[];
   readonly traits: readonly string[];
   readonly allowedSlots: readonly string[];
   readonly attributes: readonly ContentItemAttribute[];
   readonly contributions: readonly ContentScalarContribution[];
+  readonly outcomeBandShifts: readonly ContentOutcomeBandShift[];
 }
 
 export interface ContentItemDefinition extends ContentDefinitionBase {
@@ -651,6 +693,17 @@ export interface ContentScalarContribution {
   readonly predicate: ContentContributionPredicate;
 }
 
+export interface ContentOutcomeBandShift {
+  readonly schema: {
+    readonly identity: "asha.rpg.outcome-band-shift";
+    readonly version: 1;
+  };
+  readonly id: string;
+  readonly profile: ContentOwnedRulesetReference;
+  readonly shift: number;
+  readonly predicate: ContentContributionPredicate;
+}
+
 export interface ContentCharacterClassData {
   readonly schema: {
     readonly identity: "asha.rpg.character-class";
@@ -667,9 +720,10 @@ export interface ContentCharacterClassDefinition extends ContentDefinitionBase {
 export interface ContentCharacterFeatureData {
   readonly schema: {
     readonly identity: "asha.rpg.character-feature";
-    readonly version: 2;
+    readonly version: 3;
   };
   readonly contributions: readonly ContentScalarContribution[];
+  readonly outcomeBandShifts: readonly ContentOutcomeBandShift[];
 }
 
 export interface ContentCharacterFeatureDefinition extends ContentDefinitionBase {
@@ -1014,7 +1068,7 @@ export interface MaterializedContentDefinition {
 export interface PreparedPlayBundle {
   readonly schema: {
     readonly identity: "asha.rpg.play-bundle.prepared";
-    readonly major: 3;
+    readonly major: 4;
   };
   readonly playBundleIdentity: PlayBundleIdentity;
   readonly ruleset: Ruleset;

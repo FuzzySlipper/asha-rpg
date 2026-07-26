@@ -11,8 +11,8 @@ Asha RPG is not:
 - a D&D compatibility target, campaign system, or broad character builder;
 - a home for every consumer's named content catalog.
 
-The initial semantic profile does not yet claim contested checks, critical
-outcomes, area selectors, conditions, temporary vitality,
+The initial semantic profile does not yet claim contested checks,
+source-specific critical damage rules, area selectors, conditions, temporary vitality,
 permanent or scheduler-relative durations, persistent-modifier stacking policies,
 or reaction-window authoring. Unknown requirements for those meanings fail
 closed. Portable checkpoint and replay are part of the existing authority
@@ -40,9 +40,10 @@ dice execution, predicate evaluation, state access, effect execution, or a
 mutable gameplay context. Their structural diagnostics are convenience only;
 Rust compilation remains authoritative.
 
-The contextual contribution ledger is a closed scalar contract, not a generic
-modifier or scripting facility. It does not provide arbitrary option bags,
+The contextual contribution ledger and ordered scalar-test profile are closed
+contracts, not a generic modifier or scripting facility. They do not provide
+arbitrary option bags,
 mutable toggles, user-authored predicates, pool/category transformations,
 probability previews, or calculation owners beyond the currently bound attack
-modifier. `F1` through `F6` in the first-wave catalog remain implementation
-non-claims.
+modifier and scalar-test profiles. `F2` through `F6` in the first-wave catalog
+remain implementation non-claims.

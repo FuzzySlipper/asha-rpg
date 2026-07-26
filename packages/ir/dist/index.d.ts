@@ -72,6 +72,21 @@ export type RpgIrCheck = {
     readonly kind: 'savingThrow';
     readonly difficulty: RpgIrFormula;
     readonly defenseId: RpgDefenseId;
+} | {
+    readonly kind: 'scalarTest';
+    readonly profile: {
+        readonly rulesetId: string;
+        readonly id: string;
+    };
+    readonly base: RpgIrFormula;
+    readonly difficulty: RpgIrScalarTestDifficulty;
+};
+export type RpgIrScalarTestDifficulty = {
+    readonly kind: 'explicit';
+    readonly value: RpgIrFormula;
+} | {
+    readonly kind: 'targetDefense';
+    readonly defenseId: RpgDefenseId;
 };
 export type RpgIrFormula = {
     readonly kind: 'constant';
@@ -170,6 +185,10 @@ export type RpgIrProgram = {
     readonly saved?: RpgIrProgram;
     readonly failed?: RpgIrProgram;
     readonly noRoll?: RpgIrProgram;
+} | {
+    readonly kind: 'onOutcome';
+    readonly branches: Readonly<Record<string, RpgIrProgram>>;
+    readonly default: RpgIrProgram;
 } | {
     readonly kind: 'atomic';
     readonly body: RpgIrProgram;

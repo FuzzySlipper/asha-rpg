@@ -246,7 +246,7 @@ export function preparePlayBundle(options: {
   ].sort(compareRelationship);
 
   const prepared: PreparedPlayBundle = immutable({
-    schema: { identity: 'asha.rpg.play-bundle.prepared', major: 3 },
+    schema: { identity: 'asha.rpg.play-bundle.prepared', major: 4 },
     playBundleIdentity: options.bundle.identity,
     ruleset: options.bundle.ruleset,
     contentPacks: [...context.selected.values()]
@@ -396,6 +396,10 @@ function validateRuleset(
     }
   }
   const domainIds = new Set<string>();
+  const numericDomains = new Map<
+    string,
+    { readonly minimum: number; readonly maximum: number }
+  >();
   for (const [index, provision] of ruleset.provides.numericDomains.entries()) {
     if (
       !domainIds.add(provision.id) ||
@@ -409,9 +413,15 @@ function validateRuleset(
           `ruleset numeric domain ${provision.id} must be unique and ordered`,
         ),
       );
+    } else {
+      numericDomains.set(provision.id, {
+        minimum: provision.minimum,
+        maximum: provision.maximum,
+      });
     }
   }
   const selectorIds = new Set<string>();
+  const selectorDomains = new Map<string, string>();
   for (const [index, selector] of ruleset.provides.calculationSelectors.entries()) {
     if (
       !selectorIds.add(selector.id) ||
@@ -428,6 +438,8 @@ function validateRuleset(
           'calculation selectors must be unique portable ids at version 1, labelled, and use a declared numeric domain',
         ),
       );
+    } else {
+      selectorDomains.set(selector.id, selector.numericDomainId);
     }
   }
   const groupIds = new Set<string>();
@@ -447,6 +459,158 @@ function validateRuleset(
           'contribution stacking groups must be unique portable ids at version 1 with a supported policy',
         ),
       );
+    }
+  }
+  const profileIds = new Set<string>();
+  for (const [index, profile] of ruleset.provides.scalarTestProfiles.entries()) {
+    const path = `$.bundle.ruleset.provides.scalarTestProfiles[${index}]`;
+    const bandIds = new Set(profile.bands.map((band) => band.id));
+    const profileHeaderValid =
+      profileIds.add(profile.id) &&
+      validPortableIdentifier(profile.id) &&
+      profile.version === 1 &&
+      profile.label.trim().length > 0 &&
+      declaredDomains.has(profile.numericDomainId) &&
+      Number.isSafeInteger(profile.dieSides) &&
+      profile.dieSides >= 2 &&
+      profile.dieSides <= 100 &&
+      (profile.contributionSelectorId === null ||
+        (selectorIds.has(profile.contributionSelectorId) &&
+          selectorDomains.get(profile.contributionSelectorId) ===
+            profile.numericDomainId)) &&
+      profile.bands.length >= 2 &&
+      profile.bands.length <= 16 &&
+      bandIds.size === profile.bands.length &&
+      profile.bands.every(
+        (band) =>
+          validPortableIdentifier(band.id) && band.label.trim().length > 0,
+      );
+    if (!profileHeaderValid) {
+      diagnostics.push(
+        diagnostic(
+          'source',
+          'RULESET_SCALAR_TEST_PROFILE_INVALID',
+          path,
+          'scalar test profiles require a unique portable version-1 id, domain, one d2..d100 primary die, optional known contribution selector, and 2..=16 unique labelled bands',
+        ),
+      );
+    }
+    const numericDomain = numericDomains.get(profile.numericDomainId);
+    if (numericDomain !== undefined) {
+      const totalMinimum = numericDomain.minimum + 1;
+      const totalMaximum = numericDomain.maximum + profile.dieSides;
+      const marginMinimum = totalMinimum - numericDomain.maximum;
+      const marginMaximum = totalMaximum - numericDomain.minimum;
+      if (
+        numericDomain.minimum < -2_147_483_648 ||
+        numericDomain.maximum > 2_147_483_647 ||
+        !Number.isSafeInteger(totalMinimum) ||
+        !Number.isSafeInteger(totalMaximum) ||
+        !Number.isSafeInteger(marginMinimum) ||
+        !Number.isSafeInteger(marginMaximum) ||
+        totalMinimum < -2_147_483_648 ||
+        totalMaximum > 2_147_483_647 ||
+        marginMinimum < -2_147_483_648 ||
+        marginMaximum > 2_147_483_647
+      ) {
+        diagnostics.push(
+          diagnostic(
+            'source',
+            'RULESET_SCALAR_TEST_DOMAIN_OVERFLOW',
+            `${path}.numericDomainId`,
+            'the profile numeric domain, primary die, total, and margin must remain inside the runtime i32 domain for every declared value',
+          ),
+        );
+      }
+    }
+    if (
+      profile.marginRules.length === 0 ||
+      profile.marginRules.length > 32
+    ) {
+      diagnostics.push(
+        diagnostic(
+          'source',
+          'RULESET_SCALAR_TEST_MARGIN_RULES_INVALID',
+          `${path}.marginRules`,
+          'scalar test profiles require 1..=32 complete ordered margin rules',
+        ),
+      );
+    }
+    let previousMaximum: number | null | undefined;
+    for (const [ruleIndex, rule] of profile.marginRules.entries()) {
+      const validBounds =
+        (rule.minimum === null || Number.isSafeInteger(rule.minimum)) &&
+        (rule.maximum === null || Number.isSafeInteger(rule.maximum)) &&
+        (rule.minimum === null ||
+          rule.maximum === null ||
+          rule.minimum <= rule.maximum);
+      const completeBoundary =
+        ruleIndex === 0
+          ? rule.minimum === null
+          : previousMaximum !== null &&
+            previousMaximum !== undefined &&
+            rule.minimum !== null &&
+            Number.isSafeInteger(previousMaximum + 1) &&
+            previousMaximum + 1 === rule.minimum;
+      if (
+        !validBounds ||
+        !completeBoundary ||
+        !bandIds.has(rule.bandId) ||
+        (ruleIndex + 1 === profile.marginRules.length
+          ? rule.maximum !== null
+          : rule.maximum === null)
+      ) {
+        diagnostics.push(
+          diagnostic(
+            'source',
+            'RULESET_SCALAR_TEST_MARGIN_RULE_INVALID',
+            `${path}.marginRules[${ruleIndex}]`,
+            'margin rules must be gap-free, non-overlapping, ordered, cover both unbounded ends, and reference known bands',
+          ),
+        );
+      }
+      previousMaximum = rule.maximum;
+    }
+    if (profile.naturalDieRules.length > 8) {
+      diagnostics.push(
+        diagnostic(
+          'source',
+          'RULESET_SCALAR_TEST_NATURAL_RULES_INVALID',
+          `${path}.naturalDieRules`,
+          'scalar test profiles support at most 8 disjoint natural-die rules',
+        ),
+      );
+    }
+    let previousNaturalMaximum = 0;
+    const naturalRuleIds = new Set<string>();
+    for (const [ruleIndex, rule] of profile.naturalDieRules.entries()) {
+      const effectValid =
+        rule.effect.kind === 'setBand'
+          ? bandIds.has(rule.effect.bandId)
+          : Number.isSafeInteger(rule.effect.amount) &&
+            rule.effect.amount !== 0 &&
+            Math.abs(rule.effect.amount) < profile.bands.length;
+      if (
+        !naturalRuleIds.add(rule.id) ||
+        !validPortableIdentifier(rule.id) ||
+        !Number.isSafeInteger(rule.minimum) ||
+        !Number.isSafeInteger(rule.maximum) ||
+        rule.minimum < 1 ||
+        rule.maximum > profile.dieSides ||
+        rule.minimum > rule.maximum ||
+        rule.minimum <= previousNaturalMaximum ||
+        !effectValid
+      ) {
+        diagnostics.push(
+          diagnostic(
+            'source',
+            'RULESET_SCALAR_TEST_NATURAL_RULE_INVALID',
+            `${path}.naturalDieRules[${ruleIndex}]`,
+            'natural-die rules must have unique portable ids, ordered disjoint ranges within the primary die, and a known set-band or bounded nonzero shift',
+          ),
+        );
+      }
+      previousNaturalMaximum = rule.maximum;
     }
   }
 }
@@ -2231,6 +2395,7 @@ function materializedItemData(
   return {
     ...item,
     contributions: materializedScalarContributions(item.contributions),
+    outcomeBandShifts: materializedOutcomeBandShifts(item.outcomeBandShifts),
   };
 }
 
@@ -2240,7 +2405,19 @@ function materializedCharacterFeatureData(
   return {
     ...feature,
     contributions: materializedScalarContributions(feature.contributions),
+    outcomeBandShifts: materializedOutcomeBandShifts(
+      feature.outcomeBandShifts,
+    ),
   };
+}
+
+function materializedOutcomeBandShifts(
+  shifts: readonly import('./play-bundle-types.js').ContentOutcomeBandShift[],
+): readonly unknown[] {
+  return shifts.map((shift) => ({
+    ...shift,
+    predicate: materializedContributionPredicate(shift.predicate),
+  }));
 }
 
 function materializedScalarContributions(
@@ -2446,10 +2623,22 @@ function authoredContributionDefinitionReferences(
       : definition.kind === 'characterFeature'
         ? definition.characterFeature.contributions
         : [];
+  const shifts =
+    definition.kind === 'item'
+      ? definition.item.outcomeBandShifts
+      : definition.kind === 'characterFeature'
+        ? definition.characterFeature.outcomeBandShifts
+        : [];
   const references: ContentDefinitionReference[] = [];
   for (const contribution of contributions) {
     collectContributionPredicateDefinitionReferences(
       contribution.predicate,
+      references,
+    );
+  }
+  for (const shift of shifts) {
+    collectContributionPredicateDefinitionReferences(
+      shift.predicate,
       references,
     );
   }
@@ -3738,28 +3927,28 @@ function validateItemDefinitions(
     const path = `$.packages[${record.package.key}].definitions.${record.definition.id}.item`;
     if (
       item.schema.identity !== 'asha.rpg.item' ||
-      item.schema.version !== 2
+      item.schema.version !== 3
     ) {
       diagnostics.push(
         diagnostic(
           'compatibility',
           'ITEM_SCHEMA_UNSUPPORTED',
           `${path}.schema`,
-          'items require asha.rpg.item@2',
+          'items require asha.rpg.item@3',
           profileDiagnosticContext(record),
         ),
       );
     }
     if (
       Object.keys(item).sort().join(',') !==
-      'allowedSlots,attributes,contributions,schema,tags,traits'
+      'allowedSlots,attributes,contributions,outcomeBandShifts,schema,tags,traits'
     ) {
       diagnostics.push(
         diagnostic(
           'source',
           'ITEM_EXECUTABLE_OR_UNKNOWN_FIELD_FORBIDDEN',
           path,
-          'items may contain only schema, tags, traits, allowedSlots, typed attributes, and scalar contributions',
+          'items may contain only schema, tags, traits, allowedSlots, typed attributes, scalar contributions, and outcome-band shifts',
           profileDiagnosticContext(record),
         ),
       );
@@ -3803,6 +3992,21 @@ function validateItemDefinitions(
       record,
       item.contributions,
       `${path}.contributions`,
+      resolvedReferences,
+      recordsByGlobalId,
+      diagnostics,
+    );
+    validateOutcomeBandShifts(
+      item.outcomeBandShifts,
+      `${path}.outcomeBandShifts`,
+      record,
+      ruleset,
+      diagnostics,
+    );
+    validateContributionDefinitionTargets(
+      record,
+      item.outcomeBandShifts,
+      `${path}.outcomeBandShifts`,
       resolvedReferences,
       recordsByGlobalId,
       diagnostics,
@@ -3938,31 +4142,120 @@ function normalizeMaterializedActions(
     return undefined;
   }
   for (const [index, action] of result.artifact.actions.entries()) {
-    if (
-      action.check.kind !== 'attack' ||
-      action.check.contributionSelector === undefined
-    ) {
+    if (action.check.kind === 'attack') {
+      const selector = action.check.contributionSelector;
+      if (
+        selector !== undefined &&
+        (selector.rulesetId !== bundle.ruleset.identity.id ||
+          !bundle.ruleset.provides.calculationSelectors.some(
+            (candidate) => candidate.id === selector.id,
+          ))
+      ) {
+        diagnostics.push(
+          diagnostic(
+            'compatibility',
+            'ACTION_CONTRIBUTION_SELECTOR_INVALID',
+            `$.actions[${index}].check.contributionSelector`,
+            'action contribution selector must resolve in the selected Ruleset',
+          ),
+        );
+      }
       continue;
     }
-    const selector = action.check.contributionSelector;
-    if (
-      selector.rulesetId !== bundle.ruleset.identity.id ||
-      !bundle.ruleset.provides.calculationSelectors.some(
-        (candidate) => candidate.id === selector.id,
-      )
-    ) {
-      diagnostics.push(
-        diagnostic(
-          'compatibility',
-          'ACTION_CONTRIBUTION_SELECTOR_INVALID',
-          `$.actions[${index}].check.contributionSelector`,
-          'action contribution selector must resolve in the selected Ruleset',
-        ),
-      );
+    if (action.check.kind === 'scalarTest') {
+      const scalarCheck = action.check;
+      const profile =
+        scalarCheck.profile.rulesetId === bundle.ruleset.identity.id
+          ? bundle.ruleset.provides.scalarTestProfiles.find(
+              (candidate) => candidate.id === scalarCheck.profile.id,
+            )
+          : undefined;
+      if (profile === undefined) {
+        diagnostics.push(
+          diagnostic(
+            'compatibility',
+            'ACTION_SCALAR_TEST_PROFILE_INVALID',
+            `$.actions[${index}].check.profile`,
+            'scalar tests must reference a profile owned by the selected Ruleset',
+          ),
+        );
+        continue;
+      }
+      const outcomePrograms = collectOutcomePrograms(action.program);
+      if (outcomePrograms.length !== 1) {
+        diagnostics.push(
+          diagnostic(
+            'source',
+            'ACTION_SCALAR_OUTCOME_PROGRAM_INVALID',
+            `$.actions[${index}].program`,
+            'a scalar test action requires exactly one onOutcome program',
+          ),
+        );
+        continue;
+      }
+      const [outcome] = outcomePrograms;
+      const bandIds = new Set(profile.bands.map((band) => band.id));
+      const branchIds = Object.keys(outcome?.branches ?? {});
+      if (
+        branchIds.length >= bandIds.size ||
+        branchIds.some((id) => !bandIds.has(id))
+      ) {
+        diagnostics.push(
+          diagnostic(
+            'source',
+            'ACTION_SCALAR_OUTCOME_BRANCHES_INVALID',
+            `$.actions[${index}].program`,
+            'onOutcome branches must be unique known profile bands and leave at least one band for the required default',
+          ),
+        );
+      }
     }
   }
   if (diagnostics.length > 0) return undefined;
   return result.artifact;
+}
+
+function collectOutcomePrograms(
+  program: import('@asha-rpg/ir').RpgIrProgram,
+): readonly Extract<
+  import('@asha-rpg/ir').RpgIrProgram,
+  { readonly kind: 'onOutcome' }
+>[] {
+  if (program.kind === 'onOutcome') return [program];
+  if (program.kind === 'sequence') {
+    return program.steps.flatMap(collectOutcomePrograms);
+  }
+  if (program.kind === 'when') {
+    return [
+      ...collectOutcomePrograms(program.then),
+      ...(program.otherwise === undefined
+        ? []
+        : collectOutcomePrograms(program.otherwise)),
+    ];
+  }
+  if (
+    program.kind === 'repeat' ||
+    program.kind === 'forEachTarget' ||
+    program.kind === 'atomic'
+  ) {
+    return collectOutcomePrograms(program.body);
+  }
+  if (program.kind === 'onCheck') {
+    return [
+      ...(program.hit === undefined ? [] : collectOutcomePrograms(program.hit)),
+      ...(program.miss === undefined ? [] : collectOutcomePrograms(program.miss)),
+      ...(program.saved === undefined
+        ? []
+        : collectOutcomePrograms(program.saved)),
+      ...(program.failed === undefined
+        ? []
+        : collectOutcomePrograms(program.failed)),
+      ...(program.noRoll === undefined
+        ? []
+        : collectOutcomePrograms(program.noRoll)),
+    ];
+  }
+  return [];
 }
 
 function validateRulesetValueOwners(
@@ -4149,25 +4442,26 @@ function validateCharacterDefinitions(
     }
     if (
       data.schema.identity !== 'asha.rpg.character-feature' ||
-      data.schema.version !== 2
+      data.schema.version !== 3
     ) {
       diagnostics.push(diagnostic(
         'compatibility',
         'CHARACTER_FEATURE_SCHEMA_UNSUPPORTED',
         `${path}.schema`,
-        'character features require asha.rpg.character-feature@2',
+        'character features require asha.rpg.character-feature@3',
         { definitionId: record.definition.id, source: record.definition.source },
       ));
     }
     if (
-      data.contributions.length === 0 ||
-      data.contributions.length > 32
+      data.contributions.length > 32 ||
+      data.outcomeBandShifts.length > 32 ||
+      data.contributions.length + data.outcomeBandShifts.length === 0
     ) {
       diagnostics.push(diagnostic(
         'source',
         'CHARACTER_FEATURE_CONTRIBUTIONS_INVALID',
-        `${path}.contributions`,
-        'character features require 1..=32 scalar contributions',
+        path,
+        'character features require at least one and at most 32 entries in each typed contribution family',
         { definitionId: record.definition.id, source: record.definition.source },
       ));
     }
@@ -4184,6 +4478,84 @@ function validateCharacterDefinitions(
       `${path}.contributions`,
       resolvedReferences,
       recordsByGlobalId,
+      diagnostics,
+    );
+    validateOutcomeBandShifts(
+      data.outcomeBandShifts,
+      `${path}.outcomeBandShifts`,
+      record,
+      ruleset,
+      diagnostics,
+    );
+    validateContributionDefinitionTargets(
+      record,
+      data.outcomeBandShifts,
+      `${path}.outcomeBandShifts`,
+      resolvedReferences,
+      recordsByGlobalId,
+      diagnostics,
+    );
+  }
+}
+
+function validateOutcomeBandShifts(
+  shifts: readonly import('./play-bundle-types.js').ContentOutcomeBandShift[],
+  path: string,
+  record: DefinitionRecord,
+  ruleset: Ruleset,
+  diagnostics: PlayBundleCompilerDiagnostic[],
+): void {
+  let previousId: string | undefined;
+  for (const [index, shift] of shifts.entries()) {
+    const shiftPath = `${path}[${index}]`;
+    const profile =
+      shift.profile.rulesetId === ruleset.identity.id
+        ? ruleset.provides.scalarTestProfiles.find(
+            (candidate) => candidate.id === shift.profile.id,
+          )
+        : undefined;
+    const maximumShift =
+      profile === undefined ? 15 : Math.min(15, profile.bands.length - 1);
+    if (
+      shift.schema.identity !== 'asha.rpg.outcome-band-shift' ||
+      shift.schema.version !== 1
+    ) {
+      diagnostics.push(
+        diagnostic(
+          'compatibility',
+          'OUTCOME_BAND_SHIFT_SCHEMA_UNSUPPORTED',
+          `${shiftPath}.schema`,
+          'outcome-band shifts require asha.rpg.outcome-band-shift@1',
+          profileDiagnosticContext(record),
+        ),
+      );
+    }
+    if (
+      !validPortableIdentifier(shift.id) ||
+      (previousId !== undefined && previousId >= shift.id) ||
+      profile === undefined ||
+      !Number.isSafeInteger(shift.shift) ||
+      shift.shift === 0 ||
+      Math.abs(shift.shift) > maximumShift
+    ) {
+      diagnostics.push(
+        diagnostic(
+          'source',
+          'OUTCOME_BAND_SHIFT_INVALID',
+          shiftPath,
+          `outcome-band shifts require canonical ids, an owner-local known profile, and a nonzero shift within -${maximumShift}..=${maximumShift}`,
+          profileDiagnosticContext(record),
+        ),
+      );
+    }
+    previousId = shift.id;
+    validateContributionPredicate(
+      shift.predicate,
+      1,
+      { value: 0 },
+      `${shiftPath}.predicate`,
+      record,
+      ruleset,
       diagnostics,
     );
   }
@@ -4277,7 +4649,9 @@ function validateScalarContributions(
 
 function validateContributionDefinitionTargets(
   record: DefinitionRecord,
-  contributions: readonly import('./play-bundle-types.js').ContentScalarContribution[],
+  contributions: readonly {
+    readonly predicate: import('./play-bundle-types.js').ContentContributionPredicate;
+  }[],
   path: string,
   resolvedReferences: ReadonlyMap<string, readonly string[]>,
   recordsByGlobalId: ReadonlyMap<string, DefinitionRecord>,

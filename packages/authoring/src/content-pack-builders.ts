@@ -36,6 +36,7 @@ import type {
   ContentPackSource,
   ContentPolicyBinding,
   ContentReservedRelationship,
+  ContentOutcomeBandShift,
   ContentScalarContribution,
   ContentSupportDefinition,
   ContentTemplateDefinition,
@@ -226,8 +227,12 @@ export function defineItemDefinition(
     OrdinaryDefinitionInput<ContentItemDefinition>,
     'item'
   > & {
-    readonly item: Omit<ContentItemData, 'schema' | 'contributions'> & {
+    readonly item: Omit<
+      ContentItemData,
+      'schema' | 'contributions' | 'outcomeBandShifts'
+    > & {
       readonly contributions?: readonly Omit<ContentScalarContribution, 'schema'>[];
+      readonly outcomeBandShifts?: readonly Omit<ContentOutcomeBandShift, 'schema'>[];
     };
   },
 ): ContentItemDefinition {
@@ -238,7 +243,7 @@ export function defineItemDefinition(
       ...input.item,
       schema: {
         identity: 'asha.rpg.item' as const,
-        version: 2 as const,
+        version: 3 as const,
       },
       tags: [...input.item.tags].sort(),
       traits: [...input.item.traits].sort(),
@@ -247,6 +252,9 @@ export function defineItemDefinition(
         left.id.localeCompare(right.id),
       ),
       contributions: normalizeScalarContributions(input.item.contributions ?? []),
+      outcomeBandShifts: normalizeOutcomeBandShifts(
+        input.item.outcomeBandShifts ?? [],
+      ),
     },
   });
 }
@@ -257,7 +265,8 @@ export function defineCharacterFeatureDefinition(
     'characterFeature'
   > & {
     readonly characterFeature: {
-      readonly contributions: readonly Omit<ContentScalarContribution, 'schema'>[];
+      readonly contributions?: readonly Omit<ContentScalarContribution, 'schema'>[];
+      readonly outcomeBandShifts?: readonly Omit<ContentOutcomeBandShift, 'schema'>[];
     };
   },
 ): ContentCharacterFeatureDefinition {
@@ -267,13 +276,30 @@ export function defineCharacterFeatureDefinition(
     characterFeature: {
       schema: {
         identity: 'asha.rpg.character-feature' as const,
-        version: 2 as const,
+        version: 3 as const,
       },
       contributions: normalizeScalarContributions(
-        input.characterFeature.contributions,
+        input.characterFeature.contributions ?? [],
+      ),
+      outcomeBandShifts: normalizeOutcomeBandShifts(
+        input.characterFeature.outcomeBandShifts ?? [],
       ),
     },
   });
+}
+
+function normalizeOutcomeBandShifts(
+  shifts: readonly Omit<ContentOutcomeBandShift, 'schema'>[],
+): readonly ContentOutcomeBandShift[] {
+  return shifts
+    .map((shift) => ({
+      ...shift,
+      schema: {
+        identity: 'asha.rpg.outcome-band-shift' as const,
+        version: 1 as const,
+      },
+    }))
+    .sort((left, right) => left.id.localeCompare(right.id));
 }
 
 function normalizeScalarContributions(

@@ -101,6 +101,28 @@ export function savingThrow(options) {
         defenseId: authoredValueId(options.defense),
     }, 'defenseId', options.defense);
 }
+export function scalarTest(options) {
+    if (options.difficulty.kind === 'explicit') {
+        return frozen({
+            kind: 'scalarTest',
+            profile: options.profile,
+            base: options.base,
+            difficulty: {
+                kind: 'explicit',
+                value: options.difficulty.value,
+            },
+        });
+    }
+    return frozenWithCatalogOwnership({
+        kind: 'scalarTest',
+        profile: options.profile,
+        base: options.base,
+        difficulty: {
+            kind: 'targetDefense',
+            defenseId: authoredValueId(options.difficulty.defense),
+        },
+    }, 'difficulty.defenseId', options.difficulty.defense);
+}
 export function spend(resource, amount) {
     return frozenWithCatalogOwnership({ resourceId: catalogDefinitionId(resource), amount }, 'resourceId', resource);
 }
@@ -184,6 +206,15 @@ export function forEachTarget(maximum, body) {
 }
 export function onCheck(branches) {
     return frozen({ kind: 'onCheck', ...branches });
+}
+export function onOutcome(branches) {
+    return frozen({
+        kind: 'onOutcome',
+        branches: frozen(Object.fromEntries(Object.entries(branches.branches)
+            .sort(([left], [right]) => left.localeCompare(right))
+            .map(([id, branch]) => [id, branch]))),
+        default: branches.default,
+    });
 }
 export function action(input) {
     const rollScope = input.check.kind === 'noRoll' ? (input.rollScope ?? 'none') : input.rollScope;

@@ -51,6 +51,11 @@ export type AuthoringProgram =
       readonly saved?: AuthoringProgram;
       readonly failed?: AuthoringProgram;
       readonly noRoll?: AuthoringProgram;
+    }
+  | {
+      readonly kind: 'onOutcome';
+      readonly branches: Readonly<Record<string, AuthoringProgram>>;
+      readonly default: AuthoringProgram;
     };
 
 export interface AuthoredAction {
@@ -123,6 +128,11 @@ export type ActionInput = ActionInputBase &
 
 export type CheckBranchInput = Omit<
   Extract<AuthoringProgram, { readonly kind: 'onCheck' }>,
+  'kind'
+>;
+
+export type OutcomeBranchInput = Omit<
+  Extract<AuthoringProgram, { readonly kind: 'onOutcome' }>,
   'kind'
 >;
 

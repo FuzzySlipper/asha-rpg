@@ -21,6 +21,7 @@ import type {
   AuthoringStacking,
   AuthoringTiming,
   CheckBranchInput,
+  OutcomeBranchInput,
 } from './types.js';
 import {
   catalogDefinitionId,
@@ -33,6 +34,7 @@ import {
 } from './ruleset-builders.js';
 import type {
   RulesetCalculationSelectorReference,
+  RulesetScalarTestProfileReference,
   RulesetValueReference,
 } from './ruleset-builders.js';
 
@@ -204,6 +206,45 @@ export function savingThrow(options: {
     },
     'defenseId',
     options.defense,
+  );
+}
+
+export function scalarTest(options: {
+  readonly profile: RulesetScalarTestProfileReference<string, string>;
+  readonly base: RpgIrFormula;
+  readonly difficulty:
+    | {
+        readonly kind: 'explicit';
+        readonly value: RpgIrFormula;
+      }
+    | {
+        readonly kind: 'targetDefense';
+        readonly defense: AuthoredDefenseReference;
+      };
+}): Extract<import('@asha-rpg/ir').RpgIrCheck, { kind: 'scalarTest' }> {
+  if (options.difficulty.kind === 'explicit') {
+    return frozen({
+      kind: 'scalarTest',
+      profile: options.profile,
+      base: options.base,
+      difficulty: {
+        kind: 'explicit',
+        value: options.difficulty.value,
+      },
+    });
+  }
+  return frozenWithCatalogOwnership(
+    {
+      kind: 'scalarTest' as const,
+      profile: options.profile,
+      base: options.base,
+      difficulty: {
+        kind: 'targetDefense' as const,
+        defenseId: authoredValueId(options.difficulty.defense),
+      },
+    },
+    'difficulty.defenseId',
+    options.difficulty.defense,
   );
 }
 
@@ -384,6 +425,20 @@ export function forEachTarget(maximum: number, body: AuthoringProgram): Authorin
 
 export function onCheck(branches: CheckBranchInput): AuthoringProgram {
   return frozen({ kind: 'onCheck', ...branches });
+}
+
+export function onOutcome(branches: OutcomeBranchInput): AuthoringProgram {
+  return frozen({
+    kind: 'onOutcome',
+    branches: frozen(
+      Object.fromEntries(
+        Object.entries(branches.branches)
+          .sort(([left], [right]) => left.localeCompare(right))
+          .map(([id, branch]) => [id, branch]),
+      ),
+    ),
+    default: branches.default,
+  });
 }
 
 export function action(input: ActionInput): AuthoredAction {

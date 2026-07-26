@@ -783,6 +783,7 @@ impl DeterministicRandomStream {
 pub enum RpgRandomRequestKind {
     AttackCheck,
     SavingThrowCheck,
+    ScalarTest,
     FormulaDice,
 }
 
@@ -1015,6 +1016,70 @@ pub struct RpgScalarContributionLedger {
     pub final_value: i32,
 }
 
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase", deny_unknown_fields)]
+pub struct RpgOutcomeBandShiftSchema {
+    pub identity: String,
+    pub version: u32,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase", deny_unknown_fields)]
+pub struct RpgOutcomeBandShiftDefinition {
+    pub schema: RpgOutcomeBandShiftSchema,
+    pub id: String,
+    pub profile: RpgOwnedRulesetReference,
+    pub shift: i32,
+    pub predicate: RpgContributionPredicate,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(tag = "status", rename_all = "camelCase", deny_unknown_fields)]
+pub enum RpgOutcomeBandShiftDisposition {
+    Applied,
+    Inapplicable { reason: String },
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase", deny_unknown_fields)]
+pub struct RpgOutcomeBandShiftDecision {
+    pub source_definition_id: String,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub source_instance_id: Option<String>,
+    pub source_label: String,
+    pub shift_id: String,
+    pub profile_id: String,
+    pub declared_shift: i32,
+    pub applied_shift: i32,
+    pub disposition: RpgOutcomeBandShiftDisposition,
+    pub resulting_band_id: String,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase", deny_unknown_fields)]
+pub struct RpgOutcomeBandShiftLedger {
+    pub profile_id: String,
+    pub starting_band_id: String,
+    pub candidates: Vec<RpgOutcomeBandShiftDecision>,
+    pub total_shift: i32,
+    pub final_band_id: String,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(tag = "kind", rename_all = "camelCase", deny_unknown_fields)]
+pub enum RpgNaturalDieEffect {
+    SetBand { band_id: String },
+    Shift { amount: i32 },
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase", deny_unknown_fields)]
+pub struct RpgNaturalDieResolution {
+    pub rule_id: String,
+    pub effect: RpgNaturalDieEffect,
+    pub resulting_band_id: String,
+}
+
 /// Rust-owned facts supplied by the encounter authority for contextual
 /// contribution evaluation. The compiler/runtime remains usable without an
 /// encounter host by passing the empty default context.
@@ -1052,6 +1117,27 @@ pub enum RpgDomainEvent {
         total: i32,
         difficulty: i32,
         saved: bool,
+    },
+    ScalarTestResolved {
+        actor_id: String,
+        target_id: String,
+        profile_id: String,
+        roll: u32,
+        base_value: i32,
+        contribution_ledger: RpgScalarContributionLedger,
+        difficulty: i32,
+        total: i32,
+        margin: i32,
+        base_band_id: String,
+        natural_die_resolution: Option<RpgNaturalDieResolution>,
+        band_shift_ledger: Box<RpgOutcomeBandShiftLedger>,
+        final_band_id: String,
+    },
+    ScalarOutcomeBranchSelected {
+        target_id: String,
+        profile_id: String,
+        final_band_id: String,
+        selected_branch_id: String,
     },
     DamageApplied {
         source_id: String,

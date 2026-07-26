@@ -105,6 +105,14 @@ function normalizeProgram(program) {
         case 'onCheck': {
             return copyCheckBranches(program);
         }
+        case 'onOutcome':
+            return {
+                kind: 'onOutcome',
+                branches: Object.fromEntries(Object.entries(program.branches)
+                    .sort(([left], [right]) => left.localeCompare(right))
+                    .map(([id, branch]) => [id, normalizeProgram(branch)])),
+                default: normalizeProgram(program.default),
+            };
     }
 }
 function copyCheckBranches(source) {
@@ -197,6 +205,8 @@ function countOperations(program, kind) {
                 program.failed,
                 program.noRoll,
             ].reduce((count, branch) => count + (branch === undefined ? 0 : countOperations(branch, kind)), 0);
+        case 'onOutcome':
+            return (Object.values(program.branches).reduce((count, branch) => count + countOperations(branch, kind), 0) + countOperations(program.default, kind));
     }
 }
 function validateProgram(program, path, depth, checkKind, diagnostics, sourcePath) {
@@ -250,7 +260,8 @@ function validateProgram(program, path, depth, checkKind, diagnostics, sourcePat
                 (checkKind === 'savingThrow' &&
                     (program.hit !== undefined ||
                         program.miss !== undefined ||
-                        program.noRoll !== undefined));
+                        program.noRoll !== undefined)) ||
+                checkKind === 'scalarTest';
             if (hasIncompatibleBranch) {
                 diagnostics.push(diagnostic('normalization.checkBranchIncompatible', path, 'check branch contains an outcome unavailable to the selected check', sourcePath));
             }
@@ -263,6 +274,18 @@ function validateProgram(program, path, depth, checkKind, diagnostics, sourcePat
                     validateProgram(branch, `${path}.branches[${index}]`, depth + 1, checkKind, diagnostics, sourcePath);
                 }
             }
+            return;
+        }
+        case 'onOutcome': {
+            if (checkKind !== 'scalarTest') {
+                diagnostics.push(diagnostic('normalization.outcomeBranchIncompatible', path, 'onOutcome is available only to scalar tests', sourcePath));
+            }
+            for (const [id, branch] of Object.entries(program.branches)) {
+                requireText(id, `${path}.branches.${id}`, 'outcome band id', diagnostics, sourcePath);
+                validateProgram(branch, `${path}.branches.${id}`, depth + 1, checkKind, diagnostics, sourcePath);
+            }
+            validateProgram(program.default, `${path}.default`, depth + 1, checkKind, diagnostics, sourcePath);
+            return;
         }
     }
 }

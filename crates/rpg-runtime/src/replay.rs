@@ -2360,6 +2360,7 @@ mod tests {
                     }],
                     calculation_selectors: Vec::new(),
                     contribution_stacking_groups: Vec::new(),
+                    scalar_test_profiles: Vec::new(),
                 },
             },
             content_packs: vec![ResolvedContentPack {

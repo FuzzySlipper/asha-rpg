@@ -1,13 +1,16 @@
 use std::collections::BTreeMap;
 
 pub use rpg_core::RpgRulesetValueKind as RulesetValueKind;
-use rpg_core::{RpgContributionStackingPolicy, RpgScalarContributionDefinition};
+use rpg_core::{
+    RpgContributionStackingPolicy, RpgNaturalDieEffect, RpgOutcomeBandShiftDefinition,
+    RpgScalarContributionDefinition,
+};
 use serde::{Deserialize, Serialize};
 use serde_json::Value;
 
 pub const PREPARED_PLAY_BUNDLE_IDENTITY: &str = "asha.rpg.play-bundle.prepared";
 pub const COMPILED_PLAY_BUNDLE_IDENTITY: &str = "asha.rpg.play-bundle.compiled";
-pub const PLAY_BUNDLE_ARTIFACT_MAJOR: u32 = 3;
+pub const PLAY_BUNDLE_ARTIFACT_MAJOR: u32 = 4;
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase", deny_unknown_fields)]
@@ -113,6 +116,44 @@ pub struct RulesetContributionStackingGroupContract {
     pub policy: RpgContributionStackingPolicy,
 }
 
+#[derive(Debug, Clone, PartialEq, Eq, PartialOrd, Ord, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase", deny_unknown_fields)]
+pub struct RulesetOutcomeBand {
+    pub id: String,
+    pub label: String,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, PartialOrd, Ord, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase", deny_unknown_fields)]
+pub struct RulesetMarginBandRule {
+    pub minimum: Option<i64>,
+    pub maximum: Option<i64>,
+    pub band_id: String,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase", deny_unknown_fields)]
+pub struct RulesetNaturalDieRule {
+    pub id: String,
+    pub minimum: u32,
+    pub maximum: u32,
+    pub effect: RpgNaturalDieEffect,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase", deny_unknown_fields)]
+pub struct RulesetScalarTestProfile {
+    pub id: String,
+    pub version: u32,
+    pub label: String,
+    pub numeric_domain_id: String,
+    pub die_sides: u32,
+    pub contribution_selector_id: Option<String>,
+    pub bands: Vec<RulesetOutcomeBand>,
+    pub margin_rules: Vec<RulesetMarginBandRule>,
+    pub natural_die_rules: Vec<RulesetNaturalDieRule>,
+}
+
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase", deny_unknown_fields)]
 pub struct RulesetProvisions {
@@ -124,6 +165,8 @@ pub struct RulesetProvisions {
     pub calculation_selectors: Vec<RulesetCalculationSelectorContract>,
     #[serde(default)]
     pub contribution_stacking_groups: Vec<RulesetContributionStackingGroupContract>,
+    #[serde(default)]
+    pub scalar_test_profiles: Vec<RulesetScalarTestProfile>,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
@@ -231,9 +274,9 @@ pub const CHARACTER_CLASS_IDENTITY: &str = "asha.rpg.character-class";
 pub const CHARACTER_FEATURE_IDENTITY: &str = "asha.rpg.character-feature";
 pub const ACTION_DEFINITION_VERSION: u32 = 1;
 pub const ACTION_PROCEDURE_VERSION: u32 = 1;
-pub const ITEM_VERSION: u32 = 2;
+pub const ITEM_VERSION: u32 = 3;
 pub const CHARACTER_CLASS_VERSION: u32 = 1;
-pub const CHARACTER_FEATURE_VERSION: u32 = 2;
+pub const CHARACTER_FEATURE_VERSION: u32 = 3;
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase", deny_unknown_fields)]
@@ -469,6 +512,8 @@ pub struct MaterializedItemSemantic {
     pub attributes: Vec<ItemAttribute>,
     #[serde(default)]
     pub contributions: Vec<RpgScalarContributionDefinition>,
+    #[serde(default)]
+    pub outcome_band_shifts: Vec<RpgOutcomeBandShiftDefinition>,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
@@ -482,6 +527,7 @@ pub struct CompiledItemDefinition {
     pub allowed_slots: Vec<String>,
     pub attributes: Vec<ItemAttribute>,
     pub contributions: Vec<RpgScalarContributionDefinition>,
+    pub outcome_band_shifts: Vec<RpgOutcomeBandShiftDefinition>,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
@@ -510,6 +556,8 @@ pub struct CharacterFeatureSchema {
 pub struct MaterializedCharacterFeatureData {
     pub schema: CharacterFeatureSchema,
     pub contributions: Vec<RpgScalarContributionDefinition>,
+    #[serde(default)]
+    pub outcome_band_shifts: Vec<RpgOutcomeBandShiftDefinition>,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
@@ -528,6 +576,7 @@ pub struct CompiledCharacterFeature {
     pub label: String,
     pub description: Option<String>,
     pub contributions: Vec<RpgScalarContributionDefinition>,
+    pub outcome_band_shifts: Vec<RpgOutcomeBandShiftDefinition>,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]

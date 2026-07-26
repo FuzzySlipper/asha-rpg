@@ -1,8 +1,8 @@
 use std::collections::{BTreeMap, BTreeSet};
 
 use rpg_core::{
-    RpgContributionPredicate, RpgContributionValueExpression, RpgRulesetValueKind,
-    RpgScalarContributionDefinition,
+    RpgContributionPredicate, RpgContributionValueExpression, RpgNaturalDieEffect,
+    RpgOutcomeBandShiftDefinition, RpgRulesetValueKind, RpgScalarContributionDefinition,
 };
 use rpg_ir::{
     ActionProcedureImplementation, ActionProcedureParameter, CompiledCharacterClass,
@@ -19,18 +19,19 @@ use rpg_ir::{
     NormalizedRpgIr, ParticipantProfileInitialCapability, PlayBundleArtifactSchema,
     PlayBundleFingerprints, PreparedPlayBundle, RpgIrAction, RpgIrActionBody, RpgIrCatalogs,
     RpgIrCheck, RpgIrFormula, RpgIrOperation, RpgIrPackage, RpgIrPredicate, RpgIrProgram,
-    RpgIrRequirement, RpgIrRequirementKind, RpgIrResourceCost, RpgIrSchema, RpgIrTargetSelector,
-    Ruleset, RulesetValueExpression, RulesetValueKind, RulesetValueSource, VersionedRpgRequirement,
-    ACTION_DEFINITION_IDENTITY, ACTION_DEFINITION_VERSION, ACTION_PROCEDURE_IDENTITY,
-    ACTION_PROCEDURE_VERSION, CHARACTER_CLASS_IDENTITY, CHARACTER_CLASS_VERSION,
-    CHARACTER_FEATURE_IDENTITY, CHARACTER_FEATURE_VERSION, COMPILED_PLAY_BUNDLE_IDENTITY,
-    ITEM_IDENTITY, ITEM_VERSION, PARTICIPANT_PROFILE_IDENTITY, PARTICIPANT_PROFILE_VERSION,
-    PLAY_BUNDLE_ARTIFACT_MAJOR, PREPARED_PLAY_BUNDLE_IDENTITY, RPG_IR_IDENTITY, RPG_IR_MAJOR,
+    RpgIrRequirement, RpgIrRequirementKind, RpgIrResourceCost, RpgIrScalarTestDifficulty,
+    RpgIrSchema, RpgIrTargetSelector, Ruleset, RulesetValueExpression, RulesetValueKind,
+    RulesetValueSource, VersionedRpgRequirement, ACTION_DEFINITION_IDENTITY,
+    ACTION_DEFINITION_VERSION, ACTION_PROCEDURE_IDENTITY, ACTION_PROCEDURE_VERSION,
+    CHARACTER_CLASS_IDENTITY, CHARACTER_CLASS_VERSION, CHARACTER_FEATURE_IDENTITY,
+    CHARACTER_FEATURE_VERSION, COMPILED_PLAY_BUNDLE_IDENTITY, ITEM_IDENTITY, ITEM_VERSION,
+    PARTICIPANT_PROFILE_IDENTITY, PARTICIPANT_PROFILE_VERSION, PLAY_BUNDLE_ARTIFACT_MAJOR,
+    PREPARED_PLAY_BUNDLE_IDENTITY, RPG_IR_IDENTITY, RPG_IR_MAJOR,
 };
 use serde::{Deserialize, Serialize};
 use serde_json::{json, Value};
 
-use crate::compile::BoundActionRegistration;
+use crate::compile::{compile_normalized_rpg_ir_with_ruleset, BoundActionRegistration};
 use crate::{
     capability_registrations, compile_normalized_rpg_ir, operation_registrations, CompiledRpgRules,
     RpgCompileFailure, RpgDiagnostic, RpgDiagnosticStage,
@@ -92,6 +93,8 @@ const MAX_CONTRIBUTION_EXPRESSION_DEPTH: usize = 16;
 const MAX_CONTRIBUTION_EXPRESSION_NODES: usize = 256;
 const SCALAR_CONTRIBUTION_IDENTITY: &str = "asha.rpg.scalar-contribution";
 const SCALAR_CONTRIBUTION_VERSION: u32 = 1;
+const OUTCOME_BAND_SHIFT_IDENTITY: &str = "asha.rpg.outcome-band-shift";
+const OUTCOME_BAND_SHIFT_VERSION: u32 = 1;
 
 #[derive(Debug, Clone, PartialEq, Eq, PartialOrd, Ord)]
 pub struct RulesetValueKey {
@@ -204,7 +207,7 @@ pub fn compile_prepared_play_bundle(
         &items,
         &character_features,
     )?;
-    let mut rules = compile_normalized_rpg_ir(normalized_ir)?;
+    let mut rules = compile_normalized_rpg_ir_with_ruleset(normalized_ir, Some(&prepared.ruleset))?;
     rules.register_bound_actions(bound_action_registrations);
     rules.register_character_features(&character_features);
     rules.register_items(&items);
@@ -702,6 +705,12 @@ fn validate_ruleset(prepared: &PreparedPlayBundle, diagnostics: &mut Vec<RpgDiag
         .iter()
         .map(|domain| domain.id.as_str())
         .collect::<BTreeSet<_>>();
+    let numeric_domains = ruleset
+        .provides
+        .numeric_domains
+        .iter()
+        .map(|domain| (domain.id.as_str(), (domain.minimum, domain.maximum)))
+        .collect::<BTreeMap<_, _>>();
     for (index, value) in ruleset.provides.values.iter().enumerate() {
         let identity = (value.kind, value.id.as_str());
         if previous_value.is_some_and(|previous| previous >= identity)
@@ -768,6 +777,159 @@ fn validate_ruleset(prepared: &PreparedPlayBundle, diagnostics: &mut Vec<RpgDiag
             ));
         }
         previous_group = Some(group.id.as_str());
+    }
+    let selector_ids = ruleset
+        .provides
+        .calculation_selectors
+        .iter()
+        .map(|selector| selector.id.as_str())
+        .collect::<BTreeSet<_>>();
+    let selector_domains = ruleset
+        .provides
+        .calculation_selectors
+        .iter()
+        .map(|selector| (selector.id.as_str(), selector.numeric_domain_id.as_str()))
+        .collect::<BTreeMap<_, _>>();
+    let mut previous_profile = None::<&str>;
+    for (index, profile) in ruleset.provides.scalar_test_profiles.iter().enumerate() {
+        let path = format!("$.ruleset.provides.scalarTestProfiles[{index}]");
+        let band_ids = profile
+            .bands
+            .iter()
+            .map(|band| band.id.as_str())
+            .collect::<BTreeSet<_>>();
+        if !valid_identifier(&profile.id)
+            || previous_profile.is_some_and(|previous| previous >= profile.id.as_str())
+            || profile.version != 1
+            || profile.label.trim().is_empty()
+            || !declared_domains.contains(profile.numeric_domain_id.as_str())
+            || !(2..=100).contains(&profile.die_sides)
+            || profile
+                .contribution_selector_id
+                .as_ref()
+                .is_some_and(|selector| {
+                    !selector_ids.contains(selector.as_str())
+                        || selector_domains.get(selector.as_str()).copied()
+                            != Some(profile.numeric_domain_id.as_str())
+                })
+            || !(2..=16).contains(&profile.bands.len())
+            || band_ids.len() != profile.bands.len()
+            || profile
+                .bands
+                .iter()
+                .any(|band| !valid_identifier(&band.id) || band.label.trim().is_empty())
+        {
+            diagnostics.push(RpgDiagnostic::error(
+                RpgDiagnosticStage::Artifact,
+                "RULESET_SCALAR_TEST_PROFILE_INVALID",
+                &path,
+                "scalar test profiles require unique sorted portable version-1 ids, a declared domain, one d2..d100 primary die, an optional known contribution selector, and 2..=16 unique labelled bands",
+            ));
+        }
+        previous_profile = Some(&profile.id);
+        if numeric_domains
+            .get(profile.numeric_domain_id.as_str())
+            .is_some_and(|(minimum, maximum)| {
+                let total_minimum = minimum.checked_add(1);
+                let total_maximum = maximum.checked_add(i64::from(profile.die_sides));
+                *minimum < i64::from(i32::MIN)
+                    || *maximum > i64::from(i32::MAX)
+                    || total_minimum.is_none_or(|value| value < i64::from(i32::MIN))
+                    || total_maximum.is_none_or(|value| value > i64::from(i32::MAX))
+                    || total_minimum
+                        .and_then(|value| value.checked_sub(*maximum))
+                        .is_none_or(|value| value < i64::from(i32::MIN))
+                    || total_maximum
+                        .and_then(|value| value.checked_sub(*minimum))
+                        .is_none_or(|value| value > i64::from(i32::MAX))
+            })
+        {
+            diagnostics.push(RpgDiagnostic::error(
+                RpgDiagnosticStage::Semantics,
+                "RULESET_SCALAR_TEST_DOMAIN_OVERFLOW",
+                format!("{path}.numericDomainId"),
+                "the profile numeric domain, primary die, total, and margin must remain inside the runtime i32 domain for every declared value",
+            ));
+        }
+        if profile.margin_rules.is_empty() || profile.margin_rules.len() > 32 {
+            diagnostics.push(RpgDiagnostic::error(
+                RpgDiagnosticStage::Semantics,
+                "RULESET_SCALAR_TEST_MARGIN_RULES_INVALID",
+                format!("{path}.marginRules"),
+                "scalar test profiles require 1..=32 complete margin rules",
+            ));
+        }
+        let mut previous_maximum = None::<Option<i64>>;
+        for (rule_index, rule) in profile.margin_rules.iter().enumerate() {
+            let ordered = rule
+                .minimum
+                .zip(rule.maximum)
+                .is_none_or(|(minimum, maximum)| minimum <= maximum);
+            let complete_boundary = if rule_index == 0 {
+                rule.minimum.is_none()
+            } else {
+                previous_maximum
+                    .flatten()
+                    .zip(rule.minimum)
+                    .is_some_and(|(previous, minimum)| previous.checked_add(1) == Some(minimum))
+            };
+            let terminal = if rule_index + 1 == profile.margin_rules.len() {
+                rule.maximum.is_none()
+            } else {
+                rule.maximum.is_some()
+            };
+            if !ordered
+                || !complete_boundary
+                || !terminal
+                || !band_ids.contains(rule.band_id.as_str())
+            {
+                diagnostics.push(RpgDiagnostic::error(
+                    RpgDiagnosticStage::Semantics,
+                    "RULESET_SCALAR_TEST_MARGIN_RULE_INVALID",
+                    format!("{path}.marginRules[{rule_index}]"),
+                    "margin rules must be gap-free, non-overlapping, ordered, cover both unbounded ends, and reference known bands",
+                ));
+            }
+            previous_maximum = Some(rule.maximum);
+        }
+        if profile.natural_die_rules.len() > 8 {
+            diagnostics.push(RpgDiagnostic::error(
+                RpgDiagnosticStage::Semantics,
+                "RULESET_SCALAR_TEST_NATURAL_RULES_INVALID",
+                format!("{path}.naturalDieRules"),
+                "scalar test profiles support at most 8 disjoint natural-die rules",
+            ));
+        }
+        let mut natural_ids = BTreeSet::new();
+        let mut previous_natural_maximum = 0;
+        for (rule_index, rule) in profile.natural_die_rules.iter().enumerate() {
+            let effect_valid = match &rule.effect {
+                RpgNaturalDieEffect::SetBand { band_id } => band_ids.contains(band_id.as_str()),
+                RpgNaturalDieEffect::Shift { amount } => {
+                    *amount != 0
+                        && amount
+                            .checked_abs()
+                            .and_then(|amount| usize::try_from(amount).ok())
+                            .is_some_and(|amount| amount < profile.bands.len())
+                }
+            };
+            if !natural_ids.insert(rule.id.as_str())
+                || !valid_identifier(&rule.id)
+                || rule.minimum == 0
+                || rule.minimum > rule.maximum
+                || rule.maximum > profile.die_sides
+                || rule.minimum <= previous_natural_maximum
+                || !effect_valid
+            {
+                diagnostics.push(RpgDiagnostic::error(
+                    RpgDiagnosticStage::Semantics,
+                    "RULESET_SCALAR_TEST_NATURAL_RULE_INVALID",
+                    format!("{path}.naturalDieRules[{rule_index}]"),
+                    "natural-die rules must have unique portable ids, ordered disjoint ranges within the primary die, and a known set-band or bounded nonzero shift",
+                ));
+            }
+            previous_natural_maximum = rule.maximum;
+        }
     }
 }
 
@@ -1211,6 +1373,13 @@ fn compile_items(
             &format!("{path}.semantic.contributions"),
             &mut diagnostics,
         );
+        validate_outcome_band_shifts(
+            &item.outcome_band_shifts,
+            prepared,
+            definition,
+            &format!("{path}.semantic.outcomeBandShifts"),
+            &mut diagnostics,
+        );
         let label = definition
             .presentation
             .get("label")
@@ -1237,6 +1406,7 @@ fn compile_items(
             allowed_slots: item.allowed_slots,
             attributes: item.attributes,
             contributions: item.contributions,
+            outcome_band_shifts: item.outcome_band_shifts,
         });
     }
     if diagnostics.is_empty() {
@@ -1288,15 +1458,16 @@ fn compile_character_features(
                 format!("expected {CHARACTER_FEATURE_IDENTITY}@{CHARACTER_FEATURE_VERSION}"),
             ));
         }
-        if feature.contributions.is_empty()
-            || feature.contributions.len() > MAX_CHARACTER_FEATURE_CONTRIBUTIONS
+        if feature.contributions.len() > MAX_CHARACTER_FEATURE_CONTRIBUTIONS
+            || feature.outcome_band_shifts.len() > MAX_CHARACTER_FEATURE_CONTRIBUTIONS
+            || feature.contributions.len() + feature.outcome_band_shifts.len() == 0
         {
             diagnostics.push(RpgDiagnostic::error(
                 RpgDiagnosticStage::Semantics,
                 "CHARACTER_FEATURE_CONTRIBUTIONS_INVALID",
-                format!("{path}.semantic.contributions"),
+                format!("{path}.semantic"),
                 format!(
-                    "character features require 1..={MAX_CHARACTER_FEATURE_CONTRIBUTIONS} scalar contributions"
+                    "character features require at least one and at most {MAX_CHARACTER_FEATURE_CONTRIBUTIONS} entries in each typed contribution family"
                 ),
             ));
         }
@@ -1305,6 +1476,13 @@ fn compile_character_features(
             prepared,
             definition,
             &format!("{path}.semantic.contributions"),
+            &mut diagnostics,
+        );
+        validate_outcome_band_shifts(
+            &feature.outcome_band_shifts,
+            prepared,
+            definition,
+            &format!("{path}.semantic.outcomeBandShifts"),
             &mut diagnostics,
         );
         let label = required_definition_label(
@@ -1323,6 +1501,7 @@ fn compile_character_features(
                 .and_then(Value::as_str)
                 .map(str::to_owned),
             contributions: feature.contributions,
+            outcome_band_shifts: feature.outcome_band_shifts,
         });
     }
     if diagnostics.is_empty() {
@@ -1607,6 +1786,93 @@ fn validate_scalar_contributions(
             1,
             &mut predicate_nodes,
             &format!("{contribution_path}.predicate"),
+            diagnostics,
+        );
+    }
+}
+
+fn validate_outcome_band_shifts(
+    shifts: &[RpgOutcomeBandShiftDefinition],
+    prepared: &PreparedPlayBundle,
+    source_definition: &MaterializedContentDefinition,
+    path: &str,
+    diagnostics: &mut Vec<RpgDiagnostic>,
+) {
+    if shifts.len() > MAX_CHARACTER_FEATURE_CONTRIBUTIONS {
+        diagnostics.push(RpgDiagnostic::error(
+            RpgDiagnosticStage::Semantics,
+            "OUTCOME_BAND_SHIFT_SOURCE_LIMIT_EXCEEDED",
+            path,
+            format!(
+                "one source may declare at most {MAX_CHARACTER_FEATURE_CONTRIBUTIONS} outcome-band shifts"
+            ),
+        ));
+    }
+    let mut previous_id = None::<&str>;
+    for (index, shift) in shifts.iter().enumerate() {
+        let shift_path = format!("{path}[{index}]");
+        if shift.schema.identity != OUTCOME_BAND_SHIFT_IDENTITY
+            || shift.schema.version != OUTCOME_BAND_SHIFT_VERSION
+        {
+            diagnostics.push(RpgDiagnostic::error(
+                RpgDiagnosticStage::Compatibility,
+                "OUTCOME_BAND_SHIFT_SCHEMA_UNSUPPORTED",
+                format!("{shift_path}.schema"),
+                format!("expected {OUTCOME_BAND_SHIFT_IDENTITY}@{OUTCOME_BAND_SHIFT_VERSION}"),
+            ));
+        }
+        if !valid_identifier(&shift.id)
+            || previous_id.is_some_and(|previous| previous >= shift.id.as_str())
+        {
+            diagnostics.push(RpgDiagnostic::error(
+                RpgDiagnosticStage::Artifact,
+                "OUTCOME_BAND_SHIFTS_NOT_CANONICAL",
+                format!("{shift_path}.id"),
+                "outcome-band shift identities must be unique sorted portable identifiers",
+            ));
+        }
+        previous_id = Some(&shift.id);
+        let profile = prepared
+            .ruleset
+            .provides
+            .scalar_test_profiles
+            .iter()
+            .find(|profile| profile.id == shift.profile.id);
+        if shift.profile.ruleset_id != prepared.ruleset.identity.id || profile.is_none() {
+            diagnostics.push(RpgDiagnostic::error(
+                RpgDiagnosticStage::References,
+                "OUTCOME_BAND_SHIFT_PROFILE_INVALID",
+                format!("{shift_path}.profile"),
+                "outcome-band shifts must reference a profile owned by the bound Ruleset",
+            ));
+        }
+        let maximum_shift = profile
+            .and_then(|profile| i32::try_from(profile.bands.len().saturating_sub(1)).ok())
+            .unwrap_or(15)
+            .min(15);
+        if shift.shift == 0
+            || shift
+                .shift
+                .checked_abs()
+                .is_none_or(|value| value > maximum_shift)
+        {
+            diagnostics.push(RpgDiagnostic::error(
+                RpgDiagnosticStage::Semantics,
+                "OUTCOME_BAND_SHIFT_VALUE_INVALID",
+                format!("{shift_path}.shift"),
+                format!(
+                    "outcome-band shifts must be nonzero and fit the profile band range -{maximum_shift}..={maximum_shift}"
+                ),
+            ));
+        }
+        let mut predicate_nodes = 0;
+        validate_contribution_predicate(
+            &shift.predicate,
+            prepared,
+            source_definition,
+            1,
+            &mut predicate_nodes,
+            &format!("{shift_path}.predicate"),
             diagnostics,
         );
     }
@@ -1965,6 +2231,12 @@ fn validate_action_contribution_contracts(
         .iter()
         .map(|selector| selector.id.as_str())
         .collect::<BTreeSet<_>>();
+    let selector_domains = ruleset
+        .provides
+        .calculation_selectors
+        .iter()
+        .map(|selector| (selector.id.as_str(), selector.numeric_domain_id.as_str()))
+        .collect::<BTreeMap<_, _>>();
     let action_tags = normalized
         .actions
         .iter()
@@ -1972,23 +2244,99 @@ fn validate_action_contribution_contracts(
         .collect::<BTreeSet<_>>();
     let mut diagnostics = Vec::new();
     for (index, action) in normalized.actions.iter().enumerate() {
-        let RpgIrCheck::Attack {
-            contribution_selector: Some(selector),
-            ..
-        } = &action.check
-        else {
-            continue;
-        };
-        if selector.ruleset_id != ruleset.identity.id || !selectors.contains(selector.id.as_str()) {
-            diagnostics.push(RpgDiagnostic::error(
-                RpgDiagnosticStage::References,
-                "ACTION_CONTRIBUTION_SELECTOR_INVALID",
-                format!("$.actions[{index}].check.contributionSelector"),
-                format!(
-                    "action contribution selector {} must resolve in Ruleset {}",
-                    selector.id, ruleset.identity.id
-                ),
-            ));
+        match &action.check {
+            RpgIrCheck::Attack {
+                contribution_selector: Some(selector),
+                ..
+            } => {
+                if selector.ruleset_id != ruleset.identity.id
+                    || !selectors.contains(selector.id.as_str())
+                {
+                    diagnostics.push(RpgDiagnostic::error(
+                        RpgDiagnosticStage::References,
+                        "ACTION_CONTRIBUTION_SELECTOR_INVALID",
+                        format!("$.actions[{index}].check.contributionSelector"),
+                        format!(
+                            "action contribution selector {} must resolve in Ruleset {}",
+                            selector.id, ruleset.identity.id
+                        ),
+                    ));
+                }
+            }
+            RpgIrCheck::ScalarTest { profile, .. } => {
+                let profile_definition = ruleset
+                    .provides
+                    .scalar_test_profiles
+                    .iter()
+                    .find(|candidate| candidate.id == profile.id);
+                if profile.ruleset_id != ruleset.identity.id || profile_definition.is_none() {
+                    diagnostics.push(RpgDiagnostic::error(
+                        RpgDiagnosticStage::References,
+                        "ACTION_SCALAR_TEST_PROFILE_INVALID",
+                        format!("$.actions[{index}].check.profile"),
+                        format!(
+                            "scalar-test profile {} must resolve in Ruleset {}",
+                            profile.id, ruleset.identity.id
+                        ),
+                    ));
+                }
+                if let Some(profile_definition) = profile_definition {
+                    if profile_definition
+                        .contribution_selector_id
+                        .as_ref()
+                        .and_then(|selector_id| selector_domains.get(selector_id.as_str()))
+                        .is_some_and(|domain_id| {
+                            *domain_id != profile_definition.numeric_domain_id.as_str()
+                        })
+                    {
+                        diagnostics.push(RpgDiagnostic::error(
+                            RpgDiagnosticStage::Semantics,
+                            "ACTION_SCALAR_TEST_SELECTOR_DOMAIN_MISMATCH",
+                            format!("$.actions[{index}].check.profile"),
+                            "the profile contribution selector and scalar-test result must use the same numeric domain",
+                        ));
+                    }
+                    let mut outcome_programs = Vec::new();
+                    collect_outcome_programs(&action.program, &mut outcome_programs);
+                    if outcome_programs.len() != 1 {
+                        diagnostics.push(RpgDiagnostic::error(
+                            RpgDiagnosticStage::Semantics,
+                            "ACTION_SCALAR_TEST_OUTCOME_BRANCH_COUNT_INVALID",
+                            format!("$.actions[{index}].program"),
+                            "a scalar-test action requires exactly one on-outcome program",
+                        ));
+                    } else {
+                        let known_bands = profile_definition
+                            .bands
+                            .iter()
+                            .map(|band| band.id.as_str())
+                            .collect::<BTreeSet<_>>();
+                        let branches = outcome_programs[0];
+                        for band_id in branches.keys() {
+                            if !known_bands.contains(band_id.as_str()) {
+                                diagnostics.push(RpgDiagnostic::error(
+                                    RpgDiagnosticStage::References,
+                                    "ACTION_SCALAR_TEST_OUTCOME_BAND_UNKNOWN",
+                                    format!("$.actions[{index}].program"),
+                                    format!(
+                                        "outcome branch {band_id} is not declared by profile {}",
+                                        profile_definition.id
+                                    ),
+                                ));
+                            }
+                        }
+                        if branches.len() >= known_bands.len() {
+                            diagnostics.push(RpgDiagnostic::error(
+                                RpgDiagnosticStage::Semantics,
+                                "ACTION_SCALAR_TEST_OUTCOME_DEFAULT_UNREACHABLE",
+                                format!("$.actions[{index}].program"),
+                                "on-outcome must leave at least one profile band for its required default branch",
+                            ));
+                        }
+                    }
+                }
+            }
+            _ => {}
         }
     }
     for (source_kind, source_id, contributions) in items
@@ -2019,10 +2367,84 @@ fn validate_action_contribution_contracts(
             );
         }
     }
+    for (source_kind, source_id, shifts) in items
+        .iter()
+        .map(|item| {
+            (
+                "items",
+                item.definition_id.as_str(),
+                item.outcome_band_shifts.as_slice(),
+            )
+        })
+        .chain(features.iter().map(|feature| {
+            (
+                "characterFeatures",
+                feature.definition_id.as_str(),
+                feature.outcome_band_shifts.as_slice(),
+            )
+        }))
+    {
+        for (shift_index, shift) in shifts.iter().enumerate() {
+            validate_contribution_action_tag_references(
+                &shift.predicate,
+                &action_tags,
+                &format!(
+                    "$.compiledOutcomeBandShifts.{source_kind}.{source_id}[{shift_index}].predicate"
+                ),
+                &mut diagnostics,
+            );
+        }
+    }
     if diagnostics.is_empty() {
         Ok(())
     } else {
         Err(RpgCompileFailure { diagnostics })
+    }
+}
+
+fn collect_outcome_programs<'a>(
+    program: &'a RpgIrProgram,
+    branches: &mut Vec<&'a BTreeMap<String, Box<RpgIrProgram>>>,
+) {
+    match program {
+        RpgIrProgram::Operation { .. } => {}
+        RpgIrProgram::Sequence { steps } => {
+            for step in steps {
+                collect_outcome_programs(step, branches);
+            }
+        }
+        RpgIrProgram::When {
+            then, otherwise, ..
+        } => {
+            collect_outcome_programs(then, branches);
+            if let Some(otherwise) = otherwise {
+                collect_outcome_programs(otherwise, branches);
+            }
+        }
+        RpgIrProgram::Repeat { body, .. }
+        | RpgIrProgram::ForEachTarget { body, .. }
+        | RpgIrProgram::Atomic { body } => collect_outcome_programs(body, branches),
+        RpgIrProgram::OnCheck {
+            hit,
+            miss,
+            saved,
+            failed,
+            no_roll,
+        } => {
+            for branch in [hit, miss, saved, failed, no_roll].into_iter().flatten() {
+                collect_outcome_programs(branch, branches);
+            }
+        }
+        RpgIrProgram::OnOutcome {
+            branches: outcome_branches,
+            default,
+        } => {
+            branches.push(outcome_branches);
+            for branch in outcome_branches.values() {
+                collect_outcome_programs(branch, branches);
+            }
+            collect_outcome_programs(default, branches);
+        }
     }
 }
 
@@ -4876,6 +5298,41 @@ fn resolve_action_catalogs(
                 diagnostics,
             );
         }
+        RpgIrCheck::ScalarTest {
+            base, difficulty, ..
+        } => {
+            resolve_formula_catalogs(
+                base,
+                action_definition,
+                definitions,
+                ruleset_catalogs,
+                &format!("{path}.check.base"),
+                diagnostics,
+            );
+            match difficulty {
+                RpgIrScalarTestDifficulty::Explicit { value } => {
+                    resolve_formula_catalogs(
+                        value,
+                        action_definition,
+                        definitions,
+                        ruleset_catalogs,
+                        &format!("{path}.check.difficulty.value"),
+                        diagnostics,
+                    );
+                }
+                RpgIrScalarTestDifficulty::TargetDefense { defense_id } => {
+                    resolve_catalog_reference(
+                        defense_id,
+                        CatalogReferenceKind::DEFENSE,
+                        action_definition,
+                        definitions,
+                        ruleset_catalogs,
+                        &format!("{path}.check.difficulty.defenseId"),
+                        diagnostics,
+                    );
+                }
+            }
+        }
     }
     resolve_program_catalogs(
         &mut action.program,
@@ -4985,6 +5442,26 @@ fn resolve_program_catalogs(
                     );
                 }
             }
+        }
+        RpgIrProgram::OnOutcome { branches, default } => {
+            for (branch_id, branch) in branches {
+                resolve_program_catalogs(
+                    branch,
+                    action_definition,
+                    definitions,
+                    ruleset_catalogs,
+                    &format!("{path}.branches.{branch_id}"),
+                    diagnostics,
+                );
+            }
+            resolve_program_catalogs(
+                default,
+                action_definition,
+                definitions,
+                ruleset_catalogs,
+                &format!("{path}.default"),
+                diagnostics,
+            );
         }
     }
 }
@@ -5319,6 +5796,19 @@ fn collect_action_catalogs(action: &RpgIrAction, catalogs: &mut DerivedCatalogs)
             catalogs.defenses.insert(defense_id.clone());
             collect_formula_catalogs(difficulty, catalogs);
         }
+        RpgIrCheck::ScalarTest {
+            base, difficulty, ..
+        } => {
+            collect_formula_catalogs(base, catalogs);
+            match difficulty {
+                RpgIrScalarTestDifficulty::Explicit { value } => {
+                    collect_formula_catalogs(value, catalogs);
+                }
+                RpgIrScalarTestDifficulty::TargetDefense { defense_id } => {
+                    catalogs.defenses.insert(defense_id.clone());
+                }
+            }
+        }
     }
     collect_program_catalogs(&action.program, catalogs);
 }
@@ -5355,6 +5845,12 @@ fn collect_program_catalogs(program: &RpgIrProgram, catalogs: &mut DerivedCatalo
             for branch in [hit, miss, saved, failed, no_roll].into_iter().flatten() {
                 collect_program_catalogs(branch, catalogs);
             }
+        }
+        RpgIrProgram::OnOutcome { branches, default } => {
+            for branch in branches.values() {
+                collect_program_catalogs(branch, catalogs);
+            }
+            collect_program_catalogs(default, catalogs);
         }
     }
 }

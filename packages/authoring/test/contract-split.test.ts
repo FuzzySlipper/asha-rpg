@@ -26,13 +26,16 @@ import {
   noRoll,
   participantProfileVitality,
   participantProfileStat,
+  onOutcome,
   preparePlayBundle,
   readStat,
   rulesetDefense,
   rulesetCalculationSelector,
   rulesetContributionStackingGroup,
+  rulesetScalarTestProfile,
   rulesetStat,
   rulesetValueId,
+  scalarTest,
 } from "@asha-rpg/authoring";
 
 const semanticRuleset = defineRuleset({
@@ -123,6 +126,118 @@ test("Ruleset value ownership survives action authoring and rejects a foreign ow
   assert.deepEqual(
     [...new Set(rejected.diagnostics.map((diagnostic) => diagnostic.code))],
     ["RULESET_VALUE_REFERENCE_OWNER_MISMATCH"],
+  );
+});
+
+test("Ruleset scalar profiles author canonical ordered outcomes and reject gaps", () => {
+  const scalarRuleset = defineRuleset({
+    ...semanticRuleset,
+    provides: {
+      ...semanticRuleset.provides,
+      operations: [{ id: "operation.heal", version: 1 }],
+      capabilities: [
+        { id: "capability.defenses", version: 1 },
+        { id: "capability.random", version: 1 },
+        { id: "capability.stats", version: 1 },
+        { id: "capability.vitality", version: 1 },
+      ],
+      scalarTestProfiles: [
+        {
+          id: "graded",
+          version: 1,
+          label: "Graded test",
+          numericDomainId: "score",
+          dieSides: 20,
+          contributionSelectorId: null,
+          bands: [
+            { id: "failure", label: "Failure" },
+            { id: "success", label: "Success" },
+          ],
+          marginRules: [
+            { minimum: null, maximum: -1, bandId: "failure" },
+            { minimum: 0, maximum: null, bandId: "success" },
+          ],
+          naturalDieRules: [
+            {
+              id: "natural-high",
+              minimum: 20,
+              maximum: 20,
+              effect: { kind: "setBand", bandId: "success" },
+            },
+          ],
+        },
+      ],
+    },
+  });
+  const result = prepareScalarRulesetAction(scalarRuleset);
+  assert.equal(
+    result.ok,
+    true,
+    result.ok ? "expected scalar profile" : JSON.stringify(result.diagnostics),
+  );
+  if (!result.ok) return;
+  assert.equal(result.prepared.schema.major, 4);
+  assert.deepEqual(
+    result.prepared.ruleset.provides.scalarTestProfiles.map(
+      (profile) => profile.id,
+    ),
+    ["graded"],
+  );
+  const actionDefinition = result.prepared.materializedDefinitions.find(
+    (definition) => definition.id === "contract.scalar-action",
+  );
+  assert.equal(
+    (actionDefinition?.semantic as { action?: { check?: { kind?: string } } })
+      .action?.check?.kind,
+    "scalarTest",
+  );
+
+  const scalarProfile = scalarRuleset.provides.scalarTestProfiles[0];
+  if (scalarProfile === undefined) {
+    throw new Error("expected scalar profile fixture");
+  }
+  const malformedRuleset = defineRuleset({
+    ...scalarRuleset,
+    provides: {
+      ...scalarRuleset.provides,
+      scalarTestProfiles: [
+        {
+          ...scalarProfile,
+          marginRules: [
+            { minimum: null, maximum: -1, bandId: "failure" },
+            { minimum: 1, maximum: null, bandId: "success" },
+          ],
+        },
+      ],
+    },
+  });
+  const malformed = prepareScalarRulesetAction(malformedRuleset);
+  assert.equal(malformed.ok, false);
+  if (malformed.ok) return;
+  assert.ok(
+    malformed.diagnostics.some(
+      (diagnostic) =>
+        diagnostic.code === "RULESET_SCALAR_TEST_MARGIN_RULE_INVALID",
+    ),
+  );
+
+  const overflowRuleset = defineRuleset({
+    ...scalarRuleset,
+    provides: {
+      ...scalarRuleset.provides,
+      numericDomains: [
+        { id: "score", minimum: -1, maximum: 2_147_483_647 },
+      ],
+    },
+  });
+  const overflow = prepareScalarRulesetAction(overflowRuleset);
+  assert.equal(overflow.ok, false);
+  if (overflow.ok) return;
+  assert.ok(
+    overflow.diagnostics.some(
+      (diagnostic) =>
+        diagnostic.code === "RULESET_SCALAR_TEST_DOMAIN_OVERFLOW",
+    ),
   );
 });
 
@@ -654,6 +769,62 @@ function prepareRulesetAction(
   return preparePlayBundle({
     bundle: composePlayBundle({
       identity: { id: "contract.ruleset-owned-bundle", version: "1.0.0" },
+      ruleset,
+      base: contentPackRequest({
+        id: contentPack.identity.id,
+        version: "1.0.0",
+      }),
+      add: [],
+      overlays: [],
+      configure: {},
+    }),
+    contentPacks: [contentPackSource(contentPack)],
+  });
+}
+
+function prepareScalarRulesetAction(ruleset: typeof semanticRuleset) {
+  const authoredAction = action({
+    id: actionId("contract.scalar-action"),
+    name: "Scalar action",
+    sourcePath: "contract/scalar-action.ts",
+    targets: hostile({ range: 1 }),
+    check: scalarTest({
+      profile: rulesetScalarTestProfile(ruleset, "graded"),
+      base: readStat("actor", rulesetStat(ruleset, "strength")),
+      difficulty: {
+        kind: "targetDefense",
+        defense: rulesetDefense(ruleset, "armor-class"),
+      },
+    }),
+    rollScope: "perTarget",
+    program: onOutcome({
+      branches: {
+        success: heal({ amount: constant(2) }),
+      },
+      default: heal({ amount: constant(1) }),
+    }),
+  });
+  const definition = defineActionDefinition({
+    id: authoredAction.id,
+    visibility: "public",
+    extensionPolicy: "sealed",
+    source: {
+      module: "contract/scalar-action.ts",
+      declaration: "action",
+    },
+    action: authoredAction,
+  });
+  const contentPack = defineContentPack({
+    identity: { id: "contract.scalar-content", version: "1.0.0" },
+    entry: {
+      module: "contract/scalar-action.ts",
+      declaration: "content",
+    },
+    definitions: [definition],
+  });
+  return preparePlayBundle({
+    bundle: composePlayBundle({
+      identity: { id: "contract.scalar-bundle", version: "1.0.0" },
       ruleset,
       base: contentPackRequest({
         id: contentPack.identity.id,

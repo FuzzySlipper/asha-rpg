@@ -3,6 +3,7 @@ const rulesetValueReferenceBrand = Symbol('asha-rpg.ruleset-value-reference');
 const authoredRulesetValueOwnership = Symbol('asha-rpg.authored-ruleset-value-ownership');
 const rulesetCalculationSelectorReferenceBrand = Symbol('asha-rpg.calculation-selector-reference');
 const rulesetContributionStackingGroupReferenceBrand = Symbol('asha-rpg.contribution-stacking-group-reference');
+const rulesetScalarTestProfileReferenceBrand = Symbol('asha-rpg.scalar-test-profile-reference');
 export function defineRuleset(input) {
     return immutable({
         ...input,
@@ -21,6 +22,7 @@ export function defineRuleset(input) {
             contributionStackingGroups: [
                 ...(input.provides.contributionStackingGroups ?? []),
             ].sort((left, right) => left.id.localeCompare(right.id)),
+            scalarTestProfiles: [...(input.provides.scalarTestProfiles ?? [])].sort((left, right) => left.id.localeCompare(right.id)),
         },
     });
 }
@@ -80,6 +82,16 @@ export function rulesetContributionStackingGroup(ruleset, id) {
         rulesetId: ruleset.identity.id,
         id,
         [rulesetContributionStackingGroupReferenceBrand]: true,
+    });
+}
+export function rulesetScalarTestProfile(ruleset, id) {
+    if (!ruleset.provides.scalarTestProfiles.some((candidate) => candidate.id === id)) {
+        throw new Error(`ruleset ${ruleset.identity.id}@${ruleset.identity.version} does not provide scalar test profile ${id}`);
+    }
+    return immutable({
+        rulesetId: ruleset.identity.id,
+        id,
+        [rulesetScalarTestProfileReferenceBrand]: true,
     });
 }
 export function rulesetValueId(reference) {

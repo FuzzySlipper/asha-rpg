@@ -22,6 +22,9 @@ const rulesetCalculationSelectorReferenceBrand: unique symbol = Symbol(
 const rulesetContributionStackingGroupReferenceBrand: unique symbol = Symbol(
   'asha-rpg.contribution-stacking-group-reference',
 );
+const rulesetScalarTestProfileReferenceBrand: unique symbol = Symbol(
+  'asha-rpg.scalar-test-profile-reference',
+);
 
 export interface AuthoredRulesetValueOwnership {
   readonly field: string;
@@ -67,14 +70,27 @@ export type RulesetContributionStackingGroupReference<
   readonly [rulesetContributionStackingGroupReferenceBrand]: true;
 }>;
 
+export type RulesetScalarTestProfileReference<
+  RulesetId extends string,
+  ProfileId extends string,
+> = Readonly<{
+  readonly rulesetId: RulesetId;
+  readonly id: ProfileId;
+  readonly [rulesetScalarTestProfileReferenceBrand]: true;
+}>;
+
 type RulesetInput = Omit<Ruleset, 'provides'> & {
   readonly provides: Omit<
     Ruleset['provides'],
-    'values' | 'calculationSelectors' | 'contributionStackingGroups'
+    | 'values'
+    | 'calculationSelectors'
+    | 'contributionStackingGroups'
+    | 'scalarTestProfiles'
   > & {
     readonly values: readonly RulesetValueInput[];
     readonly calculationSelectors?: Ruleset['provides']['calculationSelectors'];
     readonly contributionStackingGroups?: Ruleset['provides']['contributionStackingGroups'];
+    readonly scalarTestProfiles?: Ruleset['provides']['scalarTestProfiles'];
   };
 };
 
@@ -103,6 +119,9 @@ export function defineRuleset(input: RulesetInput): Ruleset {
       contributionStackingGroups: [
         ...(input.provides.contributionStackingGroups ?? []),
       ].sort((left, right) => left.id.localeCompare(right.id)),
+      scalarTestProfiles: [...(input.provides.scalarTestProfiles ?? [])].sort(
+        (left, right) => left.id.localeCompare(right.id),
+      ),
     },
   });
 }
@@ -221,6 +240,31 @@ export function rulesetContributionStackingGroup<
     rulesetId: ruleset.identity.id,
     id,
     [rulesetContributionStackingGroupReferenceBrand]: true as const,
+  });
+}
+
+export function rulesetScalarTestProfile<
+  const RulesetId extends string,
+  const ProfileId extends string,
+>(
+  ruleset: Ruleset & {
+    readonly identity: RulesetIdentity & { readonly id: RulesetId };
+  },
+  id: ProfileId,
+): RulesetScalarTestProfileReference<RulesetId, ProfileId> {
+  if (
+    !ruleset.provides.scalarTestProfiles.some(
+      (candidate) => candidate.id === id,
+    )
+  ) {
+    throw new Error(
+      `ruleset ${ruleset.identity.id}@${ruleset.identity.version} does not provide scalar test profile ${id}`,
+    );
+  }
+  return immutable({
+    rulesetId: ruleset.identity.id,
+    id,
+    [rulesetScalarTestProfileReferenceBrand]: true as const,
   });
 }
 

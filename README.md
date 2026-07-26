@@ -45,11 +45,18 @@ Scenario-bound authority session are the single supported path.
 The initial operation set is deliberately closed: damage, healing, resource
 change, bounded grid movement, turn-bounded modifier application with explicit
 replace or refresh stacking and authority-owned turn aging/expiry events, and
-a typed before-damage reaction window. Checks
-support attack, saving throw, and no-roll flows. Programs
-support bounded sequence, predicate branch, repeat, per-target branch, check
-outcome branch, and one atomic root. Unavailable semantics fail compilation;
-they are never delegated to consumer callbacks.
+a typed before-damage reaction window. Checks support attack, saving throw,
+generic Ruleset-owned scalar tests, and no-roll flows. Scalar profiles declare
+one d2..d100 primary die, checked numeric domains, complete margin thresholds,
+ordered outcome bands, disjoint natural rules, and an optional contribution
+selector. Actions provide a base, explicit difficulty or target defense, and
+one closed outcome/default branch map. Rust applies margin classification, a
+matching natural rule, and canonical contextual item/feature band shifts
+before executing exactly one branch. Contested roll pairs, reroll/keep
+mechanics, and heterogeneous dice remain unsupported. Programs support bounded
+sequence, predicate branch, repeat, per-target branch, check/outcome branches,
+and one atomic root. Unavailable semantics fail compilation; they are never
+delegated to consumer callbacks.
 
 Rulesets explicitly bind checks, ordered turns, scenario-supplied initiative,
 reactions, and action economy to Rust-supported model versions. Content Packs
@@ -72,9 +79,11 @@ graph, stores the selection in participant authority state, and evaluates
 bounded scalar contributions from item/feature definitions against current
 actor, target, named-value, position, team, vitality, exact item/action tag,
 and cell-capability facts. Ruleset-owned stacking groups reduce applicable
-values canonically. `AttackResolved.contributionLedger` retains applied,
-inapplicable, and suppressed sources plus base/final values so downstream logs
-can explain the action modifier without recalculating semantics in TypeScript.
+values canonically. `AttackResolved.contributionLedger` and
+`ScalarTestResolved` retain applied, inapplicable, and suppressed sources plus
+base/final values; scalar events also retain margin, natural-rule, contextual
+shift, and final-band evidence. Downstream logs can therefore explain the
+resolution without recalculating semantics in TypeScript.
 
 `@asha-rpg/ir` publishes the strict normalized data contract and a checked
 vocabulary generated from the Rust registry. `@asha-rpg/authoring` publishes

@@ -86,13 +86,14 @@ export function defineItemDefinition(input) {
             ...input.item,
             schema: {
                 identity: 'asha.rpg.item',
-                version: 2,
+                version: 3,
             },
             tags: [...input.item.tags].sort(),
             traits: [...input.item.traits].sort(),
             allowedSlots: [...input.item.allowedSlots].sort(),
             attributes: [...input.item.attributes].sort((left, right) => left.id.localeCompare(right.id)),
             contributions: normalizeScalarContributions(input.item.contributions ?? []),
+            outcomeBandShifts: normalizeOutcomeBandShifts(input.item.outcomeBandShifts ?? []),
         },
     });
 }
@@ -103,11 +104,23 @@ export function defineCharacterFeatureDefinition(input) {
         characterFeature: {
             schema: {
                 identity: 'asha.rpg.character-feature',
-                version: 2,
+                version: 3,
             },
-            contributions: normalizeScalarContributions(input.characterFeature.contributions),
+            contributions: normalizeScalarContributions(input.characterFeature.contributions ?? []),
+            outcomeBandShifts: normalizeOutcomeBandShifts(input.characterFeature.outcomeBandShifts ?? []),
         },
     });
+}
+function normalizeOutcomeBandShifts(shifts) {
+    return shifts
+        .map((shift) => ({
+        ...shift,
+        schema: {
+            identity: 'asha.rpg.outcome-band-shift',
+            version: 1,
+        },
+    }))
+        .sort((left, right) => left.id.localeCompare(right.id));
 }
 function normalizeScalarContributions(contributions) {
     return contributions

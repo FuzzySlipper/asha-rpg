@@ -7,9 +7,9 @@ use rpg_core::{
 use rpg_ir::{
     CompiledCharacterFeature, CompiledItemDefinition, EquippedItemBindingRequirement,
     NormalizedRpgIr, RpgIrAction, RpgIrCheck, RpgIrFormula, RpgIrOperation, RpgIrPredicate,
-    RpgIrProgram, RpgIrRequirementKind, RpgIrResourceCost, RpgIrRollScope, RpgIrSubject,
-    RpgIrTargetKind, RpgIrTargetSelector, RpgIrTeamConstraint, Ruleset, RPG_IR_IDENTITY,
-    RPG_IR_MAJOR,
+    RpgIrProgram, RpgIrRequirementKind, RpgIrResourceCost, RpgIrRollScope,
+    RpgIrScalarTestDifficulty, RpgIrSubject, RpgIrTargetKind, RpgIrTargetSelector,
+    RpgIrTeamConstraint, Ruleset, RulesetScalarTestProfile, RPG_IR_IDENTITY, RPG_IR_MAJOR,
 };
 use serde::Serialize;
 
@@ -40,6 +40,7 @@ struct ProgramValidationState {
     action_target_maximum: u32,
     action_target_kind: RpgIrTargetKind,
     check_kind: CheckKind,
+    outcome_branch_count: usize,
 }
 
 fn is_selected_destination_movement_program(program: &RpgIrProgram) -> bool {
@@ -72,6 +73,7 @@ enum CheckKind {
     NoRoll,
     Attack,
     SavingThrow,
+    ScalarTest,
 }
 
 #[derive(Debug, Clone)]
@@ -86,10 +88,18 @@ pub struct CompiledRpgRules {
     items: BTreeMap<String, CompiledItemDefinition>,
     calculation_selectors: BTreeMap<String, CompiledCalculationSelector>,
     contribution_stacking_groups: BTreeMap<String, RpgContributionStackingPolicy>,
+    scalar_test_profiles: BTreeMap<String, CompiledScalarTestProfile>,
 }
 
 #[derive(Debug, Clone)]
 pub(crate) struct CompiledCalculationSelector {
+    pub(crate) minimum: i64,
+    pub(crate) maximum: i64,
+}
+
+#[derive(Debug, Clone)]
+pub(crate) struct CompiledScalarTestProfile {
+    pub(crate) definition: RulesetScalarTestProfile,
     pub(crate) minimum: i64,
     pub(crate) maximum: i64,
 }
@@ -245,6 +255,25 @@ impl CompiledRpgRules {
             .iter()
             .map(|group| (group.id.clone(), group.policy))
             .collect();
+        self.scalar_test_profiles = ruleset
+            .provides
+            .scalar_test_profiles
+            .iter()
+            .filter_map(|profile| {
+                domains
+                    .get(profile.numeric_domain_id.as_str())
+                    .map(|domain| {
+                        (
+                            profile.id.clone(),
+                            CompiledScalarTestProfile {
+                                definition: profile.clone(),
+                                minimum: domain.minimum,
+                                maximum: domain.maximum,
+                            },
+                        )
+                    })
+            })
+            .collect();
     }
 
     pub(crate) fn character_feature(
@@ -270,6 +299,13 @@ impl CompiledRpgRules {
         group_id: &str,
     ) -> Option<RpgContributionStackingPolicy> {
         self.contribution_stacking_groups.get(group_id).copied()
+    }
+
+    pub(crate) fn scalar_test_profile(
+        &self,
+        profile_id: &str,
+    ) -> Option<&CompiledScalarTestProfile> {
+        self.scalar_test_profiles.get(profile_id)
     }
 }
 
@@ -364,6 +400,8 @@ pub enum RpgRandomPlanConditionKind {
     CheckSaved,
     CheckFailed,
     CheckNoRoll,
+    OutcomeBranch,
+    OutcomeDefault,
     AllPreviousTrue,
     AnyPreviousFalse,
 }
@@ -429,6 +467,10 @@ pub(crate) enum CompiledProgram {
         failed: Option<Box<CompiledProgram>>,
         no_roll: Option<Box<CompiledProgram>>,
     },
+    OnOutcome {
+        branches: BTreeMap<String, Box<CompiledProgram>>,
+        default: Box<CompiledProgram>,
+    },
     Atomic(Box<CompiledProgram>),
 }
 
@@ -447,6 +489,28 @@ pub fn compile_normalized_rpg_json(source: &[u8]) -> Result<CompiledRpgRules, Rp
 
 pub fn compile_normalized_rpg_ir(
     source: NormalizedRpgIr,
+) -> Result<CompiledRpgRules, RpgCompileFailure> {
+    if let Some((index, _)) = source
+        .actions
+        .iter()
+        .enumerate()
+        .find(|(_, action)| matches!(action.check, RpgIrCheck::ScalarTest { .. }))
+    {
+        return Err(RpgCompileFailure {
+            diagnostics: vec![RpgDiagnostic::error(
+                RpgDiagnosticStage::References,
+                "RPG_IR_SCALAR_TEST_RULESET_REQUIRED",
+                format!("$.actions[{index}].check.profile"),
+                "a scalar-test action must be compiled through a PlayBundle with its exact Ruleset",
+            )],
+        });
+    }
+    compile_normalized_rpg_ir_with_ruleset(source, None)
+}
+
+pub(crate) fn compile_normalized_rpg_ir_with_ruleset(
+    source: NormalizedRpgIr,
+    ruleset: Option<&Ruleset>,
 ) -> Result<CompiledRpgRules, RpgCompileFailure> {
     let mut validator = Validator::new(&source);
     validator.validate();
@@ -471,7 +535,11 @@ pub fn compile_normalized_rpg_ir(
         actions: source
             .actions
             .into_iter()
-            .map(|action| (action.id.clone(), compile_action(action)))
+            .map(|action| {
+                let id = action.id.clone();
+                let compiled = compile_action(action, ruleset);
+                (id, compiled)
+            })
             .collect(),
         bound_actions: BTreeMap::new(),
         binding_requirements: BTreeMap::new(),
@@ -479,11 +547,12 @@ pub fn compile_normalized_rpg_ir(
         items: BTreeMap::new(),
         calculation_selectors: BTreeMap::new(),
         contribution_stacking_groups: BTreeMap::new(),
+        scalar_test_profiles: BTreeMap::new(),
     })
 }
 
-fn compile_action(action: RpgIrAction) -> CompiledAction {
-    let random_plan = collect_action_random_plan(&action);
+fn compile_action(action: RpgIrAction, ruleset: Option<&Ruleset>) -> CompiledAction {
+    let random_plan = collect_action_random_plan(&action, ruleset);
     CompiledAction {
         name: action.name,
         source_path: action.source_path,
@@ -497,13 +566,29 @@ fn compile_action(action: RpgIrAction) -> CompiledAction {
     }
 }
 
-fn collect_action_random_plan(action: &RpgIrAction) -> Vec<RpgRandomPlanEntry> {
+fn collect_action_random_plan(
+    action: &RpgIrAction,
+    ruleset: Option<&Ruleset>,
+) -> Vec<RpgRandomPlanEntry> {
     let mut plan = Vec::new();
     if !matches!(action.check, RpgIrCheck::NoRoll) {
         let kind = match action.check {
             RpgIrCheck::Attack { .. } => RpgRandomRequestKind::AttackCheck,
             RpgIrCheck::SavingThrow { .. } => RpgRandomRequestKind::SavingThrowCheck,
+            RpgIrCheck::ScalarTest { .. } => RpgRandomRequestKind::ScalarTest,
             RpgIrCheck::NoRoll => unreachable!(),
+        };
+        let sides = match &action.check {
+            RpgIrCheck::ScalarTest { profile, .. } => ruleset
+                .and_then(|ruleset| {
+                    ruleset
+                        .provides
+                        .scalar_test_profiles
+                        .iter()
+                        .find(|candidate| candidate.id == profile.id)
+                })
+                .map_or(0, |profile| profile.die_sides),
+            _ => 20,
         };
         let count = match action.roll_scope {
             RpgIrRollScope::Shared => 1,
@@ -514,7 +599,7 @@ fn collect_action_random_plan(action: &RpgIrAction) -> Vec<RpgRandomPlanEntry> {
             request: RpgRandomRequest {
                 kind,
                 count,
-                sides: 20,
+                sides,
                 path: "$.action.check".to_owned(),
             },
             conditions: Vec::new(),
@@ -623,6 +708,24 @@ fn collect_program_random_plan(
                     );
                 }
             }
+        }
+        RpgIrProgram::OnOutcome { branches, default } => {
+            for (band_id, branch) in branches {
+                let branch_path = format!("{path}.branches.{band_id}");
+                let branch_conditions = with_condition(
+                    conditions,
+                    RpgRandomPlanConditionKind::OutcomeBranch,
+                    &branch_path,
+                );
+                collect_program_random_plan(branch, &branch_path, &branch_conditions, plan);
+            }
+            let default_path = format!("{path}.default");
+            let default_conditions = with_condition(
+                conditions,
+                RpgRandomPlanConditionKind::OutcomeDefault,
+                &default_path,
+            );
+            collect_program_random_plan(default, &default_path, &default_conditions, plan);
         }
         RpgIrProgram::Atomic { body } => {
             collect_program_random_plan(body, &format!("{path}.body"), conditions, plan);
@@ -779,6 +882,13 @@ fn compile_program(program: RpgIrProgram) -> CompiledProgram {
             saved: saved.map(|program| Box::new(compile_program(*program))),
             failed: failed.map(|program| Box::new(compile_program(*program))),
             no_roll: no_roll.map(|program| Box::new(compile_program(*program))),
+        },
+        RpgIrProgram::OnOutcome { branches, default } => CompiledProgram::OnOutcome {
+            branches: branches
+                .into_iter()
+                .map(|(band_id, program)| (band_id, Box::new(compile_program(*program))))
+                .collect(),
+            default: Box::new(compile_program(*default)),
         },
         RpgIrProgram::Atomic { body } => CompiledProgram::Atomic(Box::new(compile_program(*body))),
     }
@@ -1022,7 +1132,9 @@ impl<'a> Validator<'a> {
                     RpgIrCheck::NoRoll => CheckKind::NoRoll,
                     RpgIrCheck::Attack { .. } => CheckKind::Attack,
                     RpgIrCheck::SavingThrow { .. } => CheckKind::SavingThrow,
+                    RpgIrCheck::ScalarTest { .. } => CheckKind::ScalarTest,
                 },
+                outcome_branch_count: 0,
             };
             self.validate_program(
                 &action.program,
@@ -1032,6 +1144,15 @@ impl<'a> Validator<'a> {
                 false,
                 &mut program_state,
             );
+            let scalar_test_selected = matches!(program_state.check_kind, CheckKind::ScalarTest);
+            if scalar_test_selected != (program_state.outcome_branch_count == 1) {
+                self.error(
+                    RpgDiagnosticStage::Semantics,
+                    "RPG_IR_OUTCOME_BRANCH_COUNT_INVALID",
+                    format!("{path}.program"),
+                    "a scalar test requires exactly one on-outcome branch and other checks forbid it",
+                );
+            }
             if action.targets.kind == RpgIrTargetKind::Cell
                 && !is_selected_destination_movement_program(&action.program)
             {
@@ -1091,6 +1212,47 @@ impl<'a> Validator<'a> {
                 self.require_capability("capability.defenses", &format!("{path}.check"));
                 self.require_capability("capability.random", &format!("{path}.check"));
                 self.validate_formula(modifier, &format!("{path}.check.formula"));
+            }
+            RpgIrCheck::ScalarTest {
+                profile,
+                base,
+                difficulty,
+            } => {
+                if action.roll_scope == RpgIrRollScope::None {
+                    self.error(
+                        RpgDiagnosticStage::Semantics,
+                        "RPG_IR_ROLL_SCOPE_INVALID",
+                        format!("{path}.rollScope"),
+                        "a scalar test requires shared or per-target roll scope",
+                    );
+                }
+                if profile.ruleset_id.trim().is_empty() || profile.id.trim().is_empty() {
+                    self.error(
+                        RpgDiagnosticStage::References,
+                        "RPG_IR_SCALAR_TEST_PROFILE_INVALID",
+                        format!("{path}.check.profile"),
+                        "a scalar test requires an owned Ruleset profile reference",
+                    );
+                }
+                self.require_capability("capability.random", &format!("{path}.check"));
+                self.validate_formula(base, &format!("{path}.check.base"));
+                match difficulty {
+                    RpgIrScalarTestDifficulty::Explicit { value } => {
+                        self.validate_formula(value, &format!("{path}.check.difficulty.value"));
+                    }
+                    RpgIrScalarTestDifficulty::TargetDefense { defense_id } => {
+                        self.require_reference(
+                            CatalogKind::Defense,
+                            defense_id,
+                            &format!("{path}.check.difficulty.defenseId"),
+                            "defense",
+                        );
+                        self.require_capability(
+                            "capability.defenses",
+                            &format!("{path}.check.difficulty"),
+                        );
+                    }
+                }
             }
         }
     }
@@ -1249,6 +1411,7 @@ impl<'a> Validator<'a> {
                     }
                     CheckKind::Attack => saved.is_some() || failed.is_some() || no_roll.is_some(),
                     CheckKind::SavingThrow => hit.is_some() || miss.is_some() || no_roll.is_some(),
+                    CheckKind::ScalarTest => true,
                 };
                 if has_incompatible_branch {
                     self.error(
@@ -1279,6 +1442,59 @@ impl<'a> Validator<'a> {
                         );
                     }
                 }
+            }
+            RpgIrProgram::OnOutcome { branches, default } => {
+                state.outcome_branch_count = state.outcome_branch_count.saturating_add(1);
+                if !matches!(state.check_kind, CheckKind::ScalarTest) {
+                    self.error(
+                        RpgDiagnosticStage::Semantics,
+                        "RPG_IR_OUTCOME_BRANCH_INCOMPATIBLE",
+                        path,
+                        "on-outcome is available only to scalar-test actions",
+                    );
+                }
+                if state.action_target_maximum > 1 && !target_bound {
+                    self.error(
+                        RpgDiagnosticStage::Semantics,
+                        "RPG_IR_CHECK_TARGET_BINDING_REQUIRED",
+                        path,
+                        "a multi-target outcome branch must be inside for-each-target",
+                    );
+                }
+                if branches.is_empty() {
+                    self.error(
+                        RpgDiagnosticStage::Semantics,
+                        "RPG_IR_OUTCOME_BRANCH_EMPTY",
+                        format!("{path}.branches"),
+                        "on-outcome requires at least one explicit outcome-band branch",
+                    );
+                }
+                for (band_id, branch) in branches {
+                    if band_id.trim().is_empty() {
+                        self.error(
+                            RpgDiagnosticStage::References,
+                            "RPG_IR_OUTCOME_BAND_ID_INVALID",
+                            format!("{path}.branches"),
+                            "outcome-band branch identities cannot be empty",
+                        );
+                    }
+                    self.validate_program(
+                        branch,
+                        &format!("{path}.branches.{band_id}"),
+                        depth + 1,
+                        execution_multiplier,
+                        target_bound,
+                        state,
+                    );
+                }
+                self.validate_program(
+                    default,
+                    &format!("{path}.default"),
+                    depth + 1,
+                    execution_multiplier,
+                    target_bound,
+                    state,
+                );
             }
             RpgIrProgram::Atomic { body } => {
                 if depth != 1 {
