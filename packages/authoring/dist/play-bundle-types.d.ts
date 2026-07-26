@@ -895,7 +895,7 @@ export interface MaterializedContentDefinition {
 export interface PreparedPlayBundle {
     readonly schema: {
         readonly identity: "asha.rpg.play-bundle.prepared";
-        readonly major: 7;
+        readonly major: 8;
     };
     readonly playBundleIdentity: PlayBundleIdentity;
     readonly ruleset: Ruleset;

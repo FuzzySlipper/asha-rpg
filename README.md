@@ -34,8 +34,8 @@ compiled program with closed operation bindings, and `rpg-runtime` owns a
 versioned, PlayBundle-bound Scenario and authority session that stages
 state, explicit random evidence, typed reaction decisions, and turn
 progression together. Structured readbacks expose the board, participants,
-current actor, legal actions/targets, explicit end-turn control, reaction, log,
-and outcome without moving rule interpretation into a host. The `asha-rpg`
+current actor, legal participant/cell/area options, explicit end-turn control,
+reaction, log, and outcome without moving rule interpretation into a host. The `asha-rpg`
 crate is the supported consumer facade. There is no parallel gameplay fabric
 or disposable preview session.
 There is also no predecessor provider/module/action-definition compatibility
@@ -59,6 +59,14 @@ Contested roll pairs and reroll/keep mechanics remain unsupported. Programs supp
 sequence, predicate branch, repeat, per-target branch, check/outcome branches,
 and one atomic root. Unavailable semantics fail compilation; they are never
 delegated to consumer callbacks.
+
+Bounded area actions declare either an anchor-origin Manhattan diamond or an
+actor-origin orthogonal line plus range, team, living-state, and cardinality
+constraints. Rust projects session- and revision-bound legal anchors, derives
+cells and participants canonically, rejects stale proposals before consuming
+random evidence, and retains the exact accepted set in events and replay.
+Clients submit only the bound action/item identity and anchor; they do not
+compute target geometry.
 
 Rulesets explicitly bind checks, ordered turns, scenario-supplied initiative,
 reactions, and action economy to Rust-supported model versions. The variable
@@ -104,7 +112,7 @@ It exports distinct `Ruleset`, `ContentPack`, `PlayBundle`, and `Scenario`
 contracts. A Ruleset has no authored gameplay definitions; a Scenario has no
 definitions or gameplay script. It does not evaluate gameplay semantics or discover packages from global
 registries or the filesystem. Rust validates the prepared graph, creates the
-private executable plan, and emits the closed `asha.rpg.play-bundle.compiled@6`
+private executable plan, and emits the closed `asha.rpg.play-bundle.compiled@8`
 artifact with independent source, semantic, and presentation fingerprints.
 Representative consumer code lives in
 `examples/representative-actions.ts`; its normalized artifact is sent through

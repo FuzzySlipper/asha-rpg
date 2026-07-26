@@ -304,7 +304,7 @@ test("Ruleset scalar profiles author canonical ordered outcomes and reject gaps"
     result.ok ? "expected scalar profile" : JSON.stringify(result.diagnostics),
   );
   if (!result.ok) return;
-  assert.equal(result.prepared.schema.major, 7);
+  assert.equal(result.prepared.schema.major, 8);
   assert.deepEqual(
     result.prepared.ruleset.provides.scalarTestProfiles.map(
       (profile) => profile.id,

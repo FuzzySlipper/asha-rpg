@@ -7,18 +7,19 @@ use rpg_compiler::{CompiledPlayBundle, CompiledRpgAction, RulesetValueKey};
 use rpg_core::{
     ActiveRpgModifier, BoundedValue, GridPosition, RpgCapabilityState, RpgEntityState, RpgIntent,
     RpgIntentItemBinding, RpgRandomRequest, RpgReactionRequest, RpgResolutionRejection, RpgTeamId,
-    MAXIMUM_RPG_MODIFIER_TURNS,
+    StateFingerprint, MAXIMUM_RPG_MODIFIER_TURNS,
 };
 use rpg_ir::{
     MaterializedContentDefinitionKind, MaterializedContentVisibility, RpgIrActivation,
-    RulesetActivationBudgetResetBoundary, RulesetActivationTiming, RulesetValueKind,
+    RpgIrAreaOrigin, RpgIrAreaShape, RpgIrTargetSelector, RulesetActivationBudgetResetBoundary,
+    RulesetActivationTiming, RulesetValueKind,
 };
 use serde::{Deserialize, Serialize};
 
 pub const RPG_SCENARIO_SCHEMA_ID: &str = "asha.rpg.scenario";
 pub const RPG_SCENARIO_SCHEMA_VERSION: u32 = 2;
 pub const RPG_ENCOUNTER_VIEW_SCHEMA_ID: &str = "asha.rpg.encounter.view";
-pub const RPG_ENCOUNTER_VIEW_SCHEMA_VERSION: u32 = 9;
+pub const RPG_ENCOUNTER_VIEW_SCHEMA_VERSION: u32 = 10;
 pub const RPG_END_TURN_CONTROL_ID: &str = "control.end-turn";
 
 const MAXIMUM_BOARD_EXTENT: u32 = 1_024;
@@ -323,7 +324,7 @@ pub struct RpgItemInstanceView {
 pub struct RpgActionOptionsView {
     pub participant_ids: Vec<String>,
     pub cell_paths: Vec<RpgCellPathView>,
-    pub area_ids: Vec<String>,
+    pub area_options: Vec<RpgAreaOptionView>,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
@@ -332,6 +333,91 @@ pub struct RpgCellPathView {
     pub destination_cell_id: String,
     pub cell_ids: Vec<String>,
     pub movement_cost: u32,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase", deny_unknown_fields)]
+pub struct RpgAreaFilteredParticipantView {
+    pub participant_id: String,
+    pub reason: String,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase", deny_unknown_fields)]
+pub struct RpgAreaFilteredCellView {
+    pub x: i64,
+    pub y: i64,
+    pub reason: String,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase", deny_unknown_fields)]
+pub struct RpgAreaOptionView {
+    pub session_binding_id: String,
+    pub artifact_id: String,
+    pub scenario_fingerprint: StateFingerprint,
+    pub authority_revision: u64,
+    pub round: u64,
+    pub turn: u64,
+    pub current_actor_id: String,
+    pub action_id: String,
+    pub item_binding: Option<RpgIntentItemBinding>,
+    pub origin: RpgIrAreaOrigin,
+    pub shape: RpgIrAreaShape,
+    pub origin_cell_id: String,
+    pub anchor_cell_id: String,
+    pub included_cell_ids: Vec<String>,
+    pub filtered_cells: Vec<RpgAreaFilteredCellView>,
+    pub included_participant_ids: Vec<String>,
+    pub filtered_participants: Vec<RpgAreaFilteredParticipantView>,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub(crate) struct RpgAreaProjection {
+    pub origin: RpgIrAreaOrigin,
+    pub shape: RpgIrAreaShape,
+    pub origin_cell_id: String,
+    pub anchor_cell_id: String,
+    pub included_cells: Vec<RpgCellSetup>,
+    pub filtered_cells: Vec<RpgAreaFilteredCellView>,
+    pub included_participant_ids: Vec<String>,
+    pub filtered_participants: Vec<RpgAreaFilteredParticipantView>,
+}
+
+pub(crate) struct RpgAreaBoardIndex<'a> {
+    board: &'a RpgBoardSetup,
+    cells_by_id: BTreeMap<&'a str, &'a RpgCellSetup>,
+    cells_by_position: BTreeMap<GridPosition, &'a RpgCellSetup>,
+    participants_by_position: BTreeMap<GridPosition, Vec<&'a RpgEntityState>>,
+}
+
+impl<'a> RpgAreaBoardIndex<'a> {
+    pub(crate) fn new(board: &'a RpgBoardSetup, state: &'a RpgCapabilityState) -> Self {
+        let mut participants_by_position = BTreeMap::<_, Vec<_>>::new();
+        for participant in state.entities() {
+            participants_by_position
+                .entry(participant.position())
+                .or_default()
+                .push(participant);
+        }
+        for participants in participants_by_position.values_mut() {
+            participants.sort_by_key(|participant| participant.id());
+        }
+        Self {
+            board,
+            cells_by_id: board
+                .cells
+                .iter()
+                .map(|cell| (cell.id.as_str(), cell))
+                .collect(),
+            cells_by_position: board
+                .cells
+                .iter()
+                .map(|cell| (cell.position, cell))
+                .collect(),
+            participants_by_position,
+        }
+    }
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
@@ -382,7 +468,9 @@ pub enum RpgEncounterOutcomeView {
 #[serde(rename_all = "camelCase", deny_unknown_fields)]
 pub struct RpgEncounterView {
     pub schema: RpgSchemaIdentity,
+    pub session_binding_id: String,
     pub artifact_id: String,
+    pub scenario_fingerprint: StateFingerprint,
     pub state_revision: u64,
     pub accepted_random_position: u64,
     pub random_source: RpgRandomSourceBinding,
@@ -407,6 +495,26 @@ pub struct RpgActionProposal {
     pub target_ids: Vec<String>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub item_binding: Option<RpgIntentItemBinding>,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase", deny_unknown_fields)]
+pub struct RpgAreaActionProposal {
+    pub session_binding_id: String,
+    pub authority_revision: u64,
+    pub action_id: String,
+    pub actor_id: String,
+    pub anchor_cell_id: String,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub item_binding: Option<RpgIntentItemBinding>,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase", deny_unknown_fields)]
+pub struct RpgAreaSubmissionResult {
+    pub outcome: crate::RpgCommandOutcome,
+    pub replay_entry: Option<crate::RpgReplayEntry>,
+    pub encounter: RpgEncounterView,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
@@ -1920,6 +2028,174 @@ pub(crate) fn movement_paths(
         .collect()
 }
 
+pub(crate) fn area_projection(
+    board_index: &RpgAreaBoardIndex<'_>,
+    state: &RpgCapabilityState,
+    actor_id: &str,
+    targets: &RpgIrTargetSelector,
+    anchor_cell_id: &str,
+) -> Option<RpgAreaProjection> {
+    let board = board_index.board;
+    let area = targets.area.as_ref()?;
+    let actor = state.entity(actor_id)?;
+    let anchor = board_index.cells_by_id.get(anchor_cell_id)?;
+    let anchor_range = actor
+        .position()
+        .x
+        .abs_diff(anchor.position.x)
+        .saturating_add(actor.position().y.abs_diff(anchor.position.y));
+    if anchor_range > targets.maximum_range {
+        return None;
+    }
+
+    let (origin_cell_id, candidates) = match (&area.origin, &area.shape) {
+        (RpgIrAreaOrigin::Anchor, RpgIrAreaShape::Diamond { radius }) => {
+            let radius = i64::from(*radius);
+            let mut coordinates = Vec::new();
+            for delta_y in -radius..=radius {
+                let absolute_y = i64::try_from(delta_y.unsigned_abs()).ok()?;
+                let remaining_x = radius.saturating_sub(absolute_y);
+                for delta_x in -remaining_x..=remaining_x {
+                    let distance = u32::try_from(
+                        delta_x
+                            .unsigned_abs()
+                            .saturating_add(delta_y.unsigned_abs()),
+                    )
+                    .ok()?;
+                    coordinates.push((
+                        distance,
+                        i64::from(anchor.position.x).saturating_add(delta_x),
+                        i64::from(anchor.position.y).saturating_add(delta_y),
+                    ));
+                }
+            }
+            (anchor.id.clone(), coordinates)
+        }
+        (RpgIrAreaOrigin::Actor, RpgIrAreaShape::OrthogonalLine { length }) => {
+            let origin_cell = board_index.cells_by_position.get(&actor.position())?;
+            let delta_x = i64::from(anchor.position.x) - i64::from(actor.position().x);
+            let delta_y = i64::from(anchor.position.y) - i64::from(actor.position().y);
+            if (delta_x == 0) == (delta_y == 0) {
+                return None;
+            }
+            let step_x = delta_x.signum();
+            let step_y = delta_y.signum();
+            let anchor_steps = delta_x
+                .unsigned_abs()
+                .saturating_add(delta_y.unsigned_abs());
+            if anchor_steps == 0 || anchor_steps > u64::from(*length) {
+                return None;
+            }
+            let coordinates = (1..=*length)
+                .map(|distance| {
+                    let distance_i64 = i64::from(distance);
+                    (
+                        distance,
+                        i64::from(actor.position().x)
+                            .saturating_add(step_x.saturating_mul(distance_i64)),
+                        i64::from(actor.position().y)
+                            .saturating_add(step_y.saturating_mul(distance_i64)),
+                    )
+                })
+                .collect::<Vec<_>>();
+            (origin_cell.id.clone(), coordinates)
+        }
+        _ => return None,
+    };
+    if candidates.is_empty() || candidates.len() > 256 {
+        return None;
+    }
+    let mut ranked_cells = Vec::new();
+    let mut filtered_cells = Vec::new();
+    for (distance, x, y) in candidates {
+        let outside_board =
+            x < 0 || y < 0 || x >= i64::from(board.width) || y >= i64::from(board.height);
+        if outside_board {
+            filtered_cells.push((
+                (distance, y, x),
+                RpgAreaFilteredCellView {
+                    x,
+                    y,
+                    reason: "outsideBoard".to_owned(),
+                },
+            ));
+            continue;
+        }
+        let position = GridPosition {
+            x: u32::try_from(x).ok()?,
+            y: u32::try_from(y).ok()?,
+        };
+        match board_index.cells_by_position.get(&position) {
+            Some(cell) => ranked_cells.push(((distance, y, x, cell.id.as_str()), (*cell).clone())),
+            None => filtered_cells.push((
+                (distance, y, x),
+                RpgAreaFilteredCellView {
+                    x,
+                    y,
+                    reason: "cellMissing".to_owned(),
+                },
+            )),
+        }
+    }
+    ranked_cells.sort_by(|left, right| left.0.cmp(&right.0));
+    filtered_cells.sort_by_key(|candidate| candidate.0);
+    let included_cells = ranked_cells
+        .into_iter()
+        .map(|(_, cell)| cell)
+        .collect::<Vec<_>>();
+    let filtered_cells = filtered_cells
+        .into_iter()
+        .map(|(_, cell)| cell)
+        .collect::<Vec<_>>();
+    if included_cells.iter().all(|cell| cell.id != anchor_cell_id) {
+        return None;
+    }
+    let mut included_participant_ids = Vec::new();
+    let mut filtered = Vec::new();
+    for cell in &included_cells {
+        let Some(participants) = board_index.participants_by_position.get(&cell.position) else {
+            continue;
+        };
+        for participant in participants {
+            let team_allowed = match targets.team {
+                rpg_ir::RpgIrTeamConstraint::Hostile => participant.team() != actor.team(),
+                rpg_ir::RpgIrTeamConstraint::Ally => participant.team() == actor.team(),
+                rpg_ir::RpgIrTeamConstraint::Any => true,
+            };
+            let reason = if !team_allowed {
+                Some("teamMismatch")
+            } else if area.living_required && participant.vitality().current <= 0 {
+                Some("notLiving")
+            } else {
+                None
+            };
+            if let Some(reason) = reason {
+                filtered.push(RpgAreaFilteredParticipantView {
+                    participant_id: participant.id().to_owned(),
+                    reason: reason.to_owned(),
+                });
+            } else {
+                included_participant_ids.push(participant.id().to_owned());
+            }
+        }
+    }
+    if included_participant_ids.len() < area.minimum_targets as usize
+        || included_participant_ids.len() > targets.maximum_targets as usize
+    {
+        return None;
+    }
+    Some(RpgAreaProjection {
+        origin: area.origin,
+        shape: area.shape.clone(),
+        origin_cell_id,
+        anchor_cell_id: anchor_cell_id.to_owned(),
+        included_cells,
+        filtered_cells,
+        included_participant_ids,
+        filtered_participants: filtered,
+    })
+}
+
 pub(crate) fn runtime_board_rejection(
     board: &RpgBoardSetup,
     state: &RpgCapabilityState,
@@ -2169,7 +2445,7 @@ pub(crate) fn action_view(
 ) -> RpgActionView {
     let has_options = !options.participant_ids.is_empty()
         || !options.cell_paths.is_empty()
-        || !options.area_ids.is_empty();
+        || !options.area_options.is_empty();
     RpgActionView {
         definition_id: action.id,
         label: item_label

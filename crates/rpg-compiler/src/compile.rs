@@ -25,6 +25,9 @@ const MAX_EXPRESSION_DEPTH: usize = 16;
 const MAX_EXPRESSION_NODES: usize = 256;
 const MAX_REPEAT_COUNT: u32 = 16;
 const MAX_TARGET_COUNT: u32 = 32;
+const MAX_AREA_CELLS: u32 = 256;
+const MAX_BOARD_EXTENT: u32 = 1_024;
+const MAX_AREA_ANCHOR_RANGE: u32 = (MAX_BOARD_EXTENT - 1) * 2;
 const MAX_DICE_COUNT: u32 = 64;
 const MAX_DICE_SIDES: u32 = 1_000;
 
@@ -1254,6 +1257,7 @@ impl<'a> Validator<'a> {
             if action.targets.kind == RpgIrTargetKind::Cell {
                 if action.targets.team != RpgIrTeamConstraint::Any
                     || action.targets.maximum_targets != 1
+                    || action.targets.area.is_some()
                 {
                     self.error(
                         RpgDiagnosticStage::Semantics,
@@ -1270,6 +1274,52 @@ impl<'a> Validator<'a> {
                         "cell-target actions require a no-roll check",
                     );
                 }
+            }
+            match (&action.targets.kind, &action.targets.area) {
+                (RpgIrTargetKind::Area, Some(area)) => {
+                    let schema_valid = area.schema.identity == "asha.rpg.area-selector"
+                        && area.schema.version == 1;
+                    let shape_cells = match (&area.origin, &area.shape) {
+                        (
+                            rpg_ir::RpgIrAreaOrigin::Anchor,
+                            rpg_ir::RpgIrAreaShape::Diamond { radius },
+                        ) if *radius <= MAX_BOARD_EXTENT => radius
+                            .checked_add(1)
+                            .and_then(|next| radius.checked_mul(next))
+                            .and_then(|product| product.checked_mul(2))
+                            .and_then(|product| product.checked_add(1)),
+                        (
+                            rpg_ir::RpgIrAreaOrigin::Actor,
+                            rpg_ir::RpgIrAreaShape::OrthogonalLine { length },
+                        ) if (1..=MAX_AREA_CELLS).contains(length) => Some(*length),
+                        _ => None,
+                    };
+                    if !schema_valid
+                        || action.targets.maximum_range > MAX_AREA_ANCHOR_RANGE
+                        || area.minimum_targets > action.targets.maximum_targets
+                        || shape_cells.is_none_or(|count| count > MAX_AREA_CELLS)
+                    {
+                        self.error(
+                            RpgDiagnosticStage::Semantics,
+                            "RPG_IR_AREA_TARGET_INVALID",
+                            format!("{path}.targets.area"),
+                            "area targets require the versioned bounded diamond/anchor or orthogonal-line/actor contract",
+                        );
+                    }
+                }
+                (RpgIrTargetKind::Area, None) => self.error(
+                    RpgDiagnosticStage::Semantics,
+                    "RPG_IR_AREA_TARGET_REQUIRED",
+                    format!("{path}.targets.area"),
+                    "area-target actions require an area selector",
+                ),
+                (_, Some(_)) => self.error(
+                    RpgDiagnosticStage::Semantics,
+                    "RPG_IR_AREA_TARGET_UNEXPECTED",
+                    format!("{path}.targets.area"),
+                    "only area-target actions may declare an area selector",
+                ),
+                (_, None) => {}
             }
             self.validate_check(action, &path);
             if let Some(activation) = &action.activation {
@@ -1319,6 +1369,19 @@ impl<'a> Validator<'a> {
                 false,
                 &mut program_state,
             );
+            if action.targets.kind == RpgIrTargetKind::Area
+                && !area_program_covers_target_maximum(
+                    &action.program,
+                    action.targets.maximum_targets,
+                )
+            {
+                self.error(
+                    RpgDiagnosticStage::Semantics,
+                    "RPG_IR_AREA_PROGRAM_BOUND_INVALID",
+                    format!("{path}.program"),
+                    "every area-target for-each bound must equal the selector maximum",
+                );
+            }
             let outcome_check_selected = matches!(
                 program_state.check_kind,
                 CheckKind::ScalarTest | CheckKind::HeterogeneousPool
@@ -2274,6 +2337,60 @@ fn requirement_kind_key(kind: RpgIrRequirementKind) -> u8 {
         RpgIrRequirementKind::Operation => 0,
         RpgIrRequirementKind::Capability => 1,
     }
+}
+
+fn area_program_covers_target_maximum(program: &RpgIrProgram, maximum: u32) -> bool {
+    fn collect(program: &RpgIrProgram, maxima: &mut Vec<u32>) {
+        match program {
+            RpgIrProgram::Operation { .. } => {}
+            RpgIrProgram::Sequence { steps } => {
+                for step in steps {
+                    collect(step, maxima);
+                }
+            }
+            RpgIrProgram::When {
+                then, otherwise, ..
+            } => {
+                collect(then, maxima);
+                if let Some(otherwise) = otherwise {
+                    collect(otherwise, maxima);
+                }
+            }
+            RpgIrProgram::Repeat { body, .. } | RpgIrProgram::Atomic { body } => {
+                collect(body, maxima);
+            }
+            RpgIrProgram::ForEachTarget {
+                maximum: bound,
+                body,
+            } => {
+                maxima.push(*bound);
+                collect(body, maxima);
+            }
+            RpgIrProgram::OnCheck {
+                hit,
+                miss,
+                saved,
+                failed,
+                no_roll,
+            } => {
+                for branch in [hit, miss, saved, failed, no_roll].into_iter().flatten() {
+                    collect(branch, maxima);
+                }
+            }
+            RpgIrProgram::OnOutcome {
+                branches, default, ..
+            } => {
+                for branch in branches.values() {
+                    collect(branch, maxima);
+                }
+                collect(default, maxima);
+            }
+        }
+    }
+
+    let mut maxima = Vec::new();
+    collect(program, &mut maxima);
+    !maxima.is_empty() && maxima.into_iter().all(|bound| bound == maximum)
 }
 
 fn is_portable_identifier(value: &str) -> bool {

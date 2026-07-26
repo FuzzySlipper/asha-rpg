@@ -29,6 +29,36 @@ export function cells(options) {
         maximumTargets: 1,
     });
 }
+export function diamondArea(options) {
+    return frozen({
+        kind: 'area',
+        team: options.team,
+        maximumRange: options.range,
+        maximumTargets: options.maximumTargets ?? 32,
+        area: frozen({
+            schema: frozen({ identity: 'asha.rpg.area-selector', version: 1 }),
+            origin: 'anchor',
+            shape: frozen({ kind: 'diamond', radius: options.radius }),
+            livingRequired: options.livingRequired ?? true,
+            minimumTargets: options.minimumTargets ?? 1,
+        }),
+    });
+}
+export function orthogonalLineArea(options) {
+    return frozen({
+        kind: 'area',
+        team: options.team,
+        maximumRange: options.range,
+        maximumTargets: options.maximumTargets ?? 32,
+        area: frozen({
+            schema: frozen({ identity: 'asha.rpg.area-selector', version: 1 }),
+            origin: 'actor',
+            shape: frozen({ kind: 'orthogonalLine', length: options.length }),
+            livingRequired: options.livingRequired ?? true,
+            minimumTargets: options.minimumTargets ?? 1,
+        }),
+    });
+}
 export function hostile(options) {
     return options.maximum === undefined
         ? targets({ team: 'hostile', maximumRange: options.range })

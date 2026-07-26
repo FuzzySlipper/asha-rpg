@@ -4,13 +4,13 @@
 lane = "rust-domain"
 implementation_status = "active"
 may_depend_on = ["serde"]
-owns = ["authority values", "open team identities", "typed intent cell bindings", "contextual contribution contracts and accepted DomainEvents", "activation-budget capability state and owner", "stable portable state construction"]
+owns = ["authority values", "open team identities", "typed intent cell and area-selection bindings", "contextual contribution contracts and accepted DomainEvents", "activation-budget capability state and owner", "stable portable state construction"]
 
 [crate."crates/rpg-ir"]
 lane = "rust-language"
 implementation_status = "active"
 may_depend_on = ["rpg-core", "serde"]
-owns = ["normalized RPG IR", "Ruleset wire contract", "compiled PlayBundle artifact wire contract", "typed derivation and overlay provenance wire contracts"]
+owns = ["normalized RPG IR and bounded target selectors", "Ruleset wire contract", "compiled PlayBundle artifact wire contract", "typed derivation and overlay provenance wire contracts"]
 
 [crate."crates/rpg-compiler"]
 lane = "rust-language"
@@ -22,7 +22,7 @@ owns = ["semantic compilation", "private compiled plans", "Ruleset provision val
 lane = "rust-authority"
 implementation_status = "active"
 may_depend_on = ["rpg-core", "rpg-ir", "rpg-compiler", "serde", "serde_json"]
-owns = ["PlayBundle-bound Scenario validation", "single authority session", "turn, activation-budget, and encounter readback authority", "legal participant and cell option projection", "activation-budget reset transitions", "encounter-owned contribution context facts", "host-supplied random evidence interface", "bounded roll-tape source", "portable checkpoint and replay contracts", "canonical session state hash", "pending reaction restore"]
+owns = ["PlayBundle-bound Scenario validation", "single authority session", "turn, activation-budget, and encounter readback authority", "legal participant, cell-path, and bounded-area option projection", "activation-budget reset transitions", "encounter-owned contribution context facts", "host-supplied random evidence interface", "bounded roll-tape source", "portable checkpoint and replay contracts", "canonical session state hash", "pending reaction restore"]
 
 [crate."crates/asha-rpg"]
 lane = "rust-api"
@@ -44,4 +44,4 @@ type = "lib"
 layer = "domain"
 implementation_status = "active"
 may_depend_on = ["@asha-rpg/ir"]
-owns = ["immutable Ruleset, Content Pack, PlayBundle, Scenario, and scalar contribution authoring contracts", "explicit Content Pack dependency resolution", "deterministic base, mixin, overlay, and configuration materialization into prepared PlayBundles"]
+owns = ["immutable Ruleset, Content Pack, PlayBundle, Scenario, bounded-area selector, and scalar contribution authoring contracts", "explicit Content Pack dependency resolution", "deterministic base, mixin, overlay, and configuration materialization into prepared PlayBundles"]

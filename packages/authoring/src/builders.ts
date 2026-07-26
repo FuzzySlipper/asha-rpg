@@ -102,6 +102,52 @@ export function cells(options: {
   });
 }
 
+export function diamondArea(options: {
+  readonly range: number;
+  readonly radius: number;
+  readonly team: 'hostile' | 'ally' | 'any';
+  readonly livingRequired?: boolean;
+  readonly minimumTargets?: number;
+  readonly maximumTargets?: number;
+}): RpgIrTargetSelector {
+  return frozen({
+    kind: 'area',
+    team: options.team,
+    maximumRange: options.range,
+    maximumTargets: options.maximumTargets ?? 32,
+    area: frozen({
+      schema: frozen({ identity: 'asha.rpg.area-selector', version: 1 }),
+      origin: 'anchor',
+      shape: frozen({ kind: 'diamond', radius: options.radius }),
+      livingRequired: options.livingRequired ?? true,
+      minimumTargets: options.minimumTargets ?? 1,
+    }),
+  });
+}
+
+export function orthogonalLineArea(options: {
+  readonly range: number;
+  readonly length: number;
+  readonly team: 'hostile' | 'ally' | 'any';
+  readonly livingRequired?: boolean;
+  readonly minimumTargets?: number;
+  readonly maximumTargets?: number;
+}): RpgIrTargetSelector {
+  return frozen({
+    kind: 'area',
+    team: options.team,
+    maximumRange: options.range,
+    maximumTargets: options.maximumTargets ?? 32,
+    area: frozen({
+      schema: frozen({ identity: 'asha.rpg.area-selector', version: 1 }),
+      origin: 'actor',
+      shape: frozen({ kind: 'orthogonalLine', length: options.length }),
+      livingRequired: options.livingRequired ?? true,
+      minimumTargets: options.minimumTargets ?? 1,
+    }),
+  });
+}
+
 export function hostile(options: {
   readonly range: number;
   readonly maximum?: number;

@@ -273,13 +273,72 @@ function validateAction(
   }
   if (
     action.targets.kind === 'cell' &&
-    (action.targets.team !== 'any' || action.targets.maximumTargets !== 1)
+    (action.targets.team !== 'any' ||
+      action.targets.maximumTargets !== 1 ||
+      action.targets.area !== undefined)
   ) {
     diagnostics.push(
       diagnostic(
         'normalization.cellTargetInvalid',
         `${path}.targets`,
         'cell targets require team any and exactly one destination',
+        action.sourcePath,
+      ),
+    );
+  }
+  if (action.targets.kind === 'area') {
+    const area = action.targets.area;
+    const shapeBound =
+      area?.shape.kind === 'diamond'
+        ? 1 + 2 * area.shape.radius * (area.shape.radius + 1)
+        : area?.shape.kind === 'orthogonalLine'
+          ? area.shape.length
+          : 0;
+    const shapeValid =
+      area !== undefined &&
+      area.schema.identity === 'asha.rpg.area-selector' &&
+      area.schema.version === 1 &&
+      integerInRange(area.minimumTargets, 0, action.targets.maximumTargets) &&
+      integerInRange(action.targets.maximumRange, 0, 2046) &&
+      shapeBound >= 1 &&
+      shapeBound <= 256 &&
+      ((area.origin === 'anchor' &&
+        area.shape.kind === 'diamond' &&
+        integerInRange(area.shape.radius, 0, 1024)) ||
+        (area.origin === 'actor' &&
+          area.shape.kind === 'orthogonalLine' &&
+          integerInRange(area.shape.length, 1, 256)));
+    if (!shapeValid) {
+      diagnostics.push(
+        diagnostic(
+          'normalization.areaTargetInvalid',
+          `${path}.targets.area`,
+          'area targets require the versioned bounded diamond/anchor or orthogonal-line/actor contract',
+          action.sourcePath,
+        ),
+      );
+    }
+    if (
+      !areaProgramCoversTargetMaximum(
+        action.program,
+        action.targets.maximumTargets,
+      )
+    ) {
+      diagnostics.push(
+        diagnostic(
+          'normalization.areaProgramBoundInvalid',
+          `${path}.program`,
+          'every area-target for-each bound must equal the selector maximum',
+          action.sourcePath,
+        ),
+      );
+    }
+  } else if (action.targets.area !== undefined) {
+    diagnostics.push(
+      diagnostic(
+        'normalization.areaTargetUnexpected',
+        `${path}.targets.area`,
+        'only area-target actions may declare an area selector',
         action.sourcePath,
       ),
     );
@@ -440,6 +499,49 @@ function isSelectedDestinationMovementProgram(
     program.noRoll.kind === 'operation' &&
     program.noRoll.operation.kind === 'moveToCell'
   );
+}
+
+function areaProgramCoversTargetMaximum(
+  program: AuthoringProgram,
+  maximum: number,
+): boolean {
+  const maxima: number[] = [];
+  const collect = (node: AuthoringProgram): void => {
+    switch (node.kind) {
+      case 'operation':
+        return;
+      case 'sequence':
+        node.steps.forEach(collect);
+        return;
+      case 'when':
+        collect(node.then);
+        if (node.otherwise !== undefined) collect(node.otherwise);
+        return;
+      case 'repeat':
+        collect(node.body);
+        return;
+      case 'forEachTarget':
+        maxima.push(node.maximum);
+        collect(node.body);
+        return;
+      case 'onCheck':
+        [
+          node.hit,
+          node.miss,
+          node.saved,
+          node.failed,
+          node.noRoll,
+        ].forEach((branch) => {
+          if (branch !== undefined) collect(branch);
+        });
+        return;
+      case 'onOutcome':
+        Object.values(node.branches).forEach(collect);
+        collect(node.default);
+    }
+  };
+  collect(program);
+  return maxima.length > 0 && maxima.every((bound) => bound === maximum);
 }
 
 function countOperations(

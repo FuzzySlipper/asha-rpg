@@ -4,21 +4,21 @@ use asha_rpg::{
     ContentRelationshipKind, ContentRelationshipProvenance, ContentSourceLocation,
     ContentValueRequirement, GridPosition, MaterializedContentDefinition,
     MaterializedContentDefinitionKind, MaterializedContentVisibility, PlayBundleArtifactSchema,
-    PreparedPlayBundle, ResolvedContentPack, RpgActionProposal, RpgAuthoritySession,
-    RpgAutomaticCommandFailure, RpgBoardSetup, RpgCellCapabilitySetup, RpgCellCapabilityValue,
-    RpgCellSetup, RpgCommandOutcome, RpgContributionDisposition, RpgContributionStackingPolicy,
-    RpgDomainEvent, RpgInitialCapability, RpgNaturalDieEffect, RpgOutcomeBandShiftDisposition,
-    RpgParticipantSetup, RpgRandomRequest, RpgRandomRequestKind, RpgRandomSourceBinding,
-    RpgRollTapeEntry, RpgRollTapeSource, RpgScalarContributionLedger, RpgScenario, RpgTeamId,
-    RpgTurnControl, RpgTurnControlProposal, RpgTurnInitialization, RpgVersionedIdentity, Ruleset,
-    RulesetActionEconomyModel, RulesetActivationBudget, RulesetActivationBudgetResetBoundary,
-    RulesetActivationTiming, RulesetCalculationSelectorContract,
-    RulesetContributionStackingGroupContract, RulesetHeterogeneousPoolProfile,
-    RulesetMarginBandRule, RulesetModels, RulesetNaturalDieRule, RulesetNumericDomain,
-    RulesetOutcomeBand, RulesetPoolAxisValue, RulesetPoolCancellation, RulesetPoolDieType,
-    RulesetPoolFace, RulesetPoolResultAxis, RulesetProvisions, RulesetScalarTestProfile,
-    RulesetSchema, RulesetValueContract, RulesetValueExpression, RulesetValueFormula,
-    RulesetValueFormulaSchema, RulesetValueKind, RulesetValueSource,
+    PreparedPlayBundle, ResolvedContentPack, RpgActionProposal, RpgAreaActionProposal,
+    RpgAuthoritySession, RpgAutomaticCommandFailure, RpgBoardSetup, RpgCellCapabilitySetup,
+    RpgCellCapabilityValue, RpgCellSetup, RpgCommandOutcome, RpgContributionDisposition,
+    RpgContributionStackingPolicy, RpgDomainEvent, RpgInitialCapability, RpgNaturalDieEffect,
+    RpgOutcomeBandShiftDisposition, RpgParticipantSetup, RpgRandomRequest, RpgRandomRequestKind,
+    RpgRandomSourceBinding, RpgRollTapeEntry, RpgRollTapeSource, RpgScalarContributionLedger,
+    RpgScenario, RpgTeamId, RpgTurnControl, RpgTurnControlProposal, RpgTurnInitialization,
+    RpgVersionedIdentity, Ruleset, RulesetActionEconomyModel, RulesetActivationBudget,
+    RulesetActivationBudgetResetBoundary, RulesetActivationTiming,
+    RulesetCalculationSelectorContract, RulesetContributionStackingGroupContract,
+    RulesetHeterogeneousPoolProfile, RulesetMarginBandRule, RulesetModels, RulesetNaturalDieRule,
+    RulesetNumericDomain, RulesetOutcomeBand, RulesetPoolAxisValue, RulesetPoolCancellation,
+    RulesetPoolDieType, RulesetPoolFace, RulesetPoolResultAxis, RulesetProvisions,
+    RulesetScalarTestProfile, RulesetSchema, RulesetValueContract, RulesetValueExpression,
+    RulesetValueFormula, RulesetValueFormulaSchema, RulesetValueKind, RulesetValueSource,
     RulesetVectorOutcomeRequirement, RulesetVectorOutcomeRule, VersionedRpgRequirement,
     EFFECT_DEFINITION_VERSION, PLAY_BUNDLE_ARTIFACT_MAJOR, PREPARED_PLAY_BUNDLE_IDENTITY,
 };
@@ -107,6 +107,429 @@ fn public_facade_builds_an_artifact_bound_setup_and_executes_a_turn() {
     ));
     assert_eq!(session.turn().current_actor_id, "opponent");
     assert_eq!(session.encounter_view().log.len(), 2);
+}
+
+#[test]
+fn area_targets_are_authority_projected_bound_stale_safe_and_exactly_replayable() {
+    let bundle = compile_prepared_play_bundle(area_prepared()).unwrap();
+    let scenario = area_scenario(&bundle);
+    let mut session = RpgAuthoritySession::from_scenario(bundle.clone(), scenario.clone()).unwrap();
+    let initial = session.checkpoint().unwrap();
+    let initial_view = session.encounter_view();
+    assert_eq!(initial_view.artifact_id, bundle.artifact().artifact_id);
+    assert_eq!(
+        initial_view.scenario_fingerprint,
+        initial.scenario_fingerprint
+    );
+
+    let diamond = area_option(&initial_view, "action.area-diamond", "cell-3-1");
+    assert_eq!(
+        area_option(&session.encounter_view(), "action.area-diamond", "cell-3-1"),
+        diamond
+    );
+    assert!(serde_json::from_value::<RpgAreaActionProposal>(json!({
+        "sessionBindingId": diamond.session_binding_id.clone(),
+        "authorityRevision": diamond.authority_revision,
+        "actionId": diamond.action_id.clone(),
+        "actorId": diamond.current_actor_id.clone(),
+        "anchorCellId": diamond.anchor_cell_id.clone(),
+        "includedParticipantIds": diamond.included_participant_ids.clone()
+    }))
+    .is_err());
+    assert_eq!(diamond.session_binding_id, initial_view.session_binding_id);
+    assert_eq!(diamond.authority_revision, 0);
+    assert_eq!(diamond.round, 1);
+    assert_eq!(diamond.turn, 1);
+    assert_eq!(diamond.current_actor_id, "actor");
+    assert_eq!(diamond.origin_cell_id, "cell-3-1");
+    assert_eq!(
+        diamond.shape,
+        asha_rpg::RpgIrAreaShape::Diamond { radius: 1 }
+    );
+    assert_eq!(
+        diamond.included_cell_ids,
+        ["cell-3-1", "cell-3-0", "cell-2-1", "cell-4-1", "cell-3-2"]
+    );
+    assert_eq!(diamond.included_participant_ids, ["hostile-b", "hostile-a"]);
+    assert!(diamond.filtered_participants.is_empty());
+
+    let centered = area_option(&initial_view, "action.area-diamond", "cell-2-1");
+    assert!(centered.filtered_participants.iter().any(|participant| {
+        participant.participant_id == "ally" && participant.reason == "teamMismatch"
+    }));
+    assert!(centered.filtered_participants.iter().any(|participant| {
+        participant.participant_id == "dead-hostile" && participant.reason == "notLiving"
+    }));
+
+    let clipped = area_option(&initial_view, "action.area-diamond", "cell-4-0");
+    assert_eq!(
+        clipped.included_cell_ids,
+        ["cell-4-0", "cell-3-0", "cell-4-1"]
+    );
+    assert_eq!(
+        clipped
+            .filtered_cells
+            .iter()
+            .map(|cell| (cell.x, cell.y, cell.reason.as_str()))
+            .collect::<Vec<_>>(),
+        [(4, -1, "outsideBoard"), (5, 0, "outsideBoard")]
+    );
+    assert_eq!(clipped.included_participant_ids, ["edge-hostile"]);
+    assert!(initial_view
+        .actions
+        .iter()
+        .find(|action| action.definition_id == "action.area-diamond")
+        .unwrap()
+        .options
+        .area_options
+        .iter()
+        .all(|option| option.anchor_cell_id != "cell-0-2"));
+    let empty = area_option(&initial_view, "action.area-empty", "cell-0-2");
+    assert!(empty.included_participant_ids.is_empty());
+
+    let mut restored = RpgAuthoritySession::restore_checkpoint(initial.clone()).unwrap();
+    assert_eq!(restored.state().revision(), diamond.authority_revision);
+    assert_ne!(restored.session_binding_id(), diamond.session_binding_id);
+    let restored_before = restored.state_hash().unwrap();
+    let restored_view_before = restored.encounter_view();
+    let mut no_evidence =
+        RpgRollTapeSource::new(restored.scenario().random_source.clone(), Vec::new());
+    let stale_session = restored
+        .submit_area_with_random_source_recorded(area_proposal(&diamond), &mut no_evidence)
+        .unwrap();
+    assert!(matches!(
+        stale_session.outcome,
+        RpgCommandOutcome::Rejected(ref rejection)
+            if rejection.code == "RPG_AREA_OPTION_STALE"
+                && rejection.path == "$.proposal.sessionBindingId"
+    ));
+    assert!(stale_session.replay_entry.is_none());
+    assert_eq!(restored.state_hash().unwrap(), restored_before);
+    assert_eq!(
+        stale_session.encounter.session_binding_id,
+        restored.session_binding_id()
+    );
+    assert_eq!(
+        stale_session.encounter.accepted_random_position,
+        restored_view_before.accepted_random_position
+    );
+    assert_eq!(stale_session.encounter.log, restored_view_before.log);
+
+    let mut replacement =
+        RpgAuthoritySession::from_scenario(bundle.clone(), scenario.clone()).unwrap();
+    replacement
+        .replace_from_checkpoint(initial.clone())
+        .unwrap();
+    assert_eq!(replacement.state().revision(), diamond.authority_revision);
+    assert_ne!(replacement.session_binding_id(), diamond.session_binding_id);
+    let mut no_evidence =
+        RpgRollTapeSource::new(replacement.scenario().random_source.clone(), Vec::new());
+    let stale_replacement = replacement
+        .submit_area_with_random_source_recorded(area_proposal(&diamond), &mut no_evidence)
+        .unwrap();
+    assert!(matches!(
+        stale_replacement.outcome,
+        RpgCommandOutcome::Rejected(ref rejection)
+            if rejection.code == "RPG_AREA_OPTION_STALE"
+                && rejection.path == "$.proposal.sessionBindingId"
+    ));
+
+    let mut unrelated =
+        RpgAuthoritySession::from_scenario(bundle.clone(), scenario.clone()).unwrap();
+    let unrelated_option = area_option(
+        &unrelated.encounter_view(),
+        "action.area-diamond",
+        "cell-3-1",
+    );
+    let (control, _) = unrelated
+        .control_recorded(RpgTurnControlProposal {
+            expected_revision: 0,
+            actor_id: "actor".to_owned(),
+            control: RpgTurnControl::EndTurn,
+        })
+        .unwrap();
+    assert!(matches!(control, RpgCommandOutcome::ControlAccepted(_)));
+    let unrelated_before = unrelated.state_hash().unwrap();
+    let mut no_evidence =
+        RpgRollTapeSource::new(unrelated.scenario().random_source.clone(), Vec::new());
+    let stale_unrelated = unrelated
+        .submit_area_with_random_source_recorded(area_proposal(&unrelated_option), &mut no_evidence)
+        .unwrap();
+    assert!(matches!(
+        stale_unrelated.outcome,
+        RpgCommandOutcome::Rejected(ref rejection)
+            if rejection.code == "RPG_AREA_OPTION_STALE"
+                && rejection.path == "$.proposal.authorityRevision"
+    ));
+    assert_eq!(unrelated.state_hash().unwrap(), unrelated_before);
+
+    let line = area_option(&initial_view, "action.area-line", "cell-2-1");
+    let mut invalid_anchor = area_proposal(&line);
+    invalid_anchor.anchor_cell_id = "cell-1-1".to_owned();
+    let mut no_evidence =
+        RpgRollTapeSource::new(session.scenario().random_source.clone(), Vec::new());
+    let invalid = session
+        .submit_area_with_random_source_recorded(invalid_anchor, &mut no_evidence)
+        .unwrap();
+    assert!(matches!(
+        invalid.outcome,
+        RpgCommandOutcome::Rejected(ref rejection)
+            if rejection.code == "RPG_AREA_OPTION_INVALID"
+                && rejection.path == "$.proposal.anchorCellId"
+    ));
+    assert!(invalid.replay_entry.is_none());
+    assert_eq!(session.state().revision(), 0);
+
+    let (moved, _) = submit_no_random(
+        &mut session,
+        RpgActionProposal {
+            expected_revision: 0,
+            action_id: "action.move-candidate".to_owned(),
+            actor_id: "actor".to_owned(),
+            target_ids: vec!["hostile-a".to_owned()],
+            item_binding: None,
+        },
+    );
+    let RpgCommandOutcome::Accepted(_) = moved else {
+        panic!("candidate movement should be accepted: {moved:?}");
+    };
+    assert_eq!(
+        session.state().entity("hostile-a").unwrap().position(),
+        GridPosition { x: 1, y: 2 }
+    );
+    let moved_state = session.state_hash().unwrap();
+    let mut no_evidence =
+        RpgRollTapeSource::new(session.scenario().random_source.clone(), Vec::new());
+    let stale_revision = session
+        .submit_area_with_random_source_recorded(area_proposal(&diamond), &mut no_evidence)
+        .unwrap();
+    assert!(matches!(
+        stale_revision.outcome,
+        RpgCommandOutcome::Rejected(ref rejection)
+            if rejection.code == "RPG_AREA_OPTION_STALE"
+                && rejection.path == "$.proposal.authorityRevision"
+    ));
+    assert!(stale_revision.replay_entry.is_none());
+    assert_eq!(session.state_hash().unwrap(), moved_state);
+
+    while session.turn().current_actor_id != "actor" {
+        let actor_id = session.turn().current_actor_id.clone();
+        let (outcome, _) = session
+            .control_recorded(RpgTurnControlProposal {
+                expected_revision: session.state().revision(),
+                actor_id,
+                control: RpgTurnControl::EndTurn,
+            })
+            .unwrap();
+        assert!(matches!(outcome, RpgCommandOutcome::ControlAccepted(_)));
+    }
+    let moved_view = session.encounter_view();
+    let moved_diamond = area_option(&moved_view, "action.area-diamond", "cell-3-1");
+    assert_eq!(moved_diamond.included_participant_ids, ["hostile-b"]);
+
+    let mut accepted =
+        RpgAuthoritySession::from_scenario(bundle.clone(), scenario.clone()).unwrap();
+    let accepted_initial = accepted.checkpoint().unwrap();
+    let option = area_option(
+        &accepted.encounter_view(),
+        "action.area-diamond",
+        "cell-3-1",
+    );
+    let mut source = RpgRollTapeSource::new(
+        accepted.scenario().random_source.clone(),
+        [
+            RpgRollTapeEntry {
+                request: RpgRandomRequest {
+                    kind: RpgRandomRequestKind::AttackCheck,
+                    count: 1,
+                    sides: 20,
+                    path: "$.action.check.targets[0].roll".to_owned(),
+                    heterogeneous_terms: Vec::new(),
+                },
+                values: vec![20],
+            },
+            RpgRollTapeEntry {
+                request: RpgRandomRequest {
+                    kind: RpgRandomRequestKind::AttackCheck,
+                    count: 1,
+                    sides: 20,
+                    path: "$.action.check.targets[1].roll".to_owned(),
+                    heterogeneous_terms: Vec::new(),
+                },
+                values: vec![1],
+            },
+        ],
+    );
+    let submitted = accepted
+        .submit_area_with_random_source_recorded(area_proposal(&option), &mut source)
+        .unwrap();
+    let RpgCommandOutcome::Accepted(receipt) = &submitted.outcome else {
+        panic!(
+            "bounded diamond should be accepted: {:?}",
+            submitted.outcome
+        );
+    };
+    assert_eq!(receipt.trace[0].code, "RPG_AREA_TARGETS_DERIVED");
+    assert!(matches!(
+        &receipt.events[0],
+        RpgDomainEvent::AreaTargetsDerived {
+            proposal_revision: 0,
+            shape: asha_rpg::RpgAreaShape::Diamond { radius: 1 },
+            origin: asha_rpg::RpgAreaOrigin::Anchor,
+            origin_cell_id,
+            anchor_cell_id,
+            included_cell_ids,
+            filtered_cells,
+            included_participant_ids,
+            ..
+        } if origin_cell_id == "cell-3-1"
+            && anchor_cell_id == "cell-3-1"
+            && included_cell_ids == &option.included_cell_ids
+            && filtered_cells.is_empty()
+            && included_participant_ids == &option.included_participant_ids
+    ));
+    let attacks = receipt
+        .events
+        .iter()
+        .filter_map(|event| match event {
+            RpgDomainEvent::AttackResolved {
+                target_id, roll, ..
+            } => Some((target_id.as_str(), *roll)),
+            _ => None,
+        })
+        .collect::<Vec<_>>();
+    assert_eq!(attacks, [("hostile-b", 20), ("hostile-a", 1)]);
+    assert_eq!(
+        accepted
+            .state()
+            .entity("hostile-b")
+            .unwrap()
+            .vitality()
+            .current,
+        19
+    );
+    assert_eq!(
+        accepted
+            .state()
+            .entity("hostile-a")
+            .unwrap()
+            .vitality()
+            .current,
+        19
+    );
+    let entry = submitted.replay_entry.unwrap();
+    let portable_entry = serde_json::to_string(&entry).unwrap();
+    assert!(!portable_entry.contains(&option.session_binding_id));
+    assert!(portable_entry.contains("\"anchorCellId\":\"cell-3-1\""));
+    let replayed = RpgAuthoritySession::replay(accepted_initial, &[entry]).unwrap();
+    assert_eq!(
+        replayed.state_hash().unwrap(),
+        accepted.state_hash().unwrap()
+    );
+
+    let mut shared = RpgAuthoritySession::from_scenario(bundle.clone(), scenario.clone()).unwrap();
+    let option = area_option(&shared.encounter_view(), "action.area-line", "cell-2-1");
+    assert_eq!(
+        option.included_cell_ids,
+        ["cell-2-1", "cell-3-1", "cell-4-1"]
+    );
+    assert_eq!(option.included_participant_ids, ["hostile-a", "hostile-b"]);
+    let mut source = RpgRollTapeSource::new(
+        shared.scenario().random_source.clone(),
+        [RpgRollTapeEntry {
+            request: RpgRandomRequest {
+                kind: RpgRandomRequestKind::AttackCheck,
+                count: 1,
+                sides: 20,
+                path: "$.action.check.sharedRoll".to_owned(),
+                heterogeneous_terms: Vec::new(),
+            },
+            values: vec![12],
+        }],
+    );
+    let submitted = shared
+        .submit_area_with_random_source_recorded(area_proposal(&option), &mut source)
+        .unwrap();
+    let RpgCommandOutcome::Accepted(receipt) = submitted.outcome else {
+        panic!("shared orthogonal line should be accepted");
+    };
+    assert!(matches!(
+        &receipt.events[0],
+        RpgDomainEvent::AreaTargetsDerived {
+            shape: asha_rpg::RpgAreaShape::OrthogonalLine { length: 3 },
+            origin: asha_rpg::RpgAreaOrigin::Actor,
+            ..
+        }
+    ));
+    let shared_rolls = receipt
+        .events
+        .iter()
+        .filter_map(|event| match event {
+            RpgDomainEvent::AttackResolved { roll, .. } => Some(*roll),
+            _ => None,
+        })
+        .collect::<Vec<_>>();
+    assert_eq!(shared_rolls, [12, 12]);
+
+    let mut empty_session = RpgAuthoritySession::from_scenario(bundle, scenario).unwrap();
+    let option = area_option(
+        &empty_session.encounter_view(),
+        "action.area-empty",
+        "cell-0-2",
+    );
+    let before = empty_session.state_hash().unwrap();
+    let mut no_evidence =
+        RpgRollTapeSource::new(empty_session.scenario().random_source.clone(), Vec::new());
+    let submitted = empty_session
+        .submit_area_with_random_source_recorded(area_proposal(&option), &mut no_evidence)
+        .unwrap();
+    assert!(matches!(submitted.outcome, RpgCommandOutcome::Accepted(_)));
+    assert_ne!(empty_session.state_hash().unwrap(), before);
+}
+
+#[test]
+fn area_selector_compilation_rejects_unbounded_shapes_cardinality_and_programs() {
+    let mut too_large = area_prepared();
+    let definition = too_large
+        .materialized_definitions
+        .iter_mut()
+        .find(|definition| definition.id == "action.area-diamond")
+        .unwrap();
+    definition.semantic["action"]["targets"]["area"]["shape"]["radius"] = json!(12);
+    definition.fingerprint = materialized_definition_fingerprint(definition).unwrap();
+    let failure = compile_prepared_play_bundle(too_large).unwrap_err();
+    assert!(failure
+        .diagnostics
+        .iter()
+        .any(|diagnostic| diagnostic.code == "RPG_IR_AREA_TARGET_INVALID"));
+
+    let mut inverted = area_prepared();
+    let definition = inverted
+        .materialized_definitions
+        .iter_mut()
+        .find(|definition| definition.id == "action.area-diamond")
+        .unwrap();
+    definition.semantic["action"]["targets"]["area"]["minimumTargets"] = json!(4);
+    definition.fingerprint = materialized_definition_fingerprint(definition).unwrap();
+    let failure = compile_prepared_play_bundle(inverted).unwrap_err();
+    assert!(failure
+        .diagnostics
+        .iter()
+        .any(|diagnostic| diagnostic.code == "RPG_IR_AREA_TARGET_INVALID"));
+
+    let mut undersized_program = area_prepared();
+    let definition = undersized_program
+        .materialized_definitions
+        .iter_mut()
+        .find(|definition| definition.id == "action.area-diamond")
+        .unwrap();
+    definition.semantic["action"]["program"]["body"]["maximum"] = json!(2);
+    definition.fingerprint = materialized_definition_fingerprint(definition).unwrap();
+    let failure = compile_prepared_play_bundle(undersized_program).unwrap_err();
+    assert!(failure
+        .diagnostics
+        .iter()
+        .any(|diagnostic| diagnostic.code == "RPG_IR_AREA_PROGRAM_BOUND_INVALID"));
 }
 
 #[test]
@@ -4632,6 +5055,384 @@ fn activation_budget_prepared() -> PreparedPlayBundle {
     prepared.exported_roots = specifications
         .iter()
         .map(|(id, _, _)| (*id).to_owned())
+        .collect();
+    prepared.definition_provenance = prepared
+        .materialized_definitions
+        .iter()
+        .map(|definition| definition.provenance.clone())
+        .collect();
+    prepared.relationships = prepared
+        .exported_roots
+        .iter()
+        .enumerate()
+        .map(|(order, target)| ContentRelationshipProvenance {
+            kind: ContentRelationshipKind::Exports,
+            source: "consumer.package@1.0.0".to_owned(),
+            target: target.clone(),
+            order,
+        })
+        .collect();
+    prepared
+}
+
+fn area_option(
+    view: &asha_rpg::RpgEncounterView,
+    action_id: &str,
+    anchor_cell_id: &str,
+) -> asha_rpg::RpgAreaOptionView {
+    view.actions
+        .iter()
+        .find(|action| action.definition_id == action_id)
+        .unwrap_or_else(|| panic!("missing projected action {action_id}"))
+        .options
+        .area_options
+        .iter()
+        .find(|option| option.anchor_cell_id == anchor_cell_id)
+        .unwrap_or_else(|| panic!("missing projected anchor {anchor_cell_id} for {action_id}"))
+        .clone()
+}
+
+fn area_proposal(option: &asha_rpg::RpgAreaOptionView) -> RpgAreaActionProposal {
+    RpgAreaActionProposal {
+        session_binding_id: option.session_binding_id.clone(),
+        authority_revision: option.authority_revision,
+        action_id: option.action_id.clone(),
+        actor_id: option.current_actor_id.clone(),
+        anchor_cell_id: option.anchor_cell_id.clone(),
+        item_binding: option.item_binding.clone(),
+    }
+}
+
+fn area_scenario(bundle: &asha_rpg::CompiledPlayBundle) -> RpgScenario {
+    let action_ids = vec![
+        "action.area-diamond".to_owned(),
+        "action.area-empty".to_owned(),
+        "action.area-line".to_owned(),
+        "action.move-candidate".to_owned(),
+    ];
+    let with_actions =
+        |id: &str, label: &str, team: RpgTeamId, position: GridPosition, vitality: i32| {
+            let mut participant = participant(id, label, team, position.x, vitality);
+            participant.position = position;
+            participant.definition_ids = action_ids.clone();
+            participant
+                .capabilities
+                .push(RpgInitialCapability::Defense {
+                    id: "guard".to_owned(),
+                    value: 10,
+                });
+            participant
+        };
+    let mut cells = Vec::new();
+    for y in (0..3).rev() {
+        for x in (0..5).rev() {
+            cells.push(RpgCellSetup {
+                id: format!("cell-{x}-{y}"),
+                position: GridPosition { x, y },
+                capabilities: Vec::new(),
+            });
+        }
+    }
+    RpgScenario {
+        schema: RpgScenario::schema(),
+        play_bundle_id: bundle.artifact().artifact_id.clone(),
+        board: RpgBoardSetup {
+            width: 5,
+            height: 3,
+            cells,
+        },
+        participants: vec![
+            with_actions(
+                "actor",
+                "Actor",
+                RpgTeamId::ally(),
+                GridPosition { x: 1, y: 1 },
+                20,
+            ),
+            with_actions(
+                "hostile-a",
+                "Hostile A",
+                RpgTeamId::enemy(),
+                GridPosition { x: 2, y: 1 },
+                18,
+            ),
+            with_actions(
+                "hostile-b",
+                "Hostile B",
+                RpgTeamId::enemy(),
+                GridPosition { x: 3, y: 1 },
+                18,
+            ),
+            with_actions(
+                "edge-hostile",
+                "Edge Hostile",
+                RpgTeamId::enemy(),
+                GridPosition { x: 4, y: 0 },
+                20,
+            ),
+            with_actions(
+                "ally",
+                "Ally",
+                RpgTeamId::ally(),
+                GridPosition { x: 2, y: 0 },
+                20,
+            ),
+            with_actions(
+                "dead-hostile",
+                "Dead Hostile",
+                RpgTeamId::enemy(),
+                GridPosition { x: 2, y: 2 },
+                0,
+            ),
+        ],
+        turn: RpgTurnInitialization {
+            initiative_order: vec![
+                "actor".to_owned(),
+                "hostile-a".to_owned(),
+                "hostile-b".to_owned(),
+                "edge-hostile".to_owned(),
+                "ally".to_owned(),
+                "dead-hostile".to_owned(),
+            ],
+            current_actor_id: "actor".to_owned(),
+            round: 1,
+            turn: 1,
+        },
+        random_source: RpgRandomSourceBinding {
+            policy_id: "consumer.recorded-evidence".to_owned(),
+            policy_version: 1,
+            source_id: "consumer.roll-tape".to_owned(),
+            source_version: 1,
+        },
+    }
+}
+
+fn area_prepared() -> PreparedPlayBundle {
+    let mut prepared = healing_prepared();
+    prepared.play_bundle_identity.id = "consumer.area-bundle".to_owned();
+    prepared.ruleset.provides.operations = vec![
+        VersionedRpgRequirement {
+            id: "operation.heal".to_owned(),
+            version: 1,
+        },
+        VersionedRpgRequirement {
+            id: "operation.move".to_owned(),
+            version: 1,
+        },
+    ];
+    prepared.ruleset.provides.capabilities = vec![
+        VersionedRpgRequirement {
+            id: "capability.defenses".to_owned(),
+            version: 1,
+        },
+        VersionedRpgRequirement {
+            id: "capability.position".to_owned(),
+            version: 1,
+        },
+        VersionedRpgRequirement {
+            id: "capability.random".to_owned(),
+            version: 1,
+        },
+        VersionedRpgRequirement {
+            id: "capability.vitality".to_owned(),
+            version: 1,
+        },
+    ];
+    prepared.ruleset.provides.numeric_domains = vec![RulesetNumericDomain {
+        id: "area-check".to_owned(),
+        minimum: -100,
+        maximum: 100,
+    }];
+    prepared.ruleset.provides.values = vec![RulesetValueContract {
+        kind: RulesetValueKind::Defense,
+        id: "guard".to_owned(),
+        label: "Guard".to_owned(),
+        numeric_domain_id: "area-check".to_owned(),
+        source: RulesetValueSource::Input,
+    }];
+    prepared.content_requirements.operations = prepared.ruleset.provides.operations.clone();
+    prepared.content_requirements.capabilities = prepared.ruleset.provides.capabilities.clone();
+    prepared.content_requirements.numeric_domains = vec!["area-check".to_owned()];
+    prepared.content_requirements.values = vec![ContentValueRequirement {
+        kind: RulesetValueKind::Defense,
+        id: "guard".to_owned(),
+    }];
+
+    let base = prepared.materialized_definitions.remove(0);
+    let attack_action = |id: &str, name: &str, targets: serde_json::Value, roll_scope: &str| {
+        let mut definition = base.clone();
+        definition.id = id.to_owned();
+        definition.provenance.definition_id = id.to_owned();
+        definition.provenance.source.module = format!("actions/{id}.ts");
+        definition.provenance.source.declaration = id.replace('.', "_");
+        definition.semantic["action"] = json!({
+            "id": id,
+            "name": name,
+            "sourcePath": format!("actions/{id}.ts#{}", id.replace('.', "_")),
+            "targets": targets,
+            "check": {
+                "kind": "attack",
+                "modifier": {"kind": "constant", "value": 0},
+                "defenseId": "guard"
+            },
+            "rollScope": roll_scope,
+            "costs": [],
+            "program": {
+                "kind": "atomic",
+                "body": {
+                    "kind": "forEachTarget",
+                    "maximum": 3,
+                    "body": {
+                        "kind": "onCheck",
+                        "hit": {
+                            "kind": "operation",
+                            "operation": {
+                                "kind": "heal",
+                                "amount": {"kind": "constant", "value": 1},
+                            }
+                        },
+                        "miss": {
+                            "kind": "operation",
+                            "operation": {
+                                "kind": "heal",
+                                "amount": {"kind": "constant", "value": 1},
+                            }
+                        }
+                    }
+                }
+            }
+        });
+        definition.presentation = json!({"label": name});
+        definition.fingerprint = materialized_definition_fingerprint(&definition).unwrap();
+        definition
+    };
+    let mut definitions = vec![
+        attack_action(
+            "action.area-diamond",
+            "Area diamond",
+            json!({
+                "kind": "area",
+                "team": "hostile",
+                "maximumRange": 4,
+                "maximumTargets": 3,
+                "area": {
+                    "schema": {"identity": "asha.rpg.area-selector", "version": 1},
+                    "origin": "anchor",
+                    "shape": {"kind": "diamond", "radius": 1},
+                    "livingRequired": true,
+                    "minimumTargets": 1
+                }
+            }),
+            "perTarget",
+        ),
+        attack_action(
+            "action.area-line",
+            "Area line",
+            json!({
+                "kind": "area",
+                "team": "hostile",
+                "maximumRange": 3,
+                "maximumTargets": 3,
+                "area": {
+                    "schema": {"identity": "asha.rpg.area-selector", "version": 1},
+                    "origin": "actor",
+                    "shape": {"kind": "orthogonalLine", "length": 3},
+                    "livingRequired": true,
+                    "minimumTargets": 1
+                }
+            }),
+            "shared",
+        ),
+    ];
+    let mut empty = base.clone();
+    empty.id = "action.area-empty".to_owned();
+    empty.provenance.definition_id = empty.id.clone();
+    empty.provenance.source.module = "actions/action.area-empty.ts".to_owned();
+    empty.provenance.source.declaration = "action_area-empty".to_owned();
+    empty.semantic["action"]["id"] = json!("action.area-empty");
+    empty.semantic["action"]["name"] = json!("Area empty");
+    empty.semantic["action"]["sourcePath"] =
+        json!("actions/action.area-empty.ts#action_area_empty");
+    empty.semantic["action"]["targets"] = json!({
+        "kind": "area",
+        "team": "hostile",
+        "maximumRange": 4,
+        "maximumTargets": 3,
+        "area": {
+            "schema": {"identity": "asha.rpg.area-selector", "version": 1},
+            "origin": "anchor",
+            "shape": {"kind": "diamond", "radius": 0},
+            "livingRequired": true,
+            "minimumTargets": 0
+        }
+    });
+    empty.semantic["action"]["check"] = json!({"kind": "noRoll"});
+    empty.semantic["action"]["rollScope"] = json!("none");
+    empty.semantic["action"]["program"] = json!({
+        "kind": "atomic",
+        "body": {
+            "kind": "forEachTarget",
+            "maximum": 3,
+            "body": {
+                "kind": "onCheck",
+                "noRoll": {
+                    "kind": "operation",
+                    "operation": {
+                        "kind": "heal",
+                        "amount": {"kind": "constant", "value": 0}
+                    }
+                }
+            }
+        }
+    });
+    empty.presentation = json!({"label": "Area empty"});
+    empty.fingerprint = materialized_definition_fingerprint(&empty).unwrap();
+    definitions.push(empty);
+
+    let mut movement = base;
+    movement.id = "action.move-candidate".to_owned();
+    movement.provenance.definition_id = movement.id.clone();
+    movement.provenance.source.module = "actions/action.move-candidate.ts".to_owned();
+    movement.provenance.source.declaration = "action_move_candidate".to_owned();
+    movement.semantic["action"]["id"] = json!("action.move-candidate");
+    movement.semantic["action"]["name"] = json!("Move candidate");
+    movement.semantic["action"]["sourcePath"] =
+        json!("actions/action.move-candidate.ts#action_move_candidate");
+    movement.semantic["action"]["targets"] = json!({
+        "kind": "participant",
+        "team": "hostile",
+        "maximumRange": 4,
+        "maximumTargets": 1
+    });
+    movement.semantic["action"]["check"] = json!({"kind": "noRoll"});
+    movement.semantic["action"]["rollScope"] = json!("none");
+    movement.semantic["action"]["program"] = json!({
+        "kind": "atomic",
+        "body": {
+            "kind": "onCheck",
+            "noRoll": {
+                "kind": "operation",
+                "operation": {
+                    "kind": "move",
+                    "subject": "target",
+                    "deltaX": {"kind": "constant", "value": -1},
+                    "deltaY": {"kind": "constant", "value": 1},
+                    "maximumDistance": 2,
+                    "provokes": false
+                }
+            }
+        }
+    });
+    movement.presentation = json!({"label": "Move candidate"});
+    movement.fingerprint = materialized_definition_fingerprint(&movement).unwrap();
+    definitions.push(movement);
+    definitions.sort_by(|left, right| left.id.cmp(&right.id));
+
+    prepared.materialized_definitions = definitions;
+    prepared.exported_roots = prepared
+        .materialized_definitions
+        .iter()
+        .map(|definition| definition.id.clone())
         .collect();
     prepared.definition_provenance = prepared
         .materialized_definitions

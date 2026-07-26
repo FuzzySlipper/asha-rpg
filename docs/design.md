@@ -16,7 +16,7 @@ ruleset:
 | --- | --- | --- |
 | `Ruleset` (`asha.rpg.ruleset@1`) | language compatibility, Rust-bound operation and capability provisions, named stat/defense contracts, numeric domains, scalar calculation selectors, contribution stacking groups, scalar-test profiles, heterogeneous-pool profiles | actions, spells, classes, creatures, items, conditions, presentation, setup |
 | `ContentPack` | authored definitions, presentation, dependencies, derivation, mixins, overlays | Rust execution callbacks, board/participants, commands or expected outcomes |
-| `PlayBundle` (`asha.rpg.play-bundle.prepared@6` / `.compiled@6`) | one Ruleset plus an exact compatible Content Pack closure and fingerprints | ambient discovery, executable TypeScript, scenario scripts |
+| `PlayBundle` (`asha.rpg.play-bundle.prepared@8` / `.compiled@8`) | one Ruleset plus an exact compatible Content Pack closure and fingerprints | ambient discovery, executable TypeScript, scenario scripts |
 | `Scenario` (`asha.rpg.scenario@2`) | board, participants, selected definitions, initial values, initiative, and random-source policy for one PlayBundle | definitions, commands, targets, reactions, rolls, expected events/outcomes, Tester configuration |
 
 A Tester is a caller of the same accessible interaction surface as a person;
@@ -218,13 +218,14 @@ numeric domains, content-owned resource/modifier ids, board, occupancy,
 initiative, capability owners, and random-source binding before mutable state
 exists.
 
-Checkpoint schema version 8 embeds the exact compiled PlayBundle, Scenario and
+Checkpoint schema version 9 embeds the exact compiled PlayBundle, Scenario and
 Scenario fingerprint, portable state, turn/log, accepted random position,
-pending phase, named effect instances, and canonical state hash. Replay entry schema version 9 records
+pending phase, named effect instances, and canonical state hash. Replay entry schema version 10 records
 ordinary submit/reaction/turn-control operations and verifies before/after
-boundaries. Accepted event schema version 7 and encounter-view schema version 9
+boundaries. Accepted event schema version 8 and encounter-view schema version 10
 carry the contextual contribution ledger, character selection, activation
-budgets, and accepted activation count. Replay never reruns
+budgets, accepted activation count, and exact authority-derived area
+selections. Replay never reruns
 authoring or substitutes a candidate artifact.
 
 ## TypeScript authoring
@@ -285,6 +286,8 @@ The survey-selected neutral expansion is specified in
 catalog is an implementation map. `F0@1`, the contextual contribution ledger,
 `F1@1`, generic scalar tests and ordered outcomes, `F2@1`, variable activation
 budgets, `F3@1`, named effects with bounded expiry, and `F6@1`, heterogeneous
-pools and vector outcomes, are implemented as described above. `F4` and `F5`
-remain non-claims until their separately reviewed tasks update this canonical design and the corresponding code,
+pools and vector outcomes, are implemented as described above. `F5@1`, bounded
+area selection and spatial legality, is also implemented through the
+session-bound authority path. `F4` remains a non-claim until its separately
+reviewed task updates this canonical design and the corresponding code,
 schemas, tests, events, readbacks, checkpoint, and replay contracts.

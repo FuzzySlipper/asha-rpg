@@ -264,7 +264,7 @@ export function preparePlayBundle(options: {
   ].sort(compareRelationship);
 
   const prepared: PreparedPlayBundle = immutable({
-    schema: { identity: 'asha.rpg.play-bundle.prepared', major: 7 },
+    schema: { identity: 'asha.rpg.play-bundle.prepared', major: 8 },
     playBundleIdentity: options.bundle.identity,
     ruleset: options.bundle.ruleset,
     contentPacks: [...context.selected.values()]
@@ -4225,12 +4225,15 @@ function isStructurallyValidActionBody(value: unknown): boolean {
   const program = value['program'];
   return (
     isRecord(targets) &&
-    (targets['kind'] === 'participant' || targets['kind'] === 'cell') &&
+    (targets['kind'] === 'participant' ||
+      targets['kind'] === 'cell' ||
+      targets['kind'] === 'area') &&
     (targets['team'] === 'hostile' ||
       targets['team'] === 'ally' ||
       targets['team'] === 'any') &&
     unsigned32(targets['maximumRange']) &&
     unsigned32(targets['maximumTargets']) &&
+    structurallyValidAreaTarget(targets) &&
     isRecord(check) &&
     (check['kind'] === 'noRoll' ||
       check['kind'] === 'attack' ||
@@ -4243,6 +4246,34 @@ function isStructurallyValidActionBody(value: unknown): boolean {
     Array.isArray(value['costs']) &&
     isRecord(program) &&
     isProgramKind(program['kind'])
+  );
+}
+
+function structurallyValidAreaTarget(
+  targets: Readonly<Record<string, unknown>>,
+): boolean {
+  const area = targets['area'];
+  if (targets['kind'] !== 'area') return area === undefined;
+  if (!isRecord(area)) return false;
+  const schema = area['schema'];
+  const shape = area['shape'];
+  if (
+    !isRecord(schema) ||
+    schema['identity'] !== 'asha.rpg.area-selector' ||
+    schema['version'] !== 1 ||
+    !isRecord(shape) ||
+    typeof area['livingRequired'] !== 'boolean' ||
+    !unsigned32(area['minimumTargets'])
+  ) {
+    return false;
+  }
+  return (
+    (area['origin'] === 'anchor' &&
+      shape['kind'] === 'diamond' &&
+      unsigned32(shape['radius'])) ||
+    (area['origin'] === 'actor' &&
+      shape['kind'] === 'orthogonalLine' &&
+      unsigned32(shape['length']))
   );
 }
 

@@ -104,6 +104,43 @@ pub enum RpgIrTargetKind {
     #[default]
     Participant,
     Cell,
+    Area,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub enum RpgIrAreaOrigin {
+    Anchor,
+    Actor,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(
+    tag = "kind",
+    rename_all = "camelCase",
+    rename_all_fields = "camelCase",
+    deny_unknown_fields
+)]
+pub enum RpgIrAreaShape {
+    Diamond { radius: u32 },
+    OrthogonalLine { length: u32 },
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase", deny_unknown_fields)]
+pub struct RpgIrAreaSelectorSchema {
+    pub identity: String,
+    pub version: u32,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase", deny_unknown_fields)]
+pub struct RpgIrAreaSelector {
+    pub schema: RpgIrAreaSelectorSchema,
+    pub origin: RpgIrAreaOrigin,
+    pub shape: RpgIrAreaShape,
+    pub living_required: bool,
+    pub minimum_targets: u32,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
@@ -114,6 +151,8 @@ pub struct RpgIrTargetSelector {
     pub team: RpgIrTeamConstraint,
     pub maximum_range: u32,
     pub maximum_targets: u32,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub area: Option<Box<RpgIrAreaSelector>>,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]

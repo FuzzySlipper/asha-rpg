@@ -21,6 +21,22 @@ export declare function targets(options: {
 export declare function cells(options: {
     readonly range: number;
 }): RpgIrTargetSelector;
+export declare function diamondArea(options: {
+    readonly range: number;
+    readonly radius: number;
+    readonly team: 'hostile' | 'ally' | 'any';
+    readonly livingRequired?: boolean;
+    readonly minimumTargets?: number;
+    readonly maximumTargets?: number;
+}): RpgIrTargetSelector;
+export declare function orthogonalLineArea(options: {
+    readonly range: number;
+    readonly length: number;
+    readonly team: 'hostile' | 'ally' | 'any';
+    readonly livingRequired?: boolean;
+    readonly minimumTargets?: number;
+    readonly maximumTargets?: number;
+}): RpgIrTargetSelector;
 export declare function hostile(options: {
     readonly range: number;
     readonly maximum?: number;

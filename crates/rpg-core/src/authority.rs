@@ -1217,6 +1217,40 @@ pub struct RpgIntentCellTarget {
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase", deny_unknown_fields)]
+pub struct RpgAreaFilteredParticipant {
+    pub participant_id: String,
+    pub reason: String,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase", deny_unknown_fields)]
+pub struct RpgAreaFilteredCell {
+    pub x: i64,
+    pub y: i64,
+    pub reason: String,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub enum RpgAreaOrigin {
+    Anchor,
+    Actor,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(
+    tag = "kind",
+    rename_all = "camelCase",
+    rename_all_fields = "camelCase",
+    deny_unknown_fields
+)]
+pub enum RpgAreaShape {
+    Diamond { radius: u32 },
+    OrthogonalLine { length: u32 },
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase", deny_unknown_fields)]
 pub struct RpgIntentItemBinding {
     pub binding_id: String,
     pub item_instance_id: String,
@@ -1814,6 +1848,19 @@ pub enum RpgDomainEvent {
         profile_id: String,
         final_band_id: String,
         selected_branch_id: String,
+    },
+    AreaTargetsDerived {
+        actor_id: String,
+        action_id: String,
+        proposal_revision: u64,
+        shape: RpgAreaShape,
+        origin: RpgAreaOrigin,
+        origin_cell_id: String,
+        anchor_cell_id: String,
+        included_cell_ids: Vec<String>,
+        filtered_cells: Vec<RpgAreaFilteredCell>,
+        included_participant_ids: Vec<String>,
+        filtered_participants: Vec<RpgAreaFilteredParticipant>,
     },
     DamageApplied {
         source_id: String,

@@ -55,7 +55,11 @@ export type RpgIrRequirement =
     };
 
 export type RpgIrTeamConstraint = 'hostile' | 'ally' | 'any';
-export type RpgIrTargetKind = 'participant' | 'cell';
+export type RpgIrTargetKind = 'participant' | 'cell' | 'area';
+export type RpgIrAreaOrigin = 'anchor' | 'actor';
+export type RpgIrAreaShape =
+  | { readonly kind: 'diamond'; readonly radius: number }
+  | { readonly kind: 'orthogonalLine'; readonly length: number };
 export type RpgIrSubject = 'actor' | 'target';
 export type RpgIrRollScope = 'shared' | 'perTarget' | 'none';
 export type RpgIrComparison =
@@ -72,6 +76,16 @@ export interface RpgIrTargetSelector {
   readonly team: RpgIrTeamConstraint;
   readonly maximumRange: number;
   readonly maximumTargets: number;
+  readonly area?: {
+    readonly schema: {
+      readonly identity: 'asha.rpg.area-selector';
+      readonly version: 1;
+    };
+    readonly origin: RpgIrAreaOrigin;
+    readonly shape: RpgIrAreaShape;
+    readonly livingRequired: boolean;
+    readonly minimumTargets: number;
+  };
 }
 
 export interface RpgIrResourceCost {

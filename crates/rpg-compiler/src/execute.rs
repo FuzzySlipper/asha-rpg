@@ -19,9 +19,9 @@ use rpg_core::{
 use rpg_ir::{
     CompiledCharacterFeature, CompiledEffectDefinition, CompiledItemDefinition, RpgIrActivation,
     RpgIrCheck, RpgIrComparison, RpgIrFormula, RpgIrOperation, RpgIrPredicate, RpgIrRollScope,
-    RpgIrScalarTestDifficulty, RpgIrSubject, RpgIrTargetKind, RpgIrTeamConstraint,
-    RulesetHeterogeneousPoolProfile, RulesetMarginBandRule, RulesetNaturalDieRule,
-    RulesetOutcomeBand,
+    RpgIrScalarTestDifficulty, RpgIrSubject, RpgIrTargetKind, RpgIrTargetSelector,
+    RpgIrTeamConstraint, RulesetHeterogeneousPoolProfile, RulesetMarginBandRule,
+    RulesetNaturalDieRule, RulesetOutcomeBand,
 };
 
 use crate::compile::{CompiledAction, CompiledOperation, CompiledProgram};
@@ -233,11 +233,11 @@ impl CompiledRpgRules {
                     format!("unknown action {action_id}"),
                 )
             })?;
-        if action.targets.kind == RpgIrTargetKind::Cell {
+        if action.targets.kind != RpgIrTargetKind::Participant {
             return Err(rejection(
                 "RPG_ACTION_BOARD_REQUIRED",
                 "$.actionId",
-                "cell-target candidates require the encounter board authority",
+                "cell and area target candidates require the encounter board authority",
             ));
         }
         let actor = state.entity(actor_id).ok_or_else(|| {
@@ -277,6 +277,22 @@ impl CompiledRpgRules {
     ) -> Result<RpgIrTargetKind, RpgResolutionRejection> {
         self.action_for_binding(action_id, item_definition_id)
             .map(|action| action.targets.kind)
+            .ok_or_else(|| {
+                rejection(
+                    "RPG_INTENT_ACTION_UNKNOWN",
+                    "$.actionId",
+                    format!("unknown action {action_id}"),
+                )
+            })
+    }
+
+    pub fn target_selector_for_binding(
+        &self,
+        action_id: &str,
+        item_definition_id: Option<&str>,
+    ) -> Result<RpgIrTargetSelector, RpgResolutionRejection> {
+        self.action_for_binding(action_id, item_definition_id)
+            .map(|action| action.targets.clone())
             .ok_or_else(|| {
                 rejection(
                     "RPG_INTENT_ACTION_UNKNOWN",
@@ -385,11 +401,16 @@ fn validate_intent(
             format!("unknown actor {}", intent.actor_id),
         )
     })?;
-    if intent.target_ids.is_empty() {
+    let minimum_targets = action
+        .targets
+        .area
+        .as_ref()
+        .map_or(1, |area| area.minimum_targets);
+    if intent.target_ids.len() < minimum_targets as usize {
         return Err(rejection(
             "RPG_INTENT_TARGETS_EMPTY",
             "$.intent.targetIds",
-            "at least one target is required",
+            format!("at least {minimum_targets} target(s) are required"),
         ));
     }
     if intent.target_ids.len() > action.targets.maximum_targets as usize {
@@ -404,7 +425,9 @@ fn validate_intent(
     }
 
     let mut target_ids = intent.target_ids.clone();
-    target_ids.sort();
+    if action.targets.kind != RpgIrTargetKind::Area {
+        target_ids.sort();
+    }
     let original_length = target_ids.len();
     target_ids.dedup();
     if target_ids.len() != original_length {
@@ -488,6 +511,71 @@ fn validate_intent(
                         "RPG_INTENT_TARGET_OUT_OF_RANGE",
                         format!("$.intent.targetIds[{index}]"),
                         format!("cell {target_id} is at range {distance}"),
+                    ));
+                }
+            }
+        }
+        RpgIrTargetKind::Area => {
+            if intent.cell_targets.is_empty() || intent.cell_targets.len() > 256 {
+                return Err(rejection(
+                    "RPG_INTENT_AREA_CELL_BINDING_INVALID",
+                    "$.intent.cellTargets",
+                    "area targets require 1..=256 authoritative cell bindings",
+                ));
+            }
+            let mut cell_ids = BTreeSet::new();
+            let mut cell_positions = BTreeMap::new();
+            for (index, binding) in intent.cell_targets.iter().enumerate() {
+                if !cell_ids.insert(binding.id.as_str())
+                    || cell_positions.insert(binding.position, index).is_some()
+                {
+                    return Err(rejection(
+                        "RPG_INTENT_AREA_CELL_BINDING_DUPLICATE",
+                        format!("$.intent.cellTargets[{index}]"),
+                        "area cell identities and positions must be unique",
+                    ));
+                }
+            }
+            let mut previous_order = None::<(usize, &str)>;
+            for (index, target_id) in target_ids.iter().enumerate() {
+                let target = state.entity(target_id).ok_or_else(|| {
+                    rejection(
+                        "RPG_INTENT_TARGET_UNKNOWN",
+                        format!("$.intent.targetIds[{index}]"),
+                        format!("unknown target {target_id}"),
+                    )
+                })?;
+                let Some(cell_order) = cell_positions.get(&target.position()).copied() else {
+                    return Err(rejection(
+                        "RPG_INTENT_AREA_TARGET_OUTSIDE_CELLS",
+                        format!("$.intent.targetIds[{index}]"),
+                        format!("target {target_id} is not on an included area cell"),
+                    ));
+                };
+                let order = (cell_order, target_id.as_str());
+                if previous_order.is_some_and(|previous| previous >= order) {
+                    return Err(rejection(
+                        "RPG_INTENT_AREA_TARGET_ORDER_INVALID",
+                        format!("$.intent.targetIds[{index}]"),
+                        "area targets must use canonical cell then participant order",
+                    ));
+                }
+                previous_order = Some(order);
+                let team_allowed = match action.targets.team {
+                    RpgIrTeamConstraint::Hostile => target.team() != actor.team(),
+                    RpgIrTeamConstraint::Ally => target.team() == actor.team(),
+                    RpgIrTeamConstraint::Any => true,
+                };
+                let living_required = action
+                    .targets
+                    .area
+                    .as_ref()
+                    .is_some_and(|area| area.living_required);
+                if !team_allowed || (living_required && target.vitality().current <= 0) {
+                    return Err(rejection(
+                        "RPG_INTENT_AREA_TARGET_FILTER_INVALID",
+                        format!("$.intent.targetIds[{index}]"),
+                        format!("target {target_id} does not satisfy the area filters"),
                     ));
                 }
             }

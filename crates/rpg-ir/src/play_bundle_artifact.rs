@@ -11,7 +11,7 @@ use serde_json::Value;
 
 pub const PREPARED_PLAY_BUNDLE_IDENTITY: &str = "asha.rpg.play-bundle.prepared";
 pub const COMPILED_PLAY_BUNDLE_IDENTITY: &str = "asha.rpg.play-bundle.compiled";
-pub const PLAY_BUNDLE_ARTIFACT_MAJOR: u32 = 7;
+pub const PLAY_BUNDLE_ARTIFACT_MAJOR: u32 = 8;
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase", deny_unknown_fields)]

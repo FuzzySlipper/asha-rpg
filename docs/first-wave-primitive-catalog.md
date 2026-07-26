@@ -4,10 +4,10 @@
 
 This document is the architecture brief produced by Den task `#6179`. It
 selects the smallest coherent semantic expansion needed for three independently
-authored representative kits. It is a versioned implementation map. `F0@1` and
-`F1@1`, `F2@1`, `F3@1`, and `F6@1` are implemented by tasks `#6180`, `#6197`,
-`#6198`, `#6199`, and `#6200`; `F4` and `F5` remain planned and are not support
-claims. Current support remains exactly what `design.md`,
+authored representative kits. It is a versioned implementation map. `F0@1`,
+`F1@1`, `F2@1`, `F3@1`, `F5@1`, and `F6@1` are implemented by tasks `#6180`,
+`#6197`, `#6198`, `#6199`, `#6202`, and `#6200`; `F4` remains planned and is not
+a support claim. Current support remains exactly what `design.md`,
 `non-claims.md`, and the checked-in code say.
 
 The catalog is intentionally not a Foundry adapter, a source-system
@@ -81,7 +81,7 @@ the neutral families `F0` through `F6`.
 | variable activation budgets | `P12` economy subset, `PFX-A01` | `F2`: implemented |
 | named effect instances with bounded authority-relative expiry | `P10`, `P11`, `PFX-E07`, `FFG-E07` effect subset | `F3@1`: implemented by `#6199` |
 | typed damage packets and qualified responses | `P06`, `P07`, `PFX-I06`, `P16` damage trace subset | `F4`: needs generalization |
-| bounded area selection and spatial legality | `P05`, `PFX-S08` | `F5`: requires a new primitive |
+| bounded area selection and spatial legality | `P05`, `PFX-S08` | `F5@1`: implemented by `#6202` |
 | heterogeneous random pools and vector outcomes | `FFG-A01`, `FFG-A02`, `FFG-A03`, `FFG-A04`, `FFG-M05` | `F6@1`: implemented by `#6200` |
 
 No interpreted candidate is accepted as a TypeScript-only content policy:
@@ -612,6 +612,11 @@ recurring damage, critical tables, body locations, or user-selected allocation.
 
 ## F5 — Bounded area selection and spatial legality
 
+Implementation status: supported as `F5@1` by task `#6202`. The checked-in
+authoring, prepared/compiled artifact, Rust encounter projection, authority
+submission, event, checkpoint, and replay contracts are the implementation
+truth for this section.
+
 ### Semantic and version boundary
 
 `F5@1` adds authority-selected participant sets derived from a submitted cell
@@ -674,8 +679,9 @@ to a different current target set.
 ### Randomness, timing, events, and persistence
 
 Target ordering fixes per-target random request order. Events and readback
-retain shape, origin, anchor, included cells, included participants, and every
-filtered participant with reason. Accepted events and replay entries also
+retain shape, origin, anchor, included cells, edge-clipped or unauthored cells
+with reasons, included participants, and every team/living-filtered participant
+with reason. Accepted events and replay entries also
 retain the accepted session-independent proposal revision, normal post-command
 revision, and exact derived set; the opaque live session binding is not a
 portable replay field. Scenario, checkpoint, replay, and state hash already

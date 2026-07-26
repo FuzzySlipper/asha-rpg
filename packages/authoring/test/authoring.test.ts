@@ -11,13 +11,16 @@ import {
   canonicalRpgJson,
   cells,
   definePackage,
+  diamondArea,
   dice,
+  forEachTarget,
   heal,
   moveToCell,
   noRoll,
   not,
   normalizePackage,
   onCheck,
+  orthogonalLineArea,
   repeat,
   sequence,
   targets,
@@ -274,6 +277,156 @@ test('cell movement shape is one unconditional evidence-free destination operati
       'normalization.cellProgramInvalid',
       'normalization.cellProgramInvalid',
       'normalization.cellProgramInvalid',
+    ],
+  );
+});
+
+test('area selector builders emit only bounded immutable declarations accepted by Rust', () => {
+  const diamondTargets = diamondArea({
+    range: 6,
+    radius: 2,
+    team: 'hostile',
+    livingRequired: true,
+    minimumTargets: 0,
+    maximumTargets: 3,
+  });
+  const lineTargets = orthogonalLineArea({
+    range: 4,
+    length: 4,
+    team: 'any',
+    minimumTargets: 1,
+    maximumTargets: 4,
+  });
+  const diamondSelector = diamondTargets.area;
+  const lineSelector = lineTargets.area;
+  assert.notEqual(diamondSelector, undefined);
+  assert.notEqual(lineSelector, undefined);
+  if (diamondSelector === undefined || lineSelector === undefined) return;
+  const diamond = action({
+    id: actionId('example.area-diamond'),
+    name: 'Area diamond',
+    sourcePath: 'examples/actions/area-diamond',
+    targets: diamondTargets,
+    check: noRoll(),
+    program: forEachTarget(
+      3,
+      onCheck({ noRoll: heal({ amount: { kind: 'constant', value: 0 } }) }),
+    ),
+  });
+  const line = action({
+    id: actionId('example.area-line'),
+    name: 'Area line',
+    sourcePath: 'examples/actions/area-line',
+    targets: lineTargets,
+    check: noRoll(),
+    program: forEachTarget(
+      4,
+      onCheck({ noRoll: heal({ amount: { kind: 'constant', value: 0 } }) }),
+    ),
+  });
+  const result = normalizePackage(
+    definePackage({
+      id: 'area.package',
+      version: '1.0.0',
+      sources: [{ kind: 'actions', id: 'areas', actions: [line, diamond] }],
+    }),
+  );
+  assert.equal(result.ok, true, JSON.stringify(result));
+  if (!result.ok) return;
+  assert.equal(Object.isFrozen(diamond.targets), true);
+  assert.equal(Object.isFrozen(diamond.targets.area), true);
+  assert.deepEqual(
+    result.artifact.actions.map((candidate) => candidate.targets),
+    [diamond.targets, line.targets],
+  );
+
+  const root = fileURLToPath(new URL('../../../', import.meta.url));
+  const validation = spawnSync(
+    'cargo',
+    [
+      'run',
+      '--quiet',
+      '--manifest-path',
+      join(root, 'Cargo.toml'),
+      '-p',
+      'rpg-compiler',
+      '--bin',
+      'validate_ir',
+    ],
+    {
+      cwd: root,
+      encoding: 'utf8',
+      input: canonicalRpgJson(result.artifact),
+    },
+  );
+  assert.equal(validation.status, 0, validation.stderr);
+  assert.equal(validation.stdout.trim(), 'accepted area.package@1.0.0 actions=2');
+
+  const invalid = normalizePackage(
+    definePackage({
+      id: 'invalid.area.package',
+      version: '1.0.0',
+      sources: [
+        {
+          kind: 'actions',
+          id: 'invalid-areas',
+          actions: [
+            {
+              ...diamond,
+              id: actionId('example.area-too-large'),
+              targets: {
+                ...diamond.targets,
+                area: {
+                  ...diamondSelector,
+                  shape: { kind: 'diamond', radius: 12 },
+                },
+              },
+            },
+            {
+              ...line,
+              id: actionId('example.area-inverted-cardinality'),
+              program: forEachTarget(
+                1,
+                onCheck({
+                  noRoll: heal({
+                    amount: { kind: 'constant', value: 0 },
+                  }),
+                }),
+              ),
+              targets: {
+                ...line.targets,
+                maximumTargets: 1,
+                area: {
+                  ...lineSelector,
+                  minimumTargets: 2,
+                },
+              },
+            },
+            {
+              ...diamond,
+              id: actionId('example.area-program-too-small'),
+              program: forEachTarget(
+                2,
+                onCheck({
+                  noRoll: heal({
+                    amount: { kind: 'constant', value: 0 },
+                  }),
+                }),
+              ),
+            },
+          ],
+        },
+      ],
+    }),
+  );
+  assert.equal(invalid.ok, false);
+  if (invalid.ok) return;
+  assert.deepEqual(
+    invalid.diagnostics.map((diagnostic) => diagnostic.code),
+    [
+      'normalization.areaTargetInvalid',
+      'normalization.areaTargetInvalid',
+      'normalization.areaProgramBoundInvalid',
     ],
   );
 });

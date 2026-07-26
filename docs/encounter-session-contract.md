@@ -8,13 +8,14 @@ consumer compiles or loads a `CompiledPlayBundle` and calls
 creating mutable authority state.
 
 The schema is `asha.rpg.scenario@2`. `playBundleId` must exactly match the
-compiled artifact. Checkpoint schema `asha.rpg.session.checkpoint@8` stores the
+compiled artifact. Checkpoint schema `asha.rpg.session.checkpoint@9` stores the
 Scenario and its `fnv1a64.rpg-scenario.v1` fingerprint. Replay entry schema
-version 9 binds before/after boundaries to that Scenario, source binding, turn,
-revision, and state hash. Accepted event schema version 7 carries the
-contextual contribution ledger and activation transitions, and encounter-view
-schema version 9 exposes that event history plus explicit class/feature
-selection, active named effects, and activation-budget readback.
+version 10 binds before/after boundaries to that Scenario, source binding,
+turn, revision, and state hash. Accepted event schema version 8 carries the
+contextual contribution ledger, activation transitions, and exact
+authority-derived area selections. Encounter-view schema version 10 exposes
+that event history plus explicit class/feature selection, active named effects,
+activation-budget readback, and session-bound area options.
 
 ## Setup-only data
 
@@ -88,8 +89,8 @@ changing content declarations.
 `RpgAuthoritySession::encounter_view` exposes board/cells, participant state
 and remaining activation budgets, the accepted activation count and ceiling,
 inventory/equipment, current actor and initiative, selected and legal actions
-plus participant or cell options, available turn controls, pending reaction
-options, accepted events, and encounter outcome. An item-bound action is
+plus participant, cell-path, or bounded area options, available turn controls,
+pending reaction options, accepted events, and encounter outcome. An item-bound action is
 projected once for each compatible equipped item instance. Its view and
 proposal carry the exact binding, and Rust rejects missing, unexpected,
 tampered, or stale bindings without mutation.
@@ -109,6 +110,18 @@ authored range and total-cost movement bound, and rejects a stale or
 unreachable destination without mutation. The path is descriptive output;
 only Rust mutates authority state.
 
+An area option binds an opaque live session id, artifact id, Scenario
+fingerprint, state revision, turn identity, action/item identity, and one
+anchor. Rust projects either an anchor-origin Manhattan diamond or an
+actor-origin orthogonal line over authored cells, then canonically derives the
+eligible participants by cell and participant identity. Submission carries
+only the live session id, revision, action/item identity, and anchor. Rust
+rejects stale identity or revision before reading random evidence, and
+recomputes the exact cells and participants once before executing per-target or
+shared checks atomically. Events and replay retain the proposal revision and
+exact derived set, including clipped or unauthored cells and team/living
+filter reasons; the opaque live session id is deliberately not portable.
+
 ## Random evidence
 
 Interactive calls use a bound `RpgRandomSource`. Rust requests the exact draw,
@@ -125,7 +138,8 @@ randomness, or reapplies events.
 
 The initial board authority does not claim diagonal or hex topology,
 jumping/flying/teleport movement, opportunity attacks, per-step effects,
-area-target semantics, campaign persistence, scripted runners, AI control,
-Tester configuration, class levels or prerequisites, calculation owners beyond
-attack and scalar-test profiles, a general condition language, or Rulebench
-product protocols.
+cones, arbitrary polygons, elevation, cover, line of effect, persistent auras,
+campaign persistence, scripted runners, AI control, Tester configuration,
+class levels or prerequisites, calculation owners beyond attack and
+scalar-test profiles, a general condition language, or Rulebench product
+protocols.

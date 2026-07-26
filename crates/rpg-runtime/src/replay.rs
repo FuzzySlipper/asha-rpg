@@ -12,8 +12,8 @@ use rpg_ir::{
 use serde::{Deserialize, Serialize};
 
 use crate::semantic_session::{
-    PendingTransaction, RpgAuthorityCommand, RpgAuthoritySession, RpgCommandOutcome,
-    RpgPendingReaction, RpgReactionCommand, RpgTurnControlCommand,
+    PendingTransaction, PreparedAreaCommand, RpgAuthorityCommand, RpgAuthoritySession,
+    RpgCommandOutcome, RpgPendingReaction, RpgReactionCommand, RpgTurnControlCommand,
 };
 use crate::{
     encounter::{validate_derived_state, validate_restored_encounter},
@@ -22,9 +22,9 @@ use crate::{
 
 pub const RPG_CHECKPOINT_SCHEMA_ID: &str = "asha.rpg.session.checkpoint";
 pub const RPG_REPLAY_ENTRY_SCHEMA_ID: &str = "asha.rpg.session.replay-entry";
-pub const RPG_CHECKPOINT_SCHEMA_VERSION: u32 = 8;
-pub const RPG_REPLAY_ENTRY_SCHEMA_VERSION: u32 = 9;
-pub const RPG_EVENT_SCHEMA_VERSION: u32 = 7;
+pub const RPG_CHECKPOINT_SCHEMA_VERSION: u32 = 9;
+pub const RPG_REPLAY_ENTRY_SCHEMA_VERSION: u32 = 10;
+pub const RPG_EVENT_SCHEMA_VERSION: u32 = 8;
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase", deny_unknown_fields)]
@@ -425,6 +425,36 @@ impl RpgAuthoritySession {
         command: RpgAuthorityCommand,
     ) -> Result<(RpgCommandOutcome, RpgReplayEntry), RpgReplayFailure> {
         self.record_operation(RpgReplayOperation::Submit { command })
+    }
+
+    pub(crate) fn submit_prepared_area_recorded(
+        &mut self,
+        command: RpgAuthorityCommand,
+        prepared: PreparedAreaCommand,
+    ) -> Result<(RpgCommandOutcome, RpgReplayEntry), RpgReplayFailure> {
+        let artifact = self.artifact.as_ref().ok_or_else(|| {
+            replay_failure(
+                "RPG_REPLAY_ARTIFACT_REQUIRED",
+                "$.artifact",
+                "recording requires a session created from a compiled PlayBundle",
+            )
+        })?;
+        let schemas = replay_versions(artifact);
+        let before = replay_boundary(self)?;
+        let operation = RpgReplayOperation::Submit {
+            command: command.clone(),
+        };
+        let outcome = self.submit_with_prepared_area(command, Some(prepared));
+        let after = replay_boundary(self)?;
+        let entry = RpgReplayEntry {
+            schema: replay_entry_schema(),
+            schemas,
+            before,
+            operation,
+            outcome: outcome.clone(),
+            after,
+        };
+        Ok((outcome, entry))
     }
 
     pub(crate) fn react_recorded(
@@ -952,7 +982,7 @@ fn checkpoint_phase(session: &RpgAuthoritySession) -> RpgCheckpointPhase {
         None => RpgCheckpointPhase::Ready,
         Some(transaction) => RpgCheckpointPhase::AwaitingReaction {
             expected_revision: transaction.expected_revision,
-            intent: Box::new(transaction.intent.clone()),
+            intent: Box::new(transaction.portable_intent.clone()),
             random_values: transaction.random_values.clone(),
             pending: Box::new(transaction.pending.clone()),
         },
@@ -1082,7 +1112,9 @@ fn session_state_hash(
     })
 }
 
-fn scenario_fingerprint(scenario: &RpgScenario) -> Result<StateFingerprint, RpgReplayFailure> {
+pub(crate) fn scenario_fingerprint(
+    scenario: &RpgScenario,
+) -> Result<StateFingerprint, RpgReplayFailure> {
     let bytes = serde_json::to_vec(scenario).map_err(|error| {
         replay_failure(
             "RPG_CHECKPOINT_SETUP_HASH_FAILED",
