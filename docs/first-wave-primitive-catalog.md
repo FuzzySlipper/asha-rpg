@@ -4,9 +4,10 @@
 
 This document is the architecture brief produced by Den task `#6179`. It
 selects the smallest coherent semantic expansion needed for three independently
-authored representative kits. It is a versioned implementation plan, not a
-claim that the selected primitives are already implemented. Current support
-remains exactly what `design.md`, `non-claims.md`, and the checked-in code say.
+authored representative kits. It is a versioned implementation map. `F0@1` is
+implemented by task `#6180`; `F1` through `F6` remain planned and are not
+support claims. Current support remains exactly what `design.md`,
+`non-claims.md`, and the checked-in code say.
 
 The catalog is intentionally not a Foundry adapter, a source-system
 compatibility target, a content transcription, or an import format. The source
@@ -73,8 +74,8 @@ the neutral families `F0` through `F6`.
 | participant/cell target, team, range, cardinality, and check/DC relation | `P02` subset, `P04` subset, `PFX-D05`, `FFG-C10` | `S1`: supported through composition; generic scalar tests move to `F1` |
 | sequenced damage/healing, fixed resource costs, and multiple bounded resource tracks | `P06` subset, `P08` subset, `FFG-R06` subset | `S2`: supported through composition; per-part interaction moves to `F4` |
 | selected-cell movement, one before-damage reaction, and turn-bounded modifier aging | `P10` subset, `P12` subset, `P14` subset | `S3`: already supported |
-| sealed class/feature selection and attack contribution provenance | `P15` subset, `P16` subset, `PFX-P09` subset | `S4`: already supported; the attack-only contribution restriction moves to `F0` |
-| typed contextual contributions and deterministic suppression | `P16`, `PFX-M03`, `PFX-C04`, `FFG-M05` | `F0`: needs generalization; first implementation batch |
+| sealed class/feature selection and attack contribution provenance | `P15` subset, `P16` subset, `PFX-P09` subset | `S4`: already supported; generalized through implemented `F0` |
+| typed contextual contributions and deterministic suppression | `P16`, `PFX-M03`, `PFX-C04`, `FFG-M05` | `F0@1`: implemented by `#6180` |
 | generic scalar tests, ordered outcome bands, critical policy, and band adjustment | `P02`, `P03`, `PFX-O02`, `PFX-D05`, `FFG-E07` outcome subset, `FFG-C10` | `F1`: needs generalization |
 | variable activation budgets | `P12` economy subset, `PFX-A01` | `F2`: needs generalization |
 | named effect instances with bounded authority-relative expiry | `P10`, `P11`, `PFX-E07`, `FFG-E07` effect subset | `F3`: requires a new primitive |
@@ -182,6 +183,10 @@ Every `F*` implementation follows the repository's normal extension path:
   ceiling or accept an unbounded form.
 
 ## F0 — Contextual contribution ledger
+
+Implementation status: supported as `F0@1` by task `#6180`. The checked-in
+authoring, prepared/compiled artifact, Rust execution, event/trace, and replay
+contracts are the implementation truth for this section.
 
 ### Semantic and version boundary
 

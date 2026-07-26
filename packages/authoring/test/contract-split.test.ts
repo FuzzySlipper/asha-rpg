@@ -18,6 +18,7 @@ import {
   defineRuleset,
   defineScenario,
   defineScenarioTemplate,
+  defineSupportDefinition,
   instantiateScenarioTemplate,
   heal,
   hostile,
@@ -28,6 +29,8 @@ import {
   preparePlayBundle,
   readStat,
   rulesetDefense,
+  rulesetCalculationSelector,
+  rulesetContributionStackingGroup,
   rulesetStat,
   rulesetValueId,
 } from "@asha-rpg/authoring";
@@ -162,18 +165,50 @@ test("Content Packs carry typed class, feature, and participant setup definition
       ...semanticRuleset.provides,
       operations: [{ id: "operation.heal", version: 1 }],
       capabilities: [
+        { id: "capability.defenses", version: 1 },
+        { id: "capability.random", version: 1 },
         { id: "capability.stats", version: 1 },
         { id: "capability.vitality", version: 1 },
       ],
+      calculationSelectors: [
+        {
+          id: "attack-total",
+          version: 1,
+          label: "Attack total",
+          numericDomainId: "score",
+        },
+      ],
+      contributionStackingGroups: [
+        {
+          id: "circumstance",
+          version: 1,
+          label: "Circumstance",
+          policy: "sum",
+        },
+      ],
     },
   });
+  const attackSelector = rulesetCalculationSelector(
+    profileRuleset,
+    "attack-total",
+  );
+  const circumstanceGroup = rulesetContributionStackingGroup(
+    profileRuleset,
+    "circumstance",
+  );
   const authoredAction = action({
     id: actionId("action.profile-heal"),
     name: "Profile heal",
     sourcePath: "contract/profiles.ts#profileHeal",
+    tags: ["attack"],
     targets: hostile({ range: 1 }),
-    check: noRoll(),
-    program: onCheck({ noRoll: heal({ amount: constant(1) }) }),
+    check: attack({
+      modifier: constant(1),
+      defense: rulesetDefense(profileRuleset, "armor-class"),
+      contributionSelector: attackSelector,
+    }),
+    rollScope: "perTarget",
+    program: onCheck({ hit: heal({ amount: constant(1) }) }),
   });
   const actionDefinition = defineActionDefinition({
     id: authoredAction.id,
@@ -182,6 +217,21 @@ test("Content Packs carry typed class, feature, and participant setup definition
     source: { module: "contract/profiles.ts", declaration: "profileHeal" },
     action: authoredAction,
   });
+  const highGround = defineSupportDefinition({
+    id: "terrain.high-ground",
+    visibility: "private",
+    extensionPolicy: "sealed",
+    source: {
+      module: "contract/profiles.ts",
+      declaration: "highGround",
+    },
+    presentation: { label: "High ground" },
+    semantic: {
+      catalog: "cell-capability",
+      id: "terrain.high-ground",
+      data: { kind: "flag" },
+    },
+  });
   const flankingFeature = defineCharacterFeatureDefinition({
     id: "feature.flanking",
     visibility: "public",
@@ -189,12 +239,24 @@ test("Content Packs carry typed class, feature, and participant setup definition
     source: { module: "contract/profiles.ts", declaration: "flanking" },
     presentation: { label: "Flanking Discipline" },
     characterFeature: {
-      rollContributions: [
+      contributions: [
+        {
+          id: "cell",
+          selector: attackSelector,
+          stackingGroup: circumstanceGroup,
+          value: { kind: "constant", value: 1 },
+          predicate: {
+            kind: "cellCapability",
+            subject: "actor",
+            capability: { definitionId: highGround.id },
+          },
+        },
         {
           id: "flanking",
-          selector: "attack",
-          condition: { kind: "actorFlanksTarget" },
-          amount: 2,
+          selector: attackSelector,
+          stackingGroup: circumstanceGroup,
+          value: { kind: "constant", value: 2 },
+          predicate: { kind: "actorFlanksTarget" },
         },
       ],
     },
@@ -233,6 +295,7 @@ test("Content Packs carry typed class, feature, and participant setup definition
     definitions: [
       actionDefinition,
       flankingFeature,
+      highGround,
       vanguardClass,
       profile,
     ],
@@ -273,7 +336,22 @@ test("Content Packs carry typed class, feature, and participant setup definition
       { owner: "stat", id: "strength", value: 16 },
     ],
   });
+  const materializedFeature = result.prepared.materializedDefinitions.find(
+    (definition) => definition.id === flankingFeature.id,
+  );
+  assert.deepEqual(materializedFeature?.references, [highGround.id]);
+  assert.equal(
+    (
+      materializedFeature?.semantic as {
+        readonly contributions: readonly [
+          { readonly predicate: { readonly capabilityId: string } },
+        ];
+      }
+    ).contributions[0].predicate.capabilityId,
+    highGround.id,
+  );
   assert.deepEqual(result.prepared.contentRequirements.values, [
+    { kind: "defense", id: "armor-class" },
     { kind: "stat", id: "strength" },
   ]);
   assert.deepEqual(result.prepared.contentRequirements.numericDomains, ["score"]);
@@ -287,21 +365,23 @@ test("Content Packs carry typed class, feature, and participant setup definition
       declaration: "invalidSurrounded",
     },
     characterFeature: {
-      rollContributions: [
+      contributions: [
         {
-          id: "duplicate-selector",
-          selector: "attack",
-          condition: { kind: "always" },
-          amount: 1,
+          id: "duplicate",
+          selector: attackSelector,
+          stackingGroup: circumstanceGroup,
+          value: { kind: "constant", value: 1 },
+          predicate: { kind: "always" },
         },
         {
-          id: "invalid-surrounded",
-          selector: "attack",
-          condition: {
+          id: "duplicate",
+          selector: attackSelector,
+          stackingGroup: circumstanceGroup,
+          value: { kind: "constant", value: 1 },
+          predicate: {
             kind: "actorSurrounded",
             minimumHostiles: 5,
           },
-          amount: 1,
         },
       ],
     },
@@ -336,11 +416,107 @@ test("Content Packs carry typed class, feature, and participant setup definition
     ));
     assert.ok(invalidResult.diagnostics.some(
       (diagnostic) =>
-        diagnostic.code === "CHARACTER_FEATURE_SURROUNDED_THRESHOLD_INVALID",
+        diagnostic.code === "SCALAR_CONTRIBUTION_SURROUNDED_THRESHOLD_INVALID",
     ));
     assert.ok(invalidResult.diagnostics.some(
       (diagnostic) =>
-        diagnostic.code === "CHARACTER_FEATURE_SELECTOR_DUPLICATE",
+        diagnostic.code === "SCALAR_CONTRIBUTIONS_NOT_CANONICAL",
+    ));
+  }
+
+  const invalidContractFeature = defineCharacterFeatureDefinition({
+    id: "feature.invalid-contract",
+    visibility: "public",
+    extensionPolicy: "sealed",
+    source: {
+      module: "contract/profiles.ts",
+      declaration: "invalidContract",
+    },
+    presentation: { label: "Invalid contract" },
+    characterFeature: {
+      contributions: [
+        {
+          id: "invalid-contract",
+          selector: {
+            rulesetId: profileRuleset.identity.id,
+            id: "missing-selector",
+          },
+          stackingGroup: {
+            rulesetId: profileRuleset.identity.id,
+            id: "missing-group",
+          },
+          value: { kind: "constant", value: 1 },
+          predicate: { kind: "always" },
+        },
+      ],
+    },
+  });
+  const invalidContractContent = defineContentPack({
+    identity: { id: "contract.invalid-contract-content", version: "1.0.0" },
+    entry: {
+      module: "contract/profiles.ts",
+      declaration: "invalidContractContent",
+    },
+    definitions: [invalidContractFeature],
+  });
+  const invalidContractResult = preparePlayBundle({
+    bundle: composePlayBundle({
+      identity: { id: "contract.invalid-contract-bundle", version: "1.0.0" },
+      ruleset: profileRuleset,
+      base: contentPackRequest({
+        id: invalidContractContent.identity.id,
+        version: "1.0.0",
+      }),
+      add: [],
+      overlays: [],
+      configure: {},
+    }),
+    contentPacks: [contentPackSource(invalidContractContent)],
+  });
+  assert.equal(invalidContractResult.ok, false);
+  if (!invalidContractResult.ok) {
+    assert.ok(invalidContractResult.diagnostics.some(
+      (diagnostic) => diagnostic.code === "SCALAR_CONTRIBUTION_SELECTOR_INVALID",
+    ));
+    assert.ok(invalidContractResult.diagnostics.some(
+      (diagnostic) =>
+        diagnostic.code === "SCALAR_CONTRIBUTION_STACKING_GROUP_INVALID",
+    ));
+  }
+
+  const invalidPolicyRuleset = defineRuleset({
+    ...profileRuleset,
+    provides: {
+      ...profileRuleset.provides,
+      contributionStackingGroups: [
+        {
+          id: "circumstance",
+          version: 1,
+          label: "Circumstance",
+          policy: "median" as "sum",
+        },
+      ],
+    },
+  });
+  const invalidPolicyResult = preparePlayBundle({
+    bundle: composePlayBundle({
+      identity: { id: "contract.invalid-policy-bundle", version: "1.0.0" },
+      ruleset: invalidPolicyRuleset,
+      base: contentPackRequest({
+        id: contentPack.identity.id,
+        version: "1.0.0",
+      }),
+      add: [],
+      overlays: [],
+      configure: {},
+    }),
+    contentPacks: [contentPackSource(contentPack)],
+  });
+  assert.equal(invalidPolicyResult.ok, false);
+  if (!invalidPolicyResult.ok) {
+    assert.ok(invalidPolicyResult.diagnostics.some(
+      (diagnostic) =>
+        diagnostic.code === "RULESET_CONTRIBUTION_STACKING_GROUP_INVALID",
     ));
   }
 

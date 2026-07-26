@@ -24,7 +24,7 @@ pub const RPG_CHECKPOINT_SCHEMA_ID: &str = "asha.rpg.session.checkpoint";
 pub const RPG_REPLAY_ENTRY_SCHEMA_ID: &str = "asha.rpg.session.replay-entry";
 pub const RPG_CHECKPOINT_SCHEMA_VERSION: u32 = 5;
 pub const RPG_REPLAY_ENTRY_SCHEMA_VERSION: u32 = 6;
-pub const RPG_EVENT_SCHEMA_VERSION: u32 = 3;
+pub const RPG_EVENT_SCHEMA_VERSION: u32 = 4;
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase", deny_unknown_fields)]
@@ -2358,6 +2358,8 @@ mod tests {
                         minimum: 0,
                         maximum: 100,
                     }],
+                    calculation_selectors: Vec::new(),
+                    contribution_stacking_groups: Vec::new(),
                 },
             },
             content_packs: vec![ResolvedContentPack {

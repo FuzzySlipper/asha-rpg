@@ -1,11 +1,15 @@
 use std::collections::{BTreeMap, BTreeSet};
 
-use rpg_core::{RpgRandomRequest, RpgRandomRequestKind, MAXIMUM_RPG_MODIFIER_TURNS};
+use rpg_core::{
+    RpgContributionStackingPolicy, RpgRandomRequest, RpgRandomRequestKind,
+    MAXIMUM_RPG_MODIFIER_TURNS,
+};
 use rpg_ir::{
-    CompiledCharacterFeature, EquippedItemBindingRequirement, NormalizedRpgIr, RpgIrAction,
-    RpgIrCheck, RpgIrFormula, RpgIrOperation, RpgIrPredicate, RpgIrProgram, RpgIrRequirementKind,
-    RpgIrResourceCost, RpgIrRollScope, RpgIrSubject, RpgIrTargetKind, RpgIrTargetSelector,
-    RpgIrTeamConstraint, RPG_IR_IDENTITY, RPG_IR_MAJOR,
+    CompiledCharacterFeature, CompiledItemDefinition, EquippedItemBindingRequirement,
+    NormalizedRpgIr, RpgIrAction, RpgIrCheck, RpgIrFormula, RpgIrOperation, RpgIrPredicate,
+    RpgIrProgram, RpgIrRequirementKind, RpgIrResourceCost, RpgIrRollScope, RpgIrSubject,
+    RpgIrTargetKind, RpgIrTargetSelector, RpgIrTeamConstraint, Ruleset, RPG_IR_IDENTITY,
+    RPG_IR_MAJOR,
 };
 use serde::Serialize;
 
@@ -79,6 +83,15 @@ pub struct CompiledRpgRules {
     bound_actions: BTreeMap<(String, String), CompiledAction>,
     binding_requirements: BTreeMap<String, EquippedItemBindingRequirement>,
     character_features: BTreeMap<String, CompiledCharacterFeature>,
+    items: BTreeMap<String, CompiledItemDefinition>,
+    calculation_selectors: BTreeMap<String, CompiledCalculationSelector>,
+    contribution_stacking_groups: BTreeMap<String, RpgContributionStackingPolicy>,
+}
+
+#[derive(Debug, Clone)]
+pub(crate) struct CompiledCalculationSelector {
+    pub(crate) minimum: i64,
+    pub(crate) maximum: i64,
 }
 
 impl CompiledRpgRules {
@@ -193,11 +206,70 @@ impl CompiledRpgRules {
             .collect();
     }
 
+    pub(crate) fn register_items(&mut self, items: &[CompiledItemDefinition]) {
+        self.items = items
+            .iter()
+            .cloned()
+            .map(|item| (item.definition_id.clone(), item))
+            .collect();
+    }
+
+    pub(crate) fn register_contribution_contracts(&mut self, ruleset: &Ruleset) {
+        let domains = ruleset
+            .provides
+            .numeric_domains
+            .iter()
+            .map(|domain| (domain.id.as_str(), domain))
+            .collect::<BTreeMap<_, _>>();
+        self.calculation_selectors = ruleset
+            .provides
+            .calculation_selectors
+            .iter()
+            .filter_map(|selector| {
+                domains
+                    .get(selector.numeric_domain_id.as_str())
+                    .map(|domain| {
+                        (
+                            selector.id.clone(),
+                            CompiledCalculationSelector {
+                                minimum: domain.minimum,
+                                maximum: domain.maximum,
+                            },
+                        )
+                    })
+            })
+            .collect();
+        self.contribution_stacking_groups = ruleset
+            .provides
+            .contribution_stacking_groups
+            .iter()
+            .map(|group| (group.id.clone(), group.policy))
+            .collect();
+    }
+
     pub(crate) fn character_feature(
         &self,
         definition_id: &str,
     ) -> Option<&CompiledCharacterFeature> {
         self.character_features.get(definition_id)
+    }
+
+    pub(crate) fn item(&self, definition_id: &str) -> Option<&CompiledItemDefinition> {
+        self.items.get(definition_id)
+    }
+
+    pub(crate) fn calculation_selector(
+        &self,
+        selector_id: &str,
+    ) -> Option<&CompiledCalculationSelector> {
+        self.calculation_selectors.get(selector_id)
+    }
+
+    pub(crate) fn contribution_stacking_policy(
+        &self,
+        group_id: &str,
+    ) -> Option<RpgContributionStackingPolicy> {
+        self.contribution_stacking_groups.get(group_id).copied()
     }
 }
 
@@ -215,6 +287,7 @@ pub struct CompiledRpgAction {
     pub id: String,
     pub name: String,
     pub source_path: String,
+    pub tags: Vec<String>,
     pub targets: RpgIrTargetSelector,
     pub check: RpgIrCheck,
     pub roll_scope: RpgIrRollScope,
@@ -241,6 +314,7 @@ fn compiled_action_projection(
         id: id.to_owned(),
         name: action.name.clone(),
         source_path: action.source_path.clone(),
+        tags: action.tags.clone(),
         targets: action.targets.clone(),
         check: action.check.clone(),
         roll_scope: action.roll_scope,
@@ -316,6 +390,7 @@ pub struct RpgRandomPlanEntry {
 pub(crate) struct CompiledAction {
     pub(crate) name: String,
     pub(crate) source_path: String,
+    pub(crate) tags: Vec<String>,
     pub(crate) targets: RpgIrTargetSelector,
     pub(crate) check: RpgIrCheck,
     pub(crate) roll_scope: RpgIrRollScope,
@@ -401,6 +476,9 @@ pub fn compile_normalized_rpg_ir(
         bound_actions: BTreeMap::new(),
         binding_requirements: BTreeMap::new(),
         character_features: BTreeMap::new(),
+        items: BTreeMap::new(),
+        calculation_selectors: BTreeMap::new(),
+        contribution_stacking_groups: BTreeMap::new(),
     })
 }
 
@@ -409,6 +487,7 @@ fn compile_action(action: RpgIrAction) -> CompiledAction {
     CompiledAction {
         name: action.name,
         source_path: action.source_path,
+        tags: action.tags,
         targets: action.targets,
         check: action.check,
         roll_scope: action.roll_scope,
@@ -863,6 +942,20 @@ impl<'a> Validator<'a> {
                 &format!("{path}.sourcePath"),
                 "source path",
             );
+            let mut previous_tag = None::<&str>;
+            for (tag_index, tag) in action.tags.iter().enumerate() {
+                if !is_portable_identifier(tag)
+                    || previous_tag.is_some_and(|previous| previous >= tag.as_str())
+                {
+                    self.error(
+                        RpgDiagnosticStage::Artifact,
+                        "RPG_IR_ACTION_TAGS_NOT_CANONICAL",
+                        format!("{path}.tags[{tag_index}]"),
+                        "action tags must be unique sorted portable identifiers",
+                    );
+                }
+                previous_tag = Some(tag);
+            }
             if !action_ids.insert(&action.id) {
                 self.error(
                     RpgDiagnosticStage::References,
@@ -975,6 +1068,7 @@ impl<'a> Validator<'a> {
             RpgIrCheck::Attack {
                 modifier,
                 defense_id,
+                ..
             }
             | RpgIrCheck::SavingThrow {
                 difficulty: modifier,
@@ -1606,4 +1700,11 @@ fn requirement_kind_key(kind: RpgIrRequirementKind) -> u8 {
         RpgIrRequirementKind::Operation => 0,
         RpgIrRequirementKind::Capability => 1,
     }
+}
+
+fn is_portable_identifier(value: &str) -> bool {
+    !value.is_empty()
+        && value
+            .chars()
+            .all(|character| character.is_ascii_alphanumeric() || "._-/".contains(character))
 }

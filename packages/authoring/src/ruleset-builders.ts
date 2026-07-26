@@ -16,6 +16,12 @@ const rulesetValueReferenceBrand: unique symbol = Symbol(
 const authoredRulesetValueOwnership: unique symbol = Symbol(
   'asha-rpg.authored-ruleset-value-ownership',
 );
+const rulesetCalculationSelectorReferenceBrand: unique symbol = Symbol(
+  'asha-rpg.calculation-selector-reference',
+);
+const rulesetContributionStackingGroupReferenceBrand: unique symbol = Symbol(
+  'asha-rpg.contribution-stacking-group-reference',
+);
 
 export interface AuthoredRulesetValueOwnership {
   readonly field: string;
@@ -43,9 +49,32 @@ type RulesetValueInput = Omit<RulesetValueContract, 'source'> & {
   readonly source?: RulesetValueSource;
 };
 
+export type RulesetCalculationSelectorReference<
+  RulesetId extends string,
+  SelectorId extends string,
+> = Readonly<{
+  readonly rulesetId: RulesetId;
+  readonly id: SelectorId;
+  readonly [rulesetCalculationSelectorReferenceBrand]: true;
+}>;
+
+export type RulesetContributionStackingGroupReference<
+  RulesetId extends string,
+  GroupId extends string,
+> = Readonly<{
+  readonly rulesetId: RulesetId;
+  readonly id: GroupId;
+  readonly [rulesetContributionStackingGroupReferenceBrand]: true;
+}>;
+
 type RulesetInput = Omit<Ruleset, 'provides'> & {
-  readonly provides: Omit<Ruleset['provides'], 'values'> & {
+  readonly provides: Omit<
+    Ruleset['provides'],
+    'values' | 'calculationSelectors' | 'contributionStackingGroups'
+  > & {
     readonly values: readonly RulesetValueInput[];
+    readonly calculationSelectors?: Ruleset['provides']['calculationSelectors'];
+    readonly contributionStackingGroups?: Ruleset['provides']['contributionStackingGroups'];
   };
 };
 
@@ -68,6 +97,12 @@ export function defineRuleset(input: RulesetInput): Ruleset {
       numericDomains: [...input.provides.numericDomains].sort((left, right) =>
         left.id.localeCompare(right.id),
       ),
+      calculationSelectors: [...(input.provides.calculationSelectors ?? [])].sort(
+        (left, right) => left.id.localeCompare(right.id),
+      ),
+      contributionStackingGroups: [
+        ...(input.provides.contributionStackingGroups ?? []),
+      ].sort((left, right) => left.id.localeCompare(right.id)),
     },
   });
 }
@@ -141,6 +176,52 @@ export function rulesetDefense<
   id: DefenseId,
 ): RulesetValueReference<'defense', RulesetId, DefenseId> {
   return rulesetValueReference(ruleset, 'defense', id);
+}
+
+export function rulesetCalculationSelector<
+  const RulesetId extends string,
+  const SelectorId extends string,
+>(
+  ruleset: Ruleset & { readonly identity: RulesetIdentity & { readonly id: RulesetId } },
+  id: SelectorId,
+): RulesetCalculationSelectorReference<RulesetId, SelectorId> {
+  if (
+    !ruleset.provides.calculationSelectors.some(
+      (candidate) => candidate.id === id,
+    )
+  ) {
+    throw new Error(
+      `ruleset ${ruleset.identity.id}@${ruleset.identity.version} does not provide calculation selector ${id}`,
+    );
+  }
+  return immutable({
+    rulesetId: ruleset.identity.id,
+    id,
+    [rulesetCalculationSelectorReferenceBrand]: true as const,
+  });
+}
+
+export function rulesetContributionStackingGroup<
+  const RulesetId extends string,
+  const GroupId extends string,
+>(
+  ruleset: Ruleset & { readonly identity: RulesetIdentity & { readonly id: RulesetId } },
+  id: GroupId,
+): RulesetContributionStackingGroupReference<RulesetId, GroupId> {
+  if (
+    !ruleset.provides.contributionStackingGroups.some(
+      (candidate) => candidate.id === id,
+    )
+  ) {
+    throw new Error(
+      `ruleset ${ruleset.identity.id}@${ruleset.identity.version} does not provide contribution stacking group ${id}`,
+    );
+  }
+  return immutable({
+    rulesetId: ruleset.identity.id,
+    id,
+    [rulesetContributionStackingGroupReferenceBrand]: true as const,
+  });
 }
 
 export function rulesetValueId<Kind extends RulesetValueKind>(

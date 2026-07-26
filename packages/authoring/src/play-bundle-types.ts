@@ -79,6 +79,26 @@ export interface RulesetNumericDomain {
   readonly maximum: number;
 }
 
+export interface RulesetCalculationSelectorContract {
+  readonly id: string;
+  readonly version: 1;
+  readonly label: string;
+  readonly numericDomainId: string;
+}
+
+export type RulesetContributionStackingPolicy =
+  | "sum"
+  | "greatest"
+  | "least"
+  | "signedExtremes";
+
+export interface RulesetContributionStackingGroupContract {
+  readonly id: string;
+  readonly version: 1;
+  readonly label: string;
+  readonly policy: RulesetContributionStackingPolicy;
+}
+
 export interface VersionedRpgRequirement {
   readonly id: string;
   readonly version: number;
@@ -89,6 +109,8 @@ export interface RulesetProvisions {
   readonly capabilities: readonly VersionedRpgRequirement[];
   readonly values: readonly RulesetValueContract[];
   readonly numericDomains: readonly RulesetNumericDomain[];
+  readonly calculationSelectors: readonly RulesetCalculationSelectorContract[];
+  readonly contributionStackingGroups: readonly RulesetContributionStackingGroupContract[];
 }
 
 export interface RulesetModels {
@@ -458,6 +480,7 @@ export interface ContentActionProcedureDefinition<
 
 export interface ContentInvokedActionDefinition extends ContentDefinitionBase {
   readonly kind: "action";
+  readonly tags: readonly string[];
   readonly invocation: ActionProcedureInvocation;
   readonly action?: never;
 }
@@ -507,12 +530,13 @@ export type ContentItemAttribute =
 export interface ContentItemData {
   readonly schema: {
     readonly identity: "asha.rpg.item";
-    readonly version: 1;
+    readonly version: 2;
   };
   readonly tags: readonly string[];
   readonly traits: readonly string[];
   readonly allowedSlots: readonly string[];
   readonly attributes: readonly ContentItemAttribute[];
+  readonly contributions: readonly ContentScalarContribution[];
 }
 
 export interface ContentItemDefinition extends ContentDefinitionBase {
@@ -520,11 +544,75 @@ export interface ContentItemDefinition extends ContentDefinitionBase {
   readonly item: ContentItemData;
 }
 
-export type ContentRollContributionSelector = "attack";
+export interface ContentOwnedRulesetReference {
+  readonly rulesetId: string;
+  readonly id: string;
+}
 
-export type ContentRollContributionCondition =
+export type ContentContributionValueExpression =
+  | {
+      readonly kind: "constant";
+      readonly value: number;
+    }
+  | {
+      readonly kind: "readValue";
+      readonly subject: "actor" | "target";
+      readonly rulesetId: string;
+      readonly valueKind: RulesetValueKind;
+      readonly valueId: string;
+    }
+  | {
+      readonly kind: "add";
+      readonly terms: readonly ContentContributionValueExpression[];
+    }
+  | {
+      readonly kind: "subtract";
+      readonly minuend: ContentContributionValueExpression;
+      readonly subtrahend: ContentContributionValueExpression;
+    };
+
+export type ContentContributionPredicate =
   | {
       readonly kind: "always";
+    }
+  | {
+      readonly kind: "not";
+      readonly predicate: ContentContributionPredicate;
+    }
+  | {
+      readonly kind: "all";
+      readonly predicates: readonly ContentContributionPredicate[];
+    }
+  | {
+      readonly kind: "any";
+      readonly predicates: readonly ContentContributionPredicate[];
+    }
+  | {
+      readonly kind: "actorIsTarget";
+      readonly expected: boolean;
+    }
+  | {
+      readonly kind: "teamRelation";
+      readonly relation: "same" | "different";
+    }
+  | {
+      readonly kind: "living";
+      readonly subject: "actor" | "target";
+      readonly expected: boolean;
+    }
+  | {
+      readonly kind: "namedValue";
+      readonly subject: "actor" | "target";
+      readonly rulesetId: string;
+      readonly valueKind: RulesetValueKind;
+      readonly valueId: string;
+      readonly comparison: "lessThan" | "lessThanOrEqual" | "equal" | "greaterThanOrEqual" | "greaterThan";
+      readonly value: number;
+    }
+  | {
+      readonly kind: "distance";
+      readonly comparison: "lessThan" | "lessThanOrEqual" | "equal" | "greaterThanOrEqual" | "greaterThan";
+      readonly value: number;
     }
   | {
       readonly kind: "actorFlanksTarget";
@@ -534,15 +622,33 @@ export type ContentRollContributionCondition =
       readonly minimumHostiles: number;
     }
   | {
-      readonly kind: "all";
-      readonly conditions: readonly ContentRollContributionCondition[];
+      readonly kind: "boundItemDefinition";
+      readonly definition: ContentDefinitionReference;
+    }
+  | {
+      readonly kind: "boundItemTag";
+      readonly tag: string;
+    }
+  | {
+      readonly kind: "actionTag";
+      readonly tag: string;
+    }
+  | {
+      readonly kind: "cellCapability";
+      readonly subject: "actor" | "target";
+      readonly capability: ContentDefinitionReference;
     };
 
-export interface ContentCharacterFeatureRollContribution {
+export interface ContentScalarContribution {
+  readonly schema: {
+    readonly identity: "asha.rpg.scalar-contribution";
+    readonly version: 1;
+  };
   readonly id: string;
-  readonly selector: ContentRollContributionSelector;
-  readonly condition: ContentRollContributionCondition;
-  readonly amount: number;
+  readonly selector: ContentOwnedRulesetReference;
+  readonly stackingGroup: ContentOwnedRulesetReference;
+  readonly value: ContentContributionValueExpression;
+  readonly predicate: ContentContributionPredicate;
 }
 
 export interface ContentCharacterClassData {
@@ -561,9 +667,9 @@ export interface ContentCharacterClassDefinition extends ContentDefinitionBase {
 export interface ContentCharacterFeatureData {
   readonly schema: {
     readonly identity: "asha.rpg.character-feature";
-    readonly version: 1;
+    readonly version: 2;
   };
-  readonly rollContributions: readonly ContentCharacterFeatureRollContribution[];
+  readonly contributions: readonly ContentScalarContribution[];
 }
 
 export interface ContentCharacterFeatureDefinition extends ContentDefinitionBase {
@@ -908,7 +1014,7 @@ export interface MaterializedContentDefinition {
 export interface PreparedPlayBundle {
   readonly schema: {
     readonly identity: "asha.rpg.play-bundle.prepared";
-    readonly major: 2;
+    readonly major: 3;
   };
   readonly playBundleIdentity: PlayBundleIdentity;
   readonly ruleset: Ruleset;

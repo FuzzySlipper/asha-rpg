@@ -8,7 +8,6 @@ import type {
   ContentActionProcedureDefinition,
   ContentCharacterClassData,
   ContentCharacterClassDefinition,
-  ContentCharacterFeatureData,
   ContentCharacterFeatureDefinition,
   ContentInvokedActionDefinition,
   ActionProcedureArgumentsFor,
@@ -37,6 +36,7 @@ import type {
   ContentPackSource,
   ContentPolicyBinding,
   ContentReservedRelationship,
+  ContentScalarContribution,
   ContentSupportDefinition,
   ContentTemplateDefinition,
   ScenarioBoundedValue,
@@ -124,12 +124,13 @@ export function defineActionInvocationDefinition<
 >(
   input: Omit<
     OrdinaryDefinitionInput<ContentInvokedActionDefinition>,
-    'invocation'
+    'invocation' | 'tags'
   > & {
     readonly procedure: ContentActionProcedureDefinition<Parameters>;
     readonly importAs?: string;
     readonly arguments: ActionProcedureArgumentsFor<Parameters>;
     readonly binding?: EquippedItemBindingRequirement;
+    readonly tags?: readonly string[];
   },
 ): ContentInvokedActionDefinition {
   const {
@@ -137,11 +138,13 @@ export function defineActionInvocationDefinition<
     importAs,
     arguments: invocationArguments,
     binding,
+    tags,
     ...definition
   } = input;
   return immutable({
     ...definition,
     kind: 'action' as const,
+    tags: [...(tags ?? [])].sort(),
     invocation: {
       procedure: {
         definitionId: procedure.id,
@@ -223,7 +226,9 @@ export function defineItemDefinition(
     OrdinaryDefinitionInput<ContentItemDefinition>,
     'item'
   > & {
-    readonly item: Omit<ContentItemData, 'schema'>;
+    readonly item: Omit<ContentItemData, 'schema' | 'contributions'> & {
+      readonly contributions?: readonly Omit<ContentScalarContribution, 'schema'>[];
+    };
   },
 ): ContentItemDefinition {
   return immutable({
@@ -233,7 +238,7 @@ export function defineItemDefinition(
       ...input.item,
       schema: {
         identity: 'asha.rpg.item' as const,
-        version: 1 as const,
+        version: 2 as const,
       },
       tags: [...input.item.tags].sort(),
       traits: [...input.item.traits].sort(),
@@ -241,6 +246,7 @@ export function defineItemDefinition(
       attributes: [...input.item.attributes].sort((left, right) =>
         left.id.localeCompare(right.id),
       ),
+      contributions: normalizeScalarContributions(input.item.contributions ?? []),
     },
   });
 }
@@ -250,7 +256,9 @@ export function defineCharacterFeatureDefinition(
     OrdinaryDefinitionInput<ContentCharacterFeatureDefinition>,
     'characterFeature'
   > & {
-    readonly characterFeature: Omit<ContentCharacterFeatureData, 'schema'>;
+    readonly characterFeature: {
+      readonly contributions: readonly Omit<ContentScalarContribution, 'schema'>[];
+    };
   },
 ): ContentCharacterFeatureDefinition {
   return immutable({
@@ -259,13 +267,27 @@ export function defineCharacterFeatureDefinition(
     characterFeature: {
       schema: {
         identity: 'asha.rpg.character-feature' as const,
-        version: 1 as const,
+        version: 2 as const,
       },
-      rollContributions: [...input.characterFeature.rollContributions].sort(
-        (left, right) => left.id.localeCompare(right.id),
+      contributions: normalizeScalarContributions(
+        input.characterFeature.contributions,
       ),
     },
   });
+}
+
+function normalizeScalarContributions(
+  contributions: readonly Omit<ContentScalarContribution, 'schema'>[],
+): readonly ContentScalarContribution[] {
+  return contributions
+    .map((contribution) => ({
+      ...contribution,
+      schema: {
+        identity: 'asha.rpg.scalar-contribution' as const,
+        version: 1 as const,
+      },
+    }))
+    .sort((left, right) => left.id.localeCompare(right.id));
 }
 
 export function defineCharacterClassDefinition(

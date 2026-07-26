@@ -1,6 +1,9 @@
 use std::collections::{BTreeMap, BTreeSet};
 
-use rpg_core::{RpgRollContributionCondition, RpgRollContributionSelector};
+use rpg_core::{
+    RpgContributionPredicate, RpgContributionValueExpression, RpgRulesetValueKind,
+    RpgScalarContributionDefinition,
+};
 use rpg_ir::{
     ActionProcedureImplementation, ActionProcedureParameter, CompiledCharacterClass,
     CompiledCharacterFeature, CompiledItemDefinition, CompiledParticipantProfile,
@@ -83,9 +86,12 @@ pub const RULESET_VALUE_FORMULA_VERSION: u32 = 1;
 const MAX_RULESET_VALUE_FORMULA_DEPTH: usize = 16;
 const MAX_RULESET_VALUE_FORMULA_NODES: usize = 64;
 const MAX_CHARACTER_FEATURE_CONTRIBUTIONS: usize = 32;
-const MAX_ROLL_CONDITION_DEPTH: usize = 8;
-const MAX_ROLL_CONDITION_NODES: usize = 32;
-const MAX_ROLL_CONTRIBUTION_ABSOLUTE: i32 = 1_000;
+const MAX_CONTRIBUTION_PREDICATE_DEPTH: usize = 16;
+const MAX_CONTRIBUTION_PREDICATE_NODES: usize = 128;
+const MAX_CONTRIBUTION_EXPRESSION_DEPTH: usize = 16;
+const MAX_CONTRIBUTION_EXPRESSION_NODES: usize = 256;
+const SCALAR_CONTRIBUTION_IDENTITY: &str = "asha.rpg.scalar-contribution";
+const SCALAR_CONTRIBUTION_VERSION: u32 = 1;
 
 #[derive(Debug, Clone, PartialEq, Eq, PartialOrd, Ord)]
 pub struct RulesetValueKey {
@@ -192,9 +198,17 @@ pub fn compile_prepared_play_bundle(
     let character_classes = compile_character_classes(&prepared, &character_features)?;
     let (normalized_ir, bound_action_registrations) =
         normalized_ir_from_materialized(&prepared, &items)?;
+    validate_action_contribution_contracts(
+        &normalized_ir,
+        &prepared.ruleset,
+        &items,
+        &character_features,
+    )?;
     let mut rules = compile_normalized_rpg_ir(normalized_ir)?;
     rules.register_bound_actions(bound_action_registrations);
     rules.register_character_features(&character_features);
+    rules.register_items(&items);
+    rules.register_contribution_contracts(&prepared.ruleset);
     let value_plan = compile_ruleset_value_plan(&prepared.ruleset)?;
     let participant_profiles =
         compile_participant_profiles(&prepared, &items, &character_classes, &character_features)?;
@@ -717,6 +731,44 @@ fn validate_ruleset(prepared: &PreparedPlayBundle, diagnostics: &mut Vec<RpgDiag
         }
         previous_domain = Some(domain.id.as_str());
     }
+    let mut previous_selector = None::<&str>;
+    for (index, selector) in ruleset.provides.calculation_selectors.iter().enumerate() {
+        if !valid_identifier(&selector.id)
+            || previous_selector.is_some_and(|previous| previous >= selector.id.as_str())
+            || selector.version != 1
+            || selector.label.trim().is_empty()
+            || !declared_domains.contains(selector.numeric_domain_id.as_str())
+        {
+            diagnostics.push(RpgDiagnostic::error(
+                RpgDiagnosticStage::Artifact,
+                "RULESET_CALCULATION_SELECTORS_NOT_CANONICAL",
+                format!("$.ruleset.provides.calculationSelectors[{index}]"),
+                "calculation selectors must be unique sorted portable ids at version 1, labelled, and use a declared numeric domain",
+            ));
+        }
+        previous_selector = Some(selector.id.as_str());
+    }
+    let mut previous_group = None::<&str>;
+    for (index, group) in ruleset
+        .provides
+        .contribution_stacking_groups
+        .iter()
+        .enumerate()
+    {
+        if !valid_identifier(&group.id)
+            || previous_group.is_some_and(|previous| previous >= group.id.as_str())
+            || group.version != 1
+            || group.label.trim().is_empty()
+        {
+            diagnostics.push(RpgDiagnostic::error(
+                RpgDiagnosticStage::Artifact,
+                "RULESET_CONTRIBUTION_STACKING_GROUPS_NOT_CANONICAL",
+                format!("$.ruleset.provides.contributionStackingGroups[{index}]"),
+                "contribution stacking groups must be unique sorted portable ids at version 1 and labelled",
+            ));
+        }
+        previous_group = Some(group.id.as_str());
+    }
 }
 
 fn compile_ruleset_value_plan(
@@ -1152,6 +1204,13 @@ fn compile_items(
                 _ => {}
             }
         }
+        validate_scalar_contributions(
+            &item.contributions,
+            prepared,
+            definition,
+            &format!("{path}.semantic.contributions"),
+            &mut diagnostics,
+        );
         let label = definition
             .presentation
             .get("label")
@@ -1177,6 +1236,7 @@ fn compile_items(
             traits: item.traits,
             allowed_slots: item.allowed_slots,
             attributes: item.attributes,
+            contributions: item.contributions,
         });
     }
     if diagnostics.is_empty() {
@@ -1228,67 +1288,25 @@ fn compile_character_features(
                 format!("expected {CHARACTER_FEATURE_IDENTITY}@{CHARACTER_FEATURE_VERSION}"),
             ));
         }
-        if feature.roll_contributions.is_empty()
-            || feature.roll_contributions.len() > MAX_CHARACTER_FEATURE_CONTRIBUTIONS
+        if feature.contributions.is_empty()
+            || feature.contributions.len() > MAX_CHARACTER_FEATURE_CONTRIBUTIONS
         {
             diagnostics.push(RpgDiagnostic::error(
                 RpgDiagnosticStage::Semantics,
                 "CHARACTER_FEATURE_CONTRIBUTIONS_INVALID",
-                format!("{path}.semantic.rollContributions"),
+                format!("{path}.semantic.contributions"),
                 format!(
-                    "character features require 1..={MAX_CHARACTER_FEATURE_CONTRIBUTIONS} roll contributions"
+                    "character features require 1..={MAX_CHARACTER_FEATURE_CONTRIBUTIONS} scalar contributions"
                 ),
             ));
         }
-        let mut previous_id = None::<&str>;
-        let mut selectors = BTreeSet::new();
-        for (contribution_index, contribution) in feature.roll_contributions.iter().enumerate() {
-            let contribution_path =
-                format!("{path}.semantic.rollContributions[{contribution_index}]");
-            if !valid_identifier(&contribution.id)
-                || previous_id.is_some_and(|previous| previous >= contribution.id.as_str())
-            {
-                diagnostics.push(RpgDiagnostic::error(
-                    RpgDiagnosticStage::Artifact,
-                    "CHARACTER_FEATURE_CONTRIBUTIONS_NOT_CANONICAL",
-                    format!("{contribution_path}.id"),
-                    "roll contribution identities must be unique, sorted portable identifiers",
-                ));
-            }
-            previous_id = Some(&contribution.id);
-            if !selectors.insert(contribution.selector) {
-                diagnostics.push(RpgDiagnostic::error(
-                    RpgDiagnosticStage::Semantics,
-                    "CHARACTER_FEATURE_SELECTOR_DUPLICATE",
-                    format!("{contribution_path}.selector"),
-                    "a character feature may contribute at most once to each roll selector",
-                ));
-            }
-            if contribution.amount == 0
-                || contribution.amount < -MAX_ROLL_CONTRIBUTION_ABSOLUTE
-                || contribution.amount > MAX_ROLL_CONTRIBUTION_ABSOLUTE
-            {
-                diagnostics.push(RpgDiagnostic::error(
-                    RpgDiagnosticStage::Semantics,
-                    "CHARACTER_FEATURE_CONTRIBUTION_AMOUNT_INVALID",
-                    format!("{contribution_path}.amount"),
-                    format!(
-                        "roll contribution amounts must be non-zero within -{MAX_ROLL_CONTRIBUTION_ABSOLUTE}..={MAX_ROLL_CONTRIBUTION_ABSOLUTE}"
-                    ),
-                ));
-            }
-            match contribution.selector {
-                RpgRollContributionSelector::Attack => {}
-            }
-            let mut condition_nodes = 0;
-            validate_roll_contribution_condition(
-                &contribution.condition,
-                1,
-                &mut condition_nodes,
-                &format!("{contribution_path}.condition"),
-                &mut diagnostics,
-            );
-        }
+        validate_scalar_contributions(
+            &feature.contributions,
+            prepared,
+            definition,
+            &format!("{path}.semantic.contributions"),
+            &mut diagnostics,
+        );
         let label = required_definition_label(
             definition,
             definition_index,
@@ -1304,7 +1322,7 @@ fn compile_character_features(
                 .get("description")
                 .and_then(Value::as_str)
                 .map(str::to_owned),
-            roll_contributions: feature.roll_contributions,
+            contributions: feature.contributions,
         });
     }
     if diagnostics.is_empty() {
@@ -1455,56 +1473,596 @@ fn required_definition_label(
     label.map(str::to_owned)
 }
 
-fn validate_roll_contribution_condition(
-    condition: &RpgRollContributionCondition,
+fn validate_scalar_contributions(
+    contributions: &[RpgScalarContributionDefinition],
+    prepared: &PreparedPlayBundle,
+    source_definition: &MaterializedContentDefinition,
+    path: &str,
+    diagnostics: &mut Vec<RpgDiagnostic>,
+) {
+    if contributions.len() > MAX_CHARACTER_FEATURE_CONTRIBUTIONS {
+        diagnostics.push(RpgDiagnostic::error(
+            RpgDiagnosticStage::Semantics,
+            "SCALAR_CONTRIBUTION_SOURCE_LIMIT_EXCEEDED",
+            path,
+            format!(
+                "one source may declare at most {MAX_CHARACTER_FEATURE_CONTRIBUTIONS} scalar contributions"
+            ),
+        ));
+    }
+    let selector_domains = prepared
+        .ruleset
+        .provides
+        .calculation_selectors
+        .iter()
+        .filter_map(|selector| {
+            prepared
+                .ruleset
+                .provides
+                .numeric_domains
+                .iter()
+                .find(|domain| domain.id == selector.numeric_domain_id)
+                .map(|domain| (selector.id.as_str(), (domain.minimum, domain.maximum)))
+        })
+        .collect::<BTreeMap<_, _>>();
+    let groups = prepared
+        .ruleset
+        .provides
+        .contribution_stacking_groups
+        .iter()
+        .map(|group| group.id.as_str())
+        .collect::<BTreeSet<_>>();
+    let mut previous_id = None::<&str>;
+    for (index, contribution) in contributions.iter().enumerate() {
+        let contribution_path = format!("{path}[{index}]");
+        if contribution.schema.identity != SCALAR_CONTRIBUTION_IDENTITY
+            || contribution.schema.version != SCALAR_CONTRIBUTION_VERSION
+        {
+            diagnostics.push(RpgDiagnostic::error(
+                RpgDiagnosticStage::Compatibility,
+                "SCALAR_CONTRIBUTION_SCHEMA_UNSUPPORTED",
+                format!("{contribution_path}.schema"),
+                format!("expected {SCALAR_CONTRIBUTION_IDENTITY}@{SCALAR_CONTRIBUTION_VERSION}"),
+            ));
+        }
+        if !valid_identifier(&contribution.id)
+            || previous_id.is_some_and(|previous| previous >= contribution.id.as_str())
+        {
+            diagnostics.push(RpgDiagnostic::error(
+                RpgDiagnosticStage::Artifact,
+                "SCALAR_CONTRIBUTIONS_NOT_CANONICAL",
+                format!("{contribution_path}.id"),
+                "scalar contribution identities must be unique sorted portable identifiers",
+            ));
+        }
+        previous_id = Some(&contribution.id);
+        let selector_domain = if contribution.selector.ruleset_id != prepared.ruleset.identity.id {
+            diagnostics.push(RpgDiagnostic::error(
+                RpgDiagnosticStage::References,
+                "SCALAR_CONTRIBUTION_SELECTOR_OWNER_MISMATCH",
+                format!("{contribution_path}.selector.rulesetId"),
+                "scalar contribution selector belongs to a different Ruleset",
+            ));
+            None
+        } else {
+            selector_domains
+                .get(contribution.selector.id.as_str())
+                .copied()
+        };
+        if selector_domain.is_none() {
+            diagnostics.push(RpgDiagnostic::error(
+                RpgDiagnosticStage::References,
+                "SCALAR_CONTRIBUTION_SELECTOR_UNKNOWN",
+                format!("{contribution_path}.selector.id"),
+                format!("unknown calculation selector {}", contribution.selector.id),
+            ));
+        }
+        if contribution.stacking_group.ruleset_id != prepared.ruleset.identity.id {
+            diagnostics.push(RpgDiagnostic::error(
+                RpgDiagnosticStage::References,
+                "SCALAR_CONTRIBUTION_STACKING_GROUP_OWNER_MISMATCH",
+                format!("{contribution_path}.stackingGroup.rulesetId"),
+                "scalar contribution stacking group belongs to a different Ruleset",
+            ));
+        }
+        if !groups.contains(contribution.stacking_group.id.as_str()) {
+            diagnostics.push(RpgDiagnostic::error(
+                RpgDiagnosticStage::References,
+                "SCALAR_CONTRIBUTION_STACKING_GROUP_UNKNOWN",
+                format!("{contribution_path}.stackingGroup.id"),
+                format!(
+                    "unknown contribution stacking group {}",
+                    contribution.stacking_group.id
+                ),
+            ));
+        }
+        let mut expression_nodes = 0;
+        let expression_bounds = validate_contribution_value_expression(
+            &contribution.value,
+            prepared,
+            1,
+            &mut expression_nodes,
+            &format!("{contribution_path}.value"),
+            diagnostics,
+        );
+        if let (Some((minimum, maximum)), Some((domain_minimum, domain_maximum))) =
+            (expression_bounds, selector_domain)
+        {
+            if minimum < domain_minimum || maximum > domain_maximum {
+                diagnostics.push(RpgDiagnostic::error(
+                    RpgDiagnosticStage::Semantics,
+                    "SCALAR_CONTRIBUTION_VALUE_OUT_OF_DOMAIN",
+                    format!("{contribution_path}.value"),
+                    format!(
+                        "contribution possible range {minimum}..={maximum} exceeds selector domain {domain_minimum}..={domain_maximum}"
+                    ),
+                ));
+            }
+        }
+        let mut predicate_nodes = 0;
+        validate_contribution_predicate(
+            &contribution.predicate,
+            prepared,
+            source_definition,
+            1,
+            &mut predicate_nodes,
+            &format!("{contribution_path}.predicate"),
+            diagnostics,
+        );
+    }
+}
+
+fn validate_contribution_value_expression(
+    expression: &RpgContributionValueExpression,
+    prepared: &PreparedPlayBundle,
+    depth: usize,
+    nodes: &mut usize,
+    path: &str,
+    diagnostics: &mut Vec<RpgDiagnostic>,
+) -> Option<(i64, i64)> {
+    *nodes = nodes.saturating_add(1);
+    if depth > MAX_CONTRIBUTION_EXPRESSION_DEPTH || *nodes > MAX_CONTRIBUTION_EXPRESSION_NODES {
+        diagnostics.push(RpgDiagnostic::error(
+            RpgDiagnosticStage::Semantics,
+            "SCALAR_CONTRIBUTION_VALUE_BOUNDS_EXCEEDED",
+            path,
+            format!(
+                "scalar contribution values support at most {MAX_CONTRIBUTION_EXPRESSION_DEPTH} levels and {MAX_CONTRIBUTION_EXPRESSION_NODES} nodes"
+            ),
+        ));
+        return None;
+    }
+    match expression {
+        RpgContributionValueExpression::Constant { value } => Some((*value, *value)),
+        RpgContributionValueExpression::ReadValue {
+            ruleset_id,
+            value_kind,
+            value_id,
+            ..
+        } => {
+            if ruleset_id != &prepared.ruleset.identity.id {
+                diagnostics.push(RpgDiagnostic::error(
+                    RpgDiagnosticStage::References,
+                    "SCALAR_CONTRIBUTION_VALUE_OWNER_MISMATCH",
+                    format!("{path}.rulesetId"),
+                    "scalar contribution value belongs to a different Ruleset",
+                ));
+                return None;
+            }
+            let Some(contract) = prepared.ruleset.provides.values.iter().find(|candidate| {
+                contribution_value_kind_matches(*value_kind, candidate.kind)
+                    && candidate.id == *value_id
+            }) else {
+                diagnostics.push(RpgDiagnostic::error(
+                    RpgDiagnosticStage::References,
+                    "SCALAR_CONTRIBUTION_VALUE_REFERENCE_UNKNOWN",
+                    path,
+                    format!("unknown Ruleset value {value_id}"),
+                ));
+                return None;
+            };
+            prepared
+                .ruleset
+                .provides
+                .numeric_domains
+                .iter()
+                .find(|domain| domain.id == contract.numeric_domain_id)
+                .map(|domain| (domain.minimum, domain.maximum))
+        }
+        RpgContributionValueExpression::Add { terms } => {
+            if terms.is_empty() || terms.len() > 32 {
+                diagnostics.push(RpgDiagnostic::error(
+                    RpgDiagnosticStage::Semantics,
+                    "SCALAR_CONTRIBUTION_ADD_TERMS_INVALID",
+                    format!("{path}.terms"),
+                    "scalar contribution addition requires 1..=32 terms",
+                ));
+            }
+            let mut minimum = 0_i64;
+            let mut maximum = 0_i64;
+            let mut complete = true;
+            for (index, term) in terms.iter().enumerate() {
+                let Some((term_minimum, term_maximum)) = validate_contribution_value_expression(
+                    term,
+                    prepared,
+                    depth.saturating_add(1),
+                    nodes,
+                    &format!("{path}.terms[{index}]"),
+                    diagnostics,
+                ) else {
+                    complete = false;
+                    continue;
+                };
+                let Some(next_minimum) = minimum.checked_add(term_minimum) else {
+                    diagnostics.push(RpgDiagnostic::error(
+                        RpgDiagnosticStage::Semantics,
+                        "SCALAR_CONTRIBUTION_VALUE_OVERFLOW",
+                        path,
+                        "scalar contribution possible minimum overflows",
+                    ));
+                    return None;
+                };
+                let Some(next_maximum) = maximum.checked_add(term_maximum) else {
+                    diagnostics.push(RpgDiagnostic::error(
+                        RpgDiagnosticStage::Semantics,
+                        "SCALAR_CONTRIBUTION_VALUE_OVERFLOW",
+                        path,
+                        "scalar contribution possible maximum overflows",
+                    ));
+                    return None;
+                };
+                minimum = next_minimum;
+                maximum = next_maximum;
+            }
+            complete.then_some((minimum, maximum))
+        }
+        RpgContributionValueExpression::Subtract {
+            minuend,
+            subtrahend,
+        } => {
+            let left = validate_contribution_value_expression(
+                minuend,
+                prepared,
+                depth.saturating_add(1),
+                nodes,
+                &format!("{path}.minuend"),
+                diagnostics,
+            );
+            let right = validate_contribution_value_expression(
+                subtrahend,
+                prepared,
+                depth.saturating_add(1),
+                nodes,
+                &format!("{path}.subtrahend"),
+                diagnostics,
+            );
+            let (left_minimum, left_maximum) = left?;
+            let (right_minimum, right_maximum) = right?;
+            let minimum = left_minimum.checked_sub(right_maximum);
+            let maximum = left_maximum.checked_sub(right_minimum);
+            match (minimum, maximum) {
+                (Some(minimum), Some(maximum)) => Some((minimum, maximum)),
+                _ => {
+                    diagnostics.push(RpgDiagnostic::error(
+                        RpgDiagnosticStage::Semantics,
+                        "SCALAR_CONTRIBUTION_VALUE_OVERFLOW",
+                        path,
+                        "scalar contribution subtraction can overflow",
+                    ));
+                    None
+                }
+            }
+        }
+    }
+}
+
+fn contribution_value_kind_matches(
+    contribution_kind: RpgRulesetValueKind,
+    ruleset_kind: RulesetValueKind,
+) -> bool {
+    matches!(
+        (contribution_kind, ruleset_kind),
+        (RpgRulesetValueKind::Stat, RulesetValueKind::Stat)
+            | (RpgRulesetValueKind::Defense, RulesetValueKind::Defense)
+    )
+}
+
+fn validate_contribution_predicate(
+    predicate: &RpgContributionPredicate,
+    prepared: &PreparedPlayBundle,
+    source_definition: &MaterializedContentDefinition,
     depth: usize,
     nodes: &mut usize,
     path: &str,
     diagnostics: &mut Vec<RpgDiagnostic>,
 ) {
     *nodes = nodes.saturating_add(1);
-    if depth > MAX_ROLL_CONDITION_DEPTH || *nodes > MAX_ROLL_CONDITION_NODES {
+    if depth > MAX_CONTRIBUTION_PREDICATE_DEPTH || *nodes > MAX_CONTRIBUTION_PREDICATE_NODES {
         diagnostics.push(RpgDiagnostic::error(
             RpgDiagnosticStage::Semantics,
-            "CHARACTER_FEATURE_CONDITION_BOUNDS_EXCEEDED",
+            "SCALAR_CONTRIBUTION_PREDICATE_BOUNDS_EXCEEDED",
             path,
             format!(
-                "roll conditions support at most {MAX_ROLL_CONDITION_DEPTH} levels and {MAX_ROLL_CONDITION_NODES} nodes"
+                "scalar contribution predicates support at most {MAX_CONTRIBUTION_PREDICATE_DEPTH} levels and {MAX_CONTRIBUTION_PREDICATE_NODES} nodes"
             ),
         ));
         return;
     }
-    match condition {
-        RpgRollContributionCondition::Always | RpgRollContributionCondition::ActorFlanksTarget => {}
-        RpgRollContributionCondition::ActorSurrounded { minimum_hostiles } => {
+    match predicate {
+        RpgContributionPredicate::Always
+        | RpgContributionPredicate::ActorIsTarget { .. }
+        | RpgContributionPredicate::TeamRelation { .. }
+        | RpgContributionPredicate::Living { .. }
+        | RpgContributionPredicate::Distance { .. }
+        | RpgContributionPredicate::ActorFlanksTarget => {}
+        RpgContributionPredicate::Not { predicate } => {
+            validate_contribution_predicate(
+                predicate,
+                prepared,
+                source_definition,
+                depth.saturating_add(1),
+                nodes,
+                &format!("{path}.predicate"),
+                diagnostics,
+            );
+        }
+        RpgContributionPredicate::All { predicates }
+        | RpgContributionPredicate::Any { predicates } => {
+            if predicates.is_empty() || predicates.len() > 32 {
+                diagnostics.push(RpgDiagnostic::error(
+                    RpgDiagnosticStage::Semantics,
+                    "SCALAR_CONTRIBUTION_BOOLEAN_CHILDREN_INVALID",
+                    format!("{path}.predicates"),
+                    "all/any predicates require 1..=32 children",
+                ));
+            }
+            for (index, child) in predicates.iter().enumerate() {
+                validate_contribution_predicate(
+                    child,
+                    prepared,
+                    source_definition,
+                    depth.saturating_add(1),
+                    nodes,
+                    &format!("{path}.predicates[{index}]"),
+                    diagnostics,
+                );
+            }
+        }
+        RpgContributionPredicate::NamedValue {
+            ruleset_id,
+            value_kind,
+            value_id,
+            ..
+        } => {
+            if ruleset_id != &prepared.ruleset.identity.id
+                || !prepared.ruleset.provides.values.iter().any(|candidate| {
+                    contribution_value_kind_matches(*value_kind, candidate.kind)
+                        && candidate.id == *value_id
+                })
+            {
+                diagnostics.push(RpgDiagnostic::error(
+                    RpgDiagnosticStage::References,
+                    "SCALAR_CONTRIBUTION_PREDICATE_VALUE_UNKNOWN",
+                    path,
+                    format!("predicate references unknown Ruleset value {value_id}"),
+                ));
+            }
+        }
+        RpgContributionPredicate::ActorSurrounded { minimum_hostiles } => {
             if !(2..=4).contains(minimum_hostiles) {
                 diagnostics.push(RpgDiagnostic::error(
                     RpgDiagnosticStage::Semantics,
-                    "CHARACTER_FEATURE_SURROUNDED_THRESHOLD_INVALID",
+                    "SCALAR_CONTRIBUTION_SURROUNDED_THRESHOLD_INVALID",
                     format!("{path}.minimumHostiles"),
                     "cardinal-grid surrounded thresholds must be within 2..=4",
                 ));
             }
         }
-        RpgRollContributionCondition::All { conditions } => {
-            if conditions.is_empty() || conditions.len() > 8 {
+        RpgContributionPredicate::BoundItemDefinition { definition_id } => {
+            let valid = valid_identifier(definition_id)
+                && prepared.materialized_definitions.iter().any(|definition| {
+                    definition.id == *definition_id
+                        && definition.kind == MaterializedContentDefinitionKind::Item
+                });
+            if !valid {
                 diagnostics.push(RpgDiagnostic::error(
-                    RpgDiagnosticStage::Semantics,
-                    "CHARACTER_FEATURE_ALL_CONDITIONS_INVALID",
-                    format!("{path}.conditions"),
-                    "all conditions require 1..=8 child conditions",
+                    RpgDiagnosticStage::References,
+                    "SCALAR_CONTRIBUTION_ITEM_DEFINITION_UNKNOWN",
+                    format!("{path}.definitionId"),
+                    format!("predicate references unknown item definition {definition_id}"),
                 ));
             }
-            for (index, child) in conditions.iter().enumerate() {
-                validate_roll_contribution_condition(
+            if definition_id != &source_definition.id
+                && source_definition
+                    .references
+                    .binary_search(definition_id)
+                    .is_err()
+            {
+                diagnostics.push(RpgDiagnostic::error(
+                    RpgDiagnosticStage::References,
+                    "SCALAR_CONTRIBUTION_DEFINITION_REFERENCE_UNDECLARED",
+                    format!("{path}.definitionId"),
+                    format!(
+                        "contribution source {} does not declare graph edge {definition_id}",
+                        source_definition.id
+                    ),
+                ));
+            }
+        }
+        RpgContributionPredicate::BoundItemTag { tag } => {
+            let known = valid_identifier(tag)
+                && prepared.materialized_definitions.iter().any(|definition| {
+                    definition.kind == MaterializedContentDefinitionKind::Item
+                        && definition
+                            .semantic
+                            .get("tags")
+                            .and_then(Value::as_array)
+                            .is_some_and(|tags| {
+                                tags.iter().any(|value| value.as_str() == Some(tag))
+                            })
+                });
+            if !known {
+                diagnostics.push(RpgDiagnostic::error(
+                    RpgDiagnosticStage::References,
+                    "SCALAR_CONTRIBUTION_ITEM_TAG_UNKNOWN",
+                    format!("{path}.tag"),
+                    format!("predicate references unknown item tag {tag}"),
+                ));
+            }
+        }
+        RpgContributionPredicate::ActionTag { tag } => {
+            if !valid_identifier(tag) {
+                diagnostics.push(RpgDiagnostic::error(
+                    RpgDiagnosticStage::References,
+                    "SCALAR_CONTRIBUTION_ACTION_TAG_INVALID",
+                    format!("{path}.tag"),
+                    "contribution predicates require a portable action tag identity",
+                ));
+            }
+        }
+        RpgContributionPredicate::CellCapability { capability_id, .. } => {
+            let valid = valid_identifier(capability_id)
+                && prepared.materialized_definitions.iter().any(|definition| {
+                    definition.id == *capability_id
+                        && definition.kind == MaterializedContentDefinitionKind::Support
+                });
+            if !valid {
+                diagnostics.push(RpgDiagnostic::error(
+                    RpgDiagnosticStage::References,
+                    "SCALAR_CONTRIBUTION_CELL_CAPABILITY_UNKNOWN",
+                    format!("{path}.capabilityId"),
+                    format!("predicate references unknown support definition {capability_id}"),
+                ));
+            }
+            if source_definition
+                .references
+                .binary_search(capability_id)
+                .is_err()
+            {
+                diagnostics.push(RpgDiagnostic::error(
+                    RpgDiagnosticStage::References,
+                    "SCALAR_CONTRIBUTION_DEFINITION_REFERENCE_UNDECLARED",
+                    format!("{path}.capabilityId"),
+                    format!(
+                        "contribution source {} does not declare graph edge {capability_id}",
+                        source_definition.id
+                    ),
+                ));
+            }
+        }
+    }
+}
+
+fn validate_action_contribution_contracts(
+    normalized: &NormalizedRpgIr,
+    ruleset: &Ruleset,
+    items: &[CompiledItemDefinition],
+    features: &[CompiledCharacterFeature],
+) -> Result<(), RpgCompileFailure> {
+    let selectors = ruleset
+        .provides
+        .calculation_selectors
+        .iter()
+        .map(|selector| selector.id.as_str())
+        .collect::<BTreeSet<_>>();
+    let action_tags = normalized
+        .actions
+        .iter()
+        .flat_map(|action| action.tags.iter().map(String::as_str))
+        .collect::<BTreeSet<_>>();
+    let mut diagnostics = Vec::new();
+    for (index, action) in normalized.actions.iter().enumerate() {
+        let RpgIrCheck::Attack {
+            contribution_selector: Some(selector),
+            ..
+        } = &action.check
+        else {
+            continue;
+        };
+        if selector.ruleset_id != ruleset.identity.id || !selectors.contains(selector.id.as_str()) {
+            diagnostics.push(RpgDiagnostic::error(
+                RpgDiagnosticStage::References,
+                "ACTION_CONTRIBUTION_SELECTOR_INVALID",
+                format!("$.actions[{index}].check.contributionSelector"),
+                format!(
+                    "action contribution selector {} must resolve in Ruleset {}",
+                    selector.id, ruleset.identity.id
+                ),
+            ));
+        }
+    }
+    for (source_kind, source_id, contributions) in items
+        .iter()
+        .map(|item| {
+            (
+                "items",
+                item.definition_id.as_str(),
+                item.contributions.as_slice(),
+            )
+        })
+        .chain(features.iter().map(|feature| {
+            (
+                "characterFeatures",
+                feature.definition_id.as_str(),
+                feature.contributions.as_slice(),
+            )
+        }))
+    {
+        for (contribution_index, contribution) in contributions.iter().enumerate() {
+            validate_contribution_action_tag_references(
+                &contribution.predicate,
+                &action_tags,
+                &format!(
+                    "$.compiledContributions.{source_kind}.{source_id}[{contribution_index}].predicate"
+                ),
+                &mut diagnostics,
+            );
+        }
+    }
+    if diagnostics.is_empty() {
+        Ok(())
+    } else {
+        Err(RpgCompileFailure { diagnostics })
+    }
+}
+
+fn validate_contribution_action_tag_references(
+    predicate: &RpgContributionPredicate,
+    action_tags: &BTreeSet<&str>,
+    path: &str,
+    diagnostics: &mut Vec<RpgDiagnostic>,
+) {
+    match predicate {
+        RpgContributionPredicate::ActionTag { tag } => {
+            if !action_tags.contains(tag.as_str()) {
+                diagnostics.push(RpgDiagnostic::error(
+                    RpgDiagnosticStage::References,
+                    "SCALAR_CONTRIBUTION_ACTION_TAG_UNKNOWN",
+                    format!("{path}.tag"),
+                    format!("predicate references unknown action tag {tag}"),
+                ));
+            }
+        }
+        RpgContributionPredicate::Not { predicate } => {
+            validate_contribution_action_tag_references(
+                predicate,
+                action_tags,
+                &format!("{path}.predicate"),
+                diagnostics,
+            );
+        }
+        RpgContributionPredicate::All { predicates }
+        | RpgContributionPredicate::Any { predicates } => {
+            for (index, child) in predicates.iter().enumerate() {
+                validate_contribution_action_tag_references(
                     child,
-                    depth.saturating_add(1),
-                    nodes,
-                    &format!("{path}.conditions[{index}]"),
+                    action_tags,
+                    &format!("{path}.predicates[{index}]"),
                     diagnostics,
                 );
             }
         }
+        _ => {}
     }
 }
 
@@ -2843,6 +3401,7 @@ fn normalized_ir_from_materialized(
             }
             MaterializedActionSemantic::Invocation {
                 schema,
+                tags,
                 procedure_id,
                 procedure_owner_package_id,
                 arguments,
@@ -2932,6 +3491,7 @@ fn normalized_ir_from_materialized(
                                     id: compiled_action_id.clone(),
                                     name: name.clone(),
                                     source_path: definition.provenance.source.module.clone(),
+                                    tags: tags.clone(),
                                     targets: body.targets,
                                     check: body.check,
                                     roll_scope: body.roll_scope,
@@ -2974,6 +3534,7 @@ fn normalized_ir_from_materialized(
                                 id: definition.id.clone(),
                                 name,
                                 source_path: definition.provenance.source.module.clone(),
+                                tags,
                                 targets: body.targets,
                                 check: body.check,
                                 roll_scope: body.roll_scope,
@@ -3746,6 +4307,7 @@ fn validate_expanded_action_procedure_body(
         id: definition.id.clone(),
         name: definition.id.clone(),
         source_path: definition.provenance.source.module.clone(),
+        tags: Vec::new(),
         targets: body.targets,
         check: body.check,
         roll_scope: body.roll_scope,
@@ -4272,6 +4834,7 @@ fn resolve_action_catalogs(
         RpgIrCheck::Attack {
             modifier,
             defense_id,
+            ..
         } => {
             resolve_catalog_reference(
                 defense_id,
@@ -4744,6 +5307,7 @@ fn collect_action_catalogs(action: &RpgIrAction, catalogs: &mut DerivedCatalogs)
         RpgIrCheck::Attack {
             modifier,
             defense_id,
+            ..
         } => {
             catalogs.defenses.insert(defense_id.clone());
             collect_formula_catalogs(modifier, catalogs);

@@ -1,12 +1,13 @@
 use std::collections::BTreeMap;
 
-use rpg_core::{RpgRollContributionCondition, RpgRollContributionSelector};
+pub use rpg_core::RpgRulesetValueKind as RulesetValueKind;
+use rpg_core::{RpgContributionStackingPolicy, RpgScalarContributionDefinition};
 use serde::{Deserialize, Serialize};
 use serde_json::Value;
 
 pub const PREPARED_PLAY_BUNDLE_IDENTITY: &str = "asha.rpg.play-bundle.prepared";
 pub const COMPILED_PLAY_BUNDLE_IDENTITY: &str = "asha.rpg.play-bundle.compiled";
-pub const PLAY_BUNDLE_ARTIFACT_MAJOR: u32 = 2;
+pub const PLAY_BUNDLE_ARTIFACT_MAJOR: u32 = 3;
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase", deny_unknown_fields)]
@@ -27,13 +28,6 @@ pub struct RpgVersionedIdentity {
 pub struct RulesetSchema {
     pub identity: String,
     pub major: u32,
-}
-
-#[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Serialize, Deserialize)]
-#[serde(rename_all = "camelCase")]
-pub enum RulesetValueKind {
-    Defense,
-    Stat,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, PartialOrd, Ord, Serialize, Deserialize)]
@@ -101,6 +95,24 @@ pub struct RulesetNumericDomain {
     pub maximum: i64,
 }
 
+#[derive(Debug, Clone, PartialEq, Eq, PartialOrd, Ord, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase", deny_unknown_fields)]
+pub struct RulesetCalculationSelectorContract {
+    pub id: String,
+    pub version: u32,
+    pub label: String,
+    pub numeric_domain_id: String,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, PartialOrd, Ord, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase", deny_unknown_fields)]
+pub struct RulesetContributionStackingGroupContract {
+    pub id: String,
+    pub version: u32,
+    pub label: String,
+    pub policy: RpgContributionStackingPolicy,
+}
+
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase", deny_unknown_fields)]
 pub struct RulesetProvisions {
@@ -108,6 +120,10 @@ pub struct RulesetProvisions {
     pub capabilities: Vec<VersionedRpgRequirement>,
     pub values: Vec<RulesetValueContract>,
     pub numeric_domains: Vec<RulesetNumericDomain>,
+    #[serde(default)]
+    pub calculation_selectors: Vec<RulesetCalculationSelectorContract>,
+    #[serde(default)]
+    pub contribution_stacking_groups: Vec<RulesetContributionStackingGroupContract>,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
@@ -215,9 +231,9 @@ pub const CHARACTER_CLASS_IDENTITY: &str = "asha.rpg.character-class";
 pub const CHARACTER_FEATURE_IDENTITY: &str = "asha.rpg.character-feature";
 pub const ACTION_DEFINITION_VERSION: u32 = 1;
 pub const ACTION_PROCEDURE_VERSION: u32 = 1;
-pub const ITEM_VERSION: u32 = 1;
+pub const ITEM_VERSION: u32 = 2;
 pub const CHARACTER_CLASS_VERSION: u32 = 1;
-pub const CHARACTER_FEATURE_VERSION: u32 = 1;
+pub const CHARACTER_FEATURE_VERSION: u32 = 2;
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase", deny_unknown_fields)]
@@ -240,6 +256,7 @@ pub enum MaterializedActionSemantic {
     },
     Invocation {
         schema: ActionSemanticSchema,
+        tags: Vec<String>,
         procedure_id: String,
         procedure_owner_package_id: String,
         arguments: BTreeMap<String, Value>,
@@ -450,6 +467,8 @@ pub struct MaterializedItemSemantic {
     pub traits: Vec<String>,
     pub allowed_slots: Vec<String>,
     pub attributes: Vec<ItemAttribute>,
+    #[serde(default)]
+    pub contributions: Vec<RpgScalarContributionDefinition>,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
@@ -462,6 +481,7 @@ pub struct CompiledItemDefinition {
     pub traits: Vec<String>,
     pub allowed_slots: Vec<String>,
     pub attributes: Vec<ItemAttribute>,
+    pub contributions: Vec<RpgScalarContributionDefinition>,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
@@ -487,18 +507,9 @@ pub struct CharacterFeatureSchema {
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase", deny_unknown_fields)]
-pub struct CharacterFeatureRollContribution {
-    pub id: String,
-    pub selector: RpgRollContributionSelector,
-    pub condition: RpgRollContributionCondition,
-    pub amount: i32,
-}
-
-#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
-#[serde(rename_all = "camelCase", deny_unknown_fields)]
 pub struct MaterializedCharacterFeatureData {
     pub schema: CharacterFeatureSchema,
-    pub roll_contributions: Vec<CharacterFeatureRollContribution>,
+    pub contributions: Vec<RpgScalarContributionDefinition>,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
@@ -516,7 +527,7 @@ pub struct CompiledCharacterFeature {
     pub definition_id: String,
     pub label: String,
     pub description: Option<String>,
-    pub roll_contributions: Vec<CharacterFeatureRollContribution>,
+    pub contributions: Vec<RpgScalarContributionDefinition>,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]

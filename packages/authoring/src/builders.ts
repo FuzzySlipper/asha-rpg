@@ -31,7 +31,10 @@ import {
   retainRulesetValueOwnership,
   rulesetValueId,
 } from './ruleset-builders.js';
-import type { RulesetValueReference } from './ruleset-builders.js';
+import type {
+  RulesetCalculationSelectorReference,
+  RulesetValueReference,
+} from './ruleset-builders.js';
 
 type AuthoredStatReference =
   | ContentCatalogReference<'stat', string>
@@ -173,12 +176,16 @@ export function noRoll(): Extract<import('@asha-rpg/ir').RpgIrCheck, { kind: 'no
 export function attack(options: {
   readonly modifier: RpgIrFormula;
   readonly defense: AuthoredDefenseReference;
+  readonly contributionSelector?: RulesetCalculationSelectorReference<string, string>;
 }): Extract<import('@asha-rpg/ir').RpgIrCheck, { kind: 'attack' }> {
   return frozenWithCatalogOwnership(
     {
       kind: 'attack' as const,
       modifier: options.modifier,
       defenseId: authoredValueId(options.defense),
+      ...(options.contributionSelector === undefined
+        ? {}
+        : { contributionSelector: options.contributionSelector }),
     },
     'defenseId',
     options.defense,
@@ -385,6 +392,7 @@ export function action(input: ActionInput): AuthoredAction {
     id: input.id,
     name: input.name,
     sourcePath: input.sourcePath,
+    tags: frozenList([...(input.tags ?? [])].sort()),
     targets: input.targets,
     check: input.check,
     rollScope,

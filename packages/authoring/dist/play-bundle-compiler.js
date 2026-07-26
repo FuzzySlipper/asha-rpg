@@ -57,8 +57,8 @@ export function preparePlayBundle(options) {
     if (diagnostics.length > 0 || graph === undefined)
         return failed(diagnostics);
     validateActionProcedureGraph(graph.materialized, graph.resolvedReferences, options.bundle.ruleset, diagnostics);
-    validateItemDefinitions(graph.materialized, diagnostics);
-    validateCharacterDefinitions(graph.materialized, graph.resolvedReferences, diagnostics);
+    validateItemDefinitions(graph.materialized, graph.resolvedReferences, options.bundle.ruleset, diagnostics);
+    validateCharacterDefinitions(graph.materialized, graph.resolvedReferences, options.bundle.ruleset, diagnostics);
     validateParticipantProfiles(graph.materialized, graph.resolvedReferences, options.bundle.ruleset, diagnostics);
     if (diagnostics.length > 0)
         return failed(diagnostics);
@@ -97,7 +97,7 @@ export function preparePlayBundle(options) {
         })),
     ].sort(compareRelationship);
     const prepared = immutable({
-        schema: { identity: 'asha.rpg.play-bundle.prepared', major: 2 },
+        schema: { identity: 'asha.rpg.play-bundle.prepared', major: 3 },
         playBundleIdentity: options.bundle.identity,
         ruleset: options.bundle.ruleset,
         contentPacks: [...context.selected.values()]
@@ -183,6 +183,26 @@ function validateRuleset(ruleset, target, diagnostics) {
         if (!domainIds.add(provision.id) ||
             provision.minimum > provision.maximum) {
             diagnostics.push(diagnostic('source', 'RULESET_NUMERIC_DOMAIN_INVALID', `$.bundle.ruleset.provides.numericDomains[${index}]`, `ruleset numeric domain ${provision.id} must be unique and ordered`));
+        }
+    }
+    const selectorIds = new Set();
+    for (const [index, selector] of ruleset.provides.calculationSelectors.entries()) {
+        if (!selectorIds.add(selector.id) ||
+            !validPortableIdentifier(selector.id) ||
+            selector.version !== 1 ||
+            selector.label.trim().length === 0 ||
+            !declaredDomains.has(selector.numericDomainId)) {
+            diagnostics.push(diagnostic('source', 'RULESET_CALCULATION_SELECTOR_INVALID', `$.bundle.ruleset.provides.calculationSelectors[${index}]`, 'calculation selectors must be unique portable ids at version 1, labelled, and use a declared numeric domain'));
+        }
+    }
+    const groupIds = new Set();
+    for (const [index, group] of ruleset.provides.contributionStackingGroups.entries()) {
+        if (!groupIds.add(group.id) ||
+            !validPortableIdentifier(group.id) ||
+            group.version !== 1 ||
+            group.label.trim().length === 0 ||
+            !['sum', 'greatest', 'least', 'signedExtremes'].includes(group.policy)) {
+            diagnostics.push(diagnostic('source', 'RULESET_CONTRIBUTION_STACKING_GROUP_INVALID', `$.bundle.ruleset.provides.contributionStackingGroups[${index}]`, 'contribution stacking groups must be unique portable ids at version 1 with a supported policy'));
         }
     }
 }
@@ -1268,7 +1288,7 @@ export function contentDefinitionMaterializationFingerprint(definition) {
                 }
                 : definition.kind === 'item'
                     ? {
-                        semantic: definition.item,
+                        semantic: materializedItemData(definition.item),
                         presentation: definition.presentation ?? null,
                     }
                     : definition.kind === 'characterClass'
@@ -1278,7 +1298,7 @@ export function contentDefinitionMaterializationFingerprint(definition) {
                         }
                         : definition.kind === 'characterFeature'
                             ? {
-                                semantic: definition.characterFeature,
+                                semantic: materializedCharacterFeatureData(definition.characterFeature),
                                 presentation: definition.presentation ?? null,
                             }
                             : {
@@ -1299,6 +1319,7 @@ function materializedActionSemantic(definition) {
     return {
         schema: { identity: 'asha.rpg.action-definition', version: 1 },
         kind: 'invocation',
+        tags: [...definition.tags],
         procedureId: definition.invocation.procedure.definitionId,
         procedureOwnerPackageId: definition.invocation.procedureOwnerPackageId,
         arguments: definition.invocation.arguments,
@@ -1314,6 +1335,52 @@ function materializedCharacterClassData(definition) {
             .map((reference) => reference.definitionId)
             .sort(),
     };
+}
+function materializedItemData(item) {
+    return {
+        ...item,
+        contributions: materializedScalarContributions(item.contributions),
+    };
+}
+function materializedCharacterFeatureData(feature) {
+    return {
+        ...feature,
+        contributions: materializedScalarContributions(feature.contributions),
+    };
+}
+function materializedScalarContributions(contributions) {
+    return contributions.map((contribution) => ({
+        ...contribution,
+        predicate: materializedContributionPredicate(contribution.predicate),
+    }));
+}
+function materializedContributionPredicate(predicate) {
+    if (predicate.kind === 'boundItemDefinition') {
+        return {
+            kind: predicate.kind,
+            definitionId: predicate.definition.definitionId,
+        };
+    }
+    if (predicate.kind === 'cellCapability') {
+        return {
+            kind: predicate.kind,
+            subject: predicate.subject,
+            capabilityId: predicate.capability.definitionId,
+        };
+    }
+    if (predicate.kind === 'not') {
+        return {
+            kind: predicate.kind,
+            predicate: materializedContributionPredicate(predicate.predicate),
+        };
+    }
+    if (predicate.kind === 'all' || predicate.kind === 'any') {
+        return {
+            kind: predicate.kind,
+            predicates: predicate.predicates.map(materializedContributionPredicate),
+        };
+    }
+    return predicate;
 }
 function materializedActionProcedureSemantic(definition) {
     const implementation = definition.implementation.kind === 'inline'
@@ -1386,6 +1453,10 @@ function materializationReferenceIds(record, ruleset) {
         ...new Set([
             ...(record.definition.lowLevelReferences ?? []).map((reference) => reference.definitionId),
             ...authoredReferences,
+            ...authoredContributionDefinitionReferences(record.definition)
+                .filter((reference) => reference.importAs !== undefined ||
+                reference.definitionId !== record.definition.id)
+                .map((reference) => reference.definitionId),
             ...(record.inheritedReferenceIds ?? []).map(localDefinitionId),
         ]),
     ].sort();
@@ -1410,9 +1481,42 @@ function authoredDefinitionReferenceIds(definition) {
         ...new Set([
             ...(definition.lowLevelReferences ?? []).map((reference) => reference.definitionId),
             ...procedureReferences,
+            ...authoredContributionDefinitionReferences(definition)
+                .filter((reference) => reference.importAs !== undefined ||
+                reference.definitionId !== definition.id)
+                .map((reference) => reference.definitionId),
             ...authoredCatalogReferences(definition).map((reference) => reference.definitionId),
         ]),
     ].sort();
+}
+function authoredContributionDefinitionReferences(definition) {
+    const contributions = definition.kind === 'item'
+        ? definition.item.contributions
+        : definition.kind === 'characterFeature'
+            ? definition.characterFeature.contributions
+            : [];
+    const references = [];
+    for (const contribution of contributions) {
+        collectContributionPredicateDefinitionReferences(contribution.predicate, references);
+    }
+    return references;
+}
+function collectContributionPredicateDefinitionReferences(predicate, references) {
+    if (predicate.kind === 'boundItemDefinition') {
+        references.push(predicate.definition);
+        return;
+    }
+    if (predicate.kind === 'cellCapability') {
+        references.push(predicate.capability);
+        return;
+    }
+    if (predicate.kind === 'not') {
+        collectContributionPredicateDefinitionReferences(predicate.predicate, references);
+        return;
+    }
+    if (predicate.kind === 'all' || predicate.kind === 'any') {
+        predicate.predicates.forEach((child) => collectContributionPredicateDefinitionReferences(child, references));
+    }
 }
 function authoredCatalogReferences(definition) {
     const byIdentity = new Map();
@@ -1499,6 +1603,8 @@ function definitionReferences(record, diagnostics, ruleset) {
         record.definition.implementation.kind === 'invocation') {
         references.push(record.definition.implementation.invocation.procedure);
     }
+    references.push(...authoredContributionDefinitionReferences(record.definition).filter((reference) => reference.importAs !== undefined ||
+        reference.definitionId !== record.definition.id));
     const inheritedLocalIds = new Set((record.inheritedReferenceIds ?? []).map(localDefinitionId));
     for (const catalogReference of authoredCatalogReferences(record.definition)) {
         const definitionId = catalogReference.definitionId;
@@ -2099,19 +2205,20 @@ function identifiersAreCanonical(values) {
     }
     return true;
 }
-function validateItemDefinitions(records, diagnostics) {
+function validateItemDefinitions(records, resolvedReferences, ruleset, diagnostics) {
+    const recordsByGlobalId = new Map(records.map((record) => [globalDefinitionId(record), record]));
     for (const record of records) {
         if (record.definition.kind !== 'item')
             continue;
         const item = record.definition.item;
         const path = `$.packages[${record.package.key}].definitions.${record.definition.id}.item`;
         if (item.schema.identity !== 'asha.rpg.item' ||
-            item.schema.version !== 1) {
-            diagnostics.push(diagnostic('compatibility', 'ITEM_SCHEMA_UNSUPPORTED', `${path}.schema`, 'items require asha.rpg.item@1', profileDiagnosticContext(record)));
+            item.schema.version !== 2) {
+            diagnostics.push(diagnostic('compatibility', 'ITEM_SCHEMA_UNSUPPORTED', `${path}.schema`, 'items require asha.rpg.item@2', profileDiagnosticContext(record)));
         }
         if (Object.keys(item).sort().join(',') !==
-            'allowedSlots,attributes,schema,tags,traits') {
-            diagnostics.push(diagnostic('source', 'ITEM_EXECUTABLE_OR_UNKNOWN_FIELD_FORBIDDEN', path, 'items may contain only schema, tags, traits, allowedSlots, and typed attributes', profileDiagnosticContext(record)));
+            'allowedSlots,attributes,contributions,schema,tags,traits') {
+            diagnostics.push(diagnostic('source', 'ITEM_EXECUTABLE_OR_UNKNOWN_FIELD_FORBIDDEN', path, 'items may contain only schema, tags, traits, allowedSlots, typed attributes, and scalar contributions', profileDiagnosticContext(record)));
         }
         for (const [field, values] of [
             ['tags', item.tags],
@@ -2125,6 +2232,8 @@ function validateItemDefinitions(records, diagnostics) {
         if (item.allowedSlots.length === 0) {
             diagnostics.push(diagnostic('source', 'ITEM_ALLOWED_SLOT_REQUIRED', `${path}.allowedSlots`, 'an equipable item must allow at least one authored slot', profileDiagnosticContext(record)));
         }
+        validateScalarContributions(item.contributions, `${path}.contributions`, record, ruleset, diagnostics);
+        validateContributionDefinitionTargets(record, item.contributions, `${path}.contributions`, resolvedReferences, recordsByGlobalId, diagnostics);
         if (!identifiersAreCanonical(item.attributes.map((attribute) => attribute.id))) {
             diagnostics.push(diagnostic('source', 'ITEM_ATTRIBUTES_NOT_CANONICAL', `${path}.attributes`, 'item attributes must have unique sorted portable identities', profileDiagnosticContext(record)));
         }
@@ -2202,6 +2311,19 @@ function normalizeMaterializedActions(bundle, graph, diagnostics) {
             : { source: { module: entry.sourcePath, declaration: entry.path } })));
         return undefined;
     }
+    for (const [index, action] of result.artifact.actions.entries()) {
+        if (action.check.kind !== 'attack' ||
+            action.check.contributionSelector === undefined) {
+            continue;
+        }
+        const selector = action.check.contributionSelector;
+        if (selector.rulesetId !== bundle.ruleset.identity.id ||
+            !bundle.ruleset.provides.calculationSelectors.some((candidate) => candidate.id === selector.id)) {
+            diagnostics.push(diagnostic('compatibility', 'ACTION_CONTRIBUTION_SELECTOR_INVALID', `$.actions[${index}].check.contributionSelector`, 'action contribution selector must resolve in the selected Ruleset'));
+        }
+    }
+    if (diagnostics.length > 0)
+        return undefined;
     return result.artifact;
 }
 function validateRulesetValueOwners(record, ruleset, diagnostics) {
@@ -2265,7 +2387,7 @@ function visitAuthoredValue(value, path, visit) {
         visitAuthoredValue(child, `${path}.${field}`, visit);
     }
 }
-function validateCharacterDefinitions(materialized, resolvedReferences, diagnostics) {
+function validateCharacterDefinitions(materialized, resolvedReferences, ruleset, diagnostics) {
     const recordsByGlobalId = new Map(materialized.map((record) => [globalDefinitionId(record), record]));
     for (const record of materialized) {
         if (record.definition.kind === 'characterClass') {
@@ -2308,59 +2430,190 @@ function validateCharacterDefinitions(materialized, resolvedReferences, diagnost
             diagnostics.push(diagnostic('compatibility', 'CHARACTER_FEATURE_EXTENSION_POLICY_UNSUPPORTED', `$.packages[${record.package.key}].definitions.${record.definition.id}.extensionPolicy`, 'character features are sealed in the current semantic contract', { definitionId: record.definition.id, source: record.definition.source }));
         }
         if (data.schema.identity !== 'asha.rpg.character-feature' ||
-            data.schema.version !== 1) {
-            diagnostics.push(diagnostic('compatibility', 'CHARACTER_FEATURE_SCHEMA_UNSUPPORTED', `${path}.schema`, 'character features require asha.rpg.character-feature@1', { definitionId: record.definition.id, source: record.definition.source }));
+            data.schema.version !== 2) {
+            diagnostics.push(diagnostic('compatibility', 'CHARACTER_FEATURE_SCHEMA_UNSUPPORTED', `${path}.schema`, 'character features require asha.rpg.character-feature@2', { definitionId: record.definition.id, source: record.definition.source }));
         }
-        if (data.rollContributions.length === 0 ||
-            data.rollContributions.length > 32) {
-            diagnostics.push(diagnostic('source', 'CHARACTER_FEATURE_CONTRIBUTIONS_INVALID', `${path}.rollContributions`, 'character features require 1..=32 roll contributions', { definitionId: record.definition.id, source: record.definition.source }));
+        if (data.contributions.length === 0 ||
+            data.contributions.length > 32) {
+            diagnostics.push(diagnostic('source', 'CHARACTER_FEATURE_CONTRIBUTIONS_INVALID', `${path}.contributions`, 'character features require 1..=32 scalar contributions', { definitionId: record.definition.id, source: record.definition.source }));
         }
-        let previousId;
-        const selectors = new Set();
-        for (const [index, contribution] of data.rollContributions.entries()) {
-            const contributionPath = `${path}.rollContributions[${index}]`;
-            if (!validPortableIdentifier(contribution.id) ||
-                (previousId !== undefined && previousId >= contribution.id)) {
-                diagnostics.push(diagnostic('source', 'CHARACTER_FEATURE_CONTRIBUTIONS_NOT_CANONICAL', `${contributionPath}.id`, 'roll contribution identities must be unique, sorted portable identifiers', { definitionId: record.definition.id, source: record.definition.source }));
-            }
-            previousId = contribution.id;
-            if (selectors.has(contribution.selector)) {
-                diagnostics.push(diagnostic('source', 'CHARACTER_FEATURE_SELECTOR_DUPLICATE', `${contributionPath}.selector`, 'a character feature may contribute at most once to each roll selector', { definitionId: record.definition.id, source: record.definition.source }));
-            }
-            selectors.add(contribution.selector);
-            if (contribution.selector !== 'attack' ||
-                !Number.isInteger(contribution.amount) ||
-                contribution.amount === 0 ||
-                contribution.amount < -1_000 ||
-                contribution.amount > 1_000) {
-                diagnostics.push(diagnostic('source', 'CHARACTER_FEATURE_CONTRIBUTION_INVALID', contributionPath, 'attack contributions require a non-zero integer amount within -1000..=1000', { definitionId: record.definition.id, source: record.definition.source }));
-            }
-            const nodeCounter = { value: 0 };
-            validateRollContributionCondition(contribution.condition, 1, nodeCounter, `${contributionPath}.condition`, record, diagnostics);
-        }
+        validateScalarContributions(data.contributions, `${path}.contributions`, record, ruleset, diagnostics);
+        validateContributionDefinitionTargets(record, data.contributions, `${path}.contributions`, resolvedReferences, recordsByGlobalId, diagnostics);
     }
 }
-function validateRollContributionCondition(condition, depth, nodes, path, record, diagnostics) {
+function validateScalarContributions(contributions, path, record, ruleset, diagnostics) {
+    let previousId;
+    for (const [index, contribution] of contributions.entries()) {
+        const contributionPath = `${path}[${index}]`;
+        if (contribution.schema.identity !== 'asha.rpg.scalar-contribution' ||
+            contribution.schema.version !== 1) {
+            diagnostics.push(diagnostic('compatibility', 'SCALAR_CONTRIBUTION_SCHEMA_UNSUPPORTED', `${contributionPath}.schema`, 'scalar contributions require asha.rpg.scalar-contribution@1', profileDiagnosticContext(record)));
+        }
+        if (!validPortableIdentifier(contribution.id) ||
+            (previousId !== undefined && previousId >= contribution.id)) {
+            diagnostics.push(diagnostic('source', 'SCALAR_CONTRIBUTIONS_NOT_CANONICAL', `${contributionPath}.id`, 'scalar contribution identities must be unique and sorted', profileDiagnosticContext(record)));
+        }
+        previousId = contribution.id;
+        if (contribution.selector.rulesetId !== ruleset.identity.id ||
+            !ruleset.provides.calculationSelectors.some((selector) => selector.id === contribution.selector.id)) {
+            diagnostics.push(diagnostic('graph', 'SCALAR_CONTRIBUTION_SELECTOR_INVALID', `${contributionPath}.selector`, 'scalar contribution selector must resolve in the selected Ruleset', profileDiagnosticContext(record)));
+        }
+        if (contribution.stackingGroup.rulesetId !== ruleset.identity.id ||
+            !ruleset.provides.contributionStackingGroups.some((group) => group.id === contribution.stackingGroup.id)) {
+            diagnostics.push(diagnostic('graph', 'SCALAR_CONTRIBUTION_STACKING_GROUP_INVALID', `${contributionPath}.stackingGroup`, 'scalar contribution stacking group must resolve in the selected Ruleset', profileDiagnosticContext(record)));
+        }
+        const expressionNodes = { value: 0 };
+        validateContributionValueExpression(contribution.value, 1, expressionNodes, `${contributionPath}.value`, record, ruleset, diagnostics);
+        const predicateNodes = { value: 0 };
+        validateContributionPredicate(contribution.predicate, 1, predicateNodes, `${contributionPath}.predicate`, record, ruleset, diagnostics);
+    }
+}
+function validateContributionDefinitionTargets(record, contributions, path, resolvedReferences, recordsByGlobalId, diagnostics) {
+    const visit = (predicate, predicatePath) => {
+        if (predicate.kind === 'boundItemDefinition') {
+            const target = predicate.definition.importAs === undefined &&
+                predicate.definition.definitionId === record.definition.id
+                ? record
+                : resolvedDefinitionReference(record, predicate.definition, resolvedReferences, recordsByGlobalId);
+            if (target?.definition.kind !== 'item') {
+                diagnostics.push(diagnostic('graph', 'SCALAR_CONTRIBUTION_ITEM_DEFINITION_INVALID', `${predicatePath}.definition`, 'bound-item predicates must reference an item in the closed definition graph', profileDiagnosticContext(record)));
+            }
+            return;
+        }
+        if (predicate.kind === 'cellCapability') {
+            const target = resolvedDefinitionReference(record, predicate.capability, resolvedReferences, recordsByGlobalId);
+            if (target?.definition.kind !== 'support') {
+                diagnostics.push(diagnostic('graph', 'SCALAR_CONTRIBUTION_CELL_CAPABILITY_INVALID', `${predicatePath}.capability`, 'cell-capability predicates must reference a support definition in the closed graph', profileDiagnosticContext(record)));
+            }
+            return;
+        }
+        if (predicate.kind === 'not') {
+            visit(predicate.predicate, `${predicatePath}.predicate`);
+            return;
+        }
+        if (predicate.kind === 'all' || predicate.kind === 'any') {
+            predicate.predicates.forEach((child, index) => visit(child, `${predicatePath}.predicates[${index}]`));
+        }
+    };
+    contributions.forEach((contribution, index) => visit(contribution.predicate, `${path}[${index}].predicate`));
+}
+function validateContributionValueExpression(expression, depth, nodes, path, record, ruleset, diagnostics) {
     nodes.value += 1;
-    if (depth > 8 || nodes.value > 32) {
-        diagnostics.push(diagnostic('source', 'CHARACTER_FEATURE_CONDITION_BOUNDS_EXCEEDED', path, 'roll conditions support at most 8 levels and 32 nodes', { definitionId: record.definition.id, source: record.definition.source }));
+    if (depth > 16 || nodes.value > 256) {
+        diagnostics.push(diagnostic('source', 'SCALAR_CONTRIBUTION_VALUE_BOUNDS_EXCEEDED', path, 'scalar contribution values support at most 16 levels and 256 nodes', profileDiagnosticContext(record)));
+        return;
+    }
+    if (expression.kind === 'constant') {
+        if (!Number.isSafeInteger(expression.value)) {
+            diagnostics.push(diagnostic('source', 'SCALAR_CONTRIBUTION_VALUE_INVALID', `${path}.value`, 'scalar contribution constants must be safe integers', profileDiagnosticContext(record)));
+        }
+        return;
+    }
+    if (expression.kind === 'readValue') {
+        if (!contributionSubjectIsValid(expression.subject) ||
+            expression.rulesetId !== ruleset.identity.id ||
+            !ruleset.provides.values.some((value) => value.kind === expression.valueKind &&
+                value.id === expression.valueId)) {
+            diagnostics.push(diagnostic('graph', 'SCALAR_CONTRIBUTION_VALUE_REFERENCE_INVALID', path, 'scalar contribution value reads must resolve in the selected Ruleset', profileDiagnosticContext(record)));
+        }
+        return;
+    }
+    if (expression.kind === 'add') {
+        if (expression.terms.length === 0 || expression.terms.length > 32) {
+            diagnostics.push(diagnostic('source', 'SCALAR_CONTRIBUTION_ADD_TERMS_INVALID', `${path}.terms`, 'scalar contribution addition requires 1..=32 terms', profileDiagnosticContext(record)));
+        }
+        expression.terms.forEach((term, index) => validateContributionValueExpression(term, depth + 1, nodes, `${path}.terms[${index}]`, record, ruleset, diagnostics));
+        return;
+    }
+    validateContributionValueExpression(expression.minuend, depth + 1, nodes, `${path}.minuend`, record, ruleset, diagnostics);
+    validateContributionValueExpression(expression.subtrahend, depth + 1, nodes, `${path}.subtrahend`, record, ruleset, diagnostics);
+}
+function validateContributionPredicate(condition, depth, nodes, path, record, ruleset, diagnostics) {
+    nodes.value += 1;
+    if (depth > 16 || nodes.value > 128) {
+        diagnostics.push(diagnostic('source', 'SCALAR_CONTRIBUTION_PREDICATE_BOUNDS_EXCEEDED', path, 'scalar contribution predicates support at most 16 levels and 128 nodes', { definitionId: record.definition.id, source: record.definition.source }));
         return;
     }
     if (condition.kind === 'always' || condition.kind === 'actorFlanksTarget') {
+        return;
+    }
+    if (condition.kind === 'actorIsTarget' &&
+        typeof condition.expected === 'boolean') {
+        return;
+    }
+    if (condition.kind === 'teamRelation' &&
+        (condition.relation === 'same' || condition.relation === 'different')) {
+        return;
+    }
+    if (condition.kind === 'living' &&
+        contributionSubjectIsValid(condition.subject) &&
+        typeof condition.expected === 'boolean') {
+        return;
+    }
+    if (condition.kind === 'boundItemDefinition' &&
+        validPortableIdentifier(condition.definition.definitionId)) {
+        return;
+    }
+    if ((condition.kind === 'boundItemTag' || condition.kind === 'actionTag') &&
+        validPortableIdentifier(condition.tag)) {
+        return;
+    }
+    if (condition.kind === 'cellCapability' &&
+        contributionSubjectIsValid(condition.subject) &&
+        validPortableIdentifier(condition.capability.definitionId)) {
+        return;
+    }
+    if (condition.kind === 'not') {
+        validateContributionPredicate(condition.predicate, depth + 1, nodes, `${path}.predicate`, record, ruleset, diagnostics);
+        return;
+    }
+    if (condition.kind === 'namedValue') {
+        if (!contributionSubjectIsValid(condition.subject) ||
+            !contributionComparisonIsValid(condition.comparison) ||
+            condition.rulesetId !== ruleset.identity.id ||
+            !ruleset.provides.values.some((value) => value.kind === condition.valueKind && value.id === condition.valueId) ||
+            !Number.isSafeInteger(condition.value)) {
+            diagnostics.push(diagnostic('graph', 'SCALAR_CONTRIBUTION_PREDICATE_VALUE_INVALID', path, 'named-value predicates must resolve in the selected Ruleset and compare a safe integer', profileDiagnosticContext(record)));
+        }
+        return;
+    }
+    if (condition.kind === 'distance') {
+        if (!contributionComparisonIsValid(condition.comparison) ||
+            !Number.isSafeInteger(condition.value) ||
+            condition.value < 0) {
+            diagnostics.push(diagnostic('source', 'SCALAR_CONTRIBUTION_DISTANCE_INVALID', `${path}.value`, 'distance predicates require a non-negative safe integer', profileDiagnosticContext(record)));
+        }
         return;
     }
     if (condition.kind === 'actorSurrounded') {
         if (!Number.isInteger(condition.minimumHostiles) ||
             condition.minimumHostiles < 2 ||
             condition.minimumHostiles > 4) {
-            diagnostics.push(diagnostic('source', 'CHARACTER_FEATURE_SURROUNDED_THRESHOLD_INVALID', `${path}.minimumHostiles`, 'cardinal-grid surrounded thresholds must be within 2..=4', { definitionId: record.definition.id, source: record.definition.source }));
+            diagnostics.push(diagnostic('source', 'SCALAR_CONTRIBUTION_SURROUNDED_THRESHOLD_INVALID', `${path}.minimumHostiles`, 'cardinal-grid surrounded thresholds must be within 2..=4', { definitionId: record.definition.id, source: record.definition.source }));
         }
         return;
     }
-    if (condition.conditions.length === 0 || condition.conditions.length > 8) {
-        diagnostics.push(diagnostic('source', 'CHARACTER_FEATURE_ALL_CONDITIONS_INVALID', `${path}.conditions`, 'all conditions require 1..=8 child conditions', { definitionId: record.definition.id, source: record.definition.source }));
+    if (condition.kind !== 'all' &&
+        condition.kind !== 'any') {
+        diagnostics.push(diagnostic('source', 'SCALAR_CONTRIBUTION_PREDICATE_INVALID', path, 'scalar contribution predicate fields must use the closed typed fact vocabulary', profileDiagnosticContext(record)));
+        return;
     }
-    condition.conditions.forEach((child, index) => validateRollContributionCondition(child, depth + 1, nodes, `${path}.conditions[${index}]`, record, diagnostics));
+    if (condition.predicates.length === 0 || condition.predicates.length > 32) {
+        diagnostics.push(diagnostic('source', 'SCALAR_CONTRIBUTION_BOOLEAN_CHILDREN_INVALID', `${path}.predicates`, 'all/any predicates require 1..=32 child predicates', { definitionId: record.definition.id, source: record.definition.source }));
+    }
+    condition.predicates.forEach((child, index) => validateContributionPredicate(child, depth + 1, nodes, `${path}.predicates[${index}]`, record, ruleset, diagnostics));
+}
+function contributionSubjectIsValid(value) {
+    return value === 'actor' || value === 'target';
+}
+function contributionComparisonIsValid(value) {
+    return [
+        'lessThan',
+        'lessThanOrEqual',
+        'equal',
+        'greaterThanOrEqual',
+        'greaterThan',
+    ].includes(value);
 }
 function resolvedDefinitionReference(source, reference, resolvedReferences, recordsByGlobalId) {
     const packageKey = reference.importAs === undefined
@@ -2888,9 +3141,9 @@ function materializeDefinitions(records, references, exportedRoots, actions) {
                 : definition.kind === 'characterClass'
                     ? materializedCharacterClassData(definition)
                     : definition.kind === 'characterFeature'
-                        ? definition.characterFeature
+                        ? materializedCharacterFeatureData(definition.characterFeature)
                         : definition.kind === 'item'
-                            ? definition.item
+                            ? materializedItemData(definition.item)
                             : materializedSupportSemantic(definition);
         if (semantic === undefined)
             throw new Error(`materialization missing ${definition.id}`);

@@ -1,7 +1,7 @@
 import type { RpgActionId, RpgIrComparison, RpgIrFormula, RpgIrPredicate, RpgIrResourceCost, RpgIrSubject, RpgIrTargetSelector, RpgReactionId, RpgReactionOptionId, RpgStackingGroup } from '@asha-rpg/ir';
 import type { ActionInput, AuthoredAction, AuthoredActionSource, AuthoredPackage, AuthoringDuration, AuthoringProgram, AuthoringStacking, AuthoringTiming, CheckBranchInput } from './types.js';
 import type { ContentCatalogReference } from './catalogs.js';
-import type { RulesetValueReference } from './ruleset-builders.js';
+import type { RulesetCalculationSelectorReference, RulesetValueReference } from './ruleset-builders.js';
 type AuthoredStatReference = ContentCatalogReference<'stat', string> | RulesetValueReference<'stat', string, string>;
 type AuthoredDefenseReference = ContentCatalogReference<'defense', string> | RulesetValueReference<'defense', string, string>;
 export declare function actionId(value: string): RpgActionId;
@@ -44,6 +44,7 @@ export declare function noRoll(): Extract<import('@asha-rpg/ir').RpgIrCheck, {
 export declare function attack(options: {
     readonly modifier: RpgIrFormula;
     readonly defense: AuthoredDefenseReference;
+    readonly contributionSelector?: RulesetCalculationSelectorReference<string, string>;
 }): Extract<import('@asha-rpg/ir').RpgIrCheck, {
     kind: 'attack';
 }>;

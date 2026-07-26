@@ -830,8 +830,26 @@ pub struct RpgReactionDecision {
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
-pub enum RpgRollContributionSelector {
-    Attack,
+pub enum RpgRulesetValueKind {
+    Defense,
+    Stat,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub enum RpgContributionSubject {
+    Actor,
+    Target,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub enum RpgContributionComparison {
+    LessThan,
+    LessThanOrEqual,
+    Equal,
+    GreaterThanOrEqual,
+    GreaterThan,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
@@ -841,40 +859,168 @@ pub enum RpgRollContributionSelector {
     rename_all_fields = "camelCase",
     deny_unknown_fields
 )]
-pub enum RpgRollContributionCondition {
+pub enum RpgContributionValueExpression {
+    Constant {
+        value: i64,
+    },
+    ReadValue {
+        subject: RpgContributionSubject,
+        ruleset_id: String,
+        value_kind: RpgRulesetValueKind,
+        value_id: String,
+    },
+    Add {
+        terms: Vec<RpgContributionValueExpression>,
+    },
+    Subtract {
+        minuend: Box<RpgContributionValueExpression>,
+        subtrahend: Box<RpgContributionValueExpression>,
+    },
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(
+    tag = "kind",
+    rename_all = "camelCase",
+    rename_all_fields = "camelCase",
+    deny_unknown_fields
+)]
+pub enum RpgContributionPredicate {
     Always,
+    Not {
+        predicate: Box<RpgContributionPredicate>,
+    },
+    All {
+        predicates: Vec<RpgContributionPredicate>,
+    },
+    Any {
+        predicates: Vec<RpgContributionPredicate>,
+    },
+    ActorIsTarget {
+        expected: bool,
+    },
+    TeamRelation {
+        relation: RpgContributionTeamRelation,
+    },
+    Living {
+        subject: RpgContributionSubject,
+        expected: bool,
+    },
+    NamedValue {
+        subject: RpgContributionSubject,
+        ruleset_id: String,
+        value_kind: RpgRulesetValueKind,
+        value_id: String,
+        comparison: RpgContributionComparison,
+        value: i64,
+    },
+    Distance {
+        comparison: RpgContributionComparison,
+        value: u32,
+    },
     ActorFlanksTarget,
     ActorSurrounded {
         minimum_hostiles: u32,
     },
-    All {
-        conditions: Vec<RpgRollContributionCondition>,
+    BoundItemDefinition {
+        definition_id: String,
+    },
+    BoundItemTag {
+        tag: String,
+    },
+    ActionTag {
+        tag: String,
+    },
+    CellCapability {
+        subject: RpgContributionSubject,
+        capability_id: String,
     },
 }
 
+#[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub enum RpgContributionTeamRelation {
+    Same,
+    Different,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub enum RpgContributionStackingPolicy {
+    Sum,
+    Greatest,
+    Least,
+    SignedExtremes,
+}
+
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
-#[serde(
-    tag = "kind",
-    rename_all = "camelCase",
-    rename_all_fields = "camelCase",
-    deny_unknown_fields
-)]
-pub enum RpgRollContributionReason {
-    ActionCheckModifier,
-    CharacterFeature {
-        contribution_id: String,
-        selector: RpgRollContributionSelector,
-        condition: RpgRollContributionCondition,
+#[serde(rename_all = "camelCase", deny_unknown_fields)]
+pub struct RpgOwnedRulesetReference {
+    pub ruleset_id: String,
+    pub id: String,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase", deny_unknown_fields)]
+pub struct RpgScalarContributionSchema {
+    pub identity: String,
+    pub version: u32,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase", deny_unknown_fields)]
+pub struct RpgScalarContributionDefinition {
+    pub schema: RpgScalarContributionSchema,
+    pub id: String,
+    pub selector: RpgOwnedRulesetReference,
+    pub stacking_group: RpgOwnedRulesetReference,
+    pub value: RpgContributionValueExpression,
+    pub predicate: RpgContributionPredicate,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(tag = "status", rename_all = "camelCase", deny_unknown_fields)]
+pub enum RpgContributionDisposition {
+    Applied,
+    Inapplicable {
+        reason: String,
+    },
+    Suppressed {
+        policy: RpgContributionStackingPolicy,
+        retained_contribution_ids: Vec<String>,
     },
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase", deny_unknown_fields)]
-pub struct RpgRollContribution {
+pub struct RpgScalarContributionDecision {
     pub source_definition_id: String,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub source_instance_id: Option<String>,
     pub source_label: String,
-    pub amount: i32,
-    pub reason: RpgRollContributionReason,
+    pub contribution_id: String,
+    pub selector_id: String,
+    pub stacking_group_id: String,
+    pub declared_value: i32,
+    pub applied_value: i32,
+    pub disposition: RpgContributionDisposition,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase", deny_unknown_fields)]
+pub struct RpgScalarContributionLedger {
+    pub selector_id: String,
+    pub base_value: i32,
+    pub candidates: Vec<RpgScalarContributionDecision>,
+    pub final_value: i32,
+}
+
+/// Rust-owned facts supplied by the encounter authority for contextual
+/// contribution evaluation. The compiler/runtime remains usable without an
+/// encounter host by passing the empty default context.
+#[derive(Debug, Clone, Default, PartialEq, Eq)]
+pub struct RpgResolutionContext {
+    pub entity_cell_capability_ids: BTreeMap<String, Vec<String>>,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
@@ -898,7 +1044,7 @@ pub enum RpgDomainEvent {
         defense_id: String,
         defense: i32,
         hit: bool,
-        contributions: Vec<RpgRollContribution>,
+        contribution_ledger: RpgScalarContributionLedger,
     },
     SavingThrowResolved {
         target_id: String,

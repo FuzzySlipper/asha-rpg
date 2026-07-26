@@ -89,6 +89,9 @@ export function attack(options) {
         kind: 'attack',
         modifier: options.modifier,
         defenseId: authoredValueId(options.defense),
+        ...(options.contributionSelector === undefined
+            ? {}
+            : { contributionSelector: options.contributionSelector }),
     }, 'defenseId', options.defense);
 }
 export function savingThrow(options) {
@@ -188,6 +191,7 @@ export function action(input) {
         id: input.id,
         name: input.name,
         sourcePath: input.sourcePath,
+        tags: frozenList([...(input.tags ?? [])].sort()),
         targets: input.targets,
         check: input.check,
         rollScope,

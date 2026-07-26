@@ -1,10 +1,13 @@
-use std::{collections::BTreeSet, fmt};
+use std::{
+    collections::{BTreeMap, BTreeSet},
+    fmt,
+};
 
 use rpg_compiler::{CompiledPlayBundle, CompiledRpgRules};
 use rpg_core::{
     DeterministicRandomStream, RpgCapabilityState, RpgIntent, RpgIntentCellTarget,
     RpgModifierTurnChange, RpgRandomEvidence, RpgReactionDecision, RpgReactionRequest,
-    RpgResolutionReceipt, RpgResolutionRejection, RpgTraceStep,
+    RpgResolutionContext, RpgResolutionReceipt, RpgResolutionRejection, RpgTraceStep,
 };
 use rpg_ir::{CompiledPlayBundleArtifact, RpgIrTargetKind};
 use serde::{Deserialize, Serialize};
@@ -539,10 +542,14 @@ impl RpgAuthoritySession {
 
         let mut staged_state = self.state.clone();
         let mut random = DeterministicRandomStream::new(command.random_values.clone());
-        match self
-            .rules
-            .resolve(&mut staged_state, &mut random, &command.intent)
-        {
+        let resolution_context =
+            encounter_resolution_context(&self.encounter.scenario, &staged_state);
+        match self.rules.resolve_with_context(
+            &mut staged_state,
+            &mut random,
+            &command.intent,
+            &resolution_context,
+        ) {
             Ok(mut receipt) => {
                 if random.remaining() != 0 {
                     return RpgCommandOutcome::Rejected(unused_random_rejection(
@@ -668,11 +675,14 @@ impl RpgAuthoritySession {
             reaction_id: command.reaction_id,
             option_id: command.option_id,
         };
-        match self.rules.resolve_with_reaction_decision(
+        let resolution_context =
+            encounter_resolution_context(&self.encounter.scenario, &staged_state);
+        match self.rules.resolve_with_reaction_decision_and_context(
             &mut staged_state,
             &mut random,
             &transaction.intent,
             &decision,
+            &resolution_context,
         ) {
             Ok(mut receipt) => {
                 if random.remaining() != 0 {
@@ -1193,6 +1203,42 @@ fn unused_random_rejection(remaining: usize) -> RpgResolutionRejection {
         "$.randomValues",
         format!("{remaining} supplied random value(s) were not consumed"),
     )
+}
+
+fn encounter_resolution_context(
+    scenario: &RpgScenario,
+    state: &RpgCapabilityState,
+) -> RpgResolutionContext {
+    let capabilities_by_position = scenario
+        .board
+        .cells
+        .iter()
+        .map(|cell| {
+            let mut capability_ids = cell
+                .capabilities
+                .iter()
+                .filter_map(|capability| capability.definition_id.clone())
+                .collect::<Vec<_>>();
+            capability_ids.sort();
+            capability_ids.dedup();
+            (cell.position, capability_ids)
+        })
+        .collect::<BTreeMap<_, _>>();
+    let entity_cell_capability_ids = state
+        .entities()
+        .map(|entity| {
+            (
+                entity.id().to_owned(),
+                capabilities_by_position
+                    .get(&entity.position())
+                    .cloned()
+                    .unwrap_or_default(),
+            )
+        })
+        .collect();
+    RpgResolutionContext {
+        entity_cell_capability_ids,
+    }
 }
 
 fn rejection(

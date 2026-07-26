@@ -1,6 +1,6 @@
 import type { ContentCatalogReference } from './catalogs.js';
 import type { RulesetValueReference } from './ruleset-builders.js';
-import type { ContentActionDefinition, ContentActionProcedureDefinition, ContentCharacterClassData, ContentCharacterClassDefinition, ContentCharacterFeatureData, ContentCharacterFeatureDefinition, ContentInvokedActionDefinition, ActionProcedureArgumentsFor, ActionProcedureCompositionArgumentsFor, ActionProcedureParameter, ActionProcedureParameterReference, ActionProcedureParameterType, ContentItemAttribute, ContentItemData, ContentItemDefinition, EquippedItemAttributeReference, EquippedItemBindingRequirement, PlayBundleManifest, ContentDefinition, ContentDefinitionReference, ContentParticipantProfileData, ContentParticipantProfileCapability, ContentDerivedDefinition, ContentPackDependency, ContentPackIdentity, ContentMixinApplication, ContentMixinDefinition, ContentPackManifest, ContentPatch, ContentPackRequest, ContentPackSource, ContentPolicyBinding, ContentReservedRelationship, ContentSupportDefinition, ContentTemplateDefinition, ScenarioBoundedValue } from './play-bundle-types.js';
+import type { ContentActionDefinition, ContentActionProcedureDefinition, ContentCharacterClassData, ContentCharacterClassDefinition, ContentCharacterFeatureDefinition, ContentInvokedActionDefinition, ActionProcedureArgumentsFor, ActionProcedureCompositionArgumentsFor, ActionProcedureParameter, ActionProcedureParameterReference, ActionProcedureParameterType, ContentItemAttribute, ContentItemData, ContentItemDefinition, EquippedItemAttributeReference, EquippedItemBindingRequirement, PlayBundleManifest, ContentDefinition, ContentDefinitionReference, ContentParticipantProfileData, ContentParticipantProfileCapability, ContentDerivedDefinition, ContentPackDependency, ContentPackIdentity, ContentMixinApplication, ContentMixinDefinition, ContentPackManifest, ContentPatch, ContentPackRequest, ContentPackSource, ContentPolicyBinding, ContentReservedRelationship, ContentScalarContribution, ContentSupportDefinition, ContentTemplateDefinition, ScenarioBoundedValue } from './play-bundle-types.js';
 type OrdinaryDefinitionInput<Definition extends ContentDefinition> = Omit<Definition, 'kind' | 'lowLevelReferences'> & {
     readonly kind?: Definition['kind'];
 };
@@ -25,11 +25,12 @@ export declare function defineActionDefinition(input: OrdinaryDefinitionInput<Co
 export declare function defineActionProcedureDefinition<const Parameters extends readonly ActionProcedureParameter[]>(input: Omit<OrdinaryDefinitionInput<ContentActionProcedureDefinition<Parameters>>, 'parameters'> & {
     readonly parameters: Parameters;
 }): ContentActionProcedureDefinition<Parameters>;
-export declare function defineActionInvocationDefinition<const Parameters extends readonly ActionProcedureParameter[]>(input: Omit<OrdinaryDefinitionInput<ContentInvokedActionDefinition>, 'invocation'> & {
+export declare function defineActionInvocationDefinition<const Parameters extends readonly ActionProcedureParameter[]>(input: Omit<OrdinaryDefinitionInput<ContentInvokedActionDefinition>, 'invocation' | 'tags'> & {
     readonly procedure: ContentActionProcedureDefinition<Parameters>;
     readonly importAs?: string;
     readonly arguments: ActionProcedureArgumentsFor<Parameters>;
     readonly binding?: EquippedItemBindingRequirement;
+    readonly tags?: readonly string[];
 }): ContentInvokedActionDefinition;
 export declare function actionProcedureParameterReference<const Type extends ActionProcedureParameterType>(parameter: ActionProcedureParameter & {
     readonly type: Type;
@@ -43,10 +44,14 @@ export declare function equippedItemAttribute<const Type extends ActionProcedure
 export declare function actionProcedureInvocation<const Parameters extends readonly ActionProcedureParameter[]>(procedure: ContentActionProcedureDefinition<Parameters>, argumentsById: ActionProcedureCompositionArgumentsFor<Parameters>, importAs?: string): import('./play-bundle-types.js').ActionProcedureImplementation;
 export declare function defineSupportDefinition(input: OrdinaryDefinitionInput<ContentSupportDefinition>): ContentSupportDefinition;
 export declare function defineItemDefinition(input: Omit<OrdinaryDefinitionInput<ContentItemDefinition>, 'item'> & {
-    readonly item: Omit<ContentItemData, 'schema'>;
+    readonly item: Omit<ContentItemData, 'schema' | 'contributions'> & {
+        readonly contributions?: readonly Omit<ContentScalarContribution, 'schema'>[];
+    };
 }): ContentItemDefinition;
 export declare function defineCharacterFeatureDefinition(input: Omit<OrdinaryDefinitionInput<ContentCharacterFeatureDefinition>, 'characterFeature'> & {
-    readonly characterFeature: Omit<ContentCharacterFeatureData, 'schema'>;
+    readonly characterFeature: {
+        readonly contributions: readonly Omit<ContentScalarContribution, 'schema'>[];
+    };
 }): ContentCharacterFeatureDefinition;
 export declare function defineCharacterClassDefinition(input: Omit<OrdinaryDefinitionInput<ContentCharacterClassDefinition>, 'characterClass'> & {
     readonly characterClass: Omit<ContentCharacterClassData, 'schema'>;

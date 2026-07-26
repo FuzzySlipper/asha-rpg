@@ -1,16 +1,20 @@
-use std::collections::BTreeMap;
+use std::collections::{BTreeMap, BTreeSet};
 
 use rpg_core::{
     DeterministicRandomStream, GridPosition, RpgCapabilityId, RpgCapabilityMutationError,
-    RpgCapabilityState, RpgCapabilityWorkspace, RpgDomainEvent, RpgIntent,
-    RpgModifierStackingPolicy, RpgRandomEvidence, RpgRandomRequest, RpgRandomRequestKind,
-    RpgReactionDecision, RpgReactionOption, RpgReactionRequest, RpgResolutionReceipt,
-    RpgResolutionRejection, RpgRollContribution, RpgRollContributionCondition,
-    RpgRollContributionReason, RpgRollContributionSelector, RpgTraceStep,
+    RpgCapabilityState, RpgCapabilityWorkspace, RpgContributionComparison,
+    RpgContributionDisposition, RpgContributionPredicate, RpgContributionStackingPolicy,
+    RpgContributionSubject, RpgContributionTeamRelation, RpgContributionValueExpression,
+    RpgDomainEvent, RpgIntent, RpgModifierStackingPolicy, RpgRandomEvidence, RpgRandomRequest,
+    RpgRandomRequestKind, RpgReactionDecision, RpgReactionOption, RpgReactionRequest,
+    RpgResolutionContext, RpgResolutionReceipt, RpgResolutionRejection, RpgRulesetValueKind,
+    RpgScalarContributionDecision, RpgScalarContributionDefinition, RpgScalarContributionLedger,
+    RpgTraceStep,
 };
 use rpg_ir::{
-    CompiledCharacterFeature, RpgIrCheck, RpgIrComparison, RpgIrFormula, RpgIrOperation,
-    RpgIrPredicate, RpgIrRollScope, RpgIrSubject, RpgIrTargetKind, RpgIrTeamConstraint,
+    CompiledCharacterFeature, CompiledItemDefinition, RpgIrCheck, RpgIrComparison, RpgIrFormula,
+    RpgIrOperation, RpgIrPredicate, RpgIrRollScope, RpgIrSubject, RpgIrTargetKind,
+    RpgIrTeamConstraint,
 };
 
 use crate::compile::{CompiledAction, CompiledOperation, CompiledProgram};
@@ -32,7 +36,17 @@ impl CompiledRpgRules {
         random: &mut DeterministicRandomStream,
         intent: &RpgIntent,
     ) -> Result<RpgResolutionReceipt, RpgResolutionRejection> {
-        self.resolve_internal(state, random, intent, None)
+        self.resolve_with_context(state, random, intent, &RpgResolutionContext::default())
+    }
+
+    pub fn resolve_with_context(
+        &self,
+        state: &mut RpgCapabilityState,
+        random: &mut DeterministicRandomStream,
+        intent: &RpgIntent,
+        context: &RpgResolutionContext,
+    ) -> Result<RpgResolutionReceipt, RpgResolutionRejection> {
+        self.resolve_internal(state, random, intent, None, context)
     }
 
     pub fn resolve_with_reaction_decision(
@@ -42,7 +56,24 @@ impl CompiledRpgRules {
         intent: &RpgIntent,
         reaction: &RpgReactionDecision,
     ) -> Result<RpgResolutionReceipt, RpgResolutionRejection> {
-        self.resolve_internal(state, random, intent, Some(reaction))
+        self.resolve_with_reaction_decision_and_context(
+            state,
+            random,
+            intent,
+            reaction,
+            &RpgResolutionContext::default(),
+        )
+    }
+
+    pub fn resolve_with_reaction_decision_and_context(
+        &self,
+        state: &mut RpgCapabilityState,
+        random: &mut DeterministicRandomStream,
+        intent: &RpgIntent,
+        reaction: &RpgReactionDecision,
+        context: &RpgResolutionContext,
+    ) -> Result<RpgResolutionReceipt, RpgResolutionRejection> {
+        self.resolve_internal(state, random, intent, Some(reaction), context)
     }
 
     fn resolve_internal<'a>(
@@ -51,6 +82,7 @@ impl CompiledRpgRules {
         random: &mut DeterministicRandomStream,
         intent: &'a RpgIntent,
         reaction: Option<&'a RpgReactionDecision>,
+        context: &'a RpgResolutionContext,
     ) -> Result<RpgResolutionReceipt, RpgResolutionRejection> {
         let action = self
             .action_for_binding(
@@ -72,8 +104,13 @@ impl CompiledRpgRules {
             .map(|actor| actor.character_feature_ids())
             .unwrap_or_default();
         let character_features = self.resolve_character_features(character_feature_ids)?;
+        let bound_item = intent
+            .item_binding
+            .as_ref()
+            .and_then(|binding| self.item(&binding.item_definition_id));
         let target_ids = validate_intent(action, state, intent)?;
         let mut execution = Execution {
+            rules: self,
             action,
             intent,
             target_ids,
@@ -88,6 +125,8 @@ impl CompiledRpgRules {
             reaction_consumed: false,
             pending_damage_reduction: 0,
             character_features,
+            bound_item,
+            context,
         };
 
         execution.spend_costs()?;
@@ -400,6 +439,7 @@ fn validate_intent(
 }
 
 struct Execution<'a> {
+    rules: &'a CompiledRpgRules,
     action: &'a CompiledAction,
     intent: &'a RpgIntent,
     target_ids: Vec<String>,
@@ -414,6 +454,8 @@ struct Execution<'a> {
     reaction_consumed: bool,
     pending_damage_reduction: u32,
     character_features: Vec<&'a CompiledCharacterFeature>,
+    bound_item: Option<&'a CompiledItemDefinition>,
+    context: &'a RpgResolutionContext,
 }
 
 impl Execution<'_> {
@@ -462,6 +504,7 @@ impl Execution<'_> {
                 RpgIrCheck::Attack {
                     modifier,
                     defense_id,
+                    contribution_selector,
                 } => {
                     let roll = match shared_roll {
                         Some(value) => value,
@@ -471,27 +514,25 @@ impl Execution<'_> {
                             &format!("{path}.roll"),
                         )?,
                     };
-                    let modifier = self.eval_formula(modifier, &format!("{path}.modifier"))?;
-                    let mut contributions = vec![RpgRollContribution {
-                        source_definition_id: self.intent.action_id.clone(),
-                        source_label: self.action.name.clone(),
-                        amount: modifier,
-                        reason: RpgRollContributionReason::ActionCheckModifier,
-                    }];
-                    contributions
-                        .extend(self.applicable_character_feature_contributions(&target_id));
-                    let total = contributions.iter().try_fold(
-                        i32::try_from(roll).unwrap_or(i32::MAX),
-                        |running, contribution| {
-                            running.checked_add(contribution.amount).ok_or_else(|| {
-                                self.fail(
-                                    "RPG_RUNTIME_ROLL_TOTAL_OVERFLOW",
-                                    &format!("{path}.contributions"),
-                                    "roll contribution total exceeded the runtime integer domain",
-                                )
-                            })
-                        },
+                    let base_modifier = self.eval_formula(modifier, &format!("{path}.modifier"))?;
+                    let contribution_ledger = self.evaluate_contribution_ledger(
+                        contribution_selector
+                            .as_ref()
+                            .map(|selector| selector.id.as_str()),
+                        base_modifier,
+                        &target_id,
+                        &format!("{path}.contributionLedger"),
                     )?;
+                    let total = i32::try_from(roll)
+                        .unwrap_or(i32::MAX)
+                        .checked_add(contribution_ledger.final_value)
+                        .ok_or_else(|| {
+                            self.fail(
+                                "RPG_RUNTIME_ROLL_TOTAL_OVERFLOW",
+                                &format!("{path}.contributionLedger.finalValue"),
+                                "roll and contribution total exceeded the runtime integer domain",
+                            )
+                        })?;
                     let defense = self
                         .workspace
                         .state()
@@ -513,7 +554,7 @@ impl Execution<'_> {
                         defense_id: defense_id.clone(),
                         defense,
                         hit,
-                        contributions,
+                        contribution_ledger,
                     });
                     if hit {
                         CheckOutcome::Hit
@@ -576,47 +617,477 @@ impl Execution<'_> {
         Ok(())
     }
 
-    fn applicable_character_feature_contributions(
-        &self,
+    fn evaluate_contribution_ledger(
+        &mut self,
+        selector_id: Option<&str>,
+        base_value: i32,
         target_id: &str,
-    ) -> Vec<RpgRollContribution> {
-        let mut contributions = Vec::new();
+        path: &str,
+    ) -> Result<RpgScalarContributionLedger, RpgResolutionRejection> {
+        let Some(selector_id) = selector_id else {
+            return Ok(RpgScalarContributionLedger {
+                selector_id: "action.base-modifier".to_owned(),
+                base_value,
+                candidates: Vec::new(),
+                final_value: base_value,
+            });
+        };
+        let selector = self
+            .rules
+            .calculation_selector(selector_id)
+            .ok_or_else(|| {
+                self.fail(
+                    "RPG_RUNTIME_CONTRIBUTION_SELECTOR_UNKNOWN",
+                    path,
+                    format!("compiled selector {selector_id} is unavailable"),
+                )
+            })?;
+
+        let mut pending = Vec::<PendingContribution>::new();
         for feature in &self.character_features {
-            for contribution in &feature.roll_contributions {
-                if contribution.selector != RpgRollContributionSelector::Attack
-                    || !self.roll_condition_applies(&contribution.condition, target_id)
-                {
-                    continue;
+            for contribution in &feature.contributions {
+                if contribution.selector.id == selector_id {
+                    pending.push(PendingContribution {
+                        source_definition_id: feature.definition_id.clone(),
+                        source_instance_id: None,
+                        source_label: feature.label.clone(),
+                        definition: contribution.clone(),
+                    });
                 }
-                contributions.push(RpgRollContribution {
-                    source_definition_id: feature.definition_id.clone(),
-                    source_label: feature.label.clone(),
-                    amount: contribution.amount,
-                    reason: RpgRollContributionReason::CharacterFeature {
-                        contribution_id: contribution.id.clone(),
-                        selector: contribution.selector,
-                        condition: contribution.condition.clone(),
-                    },
-                });
             }
         }
-        contributions
+        if let (Some(item), Some(binding)) = (self.bound_item, self.intent.item_binding.as_ref()) {
+            for contribution in &item.contributions {
+                if contribution.selector.id == selector_id {
+                    pending.push(PendingContribution {
+                        source_definition_id: item.definition_id.clone(),
+                        source_instance_id: Some(binding.item_instance_id.clone()),
+                        source_label: item.label.clone(),
+                        definition: contribution.clone(),
+                    });
+                }
+            }
+        }
+        pending.sort_by(|left, right| left.canonical_key().cmp(&right.canonical_key()));
+        if pending.len() > 256 {
+            return Err(self.fail(
+                "RPG_RUNTIME_CONTRIBUTION_LIMIT_EXCEEDED",
+                path,
+                "one scalar evaluation may consider at most 256 contributions",
+            ));
+        }
+        for adjacent in pending.windows(2) {
+            if adjacent[0].canonical_key() == adjacent[1].canonical_key() {
+                return Err(self.fail(
+                    "RPG_RUNTIME_CONTRIBUTION_IDENTITY_DUPLICATE",
+                    path,
+                    format!(
+                        "duplicate contribution identity {}",
+                        adjacent[0].display_key()
+                    ),
+                ));
+            }
+        }
+
+        let mut decisions = Vec::with_capacity(pending.len());
+        for (index, candidate) in pending.iter().enumerate() {
+            let candidate_path = format!("{path}.candidates[{index}]");
+            let declared_value = self.evaluate_contribution_value(
+                &candidate.definition.value,
+                target_id,
+                &candidate_path,
+            )?;
+            let inapplicable_reason = self.evaluate_contribution_predicate(
+                &candidate.definition.predicate,
+                target_id,
+                &candidate_path,
+            )?;
+            decisions.push(RpgScalarContributionDecision {
+                source_definition_id: candidate.source_definition_id.clone(),
+                source_instance_id: candidate.source_instance_id.clone(),
+                source_label: candidate.source_label.clone(),
+                contribution_id: candidate.definition.id.clone(),
+                selector_id: selector_id.to_owned(),
+                stacking_group_id: candidate.definition.stacking_group.id.clone(),
+                declared_value,
+                applied_value: 0,
+                disposition: if let Some(reason) = inapplicable_reason {
+                    RpgContributionDisposition::Inapplicable { reason }
+                } else {
+                    RpgContributionDisposition::Applied
+                },
+            });
+        }
+
+        let mut group_indices = BTreeMap::<String, Vec<usize>>::new();
+        for (index, decision) in decisions.iter().enumerate() {
+            if matches!(decision.disposition, RpgContributionDisposition::Applied) {
+                group_indices
+                    .entry(decision.stacking_group_id.clone())
+                    .or_default()
+                    .push(index);
+            }
+        }
+        for (group_id, indices) in group_indices {
+            let policy = self
+                .rules
+                .contribution_stacking_policy(&group_id)
+                .ok_or_else(|| {
+                    self.fail(
+                        "RPG_RUNTIME_CONTRIBUTION_GROUP_UNKNOWN",
+                        path,
+                        format!("compiled stacking group {group_id} is unavailable"),
+                    )
+                })?;
+            let retained = retained_contribution_indices(policy, &indices, &decisions);
+            let retained_keys = retained
+                .iter()
+                .map(|index| decision_key(&decisions[*index]))
+                .collect::<Vec<_>>();
+            let retained_set = retained.into_iter().collect::<BTreeSet<_>>();
+            for index in indices {
+                if retained_set.contains(&index) {
+                    decisions[index].applied_value = decisions[index].declared_value;
+                } else {
+                    decisions[index].disposition = RpgContributionDisposition::Suppressed {
+                        policy,
+                        retained_contribution_ids: retained_keys.clone(),
+                    };
+                }
+            }
+        }
+
+        let final_value = decisions.iter().try_fold(base_value, |total, decision| {
+            total.checked_add(decision.applied_value).ok_or_else(|| {
+                self.fail(
+                    "RPG_RUNTIME_CONTRIBUTION_TOTAL_OVERFLOW",
+                    path,
+                    "scalar contribution total exceeded the runtime integer domain",
+                )
+            })
+        })?;
+        let final_value_i64 = i64::from(final_value);
+        if final_value_i64 < selector.minimum || final_value_i64 > selector.maximum {
+            return Err(self.fail(
+                "RPG_RUNTIME_CONTRIBUTION_DOMAIN_EXCEEDED",
+                &format!("{path}.finalValue"),
+                format!(
+                    "resolved value {final_value} is outside selector {selector_id} domain {}..={}",
+                    selector.minimum, selector.maximum
+                ),
+            ));
+        }
+        for (index, decision) in decisions.iter().enumerate() {
+            self.trace.push(RpgTraceStep {
+                path: format!("{path}.candidates[{index}]"),
+                code: "RPG_CONTRIBUTION_EVALUATED".to_owned(),
+                detail: format!(
+                    "{} declared {} applied {} status {:?}",
+                    decision_key(decision),
+                    decision.declared_value,
+                    decision.applied_value,
+                    decision.disposition
+                ),
+            });
+        }
+        self.trace.push(RpgTraceStep {
+            path: path.to_owned(),
+            code: "RPG_CONTRIBUTION_LEDGER_RESOLVED".to_owned(),
+            detail: format!("selector {selector_id} base {base_value} final {final_value}"),
+        });
+        Ok(RpgScalarContributionLedger {
+            selector_id: selector_id.to_owned(),
+            base_value,
+            candidates: decisions,
+            final_value,
+        })
     }
 
-    fn roll_condition_applies(
+    fn evaluate_contribution_value(
         &self,
-        condition: &RpgRollContributionCondition,
+        expression: &RpgContributionValueExpression,
         target_id: &str,
-    ) -> bool {
-        match condition {
-            RpgRollContributionCondition::Always => true,
-            RpgRollContributionCondition::ActorFlanksTarget => self.actor_flanks_target(target_id),
-            RpgRollContributionCondition::ActorSurrounded { minimum_hostiles } => {
-                self.actor_adjacent_living_hostile_count() >= *minimum_hostiles
+        path: &str,
+    ) -> Result<i32, RpgResolutionRejection> {
+        let value = self.evaluate_contribution_value_i64(expression, target_id, path)?;
+        i32::try_from(value).map_err(|_| {
+            self.fail(
+                "RPG_RUNTIME_CONTRIBUTION_VALUE_OVERFLOW",
+                path,
+                format!("contribution value {value} does not fit the runtime integer domain"),
+            )
+        })
+    }
+
+    fn evaluate_contribution_value_i64(
+        &self,
+        expression: &RpgContributionValueExpression,
+        target_id: &str,
+        path: &str,
+    ) -> Result<i64, RpgResolutionRejection> {
+        match expression {
+            RpgContributionValueExpression::Constant { value } => Ok(*value),
+            RpgContributionValueExpression::ReadValue {
+                subject,
+                value_kind,
+                value_id,
+                ..
+            } => Ok(i64::from(self.read_contribution_value(
+                *subject,
+                *value_kind,
+                value_id,
+                target_id,
+                path,
+            )?)),
+            RpgContributionValueExpression::Add { terms } => {
+                let mut total = 0_i64;
+                for (index, term) in terms.iter().enumerate() {
+                    let value = self.evaluate_contribution_value_i64(
+                        term,
+                        target_id,
+                        &format!("{path}.terms[{index}]"),
+                    )?;
+                    total = total.checked_add(value).ok_or_else(|| {
+                        self.fail(
+                            "RPG_RUNTIME_CONTRIBUTION_VALUE_OVERFLOW",
+                            path,
+                            "contribution addition exceeded the i64 domain",
+                        )
+                    })?;
+                }
+                Ok(total)
             }
-            RpgRollContributionCondition::All { conditions } => conditions
-                .iter()
-                .all(|condition| self.roll_condition_applies(condition, target_id)),
+            RpgContributionValueExpression::Subtract {
+                minuend,
+                subtrahend,
+            } => {
+                let left = self.evaluate_contribution_value_i64(
+                    minuend,
+                    target_id,
+                    &format!("{path}.minuend"),
+                )?;
+                let right = self.evaluate_contribution_value_i64(
+                    subtrahend,
+                    target_id,
+                    &format!("{path}.subtrahend"),
+                )?;
+                left.checked_sub(right).ok_or_else(|| {
+                    self.fail(
+                        "RPG_RUNTIME_CONTRIBUTION_VALUE_OVERFLOW",
+                        path,
+                        "contribution subtraction exceeded the i64 domain",
+                    )
+                })
+            }
+        }
+    }
+
+    fn evaluate_contribution_predicate(
+        &self,
+        predicate: &RpgContributionPredicate,
+        target_id: &str,
+        path: &str,
+    ) -> Result<Option<String>, RpgResolutionRejection> {
+        match predicate {
+            RpgContributionPredicate::Always => Ok(None),
+            RpgContributionPredicate::Not { predicate } => {
+                let inner = self.evaluate_contribution_predicate(
+                    predicate,
+                    target_id,
+                    &format!("{path}.not"),
+                )?;
+                Ok(inner.is_none().then(|| "not.innerMatched".to_owned()))
+            }
+            RpgContributionPredicate::All { predicates } => {
+                for (index, predicate) in predicates.iter().enumerate() {
+                    if let Some(reason) = self.evaluate_contribution_predicate(
+                        predicate,
+                        target_id,
+                        &format!("{path}.all[{index}]"),
+                    )? {
+                        return Ok(Some(format!("all[{index}].{reason}")));
+                    }
+                }
+                Ok(None)
+            }
+            RpgContributionPredicate::Any { predicates } => {
+                let mut reasons = Vec::with_capacity(predicates.len());
+                for (index, predicate) in predicates.iter().enumerate() {
+                    let outcome = self.evaluate_contribution_predicate(
+                        predicate,
+                        target_id,
+                        &format!("{path}.any[{index}]"),
+                    )?;
+                    match outcome {
+                        None => return Ok(None),
+                        Some(reason) => reasons.push(format!("{index}:{reason}")),
+                    }
+                }
+                Ok(Some(format!("any.noneMatched({})", reasons.join(","))))
+            }
+            RpgContributionPredicate::ActorIsTarget { expected } => {
+                Ok(((self.intent.actor_id == target_id) != *expected)
+                    .then(|| format!("actorIsTarget.expected.{expected}")))
+            }
+            RpgContributionPredicate::TeamRelation { relation } => {
+                let actor =
+                    self.contribution_entity(RpgContributionSubject::Actor, target_id, path)?;
+                let target =
+                    self.contribution_entity(RpgContributionSubject::Target, target_id, path)?;
+                let applies = match relation {
+                    RpgContributionTeamRelation::Same => actor.team() == target.team(),
+                    RpgContributionTeamRelation::Different => actor.team() != target.team(),
+                };
+                Ok((!applies)
+                    .then(|| format!("teamRelation.required.{}", team_relation_name(*relation))))
+            }
+            RpgContributionPredicate::Living { subject, expected } => {
+                let entity = self.contribution_entity(*subject, target_id, path)?;
+                Ok(((entity.vitality().current > 0) != *expected).then(|| {
+                    format!(
+                        "living.{}.expected.{expected}",
+                        contribution_subject_name(*subject)
+                    )
+                }))
+            }
+            RpgContributionPredicate::NamedValue {
+                subject,
+                value_kind,
+                value_id,
+                comparison,
+                value,
+                ..
+            } => {
+                let actual = i64::from(self.read_contribution_value(
+                    *subject,
+                    *value_kind,
+                    value_id,
+                    target_id,
+                    path,
+                )?);
+                Ok((!compare_i64(actual, *comparison, *value)).then(|| {
+                    format!(
+                        "namedValue.{}.{}.{value_id}.{}.{value}",
+                        contribution_subject_name(*subject),
+                        ruleset_value_kind_name(*value_kind),
+                        contribution_comparison_name(*comparison),
+                    )
+                }))
+            }
+            RpgContributionPredicate::Distance { comparison, value } => {
+                let actor =
+                    self.contribution_entity(RpgContributionSubject::Actor, target_id, path)?;
+                let target =
+                    self.contribution_entity(RpgContributionSubject::Target, target_id, path)?;
+                let distance = i64::from(cardinal_distance(actor.position(), target.position()));
+                Ok(
+                    (!compare_i64(distance, *comparison, i64::from(*value))).then(|| {
+                        format!(
+                            "distance.{}.{value}.actual.{distance}",
+                            contribution_comparison_name(*comparison)
+                        )
+                    }),
+                )
+            }
+            RpgContributionPredicate::ActorFlanksTarget => Ok((!self
+                .actor_flanks_target(target_id))
+            .then(|| "actorFlanksTarget.false".to_owned())),
+            RpgContributionPredicate::ActorSurrounded { minimum_hostiles } => {
+                let actual = self.actor_adjacent_living_hostile_count();
+                Ok((actual < *minimum_hostiles)
+                    .then(|| format!("actorSurrounded.minimum.{minimum_hostiles}.actual.{actual}")))
+            }
+            RpgContributionPredicate::BoundItemDefinition { definition_id } => {
+                let applies = self
+                    .intent
+                    .item_binding
+                    .as_ref()
+                    .is_some_and(|binding| binding.item_definition_id == *definition_id);
+                Ok((!applies).then(|| format!("boundItemDefinition.required.{definition_id}")))
+            }
+            RpgContributionPredicate::BoundItemTag { tag } => {
+                let applies = self
+                    .bound_item
+                    .is_some_and(|item| item.tags.binary_search(tag).is_ok());
+                Ok((!applies).then(|| format!("boundItemTag.required.{tag}")))
+            }
+            RpgContributionPredicate::ActionTag { tag } => Ok(self
+                .action
+                .tags
+                .binary_search(tag)
+                .is_err()
+                .then(|| format!("actionTag.required.{tag}"))),
+            RpgContributionPredicate::CellCapability {
+                subject,
+                capability_id,
+            } => {
+                let entity_id = self.contribution_subject_id(*subject, target_id);
+                let applies = self
+                    .context
+                    .entity_cell_capability_ids
+                    .get(entity_id)
+                    .is_some_and(|ids| ids.binary_search(capability_id).is_ok());
+                Ok((!applies).then(|| {
+                    format!(
+                        "cellCapability.{}.required.{capability_id}",
+                        contribution_subject_name(*subject)
+                    )
+                }))
+            }
+        }
+    }
+
+    fn read_contribution_value(
+        &self,
+        subject: RpgContributionSubject,
+        value_kind: RpgRulesetValueKind,
+        value_id: &str,
+        target_id: &str,
+        path: &str,
+    ) -> Result<i32, RpgResolutionRejection> {
+        let entity = self.contribution_entity(subject, target_id, path)?;
+        let value = match value_kind {
+            RpgRulesetValueKind::Defense => entity.defense(value_id),
+            RpgRulesetValueKind::Stat => entity.stat(value_id),
+        };
+        value.ok_or_else(|| {
+            self.fail(
+                "RPG_RUNTIME_CONTRIBUTION_VALUE_MISSING",
+                path,
+                format!(
+                    "entity {} has no {:?} {}",
+                    entity.id(),
+                    value_kind,
+                    value_id
+                ),
+            )
+        })
+    }
+
+    fn contribution_entity(
+        &self,
+        subject: RpgContributionSubject,
+        target_id: &str,
+        path: &str,
+    ) -> Result<&rpg_core::RpgEntityState, RpgResolutionRejection> {
+        let entity_id = self.contribution_subject_id(subject, target_id);
+        self.workspace.state().entity(entity_id).ok_or_else(|| {
+            self.fail(
+                "RPG_RUNTIME_CONTRIBUTION_SUBJECT_MISSING",
+                path,
+                format!("contribution subject entity {entity_id} is unavailable"),
+            )
+        })
+    }
+
+    fn contribution_subject_id<'a>(
+        &'a self,
+        subject: RpgContributionSubject,
+        target_id: &'a str,
+    ) -> &'a str {
+        match subject {
+            RpgContributionSubject::Actor => &self.intent.actor_id,
+            RpgContributionSubject::Target => target_id,
         }
     }
 
@@ -1367,6 +1838,145 @@ fn positions_are_opposite(first: GridPosition, center: GridPosition, second: Gri
             && second.x == center.x
             && u64::from(first.y).saturating_add(u64::from(second.y))
                 == u64::from(center.y).saturating_mul(2))
+}
+
+#[derive(Debug, Clone)]
+struct PendingContribution {
+    source_definition_id: String,
+    source_instance_id: Option<String>,
+    source_label: String,
+    definition: RpgScalarContributionDefinition,
+}
+
+impl PendingContribution {
+    fn canonical_key(&self) -> (&str, &str, &str) {
+        (
+            self.source_definition_id.as_str(),
+            self.definition.id.as_str(),
+            self.source_instance_id.as_deref().unwrap_or(""),
+        )
+    }
+
+    fn display_key(&self) -> String {
+        format!(
+            "{}#{}:{}",
+            self.source_definition_id,
+            self.source_instance_id.as_deref().unwrap_or("-"),
+            self.definition.id
+        )
+    }
+}
+
+fn retained_contribution_indices(
+    policy: RpgContributionStackingPolicy,
+    indices: &[usize],
+    decisions: &[RpgScalarContributionDecision],
+) -> Vec<usize> {
+    match policy {
+        RpgContributionStackingPolicy::Sum => indices.to_vec(),
+        RpgContributionStackingPolicy::Greatest => {
+            select_first_extreme(indices, decisions, |candidate, selected| {
+                candidate > selected
+            })
+            .into_iter()
+            .collect()
+        }
+        RpgContributionStackingPolicy::Least => {
+            select_first_extreme(indices, decisions, |candidate, selected| {
+                candidate < selected
+            })
+            .into_iter()
+            .collect()
+        }
+        RpgContributionStackingPolicy::SignedExtremes => {
+            let positive_indices = indices
+                .iter()
+                .copied()
+                .filter(|index| decisions[*index].declared_value > 0)
+                .collect::<Vec<_>>();
+            let negative_indices = indices
+                .iter()
+                .copied()
+                .filter(|index| decisions[*index].declared_value < 0)
+                .collect::<Vec<_>>();
+            let positive =
+                select_first_extreme(&positive_indices, decisions, |candidate, selected| {
+                    candidate > selected
+                });
+            let negative =
+                select_first_extreme(&negative_indices, decisions, |candidate, selected| {
+                    candidate < selected
+                });
+            positive.into_iter().chain(negative).collect()
+        }
+    }
+}
+
+fn select_first_extreme(
+    indices: &[usize],
+    decisions: &[RpgScalarContributionDecision],
+    replaces: impl Fn(i32, i32) -> bool,
+) -> Option<usize> {
+    let mut selected = indices.first().copied()?;
+    for index in indices.iter().copied().skip(1) {
+        if replaces(
+            decisions[index].declared_value,
+            decisions[selected].declared_value,
+        ) {
+            selected = index;
+        }
+    }
+    Some(selected)
+}
+
+fn decision_key(decision: &RpgScalarContributionDecision) -> String {
+    format!(
+        "{}#{}:{}",
+        decision.source_definition_id,
+        decision.source_instance_id.as_deref().unwrap_or("-"),
+        decision.contribution_id
+    )
+}
+
+fn compare_i64(left: i64, comparison: RpgContributionComparison, right: i64) -> bool {
+    match comparison {
+        RpgContributionComparison::LessThan => left < right,
+        RpgContributionComparison::LessThanOrEqual => left <= right,
+        RpgContributionComparison::Equal => left == right,
+        RpgContributionComparison::GreaterThanOrEqual => left >= right,
+        RpgContributionComparison::GreaterThan => left > right,
+    }
+}
+
+fn contribution_subject_name(subject: RpgContributionSubject) -> &'static str {
+    match subject {
+        RpgContributionSubject::Actor => "actor",
+        RpgContributionSubject::Target => "target",
+    }
+}
+
+fn contribution_comparison_name(comparison: RpgContributionComparison) -> &'static str {
+    match comparison {
+        RpgContributionComparison::LessThan => "lessThan",
+        RpgContributionComparison::LessThanOrEqual => "lessThanOrEqual",
+        RpgContributionComparison::Equal => "equal",
+        RpgContributionComparison::GreaterThanOrEqual => "greaterThanOrEqual",
+        RpgContributionComparison::GreaterThan => "greaterThan",
+    }
+}
+
+fn ruleset_value_kind_name(kind: RpgRulesetValueKind) -> &'static str {
+    match kind {
+        RpgRulesetValueKind::Defense => "defense",
+        RpgRulesetValueKind::Stat => "stat",
+    }
+}
+
+fn team_relation_name(relation: RpgContributionTeamRelation) -> &'static str {
+    match relation {
+        RpgContributionTeamRelation::Same => "same",
+        RpgContributionTeamRelation::Different => "different",
+    }
 }
 
 fn rejection(

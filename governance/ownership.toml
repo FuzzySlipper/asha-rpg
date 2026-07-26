@@ -4,7 +4,7 @@
 lane = "rust-domain"
 implementation_status = "active"
 may_depend_on = ["serde"]
-owns = ["authority values", "open team identities", "typed intent cell bindings", "accepted DomainEvents", "stable portable state construction"]
+owns = ["authority values", "open team identities", "typed intent cell bindings", "contextual contribution contracts and accepted DomainEvents", "stable portable state construction"]
 
 [crate."crates/rpg-ir"]
 lane = "rust-language"
@@ -16,13 +16,13 @@ owns = ["normalized RPG IR", "Ruleset wire contract", "compiled PlayBundle artif
 lane = "rust-language"
 implementation_status = "active"
 may_depend_on = ["rpg-core", "rpg-ir", "serde", "serde_json"]
-owns = ["semantic compilation", "private compiled plans", "Ruleset provision validation", "PlayBundle artifact validation and fingerprints", "materialized Content Pack definition validation"]
+owns = ["semantic compilation", "private compiled plans", "Ruleset provision validation", "contextual contribution evaluation and trace", "PlayBundle artifact validation and fingerprints", "materialized Content Pack definition validation"]
 
 [crate."crates/rpg-runtime"]
 lane = "rust-authority"
 implementation_status = "active"
 may_depend_on = ["rpg-core", "rpg-ir", "rpg-compiler", "serde", "serde_json"]
-owns = ["PlayBundle-bound Scenario validation", "single authority session", "turn and encounter readback authority", "legal participant and cell option projection", "host-supplied random evidence interface", "bounded roll-tape source", "portable checkpoint and replay contracts", "canonical session state hash", "pending reaction restore"]
+owns = ["PlayBundle-bound Scenario validation", "single authority session", "turn and encounter readback authority", "legal participant and cell option projection", "encounter-owned contribution context facts", "host-supplied random evidence interface", "bounded roll-tape source", "portable checkpoint and replay contracts", "canonical session state hash", "pending reaction restore"]
 
 [crate."crates/asha-rpg"]
 lane = "rust-api"
@@ -44,4 +44,4 @@ type = "lib"
 layer = "domain"
 implementation_status = "active"
 may_depend_on = ["@asha-rpg/ir"]
-owns = ["immutable Ruleset, Content Pack, PlayBundle, and Scenario authoring contracts", "explicit Content Pack dependency resolution", "deterministic base, mixin, overlay, and configuration materialization into prepared PlayBundles"]
+owns = ["immutable Ruleset, Content Pack, PlayBundle, Scenario, and scalar contribution authoring contracts", "explicit Content Pack dependency resolution", "deterministic base, mixin, overlay, and configuration materialization into prepared PlayBundles"]

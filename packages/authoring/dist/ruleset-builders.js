@@ -1,6 +1,8 @@
 import { immutable } from './canonical.js';
 const rulesetValueReferenceBrand = Symbol('asha-rpg.ruleset-value-reference');
 const authoredRulesetValueOwnership = Symbol('asha-rpg.authored-ruleset-value-ownership');
+const rulesetCalculationSelectorReferenceBrand = Symbol('asha-rpg.calculation-selector-reference');
+const rulesetContributionStackingGroupReferenceBrand = Symbol('asha-rpg.contribution-stacking-group-reference');
 export function defineRuleset(input) {
     return immutable({
         ...input,
@@ -15,6 +17,10 @@ export function defineRuleset(input) {
             }))
                 .sort((left, right) => left.kind.localeCompare(right.kind) || left.id.localeCompare(right.id)),
             numericDomains: [...input.provides.numericDomains].sort((left, right) => left.id.localeCompare(right.id)),
+            calculationSelectors: [...(input.provides.calculationSelectors ?? [])].sort((left, right) => left.id.localeCompare(right.id)),
+            contributionStackingGroups: [
+                ...(input.provides.contributionStackingGroups ?? []),
+            ].sort((left, right) => left.id.localeCompare(right.id)),
         },
     });
 }
@@ -55,6 +61,26 @@ export function rulesetStat(ruleset, id) {
 }
 export function rulesetDefense(ruleset, id) {
     return rulesetValueReference(ruleset, 'defense', id);
+}
+export function rulesetCalculationSelector(ruleset, id) {
+    if (!ruleset.provides.calculationSelectors.some((candidate) => candidate.id === id)) {
+        throw new Error(`ruleset ${ruleset.identity.id}@${ruleset.identity.version} does not provide calculation selector ${id}`);
+    }
+    return immutable({
+        rulesetId: ruleset.identity.id,
+        id,
+        [rulesetCalculationSelectorReferenceBrand]: true,
+    });
+}
+export function rulesetContributionStackingGroup(ruleset, id) {
+    if (!ruleset.provides.contributionStackingGroups.some((candidate) => candidate.id === id)) {
+        throw new Error(`ruleset ${ruleset.identity.id}@${ruleset.identity.version} does not provide contribution stacking group ${id}`);
+    }
+    return immutable({
+        rulesetId: ruleset.identity.id,
+        id,
+        [rulesetContributionStackingGroupReferenceBrand]: true,
+    });
 }
 export function rulesetValueId(reference) {
     return reference.id;

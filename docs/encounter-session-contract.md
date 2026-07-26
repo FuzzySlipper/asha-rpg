@@ -11,9 +11,9 @@ The schema is `asha.rpg.scenario@2`. `playBundleId` must exactly match the
 compiled artifact. Checkpoint schema `asha.rpg.session.checkpoint@5` stores the
 Scenario and its `fnv1a64.rpg-scenario.v1` fingerprint. Replay entry schema
 version 6 binds before/after boundaries to that Scenario, source binding, turn,
-revision, and state hash. Accepted event schema version 3 carries structured
-roll contributions, and encounter-view schema version 5 exposes explicit
-class/feature selection.
+revision, and state hash. Accepted event schema version 4 carries the
+contextual contribution ledger, and encounter-view schema version 6 exposes
+that event history plus explicit class/feature selection.
 
 ## Setup-only data
 
@@ -56,13 +56,16 @@ events, and the next living initiative participant.
 A pending reaction blocks other commands until resolved. Rejections preserve
 state, log, turn, reaction, and accepted-random position.
 
-Attack resolution reports its applied roll contributions as structured event
-data. The action check modifier is first. Selected feature contributions follow
-in canonical feature and contribution order when their Rust-evaluated spatial
-conditions hold. Flanking requires a living same-team ally opposite the actor
-across a cardinally adjacent living target. Surrounded counts living hostiles in
-the four cardinally adjacent cells. Defeated or repositioned participants
-therefore change later resolutions without changing the selected features.
+Attack resolution reports an authoritative scalar contribution ledger as
+structured event data. It includes the base modifier, final checked modifier,
+and every item or selected-feature candidate in canonical source-definition and
+contribution-id order. Candidates are `applied`, `inapplicable` with the exact
+failed typed-fact reason, or `suppressed` with their stacking policy and retained
+source identities. Rust evaluates actor/target state, named values, distance,
+flanking/surrounding, exact item binding/tags, action tags, and current cell
+support capabilities from one staged revision. Defeated, repositioned, or
+differently equipped participants therefore change later resolutions without
+changing content declarations.
 
 `RpgAuthoritySession::encounter_view` exposes board/cells, participant state,
 inventory/equipment, current actor and initiative, selected and legal actions
@@ -104,5 +107,5 @@ randomness, or reapplies events.
 The initial board authority does not claim diagonal or hex topology,
 jumping/flying/teleport movement, opportunity attacks, per-step effects,
 area-target semantics, campaign persistence, scripted runners, AI control,
-Tester configuration, class levels or prerequisites, non-attack feature
-contributions, a general condition language, or Rulebench product protocols.
+Tester configuration, class levels or prerequisites, non-attack calculation
+owners, a general condition language, or Rulebench product protocols.

@@ -42,6 +42,7 @@ export interface AuthoredAction {
     readonly id: RpgActionId;
     readonly name: string;
     readonly sourcePath: string;
+    readonly tags: readonly string[];
     readonly targets: RpgIrTargetSelector;
     readonly check: RpgIrCheck;
     readonly rollScope: RpgIrRollScope | undefined;
@@ -79,6 +80,7 @@ export interface ActionInputBase {
     readonly id: RpgActionId;
     readonly name: string;
     readonly sourcePath: string;
+    readonly tags?: readonly string[];
     readonly targets: RpgIrTargetSelector;
     readonly costs?: readonly RpgIrResourceCost[];
     readonly program: AuthoringProgram;

@@ -14,9 +14,9 @@ ruleset:
 
 | Contract | Owns | Must not contain |
 | --- | --- | --- |
-| `Ruleset` (`asha.rpg.ruleset@1`) | language compatibility, Rust-bound operation and capability provisions, named stat/defense contracts, numeric domains | actions, spells, classes, creatures, items, conditions, presentation, setup |
+| `Ruleset` (`asha.rpg.ruleset@1`) | language compatibility, Rust-bound operation and capability provisions, named stat/defense contracts, numeric domains, scalar calculation selectors, contribution stacking groups | actions, spells, classes, creatures, items, conditions, presentation, setup |
 | `ContentPack` | authored definitions, presentation, dependencies, derivation, mixins, overlays | Rust execution callbacks, board/participants, commands or expected outcomes |
-| `PlayBundle` (`asha.rpg.play-bundle.prepared@2` / `.compiled@2`) | one Ruleset plus an exact compatible Content Pack closure and fingerprints | ambient discovery, executable TypeScript, scenario scripts |
+| `PlayBundle` (`asha.rpg.play-bundle.prepared@3` / `.compiled@3`) | one Ruleset plus an exact compatible Content Pack closure and fingerprints | ambient discovery, executable TypeScript, scenario scripts |
 | `Scenario` (`asha.rpg.scenario@2`) | board, participants, selected definitions, initial values, initiative, and random-source policy for one PlayBundle | definitions, commands, targets, reactions, rolls, expected events/outcomes, Tester configuration |
 
 A Tester is a caller of the same accessible interaction surface as a person;
@@ -101,7 +101,7 @@ artifact identity and definition graph but interprets only registered semantic
 schemas. This is how an independent rules repository can describe setup
 ergonomics without creating a second rules engine or a d20-specific Rust enum.
 
-## Character classes and roll contributions
+## Character classes and contextual contributions
 
 Character classes and character features are closed, typed Content Pack
 definitions. A class lists exported feature definitions; a participant profile
@@ -111,27 +111,40 @@ authority state, and binds it into the Scenario fingerprint, checkpoint,
 portable state hash, and replay boundary. A command cannot submit or replace
 feature semantics.
 
-The initial feature selector contributes to attack checks. A contribution has a
-stable id, source definition id and label, signed amount, and one bounded
-condition tree. Conditions currently support always, actor flanks target, actor
-surrounded by a minimum number of hostiles, and conjunction. Flanking means the
-living actor and a living ally on the same team are cardinally adjacent on
-opposite sides of the living target. Surrounded counts living hostile
-participants in the four cardinally adjacent cells. These are exact square-grid
-authority rules, not presentation heuristics.
+Rulesets own versioned scalar calculation selectors, their numeric domains, and
+versioned stacking groups. Item and character-feature schema version 2 may
+declare `asha.rpg.scalar-contribution@1` records. Each retains a stable
+contribution id, source definition id and label, owned selector and stacking
+group references, a signed bounded value expression, and a bounded typed
+predicate. The initial group policies are `sum`, `greatest`, `least`, and
+`signed-extremes`. Equal values are resolved by source-definition id and then
+contribution id, never by Content Pack export order.
 
-Rust evaluates conditions from staged participant state at resolution time.
-The action check modifier is recorded first; applicable feature contributions
-then follow canonical feature-definition and contribution-id order. Every
-applied source is retained in `AttackResolved.contributions`, and checked
-addition produces the resolved modifier and total. A feature may declare at
-most one contribution for a selector, and duplicate feature selection is
-rejected rather than stacked accidentally.
+The closed predicate vocabulary reads actor/target identity and team, living
+state, named stats or defenses, cardinal distance, current flanking and
+surrounding, exact bound item definition and tags, selected action tags, and
+support-definition capabilities on the actor or target cell. Boolean
+composition is limited to `not`, `all`, and `any`; it is not an option bag or a
+generic predicate VM. Flanking and surrounding retain their existing
+living-participant cardinal-grid definitions.
 
-Classes and features are sealed in this contract version. It does not yet claim
-levels, prerequisites, feature choices during a session, diagonal flanking,
-range-shaped auras, a general-purpose condition VM, or contribution selectors
-for saves, damage, healing, or defenses.
+Rust gathers feature candidates plus contributions from the exact bound item
+after target and item validation. It evaluates every candidate against one
+staged revision, reduces groups canonically, checks arithmetic and the
+selector's final numeric domain, and supplies the final modifier to the attack
+calculation. `AttackResolved.contributionLedger` and trace retain the base and
+final values plus every applied, inapplicable, and suppressed candidate. An
+inapplicable entry carries the failed typed-fact reason; a suppressed entry
+names the policy and canonical retained sources. The ledger owns no mutable
+state and consumes no randomness.
+
+One source may declare at most 32 contributions, one evaluation may gather at
+most 256, predicates allow depth 16 and 128 nodes, and value expressions use
+the existing formula depth/node bounds. Unknown owners, selectors, groups,
+facts, tags, versions, duplicates, overflow, and out-of-domain values fail
+closed. Classes and features remain sealed. Levels, prerequisites, runtime
+feature choice, diagonal flanking, arbitrary auras, pool/category effects, and
+selectors for saves, damage, healing, or defenses remain separate work.
 
 ## Rust semantic profile
 
@@ -160,8 +173,8 @@ Checkpoint schema version 5 embeds the exact compiled PlayBundle, Scenario and
 Scenario fingerprint, portable state, turn/log, accepted random position,
 pending phase, and canonical state hash. Replay entry schema version 6 records
 ordinary submit/reaction/turn-control operations and verifies before/after
-boundaries. Accepted event schema version 3 and encounter-view schema version 5
-carry the contribution and character-selection additions. Replay never reruns
+boundaries. Accepted event schema version 4 and encounter-view schema version 6
+carry the contextual contribution ledger and character selection. Replay never reruns
 authoring or substitutes a candidate artifact.
 
 ## TypeScript authoring
@@ -219,7 +232,8 @@ rather than retained as aliases.
 
 The survey-selected neutral expansion is specified in
 [`first-wave-primitive-catalog.md`](first-wave-primitive-catalog.md). That
-catalog is an implementation map, not current support: every `F0` through `F6`
-family remains a non-claim until its separately reviewed task updates this
-canonical design and the corresponding code, schemas, tests, events, readbacks,
-checkpoint, and replay contracts.
+catalog is an implementation map. `F0@1`, the contextual contribution ledger,
+is implemented as described above. `F1` through `F6` remain non-claims until
+their separately reviewed tasks update this canonical design and the
+corresponding code, schemas, tests, events, readbacks, checkpoint, and replay
+contracts.

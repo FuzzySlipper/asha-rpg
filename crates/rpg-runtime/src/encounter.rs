@@ -15,7 +15,7 @@ use serde::{Deserialize, Serialize};
 pub const RPG_SCENARIO_SCHEMA_ID: &str = "asha.rpg.scenario";
 pub const RPG_SCENARIO_SCHEMA_VERSION: u32 = 2;
 pub const RPG_ENCOUNTER_VIEW_SCHEMA_ID: &str = "asha.rpg.encounter.view";
-pub const RPG_ENCOUNTER_VIEW_SCHEMA_VERSION: u32 = 5;
+pub const RPG_ENCOUNTER_VIEW_SCHEMA_VERSION: u32 = 6;
 pub const RPG_END_TURN_CONTROL_ID: &str = "control.end-turn";
 
 const MAXIMUM_BOARD_EXTENT: u32 = 1_024;

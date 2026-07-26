@@ -112,6 +112,7 @@ export function normalizeAction(action: AuthoredAction): RpgIrAction {
     id: action.id,
     name: action.name,
     sourcePath: action.sourcePath,
+    tags: [...action.tags],
     targets: action.targets,
     check: action.check,
     rollScope: normalizedRollScope(action),
@@ -174,6 +175,27 @@ function validateAction(
   requireText(action.id, `${path}.id`, 'action id', diagnostics, action.sourcePath);
   requireText(action.name, `${path}.name`, 'action name', diagnostics, action.sourcePath);
   requireText(action.sourcePath, `${path}.sourcePath`, 'source path', diagnostics);
+  let previousTag: string | undefined;
+  for (const [index, tag] of action.tags.entries()) {
+    requireText(
+      tag,
+      `${path}.tags[${index}]`,
+      'action tag',
+      diagnostics,
+      action.sourcePath,
+    );
+    if (previousTag !== undefined && previousTag >= tag) {
+      diagnostics.push(
+        diagnostic(
+          'normalization.actionTagsNotCanonical',
+          `${path}.tags[${index}]`,
+          'action tags must be unique and sorted',
+          action.sourcePath,
+        ),
+      );
+    }
+    previousTag = tag;
+  }
   if (action.check.kind === 'noRoll' && action.rollScope !== 'none') {
     diagnostics.push(
       diagnostic(

@@ -13,7 +13,7 @@ Asha RPG is not:
 
 The initial semantic profile does not yet claim contested checks, critical
 outcomes, area selectors, conditions, temporary vitality,
-permanent or scheduler-relative durations, stack/highest-wins policies,
+permanent or scheduler-relative durations, persistent-modifier stacking policies,
 or reaction-window authoring. Unknown requirements for those meanings fail
 closed. Portable checkpoint and replay are part of the existing authority
 session; a separate replay engine, event-applier, or state path is not an
@@ -39,3 +39,10 @@ The TypeScript packages do not provide semantic preview, target evaluation,
 dice execution, predicate evaluation, state access, effect execution, or a
 mutable gameplay context. Their structural diagnostics are convenience only;
 Rust compilation remains authoritative.
+
+The contextual contribution ledger is a closed scalar contract, not a generic
+modifier or scripting facility. It does not provide arbitrary option bags,
+mutable toggles, user-authored predicates, pool/category transformations,
+probability previews, or calculation owners beyond the currently bound attack
+modifier. `F1` through `F6` in the first-wave catalog remain implementation
+non-claims.

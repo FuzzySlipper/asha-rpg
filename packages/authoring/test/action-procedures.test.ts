@@ -149,6 +149,7 @@ const invokedStrike = defineActionInvocationDefinition({
     declaration: 'procedureStrike',
   },
   presentation: { label: 'Procedure strike' },
+  tags: ['attack'],
   procedure: basicAttackProcedure,
   importAs: 'foundation',
   arguments: strikeArguments,
@@ -203,6 +204,10 @@ test('a dependent package invokes an owner-bound exported procedure and Rust exp
     readPath(actionDefinition?.semantic, ['kind']),
     'invocation',
   );
+  assert.deepEqual(
+    readPath(actionDefinition?.semantic, ['tags']),
+    ['attack'],
+  );
   assert.equal(procedureDefinition?.kind, 'actionProcedure');
 
   const compilation = compilePrepared(prepared);
@@ -232,6 +237,7 @@ test('inert item definitions materialize distinct Rust action variants without w
       declaration: 'basicAttack',
     },
     presentation: { label: 'Basic Attack' },
+    tags: ['attack'],
     procedure: basicAttackProcedure,
     importAs: 'foundation',
     binding: weaponBinding,

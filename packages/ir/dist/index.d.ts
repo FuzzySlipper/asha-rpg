@@ -64,6 +64,10 @@ export type RpgIrCheck = {
     readonly kind: 'attack';
     readonly modifier: RpgIrFormula;
     readonly defenseId: RpgDefenseId;
+    readonly contributionSelector?: {
+        readonly rulesetId: string;
+        readonly id: string;
+    };
 } | {
     readonly kind: 'savingThrow';
     readonly difficulty: RpgIrFormula;
@@ -174,6 +178,7 @@ export interface RpgIrAction {
     readonly id: RpgActionId;
     readonly name: string;
     readonly sourcePath: string;
+    readonly tags: readonly string[];
     readonly targets: RpgIrTargetSelector;
     readonly check: RpgIrCheck;
     readonly rollScope: RpgIrRollScope;

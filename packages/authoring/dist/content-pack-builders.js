@@ -22,10 +22,11 @@ export function defineActionProcedureDefinition(input) {
     });
 }
 export function defineActionInvocationDefinition(input) {
-    const { procedure, importAs, arguments: invocationArguments, binding, ...definition } = input;
+    const { procedure, importAs, arguments: invocationArguments, binding, tags, ...definition } = input;
     return immutable({
         ...definition,
         kind: 'action',
+        tags: [...(tags ?? [])].sort(),
         invocation: {
             procedure: {
                 definitionId: procedure.id,
@@ -85,12 +86,13 @@ export function defineItemDefinition(input) {
             ...input.item,
             schema: {
                 identity: 'asha.rpg.item',
-                version: 1,
+                version: 2,
             },
             tags: [...input.item.tags].sort(),
             traits: [...input.item.traits].sort(),
             allowedSlots: [...input.item.allowedSlots].sort(),
             attributes: [...input.item.attributes].sort((left, right) => left.id.localeCompare(right.id)),
+            contributions: normalizeScalarContributions(input.item.contributions ?? []),
         },
     });
 }
@@ -101,11 +103,22 @@ export function defineCharacterFeatureDefinition(input) {
         characterFeature: {
             schema: {
                 identity: 'asha.rpg.character-feature',
-                version: 1,
+                version: 2,
             },
-            rollContributions: [...input.characterFeature.rollContributions].sort((left, right) => left.id.localeCompare(right.id)),
+            contributions: normalizeScalarContributions(input.characterFeature.contributions),
         },
     });
+}
+function normalizeScalarContributions(contributions) {
+    return contributions
+        .map((contribution) => ({
+        ...contribution,
+        schema: {
+            identity: 'asha.rpg.scalar-contribution',
+            version: 1,
+        },
+    }))
+        .sort((left, right) => left.id.localeCompare(right.id));
 }
 export function defineCharacterClassDefinition(input) {
     return immutable({

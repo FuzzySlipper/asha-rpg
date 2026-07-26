@@ -63,6 +63,8 @@ pub struct RpgIrAction {
     pub id: String,
     pub name: String,
     pub source_path: String,
+    #[serde(default)]
+    pub tags: Vec<String>,
     pub targets: RpgIrTargetSelector,
     pub check: RpgIrCheck,
     pub roll_scope: RpgIrRollScope,
@@ -150,6 +152,8 @@ pub enum RpgIrCheck {
     Attack {
         modifier: RpgIrFormula,
         defense_id: String,
+        #[serde(default)]
+        contribution_selector: Option<rpg_core::RpgOwnedRulesetReference>,
     },
     SavingThrow {
         difficulty: RpgIrFormula,

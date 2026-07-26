@@ -1,6 +1,8 @@
 import type { RpgDefenseId, RpgStatId } from '@asha-rpg/ir';
 import type { Ruleset, RulesetIdentity, RulesetValueContract, RulesetValueExpression, RulesetValueKind, RulesetValueSource } from './play-bundle-types.js';
 declare const rulesetValueReferenceBrand: unique symbol;
+declare const rulesetCalculationSelectorReferenceBrand: unique symbol;
+declare const rulesetContributionStackingGroupReferenceBrand: unique symbol;
 export interface AuthoredRulesetValueOwnership {
     readonly field: string;
     readonly kind: RulesetValueKind;
@@ -17,9 +19,21 @@ export type RulesetValueReference<Kind extends RulesetValueKind, RulesetId exten
 type RulesetValueInput = Omit<RulesetValueContract, 'source'> & {
     readonly source?: RulesetValueSource;
 };
+export type RulesetCalculationSelectorReference<RulesetId extends string, SelectorId extends string> = Readonly<{
+    readonly rulesetId: RulesetId;
+    readonly id: SelectorId;
+    readonly [rulesetCalculationSelectorReferenceBrand]: true;
+}>;
+export type RulesetContributionStackingGroupReference<RulesetId extends string, GroupId extends string> = Readonly<{
+    readonly rulesetId: RulesetId;
+    readonly id: GroupId;
+    readonly [rulesetContributionStackingGroupReferenceBrand]: true;
+}>;
 type RulesetInput = Omit<Ruleset, 'provides'> & {
-    readonly provides: Omit<Ruleset['provides'], 'values'> & {
+    readonly provides: Omit<Ruleset['provides'], 'values' | 'calculationSelectors' | 'contributionStackingGroups'> & {
         readonly values: readonly RulesetValueInput[];
+        readonly calculationSelectors?: Ruleset['provides']['calculationSelectors'];
+        readonly contributionStackingGroups?: Ruleset['provides']['contributionStackingGroups'];
     };
 };
 export declare function defineRuleset(input: RulesetInput): Ruleset;
@@ -38,6 +52,16 @@ export declare function rulesetDefense<const RulesetId extends string, const Def
         readonly id: RulesetId;
     };
 }, id: DefenseId): RulesetValueReference<'defense', RulesetId, DefenseId>;
+export declare function rulesetCalculationSelector<const RulesetId extends string, const SelectorId extends string>(ruleset: Ruleset & {
+    readonly identity: RulesetIdentity & {
+        readonly id: RulesetId;
+    };
+}, id: SelectorId): RulesetCalculationSelectorReference<RulesetId, SelectorId>;
+export declare function rulesetContributionStackingGroup<const RulesetId extends string, const GroupId extends string>(ruleset: Ruleset & {
+    readonly identity: RulesetIdentity & {
+        readonly id: RulesetId;
+    };
+}, id: GroupId): RulesetContributionStackingGroupReference<RulesetId, GroupId>;
 export declare function rulesetValueId<Kind extends RulesetValueKind>(reference: RulesetValueReference<Kind, string, string>): RulesetValueId<Kind>;
 /** @internal Retains Ruleset owner identity on an AST node without serializing it. */
 export declare function retainRulesetValueOwnership<Value extends object>(value: Value, fields: readonly {
