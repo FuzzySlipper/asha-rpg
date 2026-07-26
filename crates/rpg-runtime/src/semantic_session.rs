@@ -556,6 +556,26 @@ impl RpgAuthoritySession {
                                     &action.targets,
                                     &anchor.id,
                                 )?;
+                                let intent = RpgIntent {
+                                    action_id: action.id.clone(),
+                                    actor_id: actor_id.to_owned(),
+                                    target_ids: projection.included_participant_ids.clone(),
+                                    cell_targets: projection
+                                        .included_cells
+                                        .iter()
+                                        .map(|cell| RpgIntentCellTarget {
+                                            id: cell.id.clone(),
+                                            position: cell.position,
+                                        })
+                                        .collect(),
+                                    item_binding: item_binding.clone(),
+                                };
+                                if let Err(rejection) = self.rules.preflight(&self.state, &intent) {
+                                    if first_rejection.is_none() {
+                                        first_rejection = Some(rejection);
+                                    }
+                                    return None;
+                                }
                                 Some(RpgAreaOptionView {
                                     session_binding_id: self.session_binding_id.clone(),
                                     artifact_id: self

@@ -1560,6 +1560,96 @@ fn condition_subject_lanes_restrict_options_and_save_ends_atomically_replay() {
 }
 
 #[test]
+fn condition_restricted_area_actions_are_not_projected_and_submit_atomically() {
+    let bundle = compile_prepared_play_bundle(condition_prepared()).unwrap();
+    let actions = vec![
+        "action.apply-save-pair".to_owned(),
+        "action.condition-area".to_owned(),
+    ];
+    let mut scenario = basic_scenario_with_actions(&bundle, actions);
+    scenario.board.cells = (0..3)
+        .map(|x| RpgCellSetup {
+            id: format!("cell-{x}"),
+            position: GridPosition { x, y: 0 },
+            capabilities: Vec::new(),
+        })
+        .collect();
+    let mut session = RpgAuthoritySession::from_scenario(bundle, scenario).unwrap();
+    let (outcome, _) = submit_no_random(
+        &mut session,
+        RpgActionProposal {
+            expected_revision: 0,
+            action_id: "action.apply-save-pair".to_owned(),
+            actor_id: "actor".to_owned(),
+            target_ids: vec!["target".to_owned()],
+            item_binding: None,
+        },
+    );
+    assert!(matches!(outcome, RpgCommandOutcome::Accepted(_)));
+    assert_eq!(session.turn().current_actor_id, "target");
+
+    let view = session.encounter_view();
+    let restricted = view
+        .actions
+        .iter()
+        .find(|action| action.definition_id == "action.condition-area")
+        .unwrap();
+    assert!(!restricted.available);
+    assert!(restricted.options.area_options.is_empty());
+    let unavailable = restricted.unavailable.as_ref().unwrap();
+    assert_eq!(unavailable.code, "RPG_CONDITION_ACTION_RESTRICTED");
+    let source = unavailable.unavailable_source.as_ref().unwrap();
+    assert_eq!(source.source_kind, "effect");
+    assert_eq!(source.source_definition_id, "effect.save-restricted");
+    assert_eq!(
+        source.source_instance_id,
+        "effect.save-restricted:actor:1:0"
+    );
+
+    let before_checkpoint = session.checkpoint().unwrap();
+    let before_hash = session.state_hash().unwrap();
+    let before_view = session.encounter_view();
+    let before_vitality = session.state().entity("opponent").unwrap().vitality();
+    let mut no_evidence =
+        RpgRollTapeSource::new(session.scenario().random_source.clone(), Vec::new());
+    let submitted = session
+        .submit_area_with_random_source_recorded(
+            RpgAreaActionProposal {
+                session_binding_id: before_view.session_binding_id.clone(),
+                authority_revision: before_view.state_revision,
+                action_id: "action.condition-area".to_owned(),
+                actor_id: "target".to_owned(),
+                anchor_cell_id: "cell-2".to_owned(),
+                item_binding: None,
+            },
+            &mut no_evidence,
+        )
+        .unwrap();
+    assert!(matches!(
+        submitted.outcome,
+        RpgCommandOutcome::Rejected(ref rejection)
+            if rejection.code == "RPG_CONDITION_ACTION_RESTRICTED"
+                && rejection.unavailable_source.as_ref().is_some_and(|source| {
+                    source.source_kind == "effect"
+                        && source.source_definition_id == "effect.save-restricted"
+                        && source.source_instance_id == "effect.save-restricted:actor:1:0"
+                })
+    ));
+    assert_eq!(session.checkpoint().unwrap(), before_checkpoint);
+    assert_eq!(session.state_hash().unwrap(), before_hash);
+    assert_eq!(session.state().revision(), before_view.state_revision);
+    assert_eq!(
+        session.encounter_view().accepted_random_position,
+        before_view.accepted_random_position
+    );
+    assert_eq!(session.encounter_view().log, before_view.log);
+    assert_eq!(
+        session.state().entity("opponent").unwrap().vitality(),
+        before_vitality
+    );
+}
+
+#[test]
 fn condition_artifacts_reject_noncanonical_contradictory_unknown_and_tampered_contracts() {
     let mutate_condition =
         |prepared: &mut PreparedPlayBundle, mutation: &mut dyn FnMut(&mut serde_json::Value)| {
@@ -7687,6 +7777,48 @@ fn condition_prepared() -> PreparedPlayBundle {
     });
     movement.fingerprint = materialized_definition_fingerprint(&movement).unwrap();
 
+    let mut area = probe.clone();
+    area.id = "action.condition-area".to_owned();
+    area.provenance = source(&area.id);
+    area.presentation = json!({"label": "Condition area"});
+    area.semantic["action"]["id"] = json!(area.id);
+    area.semantic["action"]["name"] = json!("Condition area");
+    area.semantic["action"]["sourcePath"] = json!("conditions/save-ends.ts#conditionArea");
+    area.semantic["action"]["tags"] = json!(["restricted"]);
+    area.semantic["action"]["targets"] = json!({
+        "kind": "area",
+        "team": "hostile",
+        "maximumRange": 2,
+        "maximumTargets": 3,
+        "area": {
+            "schema": {"identity": "asha.rpg.area-selector", "version": 1},
+            "origin": "anchor",
+            "shape": {"kind": "diamond", "radius": 0},
+            "livingRequired": true,
+            "minimumTargets": 1
+        }
+    });
+    area.semantic["action"]["check"] = json!({"kind": "noRoll"});
+    area.semantic["action"]["rollScope"] = json!("none");
+    area.semantic["action"]["program"] = json!({
+        "kind": "atomic",
+        "body": {
+            "kind": "forEachTarget",
+            "maximum": 3,
+            "body": {
+                "kind": "onCheck",
+                "noRoll": {
+                    "kind": "operation",
+                    "operation": {
+                        "kind": "heal",
+                        "amount": {"kind": "constant", "value": 1}
+                    }
+                }
+            }
+        }
+    });
+    area.fingerprint = materialized_definition_fingerprint(&area).unwrap();
+
     prepared
         .ruleset
         .provides
@@ -7709,7 +7841,7 @@ fn condition_prepared() -> PreparedPlayBundle {
     prepared.content_requirements.capabilities = prepared.ruleset.provides.capabilities.clone();
     prepared
         .materialized_definitions
-        .extend([apply, movement, probe, auxiliary, condition]);
+        .extend([apply, area, movement, probe, auxiliary, condition]);
     prepared
         .materialized_definitions
         .sort_by(|left, right| left.id.cmp(&right.id));
