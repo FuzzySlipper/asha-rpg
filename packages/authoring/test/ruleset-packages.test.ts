@@ -695,7 +695,7 @@ function packageFixture(options: FixtureOptions = {}): {
         : []),
     ],
     requirements: {
-      operations: [{ id: 'operation.damage', version: 1 }],
+      operations: [{ id: 'operation.damage', version: 2 }],
       capabilities: [{ id: 'capability.vitality', version: 1 }],
     },
     definitions: options.duplicateLocalDefinition ? [spark, spark] : [spark],

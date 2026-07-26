@@ -110,6 +110,7 @@ export function defineCharacterFeatureDefinition(input) {
             contributions: normalizeScalarContributions(input.characterFeature.contributions ?? []),
             outcomeBandShifts: normalizeOutcomeBandShifts(input.characterFeature.outcomeBandShifts ?? []),
             poolContributions: normalizePoolContributions(input.characterFeature.poolContributions ?? []),
+            damageResponses: normalizeDamageResponses(input.characterFeature.damageResponses ?? []),
         },
     });
 }
@@ -126,6 +127,7 @@ export function defineEffectDefinition(input) {
             contributions: normalizeScalarContributions(input.effect.contributions ?? []),
             outcomeBandShifts: normalizeOutcomeBandShifts(input.effect.outcomeBandShifts ?? []),
             poolContributions: normalizePoolContributions(input.effect.poolContributions ?? []),
+            damageResponses: normalizeDamageResponses(input.effect.damageResponses ?? []),
         },
     });
 }
@@ -138,6 +140,25 @@ function normalizeOutcomeBandShifts(shifts) {
             version: 1,
         },
     }))
+        .sort((left, right) => left.id.localeCompare(right.id));
+}
+function normalizeDamageResponses(responses) {
+    return responses
+        .map((response) => {
+        const normalized = {
+            ...response,
+            schema: {
+                identity: 'asha.rpg.damage-response',
+                version: 1,
+            },
+            requiredTags: [...response.requiredTags].sort(),
+            bypassTags: [...response.bypassTags].sort(),
+        };
+        retainCatalogOwnership(normalized, [
+            { field: 'damageType', reference: response.damageType },
+        ]);
+        return normalized;
+    })
         .sort((left, right) => left.id.localeCompare(right.id));
 }
 function normalizePoolContributions(contributions) {

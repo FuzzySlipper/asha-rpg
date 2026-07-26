@@ -2,7 +2,7 @@ use std::collections::{BTreeMap, BTreeSet};
 
 use rpg_core::{
     RpgCapabilityId, RpgContributionStackingPolicy, RpgRandomRequest, RpgRandomRequestKind,
-    MAXIMUM_RPG_MODIFIER_TURNS,
+    MAXIMUM_RPG_DAMAGE_PARTS, MAXIMUM_RPG_DAMAGE_TAGS, MAXIMUM_RPG_MODIFIER_TURNS,
 };
 use rpg_ir::{
     CompiledCharacterFeature, CompiledEffectDefinition, CompiledItemDefinition,
@@ -782,7 +782,17 @@ fn collect_program_random_plan(
 ) {
     match program {
         RpgIrProgram::Operation { operation } => match operation {
-            RpgIrOperation::Damage { amount, .. } | RpgIrOperation::Heal { amount } => {
+            RpgIrOperation::Damage { parts } => {
+                for (index, part) in parts.iter().enumerate() {
+                    collect_formula_random_plan(
+                        &part.amount,
+                        &format!("{path}.parts[{index}].amount"),
+                        conditions,
+                        plan,
+                    );
+                }
+            }
+            RpgIrOperation::Heal { amount } => {
                 collect_formula_random_plan(amount, &format!("{path}.amount"), conditions, plan);
             }
             RpgIrOperation::ChangeResource { delta, .. } => {
@@ -1857,13 +1867,61 @@ impl<'a> Validator<'a> {
             }
         }
         match operation {
-            RpgIrOperation::Damage {
-                amount,
-                damage_type,
-            } => {
+            RpgIrOperation::Damage { parts } => {
                 self.require_target_binding(path, target_bound, action_target_maximum);
-                self.require_identifier(damage_type, &format!("{path}.damageType"));
-                self.validate_formula_at(amount, &format!("{path}.amount"), has_target_binding);
+                if parts.is_empty() || parts.len() > MAXIMUM_RPG_DAMAGE_PARTS {
+                    self.error(
+                        RpgDiagnosticStage::Semantics,
+                        "RPG_IR_DAMAGE_PARTS_INVALID",
+                        format!("{path}.parts"),
+                        format!("damage packets require 1..={MAXIMUM_RPG_DAMAGE_PARTS} parts"),
+                    );
+                }
+                let mut previous_id = None::<&str>;
+                for (index, part) in parts.iter().enumerate() {
+                    let part_path = format!("{path}.parts[{index}]");
+                    if !is_portable_identifier(&part.id)
+                        || previous_id.is_some_and(|previous| previous >= part.id.as_str())
+                    {
+                        self.error(
+                            RpgDiagnosticStage::Artifact,
+                            "RPG_IR_DAMAGE_PARTS_NOT_CANONICAL",
+                            format!("{part_path}.id"),
+                            "damage part identities must be unique sorted portable identifiers",
+                        );
+                    }
+                    previous_id = Some(&part.id);
+                    self.require_identifier(&part.damage_type, &format!("{part_path}.damageType"));
+                    if part.tags.len() > MAXIMUM_RPG_DAMAGE_TAGS {
+                        self.error(
+                            RpgDiagnosticStage::Semantics,
+                            "RPG_IR_DAMAGE_TAG_LIMIT_EXCEEDED",
+                            format!("{part_path}.tags"),
+                            format!(
+                                "one damage part may declare at most {MAXIMUM_RPG_DAMAGE_TAGS} tags"
+                            ),
+                        );
+                    }
+                    let mut previous_tag = None::<&str>;
+                    for (tag_index, tag) in part.tags.iter().enumerate() {
+                        if !is_portable_identifier(tag)
+                            || previous_tag.is_some_and(|previous| previous >= tag.as_str())
+                        {
+                            self.error(
+                                RpgDiagnosticStage::Artifact,
+                                "RPG_IR_DAMAGE_TAGS_NOT_CANONICAL",
+                                format!("{part_path}.tags[{tag_index}]"),
+                                "damage tags must be unique sorted portable identifiers",
+                            );
+                        }
+                        previous_tag = Some(tag);
+                    }
+                    self.validate_formula_at(
+                        &part.amount,
+                        &format!("{part_path}.amount"),
+                        has_target_binding,
+                    );
+                }
             }
             RpgIrOperation::Heal { amount } => {
                 self.require_target_binding(path, target_bound, action_target_maximum);

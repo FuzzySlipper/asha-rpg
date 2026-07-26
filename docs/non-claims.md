@@ -54,8 +54,12 @@ modifier and scalar-test profiles. The separate heterogeneous-pool contract
 supports only its named die-count, automatic-axis, and sequential
 replace-or-fallback effects. Named `F3@1` effects are limited to bounded rank,
 one authority-relative duration anchor, source-aware/replace/refresh stacking,
-typed registered contributions, and explicit apply/remove operations. `F4` in
-the first-wave catalog remains an implementation non-claim.
+typed registered contributions, and explicit apply/remove operations. Typed
+`F4@1` damage is limited to bounded independently identified parts and the
+registered immunity, aggregate-flat, and ordered-rational-scale response
+phases. Temporary vitality, healing responses, armor wear, recurring damage,
+critical tables, body locations, and user-selected damage allocation remain
+non-claims.
 
 The implemented variable activation-budget model is deliberately turn-relative:
 Rulesets may declare action and reaction budgets with owner-turn-start or

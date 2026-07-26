@@ -28,7 +28,7 @@ than this engine repository. Rulebench consumes them through public APIs.
 
 ## Current implementation
 
-The Rust semantic path is active. `rpg-ir` strictly decodes `asha.rpg.ir@1`,
+The Rust semantic path is active. `rpg-ir` strictly decodes `asha.rpg.ir@2`,
 `rpg-compiler` resolves exact requirements and references into an opaque
 compiled program with closed operation bindings, and `rpg-runtime` owns a
 versioned, PlayBundle-bound Scenario and authority session that stages
@@ -42,7 +42,7 @@ There is also no predecessor provider/module/action-definition compatibility
 surface: a Ruleset, selected Content Packs, the compiled PlayBundle, and its
 Scenario-bound authority session are the single supported path.
 
-The initial operation set is deliberately closed: damage, healing, resource
+The initial operation set is deliberately closed: typed damage packets, healing, resource
 change, bounded grid movement, turn-bounded modifier application, named effect
 application/removal with bounded authority-relative expiry, and a typed
 before-damage reaction window. Checks support attack, saving throw, generic
@@ -59,6 +59,14 @@ Contested roll pairs and reroll/keep mechanics remain unsupported. Programs supp
 sequence, predicate branch, repeat, per-target branch, check/outcome branches,
 and one atomic root. Unavailable semantics fail compilation; they are never
 delegated to consumer callbacks.
+
+One damage operation carries at most 16 canonically identified parts. Each
+part retains its own formula, Content-Pack-owned damage type, bounded tags,
+random path, and resolution evidence. Selected character features and active
+named effects may contribute exact-version immunity, signed-flat, and positive
+rational-scale responses. Rust classifies every candidate, reduces phases in
+canonical runtime-identity order, mutates vitality once for the final packet,
+and records original versus adjusted amounts without TypeScript interpretation.
 
 Bounded area actions declare either an anchor-origin Manhattan diamond or an
 actor-origin orthogonal line plus range, team, living-state, and cardinality
@@ -112,7 +120,7 @@ It exports distinct `Ruleset`, `ContentPack`, `PlayBundle`, and `Scenario`
 contracts. A Ruleset has no authored gameplay definitions; a Scenario has no
 definitions or gameplay script. It does not evaluate gameplay semantics or discover packages from global
 registries or the filesystem. Rust validates the prepared graph, creates the
-private executable plan, and emits the closed `asha.rpg.play-bundle.compiled@8`
+private executable plan, and emits the closed `asha.rpg.play-bundle.compiled@9`
 artifact with independent source, semantic, and presentation fingerprints.
 Representative consumer code lives in
 `examples/representative-actions.ts`; its normalized artifact is sent through

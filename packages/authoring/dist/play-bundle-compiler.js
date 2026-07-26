@@ -101,7 +101,7 @@ export function preparePlayBundle(options) {
         })),
     ].sort(compareRelationship);
     const prepared = immutable({
-        schema: { identity: 'asha.rpg.play-bundle.prepared', major: 8 },
+        schema: { identity: 'asha.rpg.play-bundle.prepared', major: 9 },
         playBundleIdentity: options.bundle.identity,
         ruleset: options.bundle.ruleset,
         contentPacks: [...context.selected.values()]
@@ -1642,6 +1642,7 @@ function materializedCharacterFeatureData(feature) {
         contributions: materializedScalarContributions(feature.contributions),
         outcomeBandShifts: materializedOutcomeBandShifts(feature.outcomeBandShifts),
         poolContributions: materializedPoolContributions(feature.poolContributions),
+        damageResponses: materializedDamageResponses(feature.damageResponses),
     };
 }
 function materializedEffectData(effect) {
@@ -1650,7 +1651,18 @@ function materializedEffectData(effect) {
         contributions: materializedScalarContributions(effect.contributions),
         outcomeBandShifts: materializedOutcomeBandShifts(effect.outcomeBandShifts),
         poolContributions: materializedPoolContributions(effect.poolContributions),
+        damageResponses: materializedDamageResponses(effect.damageResponses),
     };
+}
+function materializedDamageResponses(responses) {
+    return responses.map((response) => ({
+        schema: response.schema,
+        id: response.id,
+        damageTypeId: response.damageType.definitionId,
+        requiredTags: response.requiredTags,
+        bypassTags: response.bypassTags,
+        effect: response.effect,
+    }));
 }
 function materializedOutcomeBandShifts(shifts) {
     return shifts.map((shift) => ({
@@ -1916,6 +1928,12 @@ function authoredCatalogReferences(definition) {
     }
     else if (definition.kind === 'item') {
         collectCatalogReferences(definition.item, '$.item', byIdentity);
+    }
+    else if (definition.kind === 'characterFeature') {
+        collectCatalogReferences(definition.characterFeature, '$.characterFeature', byIdentity);
+    }
+    else if (definition.kind === 'effect') {
+        collectCatalogReferences(definition.effect, '$.effect', byIdentity);
     }
     else if (definition.kind === 'mixin') {
         collectCatalogReferences(definition.patch, '$.patch', byIdentity);
@@ -3096,17 +3114,20 @@ function validateCharacterDefinitions(materialized, resolvedReferences, ruleset,
         if (data.contributions.length > 32 ||
             data.outcomeBandShifts.length > 32 ||
             data.poolContributions.length > 32 ||
+            data.damageResponses.length > 64 ||
             data.contributions.length +
                 data.outcomeBandShifts.length +
-                data.poolContributions.length ===
+                data.poolContributions.length +
+                data.damageResponses.length ===
                 0) {
-            diagnostics.push(diagnostic('source', 'CHARACTER_FEATURE_CONTRIBUTIONS_INVALID', path, 'character features require at least one and at most 32 entries in each typed contribution family', { definitionId: record.definition.id, source: record.definition.source }));
+            diagnostics.push(diagnostic('source', 'CHARACTER_FEATURE_CONTRIBUTIONS_INVALID', path, 'character features require at least one typed entry, at most 32 roll contributions in each family, and at most 64 damage responses', { definitionId: record.definition.id, source: record.definition.source }));
         }
         validateScalarContributions(data.contributions, `${path}.contributions`, record, ruleset, diagnostics);
         validateContributionDefinitionTargets(record, data.contributions, `${path}.contributions`, resolvedReferences, recordsByGlobalId, diagnostics);
         validatePoolContributions(data.poolContributions, `${path}.poolContributions`, record, ruleset, diagnostics);
         validateContributionDefinitionTargets(record, data.poolContributions, `${path}.poolContributions`, resolvedReferences, recordsByGlobalId, diagnostics);
         validateOutcomeBandShifts(data.outcomeBandShifts, `${path}.outcomeBandShifts`, record, ruleset, diagnostics);
+        validateDamageResponses(data.damageResponses, `${path}.damageResponses`, diagnostics, profileDiagnosticContext(record));
         validateContributionDefinitionTargets(record, data.outcomeBandShifts, `${path}.outcomeBandShifts`, resolvedReferences, recordsByGlobalId, diagnostics);
     }
 }
@@ -3147,12 +3168,15 @@ function validateEffectDefinitions(records, resolvedReferences, ruleset, diagnos
         const contributionCount = data.contributions.length +
             data.outcomeBandShifts.length +
             data.poolContributions.length;
-        if (contributionCount < 1 || contributionCount > 32) {
-            diagnostics.push(diagnostic('source', 'EFFECT_CONTRIBUTIONS_INVALID', path, 'effect definitions require 1..=32 total typed contributions', profileDiagnosticContext(record)));
+        if (contributionCount > 32 ||
+            data.damageResponses.length > 64 ||
+            contributionCount + data.damageResponses.length < 1) {
+            diagnostics.push(diagnostic('source', 'EFFECT_CONTRIBUTIONS_INVALID', path, 'effect definitions require at least one typed entry, at most 32 roll contributions, and at most 64 damage responses', profileDiagnosticContext(record)));
         }
         validateScalarContributions(data.contributions, `${path}.contributions`, record, ruleset, diagnostics);
         validateOutcomeBandShifts(data.outcomeBandShifts, `${path}.outcomeBandShifts`, record, ruleset, diagnostics);
         validatePoolContributions(data.poolContributions, `${path}.poolContributions`, record, ruleset, diagnostics);
+        validateDamageResponses(data.damageResponses, `${path}.damageResponses`, diagnostics, profileDiagnosticContext(record));
         for (const [contributions, contributionPath] of [
             [data.contributions, `${path}.contributions`],
             [data.outcomeBandShifts, `${path}.outcomeBandShifts`],
@@ -3164,6 +3188,51 @@ function validateEffectDefinitions(records, resolvedReferences, ruleset, diagnos
     for (const [packageId, count] of packageCounts) {
         if (count > 128) {
             diagnostics.push(diagnostic('source', 'EFFECT_DEFINITION_LIMIT_EXCEEDED', '$.materializedDefinitions', `package ${packageId} has ${count} effects; maximum is 128`, {}));
+        }
+    }
+}
+function validateDamageResponses(responses, path, diagnostics, context) {
+    let previousId;
+    for (const [index, response] of responses.entries()) {
+        const responsePath = `${path}[${index}]`;
+        if (response.schema.identity !== 'asha.rpg.damage-response' ||
+            response.schema.version !== 1) {
+            diagnostics.push(diagnostic('compatibility', 'DAMAGE_RESPONSE_SCHEMA_UNSUPPORTED', `${responsePath}.schema`, 'damage responses require asha.rpg.damage-response@1', context));
+        }
+        if (!validPortableIdentifier(response.id) ||
+            (previousId !== undefined && previousId >= response.id)) {
+            diagnostics.push(diagnostic('source', 'DAMAGE_RESPONSES_NOT_CANONICAL', `${responsePath}.id`, 'damage response identities must be unique sorted portable identifiers', context));
+        }
+        previousId = response.id;
+        if (response.damageType.category !== 'damageType' ||
+            !validPortableIdentifier(response.damageType.definitionId) ||
+            !validPortableIdentifier(response.damageType.packageId)) {
+            diagnostics.push(diagnostic('graph', 'DAMAGE_RESPONSE_TYPE_INVALID', `${responsePath}.damageType`, 'damage response types require an owned damageType catalog reference', context));
+        }
+        for (const [field, tags] of [
+            ['requiredTags', response.requiredTags],
+            ['bypassTags', response.bypassTags],
+        ]) {
+            if (tags.length > 16 || !identifiersAreCanonical(tags)) {
+                diagnostics.push(diagnostic('source', 'DAMAGE_RESPONSE_TAGS_NOT_CANONICAL', `${responsePath}.${field}`, 'damage response tag filters require at most 16 unique sorted portable identifiers', context));
+            }
+        }
+        if (response.effect.kind === 'flat') {
+            if (!Number.isSafeInteger(response.effect.value) ||
+                response.effect.value < -2_147_483_648 ||
+                response.effect.value > 2_147_483_647) {
+                diagnostics.push(diagnostic('source', 'DAMAGE_RESPONSE_FLAT_INVALID', `${responsePath}.effect.value`, 'flat damage responses require a signed 32-bit integer', context));
+            }
+        }
+        else if (response.effect.kind === 'scale') {
+            if (!Number.isSafeInteger(response.effect.numerator) ||
+                !Number.isSafeInteger(response.effect.denominator) ||
+                response.effect.numerator < 1 ||
+                response.effect.numerator > 1_000 ||
+                response.effect.denominator < 1 ||
+                response.effect.denominator > 1_000) {
+                diagnostics.push(diagnostic('source', 'DAMAGE_RESPONSE_SCALE_INVALID', `${responsePath}.effect`, 'scale damage responses require numerator and denominator within 1..=1000', context));
+            }
         }
     }
 }

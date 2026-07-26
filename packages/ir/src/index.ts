@@ -26,7 +26,7 @@ export type RpgReactionOptionId = RpgIdentifier<'reactionOption'>;
 
 export interface RpgIrSchema {
   readonly identity: 'asha.rpg.ir';
-  readonly major: 1;
+  readonly major: 2;
 }
 
 export interface RpgIrPackageIdentity {
@@ -208,8 +208,7 @@ export type RpgIrPredicate =
 export type RpgIrOperation =
   | {
       readonly kind: 'damage';
-      readonly amount: RpgIrFormula;
-      readonly damageType: RpgDamageType;
+      readonly parts: readonly RpgIrDamagePart[];
     }
   | { readonly kind: 'heal'; readonly amount: RpgIrFormula }
   | {
@@ -253,6 +252,13 @@ export type RpgIrOperation =
       readonly reactionId: RpgReactionId;
       readonly options: readonly RpgIrReactionOption[];
     };
+
+export interface RpgIrDamagePart {
+  readonly id: string;
+  readonly amount: RpgIrFormula;
+  readonly damageType: RpgDamageType;
+  readonly tags: readonly string[];
+}
 
 export type RpgIrProgram =
   | { readonly kind: 'operation'; readonly operation: RpgIrOperation }

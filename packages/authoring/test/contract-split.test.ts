@@ -12,8 +12,10 @@ import {
   composePlayBundle,
   contentPackRequest,
   contentPackSource,
+  damage,
   defineCharacterClassDefinition,
   defineCharacterFeatureDefinition,
+  defineContentCatalog,
   defineEffectDefinition,
   defineContentPack,
   defineParticipantProfileData,
@@ -304,7 +306,7 @@ test("Ruleset scalar profiles author canonical ordered outcomes and reject gaps"
     result.ok ? "expected scalar profile" : JSON.stringify(result.diagnostics),
   );
   if (!result.ok) return;
-  assert.equal(result.prepared.schema.major, 8);
+  assert.equal(result.prepared.schema.major, 9);
   assert.deepEqual(
     result.prepared.ruleset.provides.scalarTestProfiles.map(
       (profile) => profile.id,
@@ -658,6 +660,266 @@ test("Heterogeneous pool profiles and content contributions retain typed owner-b
       malformed.diagnostics.some(
         (diagnostic) =>
           diagnostic.code === "RULESET_POOL_DIE_TYPE_INVALID",
+      ),
+    );
+  }
+});
+
+test("typed damage packets and responses retain owned catalog references and canonical order", () => {
+  const damageRuleset = defineRuleset({
+    ...semanticRuleset,
+    provides: {
+      ...semanticRuleset.provides,
+      operations: [{ id: "operation.damage", version: 2 }],
+      capabilities: [{ id: "capability.vitality", version: 1 }],
+    },
+  });
+  const catalogs = defineContentCatalog({
+    packageId: "contract.damage-content",
+    sourceModule: "contract/damage-catalog.ts",
+    entries: {
+      cold: {
+        definitionId: "catalog.damage.cold",
+        category: "damageType",
+        id: "cold",
+        label: "Cold",
+      },
+      fire: {
+        definitionId: "catalog.damage.fire",
+        category: "damageType",
+        id: "fire",
+        label: "Fire",
+      },
+    },
+  });
+  const authoredAction = action({
+    id: actionId("action.damage-packet"),
+    name: "Damage packet",
+    sourcePath: "contract/damage.ts#packet",
+    targets: hostile({ range: 3 }),
+    check: noRoll(),
+    program: onCheck({
+      noRoll: damage({
+        parts: [
+          {
+            id: "fire",
+            amount: constant(7),
+            type: catalogs.references.fire,
+            tags: ["weapon", "magic"],
+          },
+          {
+            id: "cold",
+            amount: constant(3),
+            type: catalogs.references.cold,
+            tags: ["magic"],
+          },
+        ],
+      }),
+    }),
+  });
+  const actionDefinition = defineActionDefinition({
+    id: authoredAction.id,
+    visibility: "public",
+    extensionPolicy: "sealed",
+    source: { module: "contract/damage.ts", declaration: "packet" },
+    action: authoredAction,
+  });
+  const responseFeature = defineCharacterFeatureDefinition({
+    id: "feature.damage-responses",
+    visibility: "public",
+    extensionPolicy: "sealed",
+    source: { module: "contract/damage.ts", declaration: "responses" },
+    presentation: { label: "Damage responses" },
+    characterFeature: {
+      damageResponses: [
+        {
+          id: "fire-half",
+          damageType: catalogs.references.fire,
+          requiredTags: ["weapon", "magic"],
+          bypassTags: ["penetrating", "adamantine"],
+          effect: { kind: "scale", numerator: 1, denominator: 2 },
+        },
+        {
+          id: "cold-immune",
+          damageType: catalogs.references.cold,
+          requiredTags: [],
+          bypassTags: [],
+          effect: { kind: "immune" },
+        },
+      ],
+    },
+  });
+  const contentPack = defineContentPack({
+    identity: { id: "contract.damage-content", version: "1.0.0" },
+    entry: { module: "contract/damage.ts", declaration: "content" },
+    requirements: {
+      operations: [{ id: "operation.damage", version: 2 }],
+      capabilities: [{ id: "capability.vitality", version: 1 }],
+    },
+    definitions: [
+      ...catalogs.definitions,
+      actionDefinition,
+      responseFeature,
+    ],
+  });
+  const prepare = (
+    feature: typeof responseFeature = responseFeature,
+  ) => {
+    const source = defineContentPack({
+      ...contentPack,
+      definitions: [
+        ...catalogs.definitions,
+        actionDefinition,
+        feature,
+      ],
+    });
+    return preparePlayBundle({
+      bundle: composePlayBundle({
+        identity: { id: "contract.damage-bundle", version: "1.0.0" },
+        ruleset: damageRuleset,
+        base: contentPackRequest({
+          id: source.identity.id,
+          version: source.identity.version,
+        }),
+        add: [],
+        overlays: [],
+        configure: {},
+      }),
+      contentPacks: [contentPackSource(source)],
+    });
+  };
+
+  const accepted = prepare();
+  assert.equal(
+    accepted.ok,
+    true,
+    accepted.ok ? "expected damage contract" : JSON.stringify(accepted.diagnostics),
+  );
+  if (!accepted.ok) return;
+  const materializedAction = accepted.prepared.materializedDefinitions.find(
+    (definition) => definition.id === actionDefinition.id,
+  );
+  const materializedFeature = accepted.prepared.materializedDefinitions.find(
+    (definition) => definition.id === responseFeature.id,
+  );
+  assert.deepEqual(
+    (
+      materializedAction?.semantic as {
+        action: {
+          program: {
+            body: {
+              noRoll: {
+                operation: {
+                  parts: readonly {
+                    id: string;
+                    damageType: string;
+                    tags: readonly string[];
+                  }[];
+                };
+              };
+            };
+          };
+        };
+      }
+    ).action.program.body.noRoll.operation.parts,
+    [
+      {
+        id: "cold",
+        amount: { kind: "constant", value: 3 },
+        damageType: "catalog.damage.cold",
+        tags: ["magic"],
+      },
+      {
+        id: "fire",
+        amount: { kind: "constant", value: 7 },
+        damageType: "catalog.damage.fire",
+        tags: ["magic", "weapon"],
+      },
+    ],
+  );
+  assert.deepEqual(
+    (
+      materializedFeature?.semantic as {
+        damageResponses: readonly unknown[];
+      }
+    ).damageResponses,
+    [
+      {
+        schema: { identity: "asha.rpg.damage-response", version: 1 },
+        id: "cold-immune",
+        damageTypeId: "catalog.damage.cold",
+        requiredTags: [],
+        bypassTags: [],
+        effect: { kind: "immune" },
+      },
+      {
+        schema: { identity: "asha.rpg.damage-response", version: 1 },
+        id: "fire-half",
+        damageTypeId: "catalog.damage.fire",
+        requiredTags: ["magic", "weapon"],
+        bypassTags: ["adamantine", "penetrating"],
+        effect: { kind: "scale", numerator: 1, denominator: 2 },
+      },
+    ],
+  );
+  assert.deepEqual(
+    materializedAction?.references,
+    ["catalog.damage.cold", "catalog.damage.fire"],
+  );
+  assert.deepEqual(
+    materializedFeature?.references,
+    ["catalog.damage.cold", "catalog.damage.fire"],
+  );
+
+  const duplicate = prepare(defineCharacterFeatureDefinition({
+    ...responseFeature,
+    characterFeature: {
+      damageResponses: [
+        {
+          id: "duplicate",
+          damageType: catalogs.references.fire,
+          requiredTags: [],
+          bypassTags: [],
+          effect: { kind: "flat", value: -1 },
+        },
+        {
+          id: "duplicate",
+          damageType: catalogs.references.fire,
+          requiredTags: [],
+          bypassTags: [],
+          effect: { kind: "flat", value: -2 },
+        },
+      ],
+    },
+  }));
+  assert.equal(duplicate.ok, false);
+  if (!duplicate.ok) {
+    assert.ok(
+      duplicate.diagnostics.some(
+        (diagnostic) =>
+          diagnostic.code === "DAMAGE_RESPONSES_NOT_CANONICAL",
+      ),
+    );
+  }
+
+  const invalidScale = prepare(defineCharacterFeatureDefinition({
+    ...responseFeature,
+    characterFeature: {
+      damageResponses: [{
+        id: "invalid-scale",
+        damageType: catalogs.references.fire,
+        requiredTags: [],
+        bypassTags: [],
+        effect: { kind: "scale", numerator: 1_001, denominator: 1 },
+      }],
+    },
+  }));
+  assert.equal(invalidScale.ok, false);
+  if (!invalidScale.ok) {
+    assert.ok(
+      invalidScale.diagnostics.some(
+        (diagnostic) =>
+          diagnostic.code === "DAMAGE_RESPONSE_SCALE_INVALID",
       ),
     );
   }

@@ -103,7 +103,13 @@ fn main() {
     assert!(receipt
         .events
         .iter()
-        .any(|event| matches!(event, RpgDomainEvent::DamageApplied { amount: 1, .. })));
+        .any(|event| matches!(
+            event,
+            RpgDomainEvent::DamagePacketApplied {
+                bounded_vitality_delta: 1,
+                ..
+            }
+        )));
     assert_eq!(
         replayed
             .state()

@@ -387,21 +387,52 @@ export function refresh(group: RpgStackingGroup): AuthoringStacking {
   return frozen({ kind: 'refresh', group });
 }
 
-export function damage(options: {
+export interface DamagePartInput {
+  readonly id: string;
   readonly amount: RpgIrFormula;
   readonly type: ContentCatalogReference<'damageType', string>;
-  readonly timing?: AuthoringTiming;
-}): AuthoringProgram {
+  readonly tags?: readonly string[];
+}
+
+export function damage(options:
+  | {
+      readonly parts: readonly DamagePartInput[];
+      readonly timing?: AuthoringTiming;
+    }
+  | {
+      readonly amount: RpgIrFormula;
+      readonly type: ContentCatalogReference<'damageType', string>;
+      readonly tags?: readonly string[];
+      readonly timing?: AuthoringTiming;
+    }): AuthoringProgram {
+  const inputs: readonly DamagePartInput[] =
+    'parts' in options
+      ? options.parts
+      : [{
+          id: 'damage',
+          amount: options.amount,
+          type: options.type,
+          tags: options.tags ?? [],
+        }];
+  const parts = inputs
+    .map((part) =>
+      frozenWithCatalogOwnership(
+        {
+          id: checkedIdentifier(part.id, 'damage part id'),
+          amount: part.amount,
+          damageType: catalogDefinitionId(part.type),
+          tags: frozenList([...(part.tags ?? [])].sort()),
+        },
+        'damageType',
+        part.type,
+      ),
+    )
+    .sort((left, right) => left.id.localeCompare(right.id));
   return operation(
-    frozenWithCatalogOwnership(
-      {
-        kind: 'damage' as const,
-        amount: options.amount,
-        damageType: catalogDefinitionId(options.type),
-      },
-      'damageType',
-      options.type,
-    ),
+    frozen({
+      kind: 'damage' as const,
+      parts: frozenList(parts),
+    }),
     options.timing,
   );
 }

@@ -673,7 +673,7 @@ function materializationSources(
     language: { id: 'asha-rpg', version: '^1.0.0' },
     dependencies: [],
     requirements: {
-      operations: [{ id: 'operation.damage', version: 1 }],
+      operations: [{ id: 'operation.damage', version: 2 }],
       capabilities: [{ id: 'capability.vitality', version: 1 }],
     },
     definitions: [...catalogs.definitions, baseAction, multiply, add],
@@ -710,7 +710,7 @@ function materializationSources(
     language: { id: 'asha-rpg', version: '^1.0.0' },
     dependencies: [contentPackDependency({ id: 'sample.foundation', version: '1.0.0', importAs: 'foundation' })],
     requirements: {
-      operations: [{ id: 'operation.damage', version: 1 }],
+      operations: [{ id: 'operation.damage', version: 2 }],
       capabilities: [{ id: 'capability.vitality', version: 1 }],
     },
     definitions: [derived],

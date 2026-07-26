@@ -577,6 +577,27 @@ export interface ContentPoolContribution {
     readonly effect: ContentPoolContributionEffect;
     readonly predicate: ContentContributionPredicate;
 }
+export type ContentDamageResponseEffect = {
+    readonly kind: "immune";
+} | {
+    readonly kind: "flat";
+    readonly value: number;
+} | {
+    readonly kind: "scale";
+    readonly numerator: number;
+    readonly denominator: number;
+};
+export interface ContentDamageResponse {
+    readonly schema: {
+        readonly identity: "asha.rpg.damage-response";
+        readonly version: 1;
+    };
+    readonly id: string;
+    readonly damageType: ContentCatalogReference<"damageType", string>;
+    readonly requiredTags: readonly string[];
+    readonly bypassTags: readonly string[];
+    readonly effect: ContentDamageResponseEffect;
+}
 export interface ContentCharacterClassData {
     readonly schema: {
         readonly identity: "asha.rpg.character-class";
@@ -596,6 +617,7 @@ export interface ContentCharacterFeatureData {
     readonly contributions: readonly ContentScalarContribution[];
     readonly outcomeBandShifts: readonly ContentOutcomeBandShift[];
     readonly poolContributions: readonly ContentPoolContribution[];
+    readonly damageResponses: readonly ContentDamageResponse[];
 }
 export interface ContentCharacterFeatureDefinition extends ContentDefinitionBase {
     readonly kind: "characterFeature";
@@ -615,6 +637,7 @@ export interface ContentEffectData {
     readonly contributions: readonly ContentScalarContribution[];
     readonly outcomeBandShifts: readonly ContentOutcomeBandShift[];
     readonly poolContributions: readonly ContentPoolContribution[];
+    readonly damageResponses: readonly ContentDamageResponse[];
 }
 export interface ContentEffectDefinition extends ContentDefinitionBase {
     readonly kind: "effect";
@@ -895,7 +918,7 @@ export interface MaterializedContentDefinition {
 export interface PreparedPlayBundle {
     readonly schema: {
         readonly identity: "asha.rpg.play-bundle.prepared";
-        readonly major: 8;
+        readonly major: 9;
     };
     readonly playBundleIdentity: PlayBundleIdentity;
     readonly ruleset: Ruleset;

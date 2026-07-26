@@ -109,9 +109,19 @@ export declare function immediate(): AuthoringTiming;
 export declare function turns(count: number): AuthoringDuration;
 export declare function replace(group: RpgStackingGroup): AuthoringStacking;
 export declare function refresh(group: RpgStackingGroup): AuthoringStacking;
-export declare function damage(options: {
+export interface DamagePartInput {
+    readonly id: string;
     readonly amount: RpgIrFormula;
     readonly type: ContentCatalogReference<'damageType', string>;
+    readonly tags?: readonly string[];
+}
+export declare function damage(options: {
+    readonly parts: readonly DamagePartInput[];
+    readonly timing?: AuthoringTiming;
+} | {
+    readonly amount: RpgIrFormula;
+    readonly type: ContentCatalogReference<'damageType', string>;
+    readonly tags?: readonly string[];
     readonly timing?: AuthoringTiming;
 }): AuthoringProgram;
 export declare function heal(options: {

@@ -34,7 +34,7 @@ const portableRuleset = defineRuleset({
   },
   provides: {
     operations: [
-      { id: 'operation.damage', version: 1 },
+      { id: 'operation.damage', version: 2 },
       { id: 'operation.openReaction', version: 1 },
     ],
     capabilities: [
@@ -113,7 +113,7 @@ const contentPackage = defineContentPack({
   dependencies: [],
   requirements: {
     operations: [
-      { id: 'operation.damage', version: 1 },
+      { id: 'operation.damage', version: 2 },
       { id: 'operation.openReaction', version: 1 },
     ],
     capabilities: [

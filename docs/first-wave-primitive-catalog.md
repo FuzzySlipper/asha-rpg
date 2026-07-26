@@ -5,9 +5,9 @@
 This document is the architecture brief produced by Den task `#6179`. It
 selects the smallest coherent semantic expansion needed for three independently
 authored representative kits. It is a versioned implementation map. `F0@1`,
-`F1@1`, `F2@1`, `F3@1`, `F5@1`, and `F6@1` are implemented by tasks `#6180`,
-`#6197`, `#6198`, `#6199`, `#6202`, and `#6200`; `F4` remains planned and is not
-a support claim. Current support remains exactly what `design.md`,
+`F1@1`, `F2@1`, `F3@1`, `F4@1`, `F5@1`, and `F6@1` are implemented by tasks
+`#6180`, `#6197`, `#6198`, `#6199`, `#6201`, `#6202`, and `#6200`. Current
+support remains exactly what `design.md`,
 `non-claims.md`, and the checked-in code say.
 
 The catalog is intentionally not a Foundry adapter, a source-system
@@ -80,7 +80,7 @@ the neutral families `F0` through `F6`.
 | generic scalar tests, ordered outcome bands, critical policy, and band adjustment | `P02`, `P03`, `PFX-O02`, `PFX-D05`, `FFG-E07` outcome subset, `FFG-C10` | `F1`: implemented |
 | variable activation budgets | `P12` economy subset, `PFX-A01` | `F2`: implemented |
 | named effect instances with bounded authority-relative expiry | `P10`, `P11`, `PFX-E07`, `FFG-E07` effect subset | `F3@1`: implemented by `#6199` |
-| typed damage packets and qualified responses | `P06`, `P07`, `PFX-I06`, `P16` damage trace subset | `F4`: needs generalization |
+| typed damage packets and qualified responses | `P06`, `P07`, `PFX-I06`, `P16` damage trace subset | `F4@1`: implemented by `#6201` |
 | bounded area selection and spatial legality | `P05`, `PFX-S08` | `F5@1`: implemented by `#6202` |
 | heterogeneous random pools and vector outcomes | `FFG-A01`, `FFG-A02`, `FFG-A03`, `FFG-A04`, `FFG-M05` | `F6@1`: implemented by `#6200` |
 
@@ -520,6 +520,8 @@ units, recurring damage, before/after-roll hooks, arbitrary triggers, a
 condition ontology, or document-property mutation.
 
 ## F4 — Typed damage packets and qualified responses
+
+Implementation status: supported as `F4@1` by task `#6201`.
 
 ### Semantic and version boundary
 

@@ -190,11 +190,26 @@ export function refresh(group) {
     return frozen({ kind: 'refresh', group });
 }
 export function damage(options) {
-    return operation(frozenWithCatalogOwnership({
+    const inputs = 'parts' in options
+        ? options.parts
+        : [{
+                id: 'damage',
+                amount: options.amount,
+                type: options.type,
+                tags: options.tags ?? [],
+            }];
+    const parts = inputs
+        .map((part) => frozenWithCatalogOwnership({
+        id: checkedIdentifier(part.id, 'damage part id'),
+        amount: part.amount,
+        damageType: catalogDefinitionId(part.type),
+        tags: frozenList([...(part.tags ?? [])].sort()),
+    }, 'damageType', part.type))
+        .sort((left, right) => left.id.localeCompare(right.id));
+    return operation(frozen({
         kind: 'damage',
-        amount: options.amount,
-        damageType: catalogDefinitionId(options.type),
-    }, 'damageType', options.type), options.timing);
+        parts: frozenList(parts),
+    }), options.timing);
 }
 export function heal(options) {
     return operation(frozen({ kind: 'heal', amount: options.amount }), options.timing);

@@ -3,7 +3,7 @@ use std::collections::BTreeMap;
 use serde::{Deserialize, Serialize};
 
 pub const RPG_IR_IDENTITY: &str = "asha.rpg.ir";
-pub const RPG_IR_MAJOR: u32 = 1;
+pub const RPG_IR_MAJOR: u32 = 2;
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase", deny_unknown_fields)]
@@ -345,8 +345,7 @@ pub enum RpgIrPredicate {
 )]
 pub enum RpgIrOperation {
     Damage {
-        amount: RpgIrFormula,
-        damage_type: String,
+        parts: Vec<RpgIrDamagePart>,
     },
     Heal {
         amount: RpgIrFormula,
@@ -385,6 +384,15 @@ pub enum RpgIrOperation {
         reaction_id: String,
         options: Vec<RpgIrReactionOption>,
     },
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase", deny_unknown_fields)]
+pub struct RpgIrDamagePart {
+    pub id: String,
+    pub amount: RpgIrFormula,
+    pub damage_type: String,
+    pub tags: Vec<String>,
 }
 
 impl RpgIrOperation {
@@ -459,7 +467,7 @@ mod tests {
     #[test]
     fn strict_decode_rejects_unknown_semantic_fields() {
         let source = br#"{
-          "schema":{"identity":"asha.rpg.ir","major":1},
+          "schema":{"identity":"asha.rpg.ir","major":2},
           "package":{"id":"consumer","version":"1.0.0","callback":"forbidden"},
           "catalogs":{},"requirements":[],"actions":[]
         }"#;
@@ -470,8 +478,12 @@ mod tests {
     #[test]
     fn operation_ids_are_closed_and_stable() {
         let damage = RpgIrOperation::Damage {
-            amount: RpgIrFormula::Constant { value: 4 },
-            damage_type: "arcane".to_owned(),
+            parts: vec![RpgIrDamagePart {
+                id: "damage".to_owned(),
+                amount: RpgIrFormula::Constant { value: 4 },
+                damage_type: "arcane".to_owned(),
+                tags: Vec::new(),
+            }],
         };
         assert_eq!(damage.registration_id(), "operation.damage");
     }
