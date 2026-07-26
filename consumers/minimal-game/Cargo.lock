@@ -5,7 +5,7 @@ version = 4
 [[package]]
 name = "asha-rpg"
 version = "0.1.0"
-source = "git+https://github.com/FuzzySlipper/asha-rpg.git?rev=55b89f177c853e86750ca540665142e0f3051d35#55b89f177c853e86750ca540665142e0f3051d35"
+source = "git+https://github.com/FuzzySlipper/asha-rpg.git?rev=d19ef2e18cd90ebfa373271bcb55376a01366b83#d19ef2e18cd90ebfa373271bcb55376a01366b83"
 dependencies = [
  "rpg-compiler",
  "rpg-core",
@@ -54,7 +54,7 @@ dependencies = [
 [[package]]
 name = "rpg-compiler"
 version = "0.1.0"
-source = "git+https://github.com/FuzzySlipper/asha-rpg.git?rev=55b89f177c853e86750ca540665142e0f3051d35#55b89f177c853e86750ca540665142e0f3051d35"
+source = "git+https://github.com/FuzzySlipper/asha-rpg.git?rev=d19ef2e18cd90ebfa373271bcb55376a01366b83#d19ef2e18cd90ebfa373271bcb55376a01366b83"
 dependencies = [
  "rpg-core",
  "rpg-ir",
@@ -65,7 +65,7 @@ dependencies = [
 [[package]]
 name = "rpg-core"
 version = "0.1.0"
-source = "git+https://github.com/FuzzySlipper/asha-rpg.git?rev=55b89f177c853e86750ca540665142e0f3051d35#55b89f177c853e86750ca540665142e0f3051d35"
+source = "git+https://github.com/FuzzySlipper/asha-rpg.git?rev=d19ef2e18cd90ebfa373271bcb55376a01366b83#d19ef2e18cd90ebfa373271bcb55376a01366b83"
 dependencies = [
  "serde",
 ]
@@ -73,7 +73,7 @@ dependencies = [
 [[package]]
 name = "rpg-ir"
 version = "0.1.0"
-source = "git+https://github.com/FuzzySlipper/asha-rpg.git?rev=55b89f177c853e86750ca540665142e0f3051d35#55b89f177c853e86750ca540665142e0f3051d35"
+source = "git+https://github.com/FuzzySlipper/asha-rpg.git?rev=d19ef2e18cd90ebfa373271bcb55376a01366b83#d19ef2e18cd90ebfa373271bcb55376a01366b83"
 dependencies = [
  "rpg-core",
  "serde",
@@ -83,7 +83,7 @@ dependencies = [
 [[package]]
 name = "rpg-runtime"
 version = "0.1.0"
-source = "git+https://github.com/FuzzySlipper/asha-rpg.git?rev=55b89f177c853e86750ca540665142e0f3051d35#55b89f177c853e86750ca540665142e0f3051d35"
+source = "git+https://github.com/FuzzySlipper/asha-rpg.git?rev=d19ef2e18cd90ebfa373271bcb55376a01366b83#d19ef2e18cd90ebfa373271bcb55376a01366b83"
 dependencies = [
  "rpg-compiler",
  "rpg-core",
