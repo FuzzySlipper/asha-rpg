@@ -390,6 +390,14 @@ pub enum RpgIrOperation {
         maximum_distance: u32,
         provokes: bool,
     },
+    Push {
+        subject: RpgIrSubject,
+        distance: u32,
+    },
+    Slide {
+        subject: RpgIrSubject,
+        maximum_distance: u32,
+    },
     OpenReaction {
         reaction_id: String,
         options: Vec<RpgIrReactionOption>,
@@ -416,6 +424,8 @@ impl RpgIrOperation {
             Self::RemoveEffect { .. } => "operation.removeEffect",
             Self::Move { .. } => "operation.move",
             Self::MoveToCell { .. } => "operation.moveToCell",
+            Self::Push { .. } => "operation.push",
+            Self::Slide { .. } => "operation.slide",
             Self::OpenReaction { .. } => "operation.openReaction",
         }
     }

@@ -11,7 +11,7 @@ use serde_json::Value;
 
 pub const PREPARED_PLAY_BUNDLE_IDENTITY: &str = "asha.rpg.play-bundle.prepared";
 pub const COMPILED_PLAY_BUNDLE_IDENTITY: &str = "asha.rpg.play-bundle.compiled";
-pub const PLAY_BUNDLE_ARTIFACT_MAJOR: u32 = 11;
+pub const PLAY_BUNDLE_ARTIFACT_MAJOR: u32 = 12;
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase", deny_unknown_fields)]
@@ -264,6 +264,8 @@ pub struct RulesetProvisions {
     pub scalar_test_profiles: Vec<RulesetScalarTestProfile>,
     #[serde(default)]
     pub activation_budgets: Vec<RulesetActivationBudget>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub movement_allowance_budget_id: Option<String>,
     #[serde(default)]
     pub heterogeneous_pool_profiles: Vec<RulesetHeterogeneousPoolProfile>,
 }
@@ -707,6 +709,34 @@ pub struct MaterializedCharacterFeatureData {
     pub pool_contributions: Vec<RpgPoolContributionDefinition>,
     #[serde(default)]
     pub damage_responses: Vec<RpgDamageResponseDefinition>,
+    #[serde(default)]
+    pub movement_reactions: Vec<RpgMovementReactionDefinition>,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub enum RpgMovementReactionTrigger {
+    VoluntaryLeavesAdjacency,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub enum RpgMovementReactionDuration {
+    Encounter,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase", deny_unknown_fields)]
+pub struct RpgMovementReactionDefinition {
+    pub id: String,
+    pub trigger: RpgMovementReactionTrigger,
+    pub response_action_id: String,
+    pub activation_budget_id: String,
+    pub activation_cost: i32,
+    pub maximum_uses: u32,
+    pub duration: RpgMovementReactionDuration,
+    pub reach: u32,
+    pub requires_line_of_effect: bool,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
@@ -728,6 +758,7 @@ pub struct CompiledCharacterFeature {
     pub outcome_band_shifts: Vec<RpgOutcomeBandShiftDefinition>,
     pub pool_contributions: Vec<RpgPoolContributionDefinition>,
     pub damage_responses: Vec<RpgDamageResponseDefinition>,
+    pub movement_reactions: Vec<RpgMovementReactionDefinition>,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]

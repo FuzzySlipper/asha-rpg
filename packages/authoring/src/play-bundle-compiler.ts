@@ -267,7 +267,7 @@ export function preparePlayBundle(options: {
   ].sort(compareRelationship);
 
   const prepared: PreparedPlayBundle = immutable({
-    schema: { identity: 'asha.rpg.play-bundle.prepared', major: 11 },
+    schema: { identity: 'asha.rpg.play-bundle.prepared', major: 12 },
     playBundleIdentity: options.bundle.identity,
     ruleset: options.bundle.ruleset,
     contentPacks: [...context.selected.values()]
@@ -516,6 +516,28 @@ function validateRuleset(
       );
     }
     previousBudgetId = budget.id;
+  }
+  const movementAllowanceBudgetId =
+    ruleset.provides.movementAllowanceBudgetId;
+  if (movementAllowanceBudgetId !== undefined) {
+    const movementAllowanceBudget = ruleset.provides.activationBudgets.find(
+      (budget) => budget.id === movementAllowanceBudgetId,
+    );
+    if (
+      !validPortableIdentifier(movementAllowanceBudgetId) ||
+      movementAllowanceBudget === undefined ||
+      movementAllowanceBudget.timing !== 'action' ||
+      movementAllowanceBudget.resetBoundary !== 'ownerTurnStart'
+    ) {
+      diagnostics.push(
+        diagnostic(
+          'source',
+          'RULESET_MOVEMENT_ALLOWANCE_INVALID',
+          '$.bundle.ruleset.provides.movementAllowanceBudgetId',
+          'movement allowance must reference one declared action budget that resets at owner-turn start',
+        ),
+      );
+    }
   }
   const variableActivationModel =
     ruleset.models.actionEconomy.id ===
@@ -4737,6 +4759,16 @@ function normalizeMaterializedActions(
   graph: { readonly materialized: readonly DefinitionRecord[] },
   diagnostics: PlayBundleCompilerDiagnostic[],
 ): import('@asha-rpg/ir').NormalizedRpgIr | undefined {
+  const movementResponses = new Map(
+    graph.materialized.flatMap((record) =>
+      record.definition.kind === 'characterFeature'
+        ? (record.definition.characterFeature.movementReactions ?? []).map(
+            (reaction) =>
+              [reaction.responseActionId, reaction] as const,
+          )
+        : [],
+    ),
+  );
   const actions = graph.materialized
     .filter((record) => isInlineActionDefinition(record.definition))
     .map((record) => {
@@ -4799,7 +4831,30 @@ function normalizeMaterializedActions(
       bundle.ruleset,
       `$.actions[${index}]`,
       diagnostics,
+      movementResponses.has(action.id) ? 'reaction' : 'action',
     );
+    const movementResponse = movementResponses.get(action.id);
+    if (movementResponse !== undefined) {
+      const activationCosts = action.activation?.costs ?? [];
+      if (
+        action.targets.kind !== 'participant' ||
+        action.targets.maximumTargets !== 1 ||
+        activationCosts.length !== 1 ||
+        activationCosts[0]?.budget.rulesetId !== bundle.ruleset.identity.id ||
+        activationCosts[0]?.budget.id !==
+          movementResponse.activationBudgetId ||
+        activationCosts[0]?.amount !== movementResponse.activationCost
+      ) {
+        diagnostics.push(
+          diagnostic(
+            'compatibility',
+            'MOVEMENT_REACTION_RESPONSE_ACTION_INVALID',
+            `$.actions[${index}]`,
+            'movement reaction responses require one participant target and exactly the registered same-owner reaction-budget activation cost',
+          ),
+        );
+      }
+    }
     if (action.check.kind === 'attack') {
       const selector = action.check.contributionSelector;
       if (
@@ -4965,6 +5020,7 @@ function validateActionActivationContracts(
   ruleset: Ruleset,
   path: string,
   diagnostics: PlayBundleCompilerDiagnostic[],
+  expectedTiming: import('@asha-rpg/ir').RpgIrActivationTiming,
 ): void {
   const variableModel =
     ruleset.models.actionEconomy.id ===
@@ -4984,7 +5040,7 @@ function validateActionActivationContracts(
   if (action.activation !== undefined) {
     validateActivationCosts(
       action.activation,
-      'action',
+      expectedTiming,
       ruleset,
       `${path}.activation`,
       diagnostics,
@@ -5309,6 +5365,8 @@ function validateCharacterDefinitions(
   const recordsByGlobalId = new Map(
     materialized.map((record) => [globalDefinitionId(record), record]),
   );
+  const movementReactionBudgetOwners = new Map<string, string>();
+  const movementReactionResponseOwners = new Map<string, string>();
   for (const record of materialized) {
     if (record.definition.kind === 'characterClass') {
       const path = `$.packages[${record.package.key}].definitions.${record.definition.id}.characterClass`;
@@ -5386,6 +5444,7 @@ function validateCharacterDefinitions(
     if (record.definition.kind !== 'characterFeature') continue;
     const path = `$.packages[${record.package.key}].definitions.${record.definition.id}.characterFeature`;
     const data = record.definition.characterFeature;
+    const movementReactions = data.movementReactions ?? [];
     if (record.definition.extensionPolicy !== 'sealed') {
       diagnostics.push(diagnostic(
         'compatibility',
@@ -5412,17 +5471,19 @@ function validateCharacterDefinitions(
       data.outcomeBandShifts.length > 32 ||
       data.poolContributions.length > 32 ||
       data.damageResponses.length > 64 ||
+      movementReactions.length > 16 ||
       data.contributions.length +
           data.outcomeBandShifts.length +
           data.poolContributions.length +
-          data.damageResponses.length ===
+          data.damageResponses.length +
+          movementReactions.length ===
         0
     ) {
       diagnostics.push(diagnostic(
         'source',
         'CHARACTER_FEATURE_CONTRIBUTIONS_INVALID',
         path,
-        'character features require at least one typed entry, at most 32 roll contributions in each family, and at most 64 damage responses',
+        'character features require at least one typed entry, at most 32 roll contributions in each family, at most 64 damage responses, and at most 16 movement reactions',
         { definitionId: record.definition.id, source: record.definition.source },
       ));
     }
@@ -5469,6 +5530,78 @@ function validateCharacterDefinitions(
       diagnostics,
       profileDiagnosticContext(record),
     );
+    let previousReactionId: string | undefined;
+    for (const [index, reaction] of movementReactions.entries()) {
+      const reactionPath = `${path}.movementReactions[${index}]`;
+      const budget = ruleset.provides.activationBudgets.find(
+        (candidate) => candidate.id === reaction.activationBudgetId,
+      );
+      const reference = record.definition.lowLevelReferences?.find(
+        (candidate) =>
+          candidate.definitionId === reaction.responseActionId,
+      );
+      const response =
+        reference === undefined
+          ? undefined
+          : resolvedDefinitionReference(
+              record,
+              reference,
+              resolvedReferences,
+              recordsByGlobalId,
+            );
+      const existingBudgetOwner = movementReactionBudgetOwners.get(
+        reaction.activationBudgetId,
+      );
+      const existingResponseOwner = movementReactionResponseOwners.get(
+        reaction.responseActionId,
+      );
+      const registrationIdentity = `${record.package.key}#${record.definition.id}:${reaction.id}`;
+      if (
+        !validPortableIdentifier(reaction.id) ||
+        (previousReactionId !== undefined &&
+          previousReactionId >= reaction.id) ||
+        reaction.trigger !== 'voluntaryLeavesAdjacency' ||
+        reaction.duration !== 'encounter' ||
+        !Number.isSafeInteger(reaction.activationCost) ||
+        reaction.activationCost < 1 ||
+        !Number.isSafeInteger(reaction.maximumUses) ||
+        reaction.maximumUses < 1 ||
+        reaction.maximumUses > 64 ||
+        !Number.isSafeInteger(reaction.reach) ||
+        reaction.reach < 1 ||
+        reaction.reach > 64 ||
+        budget === undefined ||
+        budget.timing !== 'reaction' ||
+        budget.resetBoundary !== 'ownerTurnStart' ||
+        budget.initialAmount !==
+          reaction.activationCost * reaction.maximumUses ||
+        response?.definition.kind !== 'action' ||
+        response.definition.visibility !== 'public' ||
+        existingBudgetOwner !== undefined ||
+        existingResponseOwner !== undefined
+      ) {
+        diagnostics.push(diagnostic(
+          'source',
+          'CHARACTER_FEATURE_MOVEMENT_REACTION_INVALID',
+          reactionPath,
+          'movement reactions must be unique sorted bounded registrations with an encounter duration, an exclusive exact-capacity owner-turn reaction budget, and an exported response action graph edge',
+          profileDiagnosticContext(record),
+        ));
+      }
+      if (existingBudgetOwner === undefined) {
+        movementReactionBudgetOwners.set(
+          reaction.activationBudgetId,
+          registrationIdentity,
+        );
+      }
+      if (existingResponseOwner === undefined) {
+        movementReactionResponseOwners.set(
+          reaction.responseActionId,
+          registrationIdentity,
+        );
+      }
+      previousReactionId = reaction.id;
+    }
     validateContributionDefinitionTargets(
       record,
       data.outcomeBandShifts,

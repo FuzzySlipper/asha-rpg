@@ -24,7 +24,7 @@ use rpg_ir::{
     PlayBundleArtifactSchema, PlayBundleFingerprints, PreparedPlayBundle, RpgIrAction,
     RpgIrActionBody, RpgIrCatalogs, RpgIrCheck, RpgIrFormula, RpgIrOperation, RpgIrPackage,
     RpgIrPredicate, RpgIrProgram, RpgIrRequirement, RpgIrRequirementKind, RpgIrResourceCost,
-    RpgIrScalarTestDifficulty, RpgIrSchema, RpgIrTargetSelector, Ruleset,
+    RpgIrScalarTestDifficulty, RpgIrSchema, RpgIrTargetKind, RpgIrTargetSelector, Ruleset,
     RulesetActionEconomyModel, RulesetValueExpression, RulesetValueKind, RulesetValueSource,
     VersionedRpgRequirement, ACTION_DEFINITION_IDENTITY, ACTION_DEFINITION_VERSION,
     ACTION_PROCEDURE_IDENTITY, ACTION_PROCEDURE_VERSION, CHARACTER_CLASS_IDENTITY,
@@ -818,6 +818,28 @@ fn validate_ruleset(prepared: &PreparedPlayBundle, diagnostics: &mut Vec<RpgDiag
             ));
         }
         previous_budget = Some(budget.id.as_str());
+    }
+    if let Some(movement_budget_id) = &ruleset.provides.movement_allowance_budget_id {
+        let movement_budget = ruleset
+            .provides
+            .activation_budgets
+            .iter()
+            .find(|budget| budget.id == *movement_budget_id);
+        if !valid_identifier(movement_budget_id)
+            || movement_budget.is_none()
+            || movement_budget.is_some_and(|budget| {
+                budget.timing != rpg_ir::RulesetActivationTiming::Action
+                    || budget.reset_boundary
+                        != rpg_ir::RulesetActivationBudgetResetBoundary::OwnerTurnStart
+            })
+        {
+            diagnostics.push(RpgDiagnostic::error(
+                RpgDiagnosticStage::Artifact,
+                "RULESET_MOVEMENT_ALLOWANCE_INVALID",
+                "$.ruleset.provides.movementAllowanceBudgetId",
+                "movement allowance must reference one declared action budget that resets at owner-turn start",
+            ));
+        }
     }
     let variable_model = matches!(
         &ruleset.models.action_economy,
@@ -1709,6 +1731,8 @@ fn compile_character_features(
         .map(|definition| (definition.id.as_str(), definition))
         .collect::<BTreeMap<_, _>>();
     let ruleset_catalogs = ruleset_catalogs(&prepared.ruleset);
+    let mut movement_reaction_budget_owners = BTreeMap::<String, String>::new();
+    let mut movement_reaction_response_owners = BTreeMap::<String, String>::new();
     for (definition_index, definition) in prepared.materialized_definitions.iter().enumerate() {
         if definition.kind != MaterializedContentDefinitionKind::CharacterFeature {
             continue;
@@ -1750,10 +1774,12 @@ fn compile_character_features(
             || feature.outcome_band_shifts.len() > MAX_CHARACTER_FEATURE_CONTRIBUTIONS
             || feature.pool_contributions.len() > MAX_CHARACTER_FEATURE_CONTRIBUTIONS
             || feature.damage_responses.len() > MAXIMUM_RPG_DAMAGE_RESPONSES
+            || feature.movement_reactions.len() > 16
             || feature.contributions.len()
                 + feature.outcome_band_shifts.len()
                 + feature.pool_contributions.len()
                 + feature.damage_responses.len()
+                + feature.movement_reactions.len()
                 == 0
         {
             diagnostics.push(RpgDiagnostic::error(
@@ -1799,6 +1825,63 @@ fn compile_character_features(
             &format!("{path}.semantic.damageResponses"),
             &mut diagnostics,
         );
+        let mut previous_reaction_id = None::<&str>;
+        for (reaction_index, reaction) in feature.movement_reactions.iter().enumerate() {
+            let reaction_path = format!("{path}.semantic.movementReactions[{reaction_index}]");
+            let budget = prepared
+                .ruleset
+                .provides
+                .activation_budgets
+                .iter()
+                .find(|budget| budget.id == reaction.activation_budget_id);
+            let response = definitions.get(reaction.response_action_id.as_str());
+            let registration_identity = format!("{}:{}", definition.id, reaction.id);
+            let expected_budget_capacity = reaction
+                .activation_cost
+                .checked_mul(i32::try_from(reaction.maximum_uses).unwrap_or(i32::MAX));
+            let duplicate_budget_owner =
+                movement_reaction_budget_owners.get(&reaction.activation_budget_id);
+            let duplicate_response_owner =
+                movement_reaction_response_owners.get(&reaction.response_action_id);
+            if !valid_identifier(&reaction.id)
+                || previous_reaction_id.is_some_and(|previous| previous >= reaction.id.as_str())
+                || reaction.activation_cost <= 0
+                || !(1..=64).contains(&reaction.maximum_uses)
+                || !(1..=64).contains(&reaction.reach)
+                || budget.is_none()
+                || budget.is_some_and(|budget| {
+                    budget.timing != rpg_ir::RulesetActivationTiming::Reaction
+                        || budget.reset_boundary
+                            != rpg_ir::RulesetActivationBudgetResetBoundary::OwnerTurnStart
+                        || expected_budget_capacity != Some(budget.initial_amount)
+                })
+                || response.is_none()
+                || response.is_some_and(|definition| {
+                    definition.kind != MaterializedContentDefinitionKind::Action
+                        || definition.visibility != MaterializedContentVisibility::Exported
+                })
+                || !definition
+                    .references
+                    .iter()
+                    .any(|reference| reference == &reaction.response_action_id)
+                || duplicate_budget_owner.is_some()
+                || duplicate_response_owner.is_some()
+            {
+                diagnostics.push(RpgDiagnostic::error(
+                    RpgDiagnosticStage::Semantics,
+                    "CHARACTER_FEATURE_MOVEMENT_REACTION_INVALID",
+                    &reaction_path,
+                    "movement reactions must be unique sorted bounded registrations referencing an exported response action and an exclusive exact-capacity owner-turn reaction budget",
+                ));
+            }
+            movement_reaction_budget_owners
+                .entry(reaction.activation_budget_id.clone())
+                .or_insert_with(|| registration_identity.clone());
+            movement_reaction_response_owners
+                .entry(reaction.response_action_id.clone())
+                .or_insert(registration_identity);
+            previous_reaction_id = Some(&reaction.id);
+        }
         let label = required_definition_label(
             definition,
             definition_index,
@@ -1818,6 +1901,7 @@ fn compile_character_features(
             outcome_band_shifts: feature.outcome_band_shifts,
             pool_contributions: feature.pool_contributions,
             damage_responses: feature.damage_responses,
+            movement_reactions: feature.movement_reactions,
         });
     }
     if diagnostics.is_empty() {
@@ -3197,8 +3281,40 @@ fn validate_action_contribution_contracts(
         .iter()
         .flat_map(|action| action.tags.iter().map(String::as_str))
         .collect::<BTreeSet<_>>();
+    let movement_responses = features
+        .iter()
+        .flat_map(|feature| {
+            feature
+                .movement_reactions
+                .iter()
+                .map(|reaction| (reaction.response_action_id.as_str(), reaction))
+        })
+        .collect::<BTreeMap<_, _>>();
     let mut diagnostics = Vec::new();
     for (index, action) in normalized.actions.iter().enumerate() {
+        let forced_movement_count = program_forced_movement_count(&action.program);
+        if forced_movement_count > 0
+            && (forced_movement_count != 1
+                || action.targets.kind != RpgIrTargetKind::Participant
+                || action.targets.maximum_targets != 1)
+        {
+            diagnostics.push(RpgDiagnostic::error(
+                RpgDiagnosticStage::Compatibility,
+                "ACTION_FORCED_MOVEMENT_COMPOSITION_INVALID",
+                format!("$.actions[{index}].program"),
+                "a forced-movement action requires one participant target and exactly one push or slide operation",
+            ));
+        }
+        if ruleset.provides.movement_allowance_budget_id.is_some()
+            && program_contains_legacy_move(&action.program)
+        {
+            diagnostics.push(RpgDiagnostic::error(
+                RpgDiagnosticStage::Compatibility,
+                "ACTION_LEGACY_MOVEMENT_INCOMPATIBLE",
+                format!("$.actions[{index}].program"),
+                "route-cost movement Rulesets must use moveToCell, push, or slide instead of legacy fixed-delta move",
+            ));
+        }
         if action.targets.line_of_effect == rpg_ir::RpgIrLineOfEffectRequirement::Required
             && ruleset.models.line_of_effect.is_none()
         {
@@ -3211,13 +3327,37 @@ fn validate_action_contribution_contracts(
         }
         validate_activation_contract(
             action.activation.as_ref(),
-            rpg_ir::RpgIrActivationTiming::Action,
+            if movement_responses.contains_key(action.id.as_str()) {
+                rpg_ir::RpgIrActivationTiming::Reaction
+            } else {
+                rpg_ir::RpgIrActivationTiming::Action
+            },
             variable_activation_model,
             ruleset,
             &activation_budgets,
             &format!("$.actions[{index}].activation"),
             &mut diagnostics,
         );
+        if let Some(reaction) = movement_responses.get(action.id.as_str()) {
+            let exact_activation = action.activation.as_ref().is_some_and(|activation| {
+                activation.timing == rpg_ir::RpgIrActivationTiming::Reaction
+                    && activation.costs.len() == 1
+                    && activation.costs[0].budget.ruleset_id == ruleset.identity.id
+                    && activation.costs[0].budget.id == reaction.activation_budget_id
+                    && activation.costs[0].amount == reaction.activation_cost
+            });
+            if action.targets.kind != RpgIrTargetKind::Participant
+                || action.targets.maximum_targets != 1
+                || !exact_activation
+            {
+                diagnostics.push(RpgDiagnostic::error(
+                    RpgDiagnosticStage::Compatibility,
+                    "MOVEMENT_REACTION_RESPONSE_ACTION_INVALID",
+                    format!("$.actions[{index}]"),
+                    "movement reaction responses require one participant target and exactly the registered same-owner reaction-budget activation cost",
+                ));
+            }
+        }
         validate_program_activation_contracts(
             &action.program,
             variable_activation_model,
@@ -3541,6 +3681,82 @@ fn validate_action_contribution_contracts(
         Ok(())
     } else {
         Err(RpgCompileFailure { diagnostics })
+    }
+}
+
+fn program_contains_legacy_move(program: &RpgIrProgram) -> bool {
+    match program {
+        RpgIrProgram::Operation { operation } => {
+            matches!(operation, RpgIrOperation::Move { .. })
+        }
+        RpgIrProgram::Sequence { steps } => steps.iter().any(program_contains_legacy_move),
+        RpgIrProgram::When {
+            then, otherwise, ..
+        } => {
+            program_contains_legacy_move(then)
+                || otherwise
+                    .as_deref()
+                    .is_some_and(program_contains_legacy_move)
+        }
+        RpgIrProgram::Repeat { body, .. }
+        | RpgIrProgram::ForEachTarget { body, .. }
+        | RpgIrProgram::Atomic { body } => program_contains_legacy_move(body),
+        RpgIrProgram::OnCheck {
+            hit,
+            miss,
+            saved,
+            failed,
+            no_roll,
+        } => [hit, miss, saved, failed, no_roll]
+            .into_iter()
+            .flatten()
+            .any(|branch| program_contains_legacy_move(branch)),
+        RpgIrProgram::OnOutcome { branches, default } => {
+            branches
+                .values()
+                .any(|branch| program_contains_legacy_move(branch))
+                || program_contains_legacy_move(default)
+        }
+    }
+}
+
+fn program_forced_movement_count(program: &RpgIrProgram) -> usize {
+    match program {
+        RpgIrProgram::Operation { operation } => usize::from(matches!(
+            operation,
+            RpgIrOperation::Push { .. } | RpgIrOperation::Slide { .. }
+        )),
+        RpgIrProgram::Sequence { steps } => steps.iter().fold(0_usize, |total, step| {
+            total.saturating_add(program_forced_movement_count(step))
+        }),
+        RpgIrProgram::When {
+            then, otherwise, ..
+        } => program_forced_movement_count(then).saturating_add(
+            otherwise
+                .as_deref()
+                .map(program_forced_movement_count)
+                .unwrap_or(0),
+        ),
+        RpgIrProgram::Repeat { body, .. }
+        | RpgIrProgram::ForEachTarget { body, .. }
+        | RpgIrProgram::Atomic { body } => program_forced_movement_count(body),
+        RpgIrProgram::OnCheck {
+            hit,
+            miss,
+            saved,
+            failed,
+            no_roll,
+        } => [hit, miss, saved, failed, no_roll]
+            .into_iter()
+            .flatten()
+            .fold(0_usize, |total, branch| {
+                total.saturating_add(program_forced_movement_count(branch))
+            }),
+        RpgIrProgram::OnOutcome { branches, default } => branches
+            .values()
+            .fold(program_forced_movement_count(default), |total, branch| {
+                total.saturating_add(program_forced_movement_count(branch))
+            }),
     }
 }
 
@@ -7245,7 +7461,9 @@ fn resolve_operation_catalogs(
                 diagnostics,
             );
         }
-        RpgIrOperation::MoveToCell { .. } => {}
+        RpgIrOperation::MoveToCell { .. }
+        | RpgIrOperation::Push { .. }
+        | RpgIrOperation::Slide { .. } => {}
         RpgIrOperation::OpenReaction { .. } => {}
     }
 }
@@ -7601,7 +7819,9 @@ fn collect_operation_catalogs(operation: &RpgIrOperation, catalogs: &mut Derived
             collect_formula_catalogs(delta_x, catalogs);
             collect_formula_catalogs(delta_y, catalogs);
         }
-        RpgIrOperation::MoveToCell { .. } => {}
+        RpgIrOperation::MoveToCell { .. }
+        | RpgIrOperation::Push { .. }
+        | RpgIrOperation::Slide { .. } => {}
         RpgIrOperation::OpenReaction { .. } => {}
     }
 }

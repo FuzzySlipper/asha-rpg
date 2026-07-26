@@ -179,8 +179,9 @@ scripts, and selectors for damage, healing, or defenses remain separate work.
 ## Rust semantic profile
 
 The initial closed operation vocabulary supports damage, healing, resource
-change, fixed-delta and selected-cell grid movement, turn-bounded modifiers,
-and a typed reaction window.
+change, fixed-delta and weighted selected-cell grid movement, cardinal push,
+bounded slide choice, turn-bounded modifiers, and typed before-damage and
+voluntary-leave-adjacency reaction windows.
 Damage is one bounded packet of canonically ordered typed parts. Selected
 features and active named effects contribute exact-version immunity,
 signed-flat, and rational-scale responses. Rust filters and orders candidates
@@ -214,8 +215,8 @@ Programs support one atomic root containing bounded sequence, predicate branch,
 repeat, per-target, check-outcome, and scalar-outcome branches. Unknown
 operations, capabilities, references, or versions fail closed.
 
-Every rejected command is atomic. A reaction suspends the same transaction and
-revision. Random requests preserve their exact count/sides and target order.
+Every rejected command is atomic. A reaction or slide choice suspends the same
+transaction and revision. Random requests preserve their exact count/sides and target order.
 Under the variable model actions and reactions pay staged budgets and remain
 on the current turn until explicit end-turn. Zero-cost activations still count
 toward the Ruleset ceiling. Turn transitions emit round/turn events, age
@@ -256,16 +257,19 @@ numeric domains, content-owned resource/modifier ids, board, occupancy,
 initiative, capability owners, and random-source binding before mutable state
 exists.
 
-Checkpoint schema version 12 embeds the exact compiled PlayBundle, Scenario and
+Checkpoint schema version 13 embeds the exact compiled PlayBundle, Scenario and
 Scenario fingerprint, portable state, turn/log, accepted random position,
-pending reaction or turn-save phase, named effect instances, and canonical
-state hash. Replay entry schema version 13 records
-ordinary submit/reaction/turn-control operations and verifies before/after
-boundaries. Accepted event schema version 11 and encounter-view schema version 13
+pending reaction, forced-movement choice, or turn-save phase, named effect
+instances, and canonical state hash. Replay entry schema version 14 records
+ordinary submit/reaction/forced-movement/turn-control operations and verifies
+before/after boundaries. Accepted event schema version 12 and encounter-view
+schema version 14
 carry the contextual contribution ledger, character selection, activation
 budgets, accepted activation count, exact authority-derived area selections,
+weighted movement routes, forced-choice and movement-reaction identity,
 structured typed-damage packet evidence, active-effect tenure/conditions, and
-pending save requests. Replay never reruns
+pending save requests. Prepared and compiled PlayBundle artifact schema major
+12 covers these retained semantic contracts. Replay never reruns
 authoring or substitutes a candidate artifact.
 
 ## TypeScript authoring

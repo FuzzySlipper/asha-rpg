@@ -11,7 +11,9 @@ export const RPG_OPERATION_VERSIONS = {
   "operation.move": 1,
   "operation.moveToCell": 1,
   "operation.openReaction": 1,
+  "operation.push": 1,
   "operation.removeEffect": 1,
+  "operation.slide": 1,
 } as const;
 export type RpgOperationId = keyof typeof RPG_OPERATION_VERSIONS;
 

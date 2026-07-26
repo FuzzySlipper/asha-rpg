@@ -8,15 +8,16 @@ consumer compiles or loads a `CompiledPlayBundle` and calls
 creating mutable authority state.
 
 The schema is `asha.rpg.scenario@3`. `playBundleId` must exactly match the
-compiled artifact. Checkpoint schema `asha.rpg.session.checkpoint@10` stores the
+compiled artifact. Checkpoint schema `asha.rpg.session.checkpoint@13` stores the
 Scenario and its `fnv1a64.rpg-scenario.v1` fingerprint. Replay entry schema
-version 11 binds before/after boundaries to that Scenario, source binding,
-turn, revision, and state hash. Accepted event schema version 9 carries the
+version 14 binds before/after boundaries to that Scenario, source binding,
+turn, revision, and state hash. Accepted event schema version 12 carries the
 contextual contribution ledger, activation transitions, and exact
 authority-derived area selections plus structured typed-damage packet
-resolution. Encounter-view schema version 11 exposes
+resolution. Encounter-view schema version 14 exposes
 that event history plus explicit class/feature selection, active named effects,
-activation-budget readback, and session-bound area options.
+movement allowance, activation-budget readback, and session-bound area and
+forced-movement options.
 
 ## Setup-only data
 
@@ -70,8 +71,9 @@ resets in that order. Effects applied or refreshed in the same transaction
 skip every boundary in that transaction. Checkpoint state retains definition,
 instance, source, rank, stacking, anchor, remaining count, and application
 revision exactly.
-A pending reaction blocks other commands until resolved. Rejections preserve
-state, log, turn, reaction, and accepted-random position.
+A pending reaction, forced-movement destination choice, or turn save blocks
+other commands until resolved. Rejections preserve the complete pending phase,
+state, log, turn, and accepted-random position.
 
 Attack and generic scalar-test resolution report an authoritative scalar
 contribution ledger as structured event data. It includes the base value, final
@@ -111,6 +113,27 @@ authored range and total-cost movement bound, and rejects a stale or
 unreachable destination without mutation. The path is descriptive output;
 only Rust mutates authority state.
 
+A Ruleset may designate one owner-turn action budget as movement allowance.
+Projection caps routes by its remaining value and accepted `moveToCell`
+transitions spend the exact weighted route cost. Readback exposes the remaining
+allowance explicitly; setup cannot supply it, and checkpoint restore rejects
+missing, extra, negative, or unreachable budget state.
+
+`push` and `slide` use the same authored cells, bounds, traversal, occupancy,
+and canonical route facts. Push is cardinal and source-relative, moves as far
+as possible up to its bound, and stops before the first unavailable cell.
+Slide suspends the original transaction and exposes bounded destination/route
+options tied to session, artifact, Scenario, revision, turn, actor, action,
+source, target, and operation path. Forced movement never provokes.
+
+The closed `voluntaryLeavesAdjacency` feature registration captures its owner,
+feature source, trigger cells, reach, line of effect, response action, and
+exact optional item binding from the trigger revision. The response owns an
+exclusive exact-capacity owner-turn reaction budget. Accept executes it at the
+trigger position; decline consumes no response evidence. Either decision
+commits with the movement as one revision, while stale identity, invalid
+evidence, or failed response legality leaves the pending transaction intact.
+
 An area option binds an opaque live session id, artifact id, Scenario
 fingerprint, state revision, turn identity, action/item identity, and one
 anchor. Rust projects either an anchor-origin Manhattan diamond or an
@@ -143,14 +166,15 @@ inspect a random plan or select semantic branches. `RpgRollTapeSource` remains
 a bounded portable source for consumers and focused tests; no seeded algorithm
 is a portability claim.
 
-Replay invokes ordinary submit/reaction/turn-control paths with recorded
+Replay invokes ordinary submit/reaction/forced-movement/turn-control paths with recorded
 evidence. It never rematerializes content, resolves versions, regenerates
 randomness, or reapplies events.
 
 ## Non-claims
 
 The initial board authority does not claim diagonal movement or hex topology,
-jumping/flying/teleport movement, opportunity attacks, per-step effects,
+jumping/flying/pull/teleport movement, general opportunity-attack or trigger
+authoring, per-step effects,
 cones, arbitrary polygons, elevation, cover, concealment, vision contests,
 arbitrary-topology or client-computed sight, persistent auras, campaign
 persistence, scripted runners, AI control, Tester configuration, class levels

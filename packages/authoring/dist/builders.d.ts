@@ -171,6 +171,16 @@ export declare function moveToCell(options: {
     readonly provokes: boolean;
     readonly timing?: AuthoringTiming;
 }): AuthoringProgram;
+export declare function pushEntity(options: {
+    readonly subject: RpgIrSubject;
+    readonly distance: number;
+    readonly timing?: AuthoringTiming;
+}): AuthoringProgram;
+export declare function slideEntity(options: {
+    readonly subject: RpgIrSubject;
+    readonly maximumDistance: number;
+    readonly timing?: AuthoringTiming;
+}): AuthoringProgram;
 export declare function openReaction(options: {
     readonly id: RpgReactionId;
     readonly options: readonly {

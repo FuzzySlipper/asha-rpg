@@ -297,6 +297,20 @@ export function moveToCell(options) {
         provokes: options.provokes,
     }), options.timing);
 }
+export function pushEntity(options) {
+    return operation(frozen({
+        kind: 'push',
+        subject: options.subject,
+        distance: options.distance,
+    }), options.timing);
+}
+export function slideEntity(options) {
+    return operation(frozen({
+        kind: 'slide',
+        subject: options.subject,
+        maximumDistance: options.maximumDistance,
+    }), options.timing);
+}
 export function openReaction(options) {
     return operation(frozen({
         kind: 'openReaction',

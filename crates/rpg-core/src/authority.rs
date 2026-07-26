@@ -2,7 +2,7 @@ use std::collections::{BTreeMap, BTreeSet};
 
 use serde::{Deserialize, Serialize};
 
-use crate::{BoundedValue, GridPosition, Team};
+use crate::{BoundedValue, GridPosition, StateFingerprint, Team};
 
 pub const MAXIMUM_RPG_MODIFIER_TURNS: u32 = 1_000;
 pub const MAXIMUM_RPG_EFFECT_DURATION: u32 = 1_000;
@@ -1273,6 +1273,32 @@ pub enum RpgCapabilityMutationError {
 pub struct RpgIntentCellTarget {
     pub id: String,
     pub position: GridPosition,
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub route_cell_ids: Vec<String>,
+    #[serde(default, skip_serializing_if = "is_zero_u32")]
+    pub movement_cost: u32,
+}
+
+const fn is_zero_u32(value: &u32) -> bool {
+    *value == 0
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub enum RpgMovementKind {
+    Voluntary,
+    Push,
+    Slide,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase", deny_unknown_fields)]
+pub struct RpgForcedMovementRequest {
+    pub movement_kind: RpgMovementKind,
+    pub source_id: String,
+    pub moved_participant_id: String,
+    pub maximum_distance: u32,
+    pub operation_path: String,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
@@ -1313,7 +1339,7 @@ pub enum RpgAreaShape {
     OrthogonalLine { length: u32 },
 }
 
-#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[derive(Debug, Clone, PartialEq, Eq, PartialOrd, Ord, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase", deny_unknown_fields)]
 pub struct RpgIntentItemBinding {
     pub binding_id: String,
@@ -1438,15 +1464,45 @@ pub struct RpgReactionOption {
     pub unavailable: Option<RpgReactionUnavailable>,
 }
 
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub enum RpgReactionKind {
+    BeforeDamageChoice,
+    VoluntaryLeavesAdjacency,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase", deny_unknown_fields)]
+pub struct RpgMovementReactionContext {
+    pub session_binding_id: String,
+    pub artifact_id: String,
+    pub scenario_fingerprint: StateFingerprint,
+    pub authority_revision: u64,
+    pub round: u64,
+    pub turn: u64,
+    pub owner_id: String,
+    pub source_definition_id: String,
+    pub registration_id: String,
+    pub trigger_start: GridPosition,
+    pub trigger_end: GridPosition,
+    pub response_action_id: String,
+    pub response_item_binding: Option<RpgIntentItemBinding>,
+    pub reach: u32,
+    pub line_of_effect_clear: bool,
+}
+
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase", deny_unknown_fields)]
 pub struct RpgReactionRequest {
+    pub kind: RpgReactionKind,
     pub reaction_id: String,
     pub actor_id: String,
     pub target_id: String,
     pub action_id: String,
     pub options: Vec<RpgReactionOption>,
     pub path: String,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub movement: Option<RpgMovementReactionContext>,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
@@ -2149,11 +2205,14 @@ pub enum RpgDomainEvent {
         difficulty: u32,
         saved: bool,
     },
-    PositionChanged {
+    MovementTransition {
         source_id: String,
-        entity_id: String,
-        previous: GridPosition,
-        current: GridPosition,
+        moved_participant_id: String,
+        movement_kind: RpgMovementKind,
+        start: GridPosition,
+        end: GridPosition,
+        route_cell_ids: Vec<String>,
+        movement_cost: u32,
         provokes: bool,
     },
     ReactionOpened {
@@ -2166,6 +2225,22 @@ pub enum RpgDomainEvent {
         reaction_id: String,
         option_id: Option<String>,
         damage_reduction: u32,
+    },
+    MovementReactionOpened {
+        reaction_id: String,
+        owner_id: String,
+        source_definition_id: String,
+        moved_participant_id: String,
+        trigger_start: GridPosition,
+        trigger_end: GridPosition,
+        response_action_id: String,
+        response_item_binding: Option<RpgIntentItemBinding>,
+    },
+    MovementReactionResolved {
+        reaction_id: String,
+        owner_id: String,
+        accepted: bool,
+        response_action_id: String,
     },
 }
 
@@ -2197,12 +2272,14 @@ pub struct RpgResolutionReceipt {
 pub struct RpgResolutionRejection {
     pub code: String,
     pub path: String,
-    pub message: String,
+    pub message: Box<str>,
     pub trace: Box<Vec<RpgTraceStep>>,
     pub random_evidence: Box<Vec<RpgRandomEvidence>>,
     pub random_attempted: u64,
     pub random_request: Option<Box<RpgRandomRequest>>,
     pub reaction_request: Option<Box<RpgReactionRequest>>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub forced_movement_request: Option<Box<RpgForcedMovementRequest>>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub unavailable_source: Option<Box<RpgUnavailableSource>>,
 }

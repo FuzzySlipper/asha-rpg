@@ -221,6 +221,7 @@ export interface RulesetProvisions {
   readonly contributionStackingGroups: readonly RulesetContributionStackingGroupContract[];
   readonly scalarTestProfiles: readonly RulesetScalarTestProfile[];
   readonly activationBudgets: readonly RulesetActivationBudget[];
+  readonly movementAllowanceBudgetId?: string;
   readonly heterogeneousPoolProfiles: readonly RulesetHeterogeneousPoolProfile[];
 }
 
@@ -875,6 +876,19 @@ export interface ContentCharacterFeatureData {
   readonly outcomeBandShifts: readonly ContentOutcomeBandShift[];
   readonly poolContributions: readonly ContentPoolContribution[];
   readonly damageResponses: readonly ContentDamageResponse[];
+  readonly movementReactions?: readonly ContentMovementReaction[];
+}
+
+export interface ContentMovementReaction {
+  readonly id: string;
+  readonly trigger: "voluntaryLeavesAdjacency";
+  readonly responseActionId: string;
+  readonly activationBudgetId: string;
+  readonly activationCost: number;
+  readonly maximumUses: number;
+  readonly duration: "encounter";
+  readonly reach: number;
+  readonly requiresLineOfEffect: boolean;
 }
 
 export interface ContentCharacterFeatureDefinition extends ContentDefinitionBase {
@@ -1273,7 +1287,7 @@ export interface MaterializedContentDefinition {
 export interface PreparedPlayBundle {
   readonly schema: {
     readonly identity: "asha.rpg.play-bundle.prepared";
-    readonly major: 11;
+    readonly major: 12;
   };
   readonly playBundleIdentity: PlayBundleIdentity;
   readonly ruleset: Ruleset;

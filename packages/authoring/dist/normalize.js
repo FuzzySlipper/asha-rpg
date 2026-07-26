@@ -8,6 +8,8 @@ const OPERATION_IDS = {
     removeEffect: 'operation.removeEffect',
     move: 'operation.move',
     moveToCell: 'operation.moveToCell',
+    push: 'operation.push',
+    slide: 'operation.slide',
     openReaction: 'operation.openReaction',
 };
 const NO_DIAGNOSTICS = Object.freeze([]);
@@ -160,7 +162,7 @@ function validateAction(action, path, diagnostics) {
         }
     }
     if (action.activation !== undefined) {
-        validateActivation(action.activation, 'action', `${path}.activation`, diagnostics, action.sourcePath);
+        validateActivation(action.activation, action.activation.timing, `${path}.activation`, diagnostics, action.sourcePath);
     }
     if (!integerInRange(action.targets.maximumTargets, 1, 32)) {
         diagnostics.push(diagnostic('normalization.targetBoundInvalid', `${path}.targets.maximumTargets`, 'target maximum must be an integer between 1 and 32', action.sourcePath));
@@ -572,6 +574,10 @@ function collectOperation(operation, collection) {
             collectFormula(operation.deltaY, collection);
             return;
         case 'moveToCell':
+            collection.capabilities.add('capability.position');
+            return;
+        case 'push':
+        case 'slide':
             collection.capabilities.add('capability.position');
             return;
         case 'openReaction':

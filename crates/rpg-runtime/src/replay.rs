@@ -13,9 +13,9 @@ use rpg_ir::{
 use serde::{Deserialize, Serialize};
 
 use crate::semantic_session::{
-    PendingTransaction, PreparedAreaCommand, RpgAuthorityCommand, RpgAuthoritySession,
-    RpgCommandOutcome, RpgPendingReaction, RpgPendingTurnSave, RpgReactionCommand,
-    RpgTurnControlCommand,
+    PendingForcedMovementTransaction, PendingTransaction, PreparedAreaCommand, RpgAuthorityCommand,
+    RpgAuthoritySession, RpgCommandOutcome, RpgForcedMovementCommand, RpgPendingForcedMovement,
+    RpgPendingReaction, RpgPendingTurnSave, RpgReactionCommand, RpgTurnControlCommand,
 };
 use crate::{
     encounter::{validate_derived_state, validate_restored_encounter},
@@ -24,9 +24,9 @@ use crate::{
 
 pub const RPG_CHECKPOINT_SCHEMA_ID: &str = "asha.rpg.session.checkpoint";
 pub const RPG_REPLAY_ENTRY_SCHEMA_ID: &str = "asha.rpg.session.replay-entry";
-pub const RPG_CHECKPOINT_SCHEMA_VERSION: u32 = 12;
-pub const RPG_REPLAY_ENTRY_SCHEMA_VERSION: u32 = 13;
-pub const RPG_EVENT_SCHEMA_VERSION: u32 = 11;
+pub const RPG_CHECKPOINT_SCHEMA_VERSION: u32 = 13;
+pub const RPG_REPLAY_ENTRY_SCHEMA_VERSION: u32 = 14;
+pub const RPG_EVENT_SCHEMA_VERSION: u32 = 12;
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase", deny_unknown_fields)]
@@ -144,6 +144,12 @@ pub enum RpgCheckpointPhase {
         random_values: Vec<u32>,
         pending: Box<RpgPendingReaction>,
     },
+    AwaitingForcedMovement {
+        expected_revision: u64,
+        intent: Box<rpg_core::RpgIntent>,
+        random_values: Vec<u32>,
+        pending: Box<RpgPendingForcedMovement>,
+    },
     AwaitingTurnSave {
         command: RpgTurnControlCommand,
         pending: Box<RpgPendingTurnSave>,
@@ -174,6 +180,11 @@ pub enum RpgReplayPhase {
     AwaitingReaction {
         reaction_id: String,
     },
+    AwaitingForcedMovement {
+        source_id: String,
+        moved_participant_id: String,
+        operation_path: String,
+    },
     AwaitingTurnSave {
         actor_id: String,
         effect_instance_ids: Vec<String>,
@@ -200,9 +211,19 @@ pub struct RpgReplayBoundary {
     deny_unknown_fields
 )]
 pub enum RpgReplayOperation {
-    Submit { command: RpgAuthorityCommand },
-    React { command: RpgReactionCommand },
-    TurnControl { command: RpgTurnControlCommand },
+    Submit {
+        command: RpgAuthorityCommand,
+    },
+    React {
+        command: RpgReactionCommand,
+    },
+    ForcedMovement {
+        command: RpgForcedMovementCommand,
+        additional_random_values: Vec<u32>,
+    },
+    TurnControl {
+        command: RpgTurnControlCommand,
+    },
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
@@ -409,9 +430,12 @@ impl RpgAuthoritySession {
                     .collect(),
             });
         }
-        let (pending_reaction, pending_turn_save) = restore_phase(&checkpoint.phase, &restored)?;
+        let (pending_reaction, pending_forced_movement, pending_turn_save) =
+            restore_phase(&checkpoint.phase, &restored)?;
         restored.pending = pending_reaction;
+        restored.pending_forced_movement = pending_forced_movement;
         restored.pending_turn_save = pending_turn_save;
+        restored.rebind_pending_session_identity();
         Ok(restored)
     }
 
@@ -480,6 +504,17 @@ impl RpgAuthoritySession {
         self.record_operation(RpgReplayOperation::React { command })
     }
 
+    pub fn resolve_forced_movement_recorded(
+        &mut self,
+        command: RpgForcedMovementCommand,
+        additional_random_values: Vec<u32>,
+    ) -> Result<(RpgCommandOutcome, RpgReplayEntry), RpgReplayFailure> {
+        self.record_operation(RpgReplayOperation::ForcedMovement {
+            command,
+            additional_random_values,
+        })
+    }
+
     pub(crate) fn record_turn_control(
         &mut self,
         command: RpgTurnControlCommand,
@@ -537,6 +572,10 @@ impl RpgAuthoritySession {
         let outcome = match &operation {
             RpgReplayOperation::Submit { command } => self.submit(command.clone()),
             RpgReplayOperation::React { command } => self.react(command.clone()),
+            RpgReplayOperation::ForcedMovement {
+                command,
+                additional_random_values,
+            } => self.resolve_forced_movement(command.clone(), additional_random_values.clone()),
             RpgReplayOperation::TurnControl { command } => self.control(command.clone()),
         };
         let after = replay_boundary(self)?;
@@ -578,7 +617,23 @@ impl RpgAuthoritySession {
         compare_boundary(&expected.before, &before, &format!("{base_path}.before"))?;
         let outcome = match &expected.operation {
             RpgReplayOperation::Submit { command } => self.submit(command.clone()),
-            RpgReplayOperation::React { command } => self.react(command.clone()),
+            RpgReplayOperation::React { command } => {
+                let mut rebound = command.clone();
+                if let Some(pending) = self.pending_reaction() {
+                    if pending.request.movement.is_some() {
+                        rebound.reaction_id = pending.request.reaction_id.clone();
+                    }
+                }
+                self.react(rebound)
+            }
+            RpgReplayOperation::ForcedMovement {
+                command,
+                additional_random_values,
+            } => {
+                let mut rebound = command.clone();
+                rebound.option.session_binding_id = self.session_binding_id().to_owned();
+                self.resolve_forced_movement(rebound, additional_random_values.clone())
+            }
             RpgReplayOperation::TurnControl { command } => self.control(command.clone()),
         };
         compare_outcome(&expected.outcome, &outcome, &format!("{base_path}.outcome"))?;
@@ -1030,15 +1085,38 @@ fn state_restore_failure(path: &str, error: rpg_core::RpgStateRestoreError) -> R
 }
 
 fn checkpoint_phase(session: &RpgAuthoritySession) -> RpgCheckpointPhase {
-    match (&session.pending, &session.pending_turn_save) {
-        (None, None) => RpgCheckpointPhase::Ready,
-        (Some(transaction), None) => RpgCheckpointPhase::AwaitingReaction {
-            expected_revision: transaction.expected_revision,
-            intent: Box::new(transaction.portable_intent.clone()),
-            random_values: transaction.random_values.clone(),
-            pending: Box::new(transaction.pending.clone()),
-        },
-        (None, Some(pending)) => RpgCheckpointPhase::AwaitingTurnSave {
+    match (
+        &session.pending,
+        &session.pending_forced_movement,
+        &session.pending_turn_save,
+    ) {
+        (None, None, None) => RpgCheckpointPhase::Ready,
+        (Some(transaction), None, None) => {
+            let mut pending = transaction.pending.clone();
+            if let Some(movement) = pending.request.movement.as_mut() {
+                movement.session_binding_id.clear();
+                pending.request.reaction_id.clear();
+            }
+            RpgCheckpointPhase::AwaitingReaction {
+                expected_revision: transaction.expected_revision,
+                intent: Box::new(transaction.portable_intent.clone()),
+                random_values: transaction.random_values.clone(),
+                pending: Box::new(pending),
+            }
+        }
+        (None, Some(transaction), None) => {
+            let mut pending = transaction.pending.clone();
+            for option in &mut pending.options {
+                option.session_binding_id.clear();
+            }
+            RpgCheckpointPhase::AwaitingForcedMovement {
+                expected_revision: session.state.revision(),
+                intent: Box::new(transaction.portable_intent.clone()),
+                random_values: transaction.random_values.clone(),
+                pending: Box::new(pending),
+            }
+        }
+        (None, None, Some(pending)) => RpgCheckpointPhase::AwaitingTurnSave {
             command: RpgTurnControlCommand {
                 expected_revision: pending.expected_revision,
                 actor_id: pending.actor_id.clone(),
@@ -1047,18 +1125,24 @@ fn checkpoint_phase(session: &RpgAuthoritySession) -> RpgCheckpointPhase {
             },
             pending: Box::new(pending.clone()),
         },
-        (Some(_), Some(_)) => {
-            unreachable!("reaction and turn-save phases are mutually exclusive")
+        _ => {
+            unreachable!("reaction, forced-movement, and turn-save phases are mutually exclusive")
         }
     }
 }
 
+type RestoredPendingPhases = (
+    Option<PendingTransaction>,
+    Option<PendingForcedMovementTransaction>,
+    Option<RpgPendingTurnSave>,
+);
+
 fn restore_phase(
     phase: &RpgCheckpointPhase,
     baseline: &RpgAuthoritySession,
-) -> Result<(Option<PendingTransaction>, Option<RpgPendingTurnSave>), RpgReplayFailure> {
+) -> Result<RestoredPendingPhases, RpgReplayFailure> {
     match phase {
-        RpgCheckpointPhase::Ready => Ok((None, None)),
+        RpgCheckpointPhase::Ready => Ok((None, None, None)),
         RpgCheckpointPhase::AwaitingReaction {
             expected_revision,
             intent,
@@ -1080,21 +1164,26 @@ fn restore_phase(
                     &outcome,
                 ));
             };
-            if pending.random_evidence != actual.random_evidence
-                || pending.random_attempted != actual.random_attempted
+            let mut expected = pending.as_ref().clone();
+            if let Some(movement) = expected.request.movement.as_mut() {
+                movement.session_binding_id = proof.session_binding_id().to_owned();
+                expected.request.reaction_id = actual.request.reaction_id.clone();
+            }
+            if expected.random_evidence != actual.random_evidence
+                || expected.random_attempted != actual.random_attempted
             {
                 return Err(replay_mismatch(
                     "RPG_CHECKPOINT_EVIDENCE_MISMATCH",
                     "$.phase.pending.randomEvidence",
-                    &(&pending.random_evidence, pending.random_attempted),
+                    &(&expected.random_evidence, expected.random_attempted),
                     &(&actual.random_evidence, actual.random_attempted),
                 ));
             }
-            if pending.as_ref() != &actual {
+            if expected != *actual {
                 return Err(replay_mismatch(
                     "RPG_CHECKPOINT_PHASE_MISMATCH",
                     "$.phase.pending",
-                    pending.as_ref(),
+                    &expected,
                     &actual,
                 ));
             }
@@ -1108,7 +1197,53 @@ fn restore_phase(
                         "Rust authority did not retain the verified pending transaction",
                     )
                 })
-                .map(|pending| (Some(pending), None))
+                .map(|pending| (Some(pending), None, None))
+        }
+        RpgCheckpointPhase::AwaitingForcedMovement {
+            expected_revision,
+            intent,
+            random_values,
+            pending,
+        } => {
+            let mut proof = baseline.clone();
+            proof.pending = None;
+            proof.pending_forced_movement = None;
+            let outcome = proof.submit(RpgAuthorityCommand {
+                expected_revision: *expected_revision,
+                intent: intent.as_ref().clone(),
+                random_values: random_values.clone(),
+            });
+            let RpgCommandOutcome::AwaitingForcedMovement(actual) = outcome else {
+                return Err(replay_mismatch(
+                    "RPG_CHECKPOINT_PHASE_MISMATCH",
+                    "$.phase",
+                    pending.as_ref(),
+                    &outcome,
+                ));
+            };
+            let mut expected = pending.as_ref().clone();
+            for option in &mut expected.options {
+                option.session_binding_id = proof.session_binding_id().to_owned();
+            }
+            if expected != actual {
+                return Err(replay_mismatch(
+                    "RPG_CHECKPOINT_PHASE_MISMATCH",
+                    "$.phase.pending",
+                    &expected,
+                    &actual,
+                ));
+            }
+            proof
+                .pending_forced_movement
+                .take()
+                .ok_or_else(|| {
+                    replay_failure(
+                        "RPG_CHECKPOINT_PHASE_MISMATCH",
+                        "$.phase.pending",
+                        "Rust authority did not retain the verified pending forced movement",
+                    )
+                })
+                .map(|pending| (None, Some(pending), None))
         }
         RpgCheckpointPhase::AwaitingTurnSave { command, pending } => {
             let mut proof = baseline.clone();
@@ -1141,18 +1276,40 @@ fn restore_phase(
                         "Rust authority did not retain the verified pending turn save",
                     )
                 })
-                .map(|pending| (None, Some(pending)))
+                .map(|pending| (None, None, Some(pending)))
         }
     }
 }
 
 fn replay_boundary(session: &RpgAuthoritySession) -> Result<RpgReplayBoundary, RpgReplayFailure> {
-    let phase = match (session.pending_reaction(), &session.pending_turn_save) {
-        (None, None) => RpgReplayPhase::Ready,
-        (Some(pending), None) => RpgReplayPhase::AwaitingReaction {
-            reaction_id: pending.request.reaction_id.clone(),
+    let phase = match (
+        session.pending_reaction(),
+        session.pending_forced_movement(),
+        &session.pending_turn_save,
+    ) {
+        (None, None, None) => RpgReplayPhase::Ready,
+        (Some(pending), None, None) => RpgReplayPhase::AwaitingReaction {
+            reaction_id: pending
+                .request
+                .movement
+                .as_ref()
+                .map(|movement| {
+                    format!(
+                        "movement:{}:{}:{}:{}",
+                        movement.authority_revision,
+                        pending.request.target_id,
+                        movement.source_definition_id,
+                        movement.registration_id
+                    )
+                })
+                .unwrap_or_else(|| pending.request.reaction_id.clone()),
         },
-        (None, Some(pending)) => RpgReplayPhase::AwaitingTurnSave {
+        (None, Some(pending), None) => RpgReplayPhase::AwaitingForcedMovement {
+            source_id: pending.request.source_id.clone(),
+            moved_participant_id: pending.request.moved_participant_id.clone(),
+            operation_path: pending.request.operation_path.clone(),
+        },
+        (None, None, Some(pending)) => RpgReplayPhase::AwaitingTurnSave {
             actor_id: pending.actor_id.clone(),
             effect_instance_ids: pending
                 .candidates
@@ -1160,8 +1317,8 @@ fn replay_boundary(session: &RpgAuthoritySession) -> Result<RpgReplayBoundary, R
                 .map(|candidate| candidate.instance_id.clone())
                 .collect(),
         },
-        (Some(_), Some(_)) => {
-            unreachable!("reaction and turn-save phases are mutually exclusive")
+        _ => {
+            unreachable!("reaction, forced-movement, and turn-save phases are mutually exclusive")
         }
     };
     Ok(RpgReplayBoundary {
@@ -1339,11 +1496,19 @@ fn compare_outcome(
                     &actual.random_evidence,
                 ));
             }
-            if expected != actual {
+            let mut portable_expected = expected.clone();
+            if let (Some(expected_movement), Some(actual_movement)) = (
+                portable_expected.request.movement.as_mut(),
+                actual.request.movement.as_ref(),
+            ) {
+                expected_movement.session_binding_id = actual_movement.session_binding_id.clone();
+                portable_expected.request.reaction_id = actual.request.reaction_id.clone();
+            }
+            if &portable_expected != actual {
                 return Err(replay_mismatch(
                     "RPG_REPLAY_PHASE_MISMATCH",
                     path,
-                    expected,
+                    &portable_expected,
                     actual,
                 ));
             }
@@ -1357,6 +1522,33 @@ fn compare_outcome(
                     "RPG_REPLAY_PHASE_MISMATCH",
                     path,
                     expected,
+                    actual,
+                ));
+            }
+        }
+        (
+            RpgCommandOutcome::AwaitingForcedMovement(expected),
+            RpgCommandOutcome::AwaitingForcedMovement(actual),
+        ) => {
+            if expected.random_evidence != actual.random_evidence {
+                return Err(replay_mismatch(
+                    "RPG_REPLAY_EVIDENCE_MISMATCH",
+                    format!("{path}.result.randomEvidence"),
+                    &expected.random_evidence,
+                    &actual.random_evidence,
+                ));
+            }
+            let mut portable_expected = expected.clone();
+            for (expected_option, actual_option) in
+                portable_expected.options.iter_mut().zip(&actual.options)
+            {
+                expected_option.session_binding_id = actual_option.session_binding_id.clone();
+            }
+            if &portable_expected != actual {
+                return Err(replay_mismatch(
+                    "RPG_REPLAY_PHASE_MISMATCH",
+                    path,
+                    &portable_expected,
                     actual,
                 ));
             }
@@ -1597,6 +1789,8 @@ mod tests {
                 cell_targets: vec![RpgIntentCellTarget {
                     id: "cell-2-0".to_owned(),
                     position: GridPosition { x: 2, y: 0 },
+                    route_cell_ids: Vec::new(),
+                    movement_cost: 0,
                 }],
                 item_binding: None,
             },
@@ -2912,6 +3106,7 @@ mod tests {
                     contribution_stacking_groups: Vec::new(),
                     scalar_test_profiles: Vec::new(),
                     activation_budgets: Vec::new(),
+                    movement_allowance_budget_id: None,
                     heterogeneous_pool_profiles: Vec::new(),
                 },
             },

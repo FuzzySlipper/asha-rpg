@@ -22,7 +22,7 @@ use serde::{Deserialize, Serialize};
 
 use crate::encounter::{
     action_view, area_projection, build_encounter, encounter_outcome, line_of_effect_projection,
-    living_intent_rejection, movement_paths, participant_view, random_failure,
+    living_intent_rejection, movement_paths, participant_view, push_path, random_failure,
     runtime_board_rejection, RpgActionOptionBindingView, RpgActionOptionsView, RpgActionProposal,
     RpgAreaActionProposal, RpgAreaBoardIndex, RpgAreaOptionView, RpgAreaSubmissionResult,
     RpgBoundActionProposal, RpgBoundActionSubmissionResult, RpgEncounterAuthority,
@@ -119,11 +119,45 @@ pub struct RpgPendingReaction {
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase", deny_unknown_fields)]
+pub struct RpgForcedMovementOptionView {
+    pub session_binding_id: String,
+    pub artifact_id: String,
+    pub scenario_fingerprint: rpg_core::StateFingerprint,
+    pub authority_revision: u64,
+    pub round: u64,
+    pub turn: u64,
+    pub current_actor_id: String,
+    pub action_id: String,
+    pub source_id: String,
+    pub moved_participant_id: String,
+    pub operation_path: String,
+    pub route: crate::RpgCellPathView,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase", deny_unknown_fields)]
+pub struct RpgPendingForcedMovement {
+    pub request: rpg_core::RpgForcedMovementRequest,
+    pub options: Vec<RpgForcedMovementOptionView>,
+    pub trace: Vec<RpgTraceStep>,
+    pub random_evidence: Vec<RpgRandomEvidence>,
+    pub random_attempted: u64,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase", deny_unknown_fields)]
+pub struct RpgForcedMovementCommand {
+    pub option: RpgForcedMovementOptionView,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(tag = "phase", content = "result", rename_all = "camelCase")]
 pub enum RpgCommandOutcome {
     Accepted(RpgResolutionReceipt),
     ControlAccepted(RpgTurnControlReceipt),
-    AwaitingReaction(RpgPendingReaction),
+    AwaitingReaction(Box<RpgPendingReaction>),
+    AwaitingForcedMovement(RpgPendingForcedMovement),
     AwaitingTurnSave(RpgPendingTurnSave),
     Rejected(RpgResolutionRejection),
 }
@@ -155,6 +189,15 @@ pub(crate) struct PendingTransaction {
     pub(crate) area_event: Option<rpg_core::RpgDomainEvent>,
 }
 
+#[derive(Debug, Clone)]
+pub(crate) struct PendingForcedMovementTransaction {
+    pub(crate) intent: RpgIntent,
+    pub(crate) portable_intent: RpgIntent,
+    pub(crate) random_values: Vec<u32>,
+    pub(crate) pending: RpgPendingForcedMovement,
+    pub(crate) area_event: Option<rpg_core::RpgDomainEvent>,
+}
+
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub(crate) struct PreparedAreaCommand {
     pub(crate) resolved_intent: RpgIntent,
@@ -169,6 +212,7 @@ pub struct RpgAuthoritySession {
     pub(crate) rules: CompiledRpgRules,
     pub(crate) state: RpgCapabilityState,
     pub(crate) pending: Option<PendingTransaction>,
+    pub(crate) pending_forced_movement: Option<PendingForcedMovementTransaction>,
     pub(crate) pending_turn_save: Option<RpgPendingTurnSave>,
     pub(crate) accepted_random_values: u64,
     pub(crate) encounter: RpgEncounterAuthority,
@@ -180,17 +224,37 @@ impl Clone for RpgAuthoritySession {
     fn clone(&self) -> Self {
         let mut clone = self.probe_snapshot();
         clone.session_binding_id = next_session_binding_id();
+        clone.rebind_pending_session_identity();
         clone
     }
 }
 
 impl RpgAuthoritySession {
+    pub(crate) fn rebind_pending_session_identity(&mut self) {
+        if let Some(transaction) = self.pending.as_mut() {
+            if let Some(context) = transaction.pending.request.movement.as_ref() {
+                let durable = durable_movement_reaction_id(&transaction.pending.request, context);
+                transaction.pending.request.reaction_id =
+                    format!("movement:{}:{durable}", self.session_binding_id);
+            }
+            if let Some(context) = transaction.pending.request.movement.as_mut() {
+                context.session_binding_id = self.session_binding_id.clone();
+            }
+        }
+        if let Some(transaction) = self.pending_forced_movement.as_mut() {
+            for option in &mut transaction.pending.options {
+                option.session_binding_id = self.session_binding_id.clone();
+            }
+        }
+    }
+
     fn probe_snapshot(&self) -> Self {
         Self {
             artifact: self.artifact.clone(),
             rules: self.rules.clone(),
             state: self.state.clone(),
             pending: self.pending.clone(),
+            pending_forced_movement: self.pending_forced_movement.clone(),
             pending_turn_save: self.pending_turn_save.clone(),
             accepted_random_values: self.accepted_random_values,
             encounter: self.encounter.clone(),
@@ -211,6 +275,7 @@ impl RpgAuthoritySession {
             rules: bundle.rules().clone(),
             state,
             pending: None,
+            pending_forced_movement: None,
             pending_turn_save: None,
             accepted_random_values: 0,
             encounter,
@@ -237,6 +302,12 @@ impl RpgAuthoritySession {
 
     pub fn pending_reaction(&self) -> Option<&RpgPendingReaction> {
         self.pending
+            .as_ref()
+            .map(|transaction| &transaction.pending)
+    }
+
+    pub fn pending_forced_movement(&self) -> Option<&RpgPendingForcedMovement> {
+        self.pending_forced_movement
             .as_ref()
             .map(|transaction| &transaction.pending)
     }
@@ -311,6 +382,11 @@ impl RpgAuthoritySession {
             .rules
             .actions()
             .filter(|action| action_definitions.contains(&action.id))
+            .filter(|action| {
+                action.activation.as_ref().is_none_or(|activation| {
+                    activation.timing != rpg_ir::RpgIrActivationTiming::Reaction
+                })
+            })
             .flat_map(|action| {
                 let Some(compiled_binding) = &action.binding else {
                     return vec![(action, None, None, None)];
@@ -456,6 +532,17 @@ impl RpgAuthoritySession {
                         let legal_paths = action
                             .selected_destination_maximum_distance
                             .map(|maximum_distance| {
+                                let maximum_distance = self
+                                    .rules
+                                    .movement_allowance_budget()
+                                    .and_then(|budget| {
+                                        self.state
+                                            .entity(actor_id)
+                                            .and_then(|entity| entity.activation_budget(&budget.id))
+                                    })
+                                    .and_then(|remaining| u32::try_from(remaining).ok())
+                                    .map(|remaining| maximum_distance.min(remaining))
+                                    .unwrap_or(maximum_distance);
                                 movement_paths(
                                     &self.encounter.scenario.board,
                                     &self.state,
@@ -566,6 +653,8 @@ impl RpgAuthoritySession {
                                         .map(|cell| RpgIntentCellTarget {
                                             id: cell.id.clone(),
                                             position: cell.position,
+                                            route_cell_ids: Vec::new(),
+                                            movement_cost: 0,
                                         })
                                         .collect(),
                                     item_binding: item_binding.clone(),
@@ -615,7 +704,10 @@ impl RpgAuthoritySession {
                         }
                     }
                 };
-                if self.pending.is_some() || self.pending_turn_save.is_some() {
+                if self.pending.is_some()
+                    || self.pending_forced_movement.is_some()
+                    || self.pending_turn_save.is_some()
+                {
                     options.participant_ids.clear();
                     options.cell_paths.clear();
                     options.area_options.clear();
@@ -624,6 +716,12 @@ impl RpgAuthoritySession {
                             "RPG_SESSION_TURN_SAVE_PENDING",
                             "$.action",
                             "resolve the pending end-turn saves before choosing an action",
+                        )
+                    } else if self.pending_forced_movement.is_some() {
+                        rejection(
+                            "RPG_SESSION_FORCED_MOVEMENT_PENDING",
+                            "$.action",
+                            "resolve the pending forced movement before choosing an action",
                         )
                     } else {
                         rejection(
@@ -690,6 +788,10 @@ impl RpgAuthoritySession {
                         item_definitions: &self.encounter.item_definitions,
                         effect_definitions: &self.encounter.effect_definitions,
                         activation_budget_definitions: &activation_budget_definitions,
+                        movement_allowance_budget_id: self
+                            .rules
+                            .movement_allowance_budget()
+                            .map(|budget| budget.id.as_str()),
                     },
                 )
             })
@@ -699,6 +801,12 @@ impl RpgAuthoritySession {
                 "RPG_SESSION_REACTION_PENDING",
                 "$.control",
                 "resolve the pending reaction before ending the turn",
+            ))
+        } else if self.pending_forced_movement.is_some() {
+            Some(rejection(
+                "RPG_SESSION_FORCED_MOVEMENT_PENDING",
+                "$.control",
+                "resolve the pending forced movement before ending the turn",
             ))
         } else if self.pending_turn_save.is_some() {
             Some(rejection(
@@ -759,6 +867,7 @@ impl RpgAuthoritySession {
             pending_reaction: self
                 .pending_reaction()
                 .map(|pending| pending.request.clone()),
+            pending_forced_movement: self.pending_forced_movement().cloned(),
             pending_turn_save: self.pending_turn_save.clone(),
             log: self.encounter.log.clone(),
             outcome: encounter_outcome(&self.state),
@@ -780,6 +889,13 @@ impl RpgAuthoritySession {
                 "RPG_SESSION_REACTION_PENDING",
                 "$.command",
                 "resolve the pending reaction before submitting another command",
+            ));
+        }
+        if self.pending_forced_movement.is_some() {
+            return RpgCommandOutcome::Rejected(rejection(
+                "RPG_SESSION_FORCED_MOVEMENT_PENDING",
+                "$.command",
+                "resolve the pending forced movement before submitting another command",
             ));
         }
         if self.pending_turn_save.is_some() {
@@ -832,6 +948,21 @@ impl RpgAuthoritySession {
         if let Some(rejection) = self.item_binding_rejection(&command.intent) {
             return RpgCommandOutcome::Rejected(rejection);
         }
+        if self.rules.action_activation_timing_for_binding(
+            &command.intent.action_id,
+            command
+                .intent
+                .item_binding
+                .as_ref()
+                .map(|binding| binding.item_definition_id.as_str()),
+        ) == Some(rpg_ir::RpgIrActivationTiming::Reaction)
+        {
+            return RpgCommandOutcome::Rejected(rejection(
+                "RPG_REACTION_ACTION_DIRECT_SUBMISSION_FORBIDDEN",
+                "$.command.intent.actionId",
+                "registered response actions execute only through their captured reaction",
+            ));
+        }
         let area_event = match prepared_area {
             Some(prepared) => {
                 command.intent = prepared.resolved_intent;
@@ -854,7 +985,7 @@ impl RpgAuthoritySession {
         if let Err(rejection) = self.rules.preflight(&self.state, &command.intent) {
             return RpgCommandOutcome::Rejected(rejection);
         }
-        if let Some(rejection) = self.movement_path_rejection(&command.intent) {
+        if let Err(rejection) = self.prepare_movement_intent(&mut command.intent) {
             return RpgCommandOutcome::Rejected(rejection);
         }
         if let Some(rejection) = self.line_of_effect_rejection(&command.intent) {
@@ -871,58 +1002,31 @@ impl RpgAuthoritySession {
             &command.intent,
             &resolution_context,
         ) {
-            Ok(mut receipt) => {
-                if let Some(area_event) = area_event {
-                    prepend_area_evidence(&mut receipt, area_event);
+            Ok(receipt) => {
+                if let Some(pending) = self.movement_reaction_pending(&receipt) {
+                    self.pending = Some(PendingTransaction {
+                        expected_revision: command.expected_revision,
+                        intent: command.intent,
+                        portable_intent,
+                        random_values: command.random_values,
+                        pending: pending.clone(),
+                        area_event,
+                    });
+                    RpgCommandOutcome::AwaitingReaction(Box::new(pending))
+                } else {
+                    self.commit_resolved(receipt, staged_state, random, area_event)
                 }
-                if let Some(rejection) =
-                    runtime_board_rejection(&self.encounter.scenario.board, &staged_state)
-                {
-                    return RpgCommandOutcome::Rejected(rejection);
-                }
-                let advances_turn = !self.rules.uses_variable_activation_budgets()
-                    && matches!(
-                        encounter_outcome(&staged_state),
-                        RpgEncounterOutcomeView::InProgress
-                    );
-                let refreshed = refreshed_modifiers(&receipt.events);
-                if advances_turn {
-                    if let Err(rejection) = append_automatic_turn_saves(
-                        &self.encounter,
-                        &mut staged_state,
-                        &mut random,
-                        &mut receipt,
-                    ) {
-                        return RpgCommandOutcome::Rejected(rejection);
-                    }
-                }
-                if random.remaining() != 0 {
-                    return RpgCommandOutcome::Rejected(unused_random_rejection(
-                        random.remaining(),
-                    ));
-                }
-                let next_turn = advances_turn.then(|| {
-                    append_turn_events(
-                        &self.rules,
-                        &self.encounter,
-                        &self.state,
-                        &mut staged_state,
-                        &mut receipt.events,
-                        refreshed,
-                        receipt.state_revision,
-                    )
-                });
-                self.state = staged_state;
-                self.accepted_random_values = self
-                    .accepted_random_values
-                    .saturating_add(receipt.random_consumed);
-                self.encounter.record(&receipt);
-                if let Some(next_turn) = next_turn {
-                    self.encounter.set_turn(next_turn);
-                }
-                RpgCommandOutcome::Accepted(receipt)
             }
             Err(mut error) => {
+                if let Some(request) = error.forced_movement_request.take() {
+                    return self.handle_forced_movement_request(
+                        command,
+                        portable_intent,
+                        area_event,
+                        *request,
+                        error,
+                    );
+                }
                 let Some(request) = error.reaction_request.take() else {
                     return RpgCommandOutcome::Rejected(error);
                 };
@@ -941,8 +1045,423 @@ impl RpgAuthoritySession {
                     pending: pending.clone(),
                     area_event,
                 });
-                RpgCommandOutcome::AwaitingReaction(pending)
+                RpgCommandOutcome::AwaitingReaction(Box::new(pending))
             }
+        }
+    }
+
+    fn commit_resolved(
+        &mut self,
+        mut receipt: RpgResolutionReceipt,
+        mut staged_state: RpgCapabilityState,
+        mut random: DeterministicRandomStream,
+        area_event: Option<rpg_core::RpgDomainEvent>,
+    ) -> RpgCommandOutcome {
+        if let Some(area_event) = area_event {
+            prepend_area_evidence(&mut receipt, area_event);
+        }
+        if let Some(rejection) =
+            runtime_board_rejection(&self.encounter.scenario.board, &staged_state)
+        {
+            return RpgCommandOutcome::Rejected(rejection);
+        }
+        let advances_turn = !self.rules.uses_variable_activation_budgets()
+            && matches!(
+                encounter_outcome(&staged_state),
+                RpgEncounterOutcomeView::InProgress
+            );
+        let refreshed = refreshed_modifiers(&receipt.events);
+        if advances_turn {
+            if let Err(rejection) = append_automatic_turn_saves(
+                &self.encounter,
+                &mut staged_state,
+                &mut random,
+                &mut receipt,
+            ) {
+                return RpgCommandOutcome::Rejected(rejection);
+            }
+        }
+        if random.remaining() != 0 {
+            return RpgCommandOutcome::Rejected(unused_random_rejection(random.remaining()));
+        }
+        let next_turn = advances_turn.then(|| {
+            append_turn_events(
+                &self.rules,
+                &self.encounter,
+                &self.state,
+                &mut staged_state,
+                &mut receipt.events,
+                refreshed,
+                receipt.state_revision,
+            )
+        });
+        self.state = staged_state;
+        self.accepted_random_values = self
+            .accepted_random_values
+            .saturating_add(receipt.random_consumed);
+        self.encounter.record(&receipt);
+        if let Some(next_turn) = next_turn {
+            self.encounter.set_turn(next_turn);
+        }
+        RpgCommandOutcome::Accepted(receipt)
+    }
+
+    fn movement_reaction_pending(
+        &self,
+        receipt: &RpgResolutionReceipt,
+    ) -> Option<RpgPendingReaction> {
+        let transition = receipt.events.iter().find_map(|event| match event {
+            rpg_core::RpgDomainEvent::MovementTransition {
+                source_id,
+                moved_participant_id,
+                movement_kind: rpg_core::RpgMovementKind::Voluntary,
+                start,
+                end,
+                provokes: true,
+                ..
+            } => Some((source_id, moved_participant_id, *start, *end)),
+            _ => None,
+        })?;
+        let board_index = RpgAreaBoardIndex::new(&self.encounter.scenario.board, &self.state);
+        let mut candidates = Vec::new();
+        for owner in self.state.entities() {
+            if owner.id() == transition.1 || owner.vitality().current <= 0 {
+                continue;
+            }
+            for feature_id in owner.character_feature_ids() {
+                for registration in self.rules.movement_reactions_for_feature(feature_id) {
+                    let start_distance = owner
+                        .position()
+                        .x
+                        .abs_diff(transition.2.x)
+                        .saturating_add(owner.position().y.abs_diff(transition.2.y));
+                    let end_distance = owner
+                        .position()
+                        .x
+                        .abs_diff(transition.3.x)
+                        .saturating_add(owner.position().y.abs_diff(transition.3.y));
+                    if start_distance > registration.reach || end_distance <= registration.reach {
+                        continue;
+                    }
+                    let line_of_effect =
+                        line_of_effect_projection(&board_index, owner.position(), transition.2);
+                    if registration.requires_line_of_effect && !line_of_effect.clear {
+                        continue;
+                    }
+                    if !self
+                        .encounter
+                        .participant_definitions
+                        .get(owner.id())
+                        .is_some_and(|definitions| {
+                            definitions.contains(&registration.response_action_id)
+                        })
+                    {
+                        continue;
+                    }
+                    let Some(budget) = self
+                        .rules
+                        .activation_budgets()
+                        .find(|budget| budget.id == registration.activation_budget_id)
+                    else {
+                        continue;
+                    };
+                    let remaining = owner
+                        .activation_budget(&registration.activation_budget_id)
+                        .unwrap_or(0);
+                    let used = budget.initial_amount.saturating_sub(remaining)
+                        / registration.activation_cost;
+                    if remaining < registration.activation_cost
+                        || u32::try_from(used).unwrap_or(u32::MAX) >= registration.maximum_uses
+                    {
+                        continue;
+                    }
+                    let response_item_binding = self
+                        .rules
+                        .actions()
+                        .filter(|action| action.id == registration.response_action_id)
+                        .flat_map(|action| match action.binding {
+                            Some(binding) => self
+                                .item_bindings_for_actor(
+                                    owner.id(),
+                                    &registration.response_action_id,
+                                    &binding.item_definition_id,
+                                )
+                                .into_iter()
+                                .map(Some)
+                                .collect::<Vec<_>>(),
+                            None => vec![None],
+                        })
+                        .min();
+                    let Some(response_item_binding) = response_item_binding else {
+                        continue;
+                    };
+                    candidates.push((
+                        owner.id().to_owned(),
+                        feature_id.to_owned(),
+                        registration.clone(),
+                        response_item_binding,
+                        line_of_effect.clear,
+                    ));
+                }
+            }
+        }
+        candidates.sort_by(|left, right| {
+            (&left.0, &left.1, &left.2.id, &left.3).cmp(&(
+                &right.0,
+                &right.1,
+                &right.2.id,
+                &right.3,
+            ))
+        });
+        let (owner_id, source_definition_id, registration, item_binding, line_of_effect_clear) =
+            candidates.into_iter().next()?;
+        let durable_reaction_id = format!(
+            "movement:{}:{}:{}:{}",
+            self.state.revision(),
+            transition.1,
+            source_definition_id,
+            registration.id
+        );
+        let reaction_id = format!(
+            "movement:{}:{}",
+            self.session_binding_id, durable_reaction_id
+        );
+        let request = RpgReactionRequest {
+            kind: rpg_core::RpgReactionKind::VoluntaryLeavesAdjacency,
+            reaction_id,
+            actor_id: transition.0.clone(),
+            target_id: transition.1.clone(),
+            action_id: receipt.action_id.clone(),
+            options: vec![rpg_core::RpgReactionOption {
+                id: "respond".to_owned(),
+                label: "Respond".to_owned(),
+                damage_reduction: 0,
+                activation_costs: vec![rpg_core::RpgReactionActivationBudgetCost {
+                    budget_id: registration.activation_budget_id.clone(),
+                    amount: registration.activation_cost,
+                    remaining: self
+                        .state
+                        .entity(&owner_id)
+                        .and_then(|owner| {
+                            owner.activation_budget(&registration.activation_budget_id)
+                        })
+                        .unwrap_or(0),
+                }],
+                unavailable: None,
+            }],
+            path: "$.movementReaction".to_owned(),
+            movement: Some(rpg_core::RpgMovementReactionContext {
+                session_binding_id: self.session_binding_id.clone(),
+                artifact_id: self
+                    .artifact
+                    .as_ref()
+                    .map(|artifact| artifact.artifact_id.clone())
+                    .unwrap_or_default(),
+                scenario_fingerprint: self.scenario_fingerprint.clone(),
+                authority_revision: self.state.revision(),
+                round: self.encounter.turn.round,
+                turn: self.encounter.turn.turn,
+                owner_id,
+                source_definition_id,
+                registration_id: registration.id,
+                trigger_start: transition.2,
+                trigger_end: transition.3,
+                response_action_id: registration.response_action_id,
+                response_item_binding: item_binding,
+                reach: registration.reach,
+                line_of_effect_clear,
+            }),
+        };
+        Some(RpgPendingReaction {
+            expected_revision: self.state.revision(),
+            request,
+            trace: receipt.trace.clone(),
+            random_evidence: receipt.random_evidence.clone(),
+            random_attempted: receipt.random_consumed,
+        })
+    }
+
+    fn handle_forced_movement_request(
+        &mut self,
+        mut command: RpgAuthorityCommand,
+        portable_intent: RpgIntent,
+        area_event: Option<rpg_core::RpgDomainEvent>,
+        request: rpg_core::RpgForcedMovementRequest,
+        error: RpgResolutionRejection,
+    ) -> RpgCommandOutcome {
+        let options = self.forced_movement_options(&command.intent, &request);
+        if options.is_empty() {
+            return RpgCommandOutcome::Rejected(rejection(
+                "RPG_FORCED_MOVEMENT_ROUTE_UNAVAILABLE",
+                &request.operation_path,
+                "forced movement has no legal board transition",
+            ));
+        }
+        if request.movement_kind == rpg_core::RpgMovementKind::Slide {
+            let pending = RpgPendingForcedMovement {
+                request,
+                options,
+                trace: *error.trace,
+                random_evidence: *error.random_evidence,
+                random_attempted: error.random_attempted,
+            };
+            self.pending_forced_movement = Some(PendingForcedMovementTransaction {
+                intent: command.intent,
+                portable_intent,
+                random_values: command.random_values,
+                pending: pending.clone(),
+                area_event,
+            });
+            return RpgCommandOutcome::AwaitingForcedMovement(pending);
+        }
+        let option = options
+            .into_iter()
+            .next()
+            .expect("non-empty push options contain one derived route");
+        command
+            .intent
+            .cell_targets
+            .push(self.forced_movement_binding(&option));
+        let mut staged_state = self.state.clone();
+        let mut random = DeterministicRandomStream::new(command.random_values.clone());
+        let context = encounter_resolution_context(&self.encounter.scenario, &staged_state);
+        match self.rules.resolve_with_context(
+            &mut staged_state,
+            &mut random,
+            &command.intent,
+            &context,
+        ) {
+            Ok(receipt) => self.commit_resolved(receipt, staged_state, random, area_event),
+            Err(error) => RpgCommandOutcome::Rejected(error),
+        }
+    }
+
+    fn forced_movement_options(
+        &self,
+        intent: &RpgIntent,
+        request: &rpg_core::RpgForcedMovementRequest,
+    ) -> Vec<RpgForcedMovementOptionView> {
+        let routes = match request.movement_kind {
+            rpg_core::RpgMovementKind::Push => push_path(
+                &self.encounter.scenario.board,
+                &self.state,
+                &request.source_id,
+                &request.moved_participant_id,
+                request.maximum_distance,
+            )
+            .into_iter()
+            .collect(),
+            rpg_core::RpgMovementKind::Slide => movement_paths(
+                &self.encounter.scenario.board,
+                &self.state,
+                &request.moved_participant_id,
+                request.maximum_distance,
+            ),
+            rpg_core::RpgMovementKind::Voluntary => Vec::new(),
+        };
+        let artifact_id = self
+            .artifact
+            .as_ref()
+            .map(|artifact| artifact.artifact_id.clone())
+            .unwrap_or_default();
+        routes
+            .into_iter()
+            .map(|route| RpgForcedMovementOptionView {
+                session_binding_id: self.session_binding_id.clone(),
+                artifact_id: artifact_id.clone(),
+                scenario_fingerprint: self.scenario_fingerprint.clone(),
+                authority_revision: self.state.revision(),
+                round: self.encounter.turn.round,
+                turn: self.encounter.turn.turn,
+                current_actor_id: self.encounter.current_actor_id().to_owned(),
+                action_id: intent.action_id.clone(),
+                source_id: request.source_id.clone(),
+                moved_participant_id: request.moved_participant_id.clone(),
+                operation_path: request.operation_path.clone(),
+                route,
+            })
+            .collect()
+    }
+
+    fn forced_movement_binding(&self, option: &RpgForcedMovementOptionView) -> RpgIntentCellTarget {
+        let destination = self
+            .encounter
+            .scenario
+            .board
+            .cells
+            .iter()
+            .find(|cell| cell.id == option.route.destination_cell_id)
+            .expect("projected forced movement destinations remain on the board");
+        RpgIntentCellTarget {
+            id: format!("forced:{}", option.moved_participant_id),
+            position: destination.position,
+            route_cell_ids: option.route.cell_ids.clone(),
+            movement_cost: option.route.movement_cost,
+        }
+    }
+
+    pub fn resolve_forced_movement(
+        &mut self,
+        command: RpgForcedMovementCommand,
+        additional_random_values: Vec<u32>,
+    ) -> RpgCommandOutcome {
+        if self.pending.is_some() || self.pending_turn_save.is_some() {
+            return RpgCommandOutcome::Rejected(rejection(
+                "RPG_SESSION_OTHER_PHASE_PENDING",
+                "$.forcedMovement",
+                "another authority phase must be resolved first",
+            ));
+        }
+        let Some(transaction) = self.pending_forced_movement.clone() else {
+            return RpgCommandOutcome::Rejected(rejection(
+                "RPG_FORCED_MOVEMENT_PENDING_ABSENT",
+                "$.forcedMovement",
+                "there is no pending forced movement choice",
+            ));
+        };
+        if !transaction
+            .pending
+            .options
+            .iter()
+            .any(|option| option == &command.option)
+        {
+            return RpgCommandOutcome::Rejected(rejection(
+                "RPG_FORCED_MOVEMENT_OPTION_STALE",
+                "$.forcedMovement.option",
+                "the forced movement option does not match current authority readback",
+            ));
+        }
+        let current_options =
+            self.forced_movement_options(&transaction.intent, &transaction.pending.request);
+        if current_options != transaction.pending.options {
+            return RpgCommandOutcome::Rejected(rejection(
+                "RPG_FORCED_MOVEMENT_OPTION_STALE",
+                "$.forcedMovement.option",
+                "the board or movement source changed after the choice was projected",
+            ));
+        }
+        let mut intent = transaction.intent.clone();
+        intent
+            .cell_targets
+            .push(self.forced_movement_binding(&command.option));
+        let mut evidence = transaction.random_values.clone();
+        evidence.extend(additional_random_values);
+        let mut staged_state = self.state.clone();
+        let mut random = DeterministicRandomStream::new(evidence);
+        let context = encounter_resolution_context(&self.encounter.scenario, &staged_state);
+        match self
+            .rules
+            .resolve_with_context(&mut staged_state, &mut random, &intent, &context)
+        {
+            Ok(receipt) => {
+                let outcome =
+                    self.commit_resolved(receipt, staged_state, random, transaction.area_event);
+                if matches!(outcome, RpgCommandOutcome::Accepted(_)) {
+                    self.pending_forced_movement = None;
+                }
+                outcome
+            }
+            Err(error) => RpgCommandOutcome::Rejected(error),
         }
     }
 
@@ -1019,6 +1538,9 @@ impl RpgAuthoritySession {
                 ),
             ));
         }
+        if transaction.pending.request.kind == rpg_core::RpgReactionKind::VoluntaryLeavesAdjacency {
+            return self.react_to_movement(transaction, command);
+        }
 
         let mut evidence = transaction.random_values.clone();
         evidence.extend(command.additional_random_values);
@@ -1091,6 +1613,168 @@ impl RpgAuthoritySession {
             }
             Err(error) => RpgCommandOutcome::Rejected(error),
         }
+    }
+
+    fn react_to_movement(
+        &mut self,
+        transaction: PendingTransaction,
+        command: RpgReactionCommand,
+    ) -> RpgCommandOutcome {
+        if !matches!(command.option_id.as_deref(), None | Some("respond")) {
+            return RpgCommandOutcome::Rejected(rejection(
+                "RPG_MOVEMENT_REACTION_OPTION_INVALID",
+                "$.reaction.optionId",
+                "movement reaction accepts only respond or explicit decline",
+            ));
+        }
+        let Some(context) = transaction.pending.request.movement.clone() else {
+            return RpgCommandOutcome::Rejected(rejection(
+                "RPG_MOVEMENT_REACTION_CONTEXT_MISSING",
+                "$.reaction",
+                "movement reaction is missing its trigger-time authority context",
+            ));
+        };
+        let artifact_id = self
+            .artifact
+            .as_ref()
+            .map(|artifact| artifact.artifact_id.as_str())
+            .unwrap_or_default();
+        if context.session_binding_id != self.session_binding_id
+            || context.artifact_id != artifact_id
+            || context.scenario_fingerprint != self.scenario_fingerprint
+            || context.authority_revision != self.state.revision()
+            || context.round != self.encounter.turn.round
+            || context.turn != self.encounter.turn.turn
+        {
+            return RpgCommandOutcome::Rejected(rejection(
+                "RPG_MOVEMENT_REACTION_STALE",
+                "$.reaction",
+                "the movement reaction belongs to a different authority identity or turn",
+            ));
+        }
+        let mut evidence = transaction.random_values.clone();
+        evidence.extend(command.additional_random_values);
+        let mut staged_state = self.state.clone();
+        let mut random = DeterministicRandomStream::new(evidence);
+        let resolution_context =
+            encounter_resolution_context(&self.encounter.scenario, &staged_state);
+        let mut receipt = match self.rules.resolve_with_context(
+            &mut staged_state,
+            &mut random,
+            &transaction.intent,
+            &resolution_context,
+        ) {
+            Ok(receipt) => receipt,
+            Err(error) => return RpgCommandOutcome::Rejected(error),
+        };
+        let Some(current_pending) = self.movement_reaction_pending(&receipt) else {
+            return RpgCommandOutcome::Rejected(rejection(
+                "RPG_MOVEMENT_REACTION_STALE",
+                "$.reaction",
+                "the accepted movement no longer produces the captured trigger",
+            ));
+        };
+        if current_pending.request != transaction.pending.request {
+            return RpgCommandOutcome::Rejected(rejection(
+                "RPG_MOVEMENT_REACTION_STALE",
+                "$.reaction",
+                "the current trigger identity differs from the pending reaction",
+            ));
+        }
+        receipt
+            .events
+            .push(rpg_core::RpgDomainEvent::MovementReactionOpened {
+                reaction_id: durable_movement_reaction_id(&transaction.pending.request, &context),
+                owner_id: context.owner_id.clone(),
+                source_definition_id: context.source_definition_id.clone(),
+                moved_participant_id: transaction.pending.request.target_id.clone(),
+                trigger_start: context.trigger_start,
+                trigger_end: context.trigger_end,
+                response_action_id: context.response_action_id.clone(),
+                response_item_binding: context.response_item_binding.clone(),
+            });
+        if command.option_id.as_deref() == Some("respond") {
+            let current_position = staged_state
+                .entity(&transaction.pending.request.target_id)
+                .map(|entity| entity.position())
+                .unwrap_or(context.trigger_end);
+            let back_x = i64::from(context.trigger_start.x) - i64::from(current_position.x);
+            let back_y = i64::from(context.trigger_start.y) - i64::from(current_position.y);
+            let back_x = i32::try_from(back_x).unwrap_or(i32::MIN);
+            let back_y = i32::try_from(back_y).unwrap_or(i32::MIN);
+            if staged_state
+                .position_owner()
+                .move_entity(&transaction.pending.request.target_id, back_x, back_y, 64)
+                .is_err()
+            {
+                return RpgCommandOutcome::Rejected(rejection(
+                    "RPG_MOVEMENT_REACTION_TRIGGER_POSITION_INVALID",
+                    "$.reaction",
+                    "the captured trigger-time position cannot be restored for response legality",
+                ));
+            }
+            let response_intent = RpgIntent {
+                action_id: context.response_action_id.clone(),
+                actor_id: context.owner_id.clone(),
+                target_ids: vec![transaction.pending.request.target_id.clone()],
+                cell_targets: Vec::new(),
+                item_binding: context.response_item_binding.clone(),
+            };
+            let response_context =
+                encounter_resolution_context(&self.encounter.scenario, &staged_state);
+            let response = match self.rules.resolve_embedded_with_context(
+                &mut staged_state,
+                &mut random,
+                &response_intent,
+                &response_context,
+            ) {
+                Ok(response) => response,
+                Err(error) => return RpgCommandOutcome::Rejected(error),
+            };
+            let now = staged_state
+                .entity(&transaction.pending.request.target_id)
+                .map(|entity| entity.position())
+                .unwrap_or(context.trigger_start);
+            let forward_x = i64::from(context.trigger_end.x) - i64::from(now.x);
+            let forward_y = i64::from(context.trigger_end.y) - i64::from(now.y);
+            let forward_x = i32::try_from(forward_x).unwrap_or(i32::MIN);
+            let forward_y = i32::try_from(forward_y).unwrap_or(i32::MIN);
+            if staged_state
+                .position_owner()
+                .move_entity(
+                    &transaction.pending.request.target_id,
+                    forward_x,
+                    forward_y,
+                    64,
+                )
+                .is_err()
+            {
+                return RpgCommandOutcome::Rejected(rejection(
+                    "RPG_MOVEMENT_REACTION_END_POSITION_INVALID",
+                    "$.reaction",
+                    "the staged movement end position cannot be restored after the response",
+                ));
+            }
+            receipt.events.extend(response.events);
+            receipt.trace.extend(response.trace);
+            receipt.random_evidence.extend(response.random_evidence);
+            receipt.random_consumed = receipt
+                .random_consumed
+                .saturating_add(response.random_consumed);
+        }
+        receipt
+            .events
+            .push(rpg_core::RpgDomainEvent::MovementReactionResolved {
+                reaction_id: durable_movement_reaction_id(&transaction.pending.request, &context),
+                owner_id: context.owner_id,
+                accepted: command.option_id.is_some(),
+                response_action_id: context.response_action_id,
+            });
+        let outcome = self.commit_resolved(receipt, staged_state, random, transaction.area_event);
+        if matches!(outcome, RpgCommandOutcome::Accepted(_)) {
+            self.pending = None;
+        }
+        outcome
     }
 
     pub(crate) fn control(&mut self, command: RpgTurnControlCommand) -> RpgCommandOutcome {
@@ -1469,6 +2153,8 @@ impl RpgAuthoritySession {
                 cell_targets: vec![RpgIntentCellTarget {
                     id: anchor.id.clone(),
                     position: anchor.position,
+                    route_cell_ids: Vec::new(),
+                    movement_cost: 0,
                 }],
                 item_binding: proposal.item_binding,
             },
@@ -1603,6 +2289,46 @@ impl RpgAuthoritySession {
         )))
     }
 
+    pub fn react_with_random_values_recorded(
+        &mut self,
+        proposal: RpgReactionProposal,
+        additional_random_values: Vec<u32>,
+    ) -> Result<(RpgCommandOutcome, RpgReplayEntry), RpgReplayFailure> {
+        self.react_recorded(RpgReactionCommand {
+            expected_revision: proposal.expected_revision,
+            reaction_id: proposal.reaction_id,
+            option_id: proposal.option_id,
+            additional_random_values,
+        })
+    }
+
+    pub fn resolve_forced_movement_with_random_source_recorded(
+        &mut self,
+        option: RpgForcedMovementOptionView,
+        source: &mut dyn RpgRandomSource,
+    ) -> Result<(RpgCommandOutcome, RpgReplayEntry), RpgAutomaticCommandFailure> {
+        self.require_random_source(source)?;
+        let baseline = self.probe_snapshot();
+        let command = RpgForcedMovementCommand { option };
+        let mut additional_random_values = Vec::new();
+        for _ in 0..MAXIMUM_AUTOMATIC_RANDOM_REQUESTS {
+            let mut probe = baseline.probe_snapshot();
+            let outcome =
+                probe.resolve_forced_movement(command.clone(), additional_random_values.clone());
+            let Some(request) = required_random_request(&outcome) else {
+                return self
+                    .resolve_forced_movement_recorded(command, additional_random_values)
+                    .map_err(RpgAutomaticCommandFailure::Replay);
+            };
+            extend_random_values(&mut additional_random_values, request, source)?;
+        }
+        Err(RpgAutomaticCommandFailure::RandomSource(random_failure(
+            "RPG_RANDOM_REQUEST_LIMIT_EXCEEDED",
+            "$.randomRequest",
+            "authority did not reach a terminal result within the random request limit",
+        )))
+    }
+
     pub fn control_recorded(
         &mut self,
         proposal: RpgTurnControlProposal,
@@ -1683,6 +2409,8 @@ impl RpgAuthoritySession {
                     .map(|cell| RpgIntentCellTarget {
                         id: cell.id.clone(),
                         position: cell.position,
+                        route_cell_ids: Vec::new(),
+                        movement_cost: 0,
                     })
             })
             .collect()
@@ -1861,13 +2589,18 @@ impl RpgAuthoritySession {
             .map(|cell| RpgIntentCellTarget {
                 id: cell.id,
                 position: cell.position,
+                route_cell_ids: Vec::new(),
+                movement_cost: 0,
             })
             .collect();
         Ok((command, Some(event)))
     }
 
-    fn movement_path_rejection(&self, intent: &RpgIntent) -> Option<RpgResolutionRejection> {
-        let maximum_distance = self
+    fn prepare_movement_intent(
+        &self,
+        intent: &mut RpgIntent,
+    ) -> Result<(), RpgResolutionRejection> {
+        let Some(mut maximum_distance) = self
             .rules
             .selected_destination_maximum_distance_for_binding(
                 &intent.action_id,
@@ -1875,27 +2608,67 @@ impl RpgAuthoritySession {
                     .item_binding
                     .as_ref()
                     .map(|binding| binding.item_definition_id.as_str()),
-            )?;
+            )
+        else {
+            return Ok(());
+        };
+        if let Some(budget) = self.rules.movement_allowance_budget() {
+            let remaining = self
+                .state
+                .entity(&intent.actor_id)
+                .and_then(|entity| entity.activation_budget(&budget.id))
+                .ok_or_else(|| {
+                    rejection(
+                        "RPG_MOVEMENT_ALLOWANCE_UNAVAILABLE",
+                        "$.command.intent.actorId",
+                        format!(
+                            "actor {} has no {} movement allowance",
+                            intent.actor_id, budget.id
+                        ),
+                    )
+                })?;
+            maximum_distance = maximum_distance.min(u32::try_from(remaining).map_err(|_| {
+                rejection(
+                    "RPG_MOVEMENT_ALLOWANCE_INVALID",
+                    "$.command.intent.actorId",
+                    "the actor movement allowance is outside the supported non-negative domain",
+                )
+            })?);
+        }
         let paths = movement_paths(
             &self.encounter.scenario.board,
             &self.state,
             &intent.actor_id,
             maximum_distance,
         );
-        intent.target_ids.iter().enumerate().find_map(|(index, target_id)| {
-            (!paths
+        for (index, target_id) in intent.target_ids.iter().enumerate() {
+            let path = paths
                 .iter()
-                .any(|path| path.destination_cell_id == *target_id))
-            .then(|| {
-                rejection(
+                .find(|path| path.destination_cell_id == *target_id)
+                .ok_or_else(|| {
+                    rejection(
                     "RPG_MOVEMENT_PATH_UNAVAILABLE",
                     format!("$.command.intent.targetIds[{index}]"),
                     format!(
                         "destination {target_id} has no traversable path within movement cost {maximum_distance}"
                     ),
-                )
-            })
-        })
+                    )
+                })?;
+            let binding = intent
+                .cell_targets
+                .iter_mut()
+                .find(|binding| binding.id == *target_id)
+                .ok_or_else(|| {
+                    rejection(
+                        "RPG_RUNTIME_CELL_BINDING_MISSING",
+                        format!("$.command.intent.targetIds[{index}]"),
+                        format!("selected cell {target_id} has no authoritative binding"),
+                    )
+                })?;
+            binding.route_cell_ids = path.cell_ids.clone();
+            binding.movement_cost = path.movement_cost;
+        }
+        Ok(())
     }
 
     fn action_option_binding_rejection(
@@ -2100,6 +2873,7 @@ impl RpgAuthoritySession {
             rules,
             state,
             pending: None,
+            pending_forced_movement: None,
             pending_turn_save: None,
             accepted_random_values: 0,
             encounter: RpgEncounterAuthority {
@@ -2126,6 +2900,19 @@ impl RpgAuthoritySession {
     }
 }
 
+fn durable_movement_reaction_id(
+    request: &rpg_core::RpgReactionRequest,
+    context: &rpg_core::RpgMovementReactionContext,
+) -> String {
+    format!(
+        "movement:{}:{}:{}:{}",
+        context.authority_revision,
+        request.target_id,
+        context.source_definition_id,
+        context.registration_id
+    )
+}
+
 fn cell_intent(action_id: &str, actor_id: &str, cell: &crate::RpgCellSetup) -> RpgIntent {
     RpgIntent {
         action_id: action_id.to_owned(),
@@ -2134,6 +2921,8 @@ fn cell_intent(action_id: &str, actor_id: &str, cell: &crate::RpgCellSetup) -> R
         cell_targets: vec![RpgIntentCellTarget {
             id: cell.id.clone(),
             position: cell.position,
+            route_cell_ids: Vec::new(),
+            movement_cost: 0,
         }],
         item_binding: None,
     }
@@ -2637,12 +3426,13 @@ fn rejection(
     RpgResolutionRejection {
         code: code.to_owned(),
         path: path.into(),
-        message: message.into(),
+        message: message.into().into_boxed_str(),
         trace: Box::new(Vec::new()),
         random_evidence: Box::new(Vec::new()),
         random_attempted: 0,
         random_request: None,
         reaction_request: None,
+        forced_movement_request: None,
         unavailable_source: None,
     }
 }
@@ -2709,6 +3499,58 @@ mod tests {
         compile_normalized_rpg_json(source).expect("movement rules compile")
     }
 
+    fn forced_movement_ruleset() -> CompiledRpgRules {
+        let source = br#"{
+          "schema":{"identity":"asha.rpg.ir","major":3},
+          "package":{"id":"forced-movement.test","version":"1.0.0"},
+          "catalogs":{"capabilities":["capability.position","capability.vitality"]},
+          "requirements":[
+            {"kind":"operation","id":"operation.push","version":1},
+            {"kind":"operation","id":"operation.slide","version":1},
+            {"kind":"capability","id":"capability.position","version":1},
+            {"kind":"capability","id":"capability.vitality","version":1}
+          ],
+          "actions":[{
+            "id":"action.push","name":"Push","sourcePath":"actions/push",
+            "targets":{"team":"hostile","maximumRange":1,"maximumTargets":1},
+            "check":{"kind":"noRoll"},"rollScope":"none","costs":[],
+            "program":{"kind":"atomic","body":{"kind":"onCheck","noRoll":{
+              "kind":"operation","operation":{"kind":"push","subject":"target","distance":3}
+            }}}
+          },{
+            "id":"action.slide","name":"Slide","sourcePath":"actions/slide",
+            "targets":{"team":"hostile","maximumRange":1,"maximumTargets":1},
+            "check":{"kind":"noRoll"},"rollScope":"none","costs":[],
+            "program":{"kind":"atomic","body":{"kind":"onCheck","noRoll":{
+              "kind":"operation","operation":{"kind":"slide","subject":"target","maximumDistance":2}
+            }}}
+          }]
+        }"#;
+        compile_normalized_rpg_json(source).expect("forced movement rules compile")
+    }
+
+    fn forced_movement_session() -> RpgAuthoritySession {
+        let actor = RpgEntityState::new("hero", Team::ally(), GridPosition { x: 0, y: 0 }, 20);
+        let target = RpgEntityState::new("target", Team::enemy(), GridPosition { x: 1, y: 0 }, 20);
+        let blocker =
+            RpgEntityState::new("blocker", Team::enemy(), GridPosition { x: 3, y: 0 }, 20);
+        let mut state = RpgCapabilityState::default();
+        state.insert_entity(actor);
+        state.insert_entity(target);
+        state.insert_entity(blocker);
+        let mut session = RpgAuthoritySession::for_test(forced_movement_ruleset(), state);
+        session.encounter.scenario.board = crate::RpgBoardSetup {
+            width: 4,
+            height: 2,
+            cells: (0..2)
+                .flat_map(|y| {
+                    (0..4).map(move |x| movement_cell(&format!("cell-{x}-{y}"), x, y, true, 1))
+                })
+                .collect(),
+        };
+        session
+    }
+
     fn movement_session() -> RpgAuthoritySession {
         let actor = RpgEntityState::new("hero", Team::ally(), GridPosition { x: 0, y: 1 }, 20);
         let target =
@@ -2763,6 +3605,8 @@ mod tests {
                 cell_targets: vec![RpgIntentCellTarget {
                     id: cell_id.to_owned(),
                     position,
+                    route_cell_ids: Vec::new(),
+                    movement_cost: 0,
                 }],
                 item_binding: None,
             },
@@ -3022,8 +3866,8 @@ mod tests {
         assert_eq!(session.turn().current_actor_id, "guardian");
         assert!(matches!(
             receipt.events.first(),
-            Some(RpgDomainEvent::PositionChanged { current, .. })
-                if *current == GridPosition { x: 2, y: 1 }
+            Some(RpgDomainEvent::MovementTransition { end, .. })
+                if *end == GridPosition { x: 2, y: 1 }
         ));
         assert!(receipt.events.iter().any(|event| matches!(
             event,
@@ -3036,6 +3880,81 @@ mod tests {
         let log = &session.encounter_view().log;
         assert_eq!(log.len(), 1);
         assert_eq!(log[0].action_id, "action.move");
+    }
+
+    #[test]
+    fn push_stops_before_blocker_and_slide_uses_bound_authority_choice() {
+        let mut pushed = forced_movement_session();
+        let push = pushed.submit(RpgAuthorityCommand {
+            expected_revision: 0,
+            intent: RpgIntent {
+                action_id: "action.push".to_owned(),
+                actor_id: "hero".to_owned(),
+                target_ids: vec!["target".to_owned()],
+                cell_targets: Vec::new(),
+                item_binding: None,
+            },
+            random_values: Vec::new(),
+        });
+        let RpgCommandOutcome::Accepted(push_receipt) = push else {
+            panic!("push should derive and commit its route: {push:?}");
+        };
+        assert_eq!(
+            pushed.state().entity("target").unwrap().position(),
+            GridPosition { x: 2, y: 0 }
+        );
+        assert!(matches!(
+            push_receipt.events.first(),
+            Some(RpgDomainEvent::MovementTransition {
+                movement_kind: rpg_core::RpgMovementKind::Push,
+                route_cell_ids,
+                movement_cost: 1,
+                provokes: false,
+                ..
+            }) if route_cell_ids == &["cell-2-0"]
+        ));
+
+        let mut slid = forced_movement_session();
+        let slide = slid.submit(RpgAuthorityCommand {
+            expected_revision: 0,
+            intent: RpgIntent {
+                action_id: "action.slide".to_owned(),
+                actor_id: "hero".to_owned(),
+                target_ids: vec!["target".to_owned()],
+                cell_targets: Vec::new(),
+                item_binding: None,
+            },
+            random_values: Vec::new(),
+        });
+        let RpgCommandOutcome::AwaitingForcedMovement(pending) = slide else {
+            panic!("slide should project a typed pending route choice: {slide:?}");
+        };
+        assert_eq!(
+            slid.state().entity("target").unwrap().position(),
+            GridPosition { x: 1, y: 0 }
+        );
+        let option = pending
+            .options
+            .iter()
+            .find(|option| option.route.destination_cell_id == "cell-1-1")
+            .cloned()
+            .unwrap();
+        let outcome = slid.resolve_forced_movement(RpgForcedMovementCommand { option }, Vec::new());
+        let RpgCommandOutcome::Accepted(receipt) = outcome else {
+            panic!("bound slide option should commit: {outcome:?}");
+        };
+        assert_eq!(
+            slid.state().entity("target").unwrap().position(),
+            GridPosition { x: 1, y: 1 }
+        );
+        assert!(matches!(
+            receipt.events.first(),
+            Some(RpgDomainEvent::MovementTransition {
+                movement_kind: rpg_core::RpgMovementKind::Slide,
+                provokes: false,
+                ..
+            })
+        ));
     }
 
     #[test]

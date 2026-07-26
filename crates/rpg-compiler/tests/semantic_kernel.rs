@@ -134,9 +134,9 @@ fn movement_uses_the_position_owner_and_emits_a_replayable_event() {
     );
     assert!(matches!(
         receipt.events[0],
-        RpgDomainEvent::PositionChanged {
-            previous: GridPosition { x: 2, y: 2 },
-            current: GridPosition { x: 4, y: 1 },
+        RpgDomainEvent::MovementTransition {
+            start: GridPosition { x: 2, y: 2 },
+            end: GridPosition { x: 4, y: 1 },
             provokes: true,
             ..
         }

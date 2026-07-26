@@ -102,6 +102,9 @@ export function defineCharacterFeatureDefinition(input) {
     return immutable({
         ...input,
         kind: 'characterFeature',
+        lowLevelReferences: (input.characterFeature.movementReactions ?? [])
+            .map((reaction) => ({ ...reaction.responseAction }))
+            .sort((left, right) => `${left.importAs ?? ''}#${left.definitionId}`.localeCompare(`${right.importAs ?? ''}#${right.definitionId}`)),
         characterFeature: {
             schema: {
                 identity: 'asha.rpg.character-feature',
@@ -111,6 +114,12 @@ export function defineCharacterFeatureDefinition(input) {
             outcomeBandShifts: normalizeOutcomeBandShifts(input.characterFeature.outcomeBandShifts ?? []),
             poolContributions: normalizePoolContributions(input.characterFeature.poolContributions ?? []),
             damageResponses: normalizeDamageResponses(input.characterFeature.damageResponses ?? []),
+            movementReactions: [...(input.characterFeature.movementReactions ?? [])]
+                .map(({ responseAction, ...reaction }) => ({
+                ...reaction,
+                responseActionId: responseAction.definitionId,
+            }))
+                .sort((left, right) => left.id.localeCompare(right.id)),
         },
     });
 }

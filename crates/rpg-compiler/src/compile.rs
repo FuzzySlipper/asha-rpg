@@ -98,6 +98,7 @@ pub struct CompiledRpgRules {
     scalar_test_profiles: BTreeMap<String, CompiledScalarTestProfile>,
     heterogeneous_pool_profiles: BTreeMap<String, RulesetHeterogeneousPoolProfile>,
     activation_budgets: BTreeMap<String, RulesetActivationBudget>,
+    movement_allowance_budget_id: Option<String>,
     accepted_activation_ceiling: Option<u32>,
 }
 
@@ -274,6 +275,7 @@ impl CompiledRpgRules {
             .cloned()
             .map(|budget| (budget.id.clone(), budget))
             .collect();
+        self.movement_allowance_budget_id = ruleset.provides.movement_allowance_budget_id.clone();
         self.accepted_activation_ceiling =
             ruleset.models.action_economy.accepted_activation_ceiling();
         self.contribution_stacking_groups = ruleset
@@ -315,6 +317,16 @@ impl CompiledRpgRules {
         definition_id: &str,
     ) -> Option<&CompiledCharacterFeature> {
         self.character_features.get(definition_id)
+    }
+
+    pub fn movement_reactions_for_feature(
+        &self,
+        definition_id: &str,
+    ) -> &[rpg_ir::RpgMovementReactionDefinition] {
+        self.character_features
+            .get(definition_id)
+            .map(|feature| feature.movement_reactions.as_slice())
+            .unwrap_or_default()
     }
 
     pub(crate) fn item(&self, definition_id: &str) -> Option<&CompiledItemDefinition> {
@@ -363,6 +375,26 @@ impl CompiledRpgRules {
 
     pub fn activation_budgets(&self) -> impl Iterator<Item = &RulesetActivationBudget> {
         self.activation_budgets.values()
+    }
+
+    pub fn movement_allowance_budget(&self) -> Option<&RulesetActivationBudget> {
+        self.movement_allowance_budget_id
+            .as_ref()
+            .and_then(|id| self.activation_budgets.get(id))
+    }
+
+    pub fn action_activation_timing_for_binding(
+        &self,
+        action_id: &str,
+        item_definition_id: Option<&str>,
+    ) -> Option<rpg_ir::RpgIrActivationTiming> {
+        self.action_for_binding(action_id, item_definition_id)
+            .and_then(|action| {
+                action
+                    .activation
+                    .as_ref()
+                    .map(|activation| activation.timing)
+            })
     }
 }
 
@@ -665,6 +697,7 @@ pub(crate) fn compile_normalized_rpg_ir_with_ruleset(
         scalar_test_profiles: BTreeMap::new(),
         heterogeneous_pool_profiles: BTreeMap::new(),
         activation_budgets: BTreeMap::new(),
+        movement_allowance_budget_id: None,
         accepted_activation_ceiling: None,
     })
 }
@@ -811,7 +844,9 @@ fn collect_program_random_plan(
                 collect_formula_random_plan(delta_x, &format!("{path}.deltaX"), conditions, plan);
                 collect_formula_random_plan(delta_y, &format!("{path}.deltaY"), conditions, plan);
             }
-            RpgIrOperation::MoveToCell { .. } => {}
+            RpgIrOperation::MoveToCell { .. }
+            | RpgIrOperation::Push { .. }
+            | RpgIrOperation::Slide { .. } => {}
             RpgIrOperation::OpenReaction { .. } => {}
         },
         RpgIrProgram::Sequence { steps } => {
@@ -1335,7 +1370,7 @@ impl<'a> Validator<'a> {
             if let Some(activation) = &action.activation {
                 self.validate_activation(
                     activation,
-                    RpgIrActivationTiming::Action,
+                    activation.timing,
                     &format!("{path}.activation"),
                 );
             }
@@ -2029,6 +2064,47 @@ impl<'a> Validator<'a> {
                         "RPG_IR_MOVEMENT_BOUND_INVALID",
                         format!("{path}.maximumDistance"),
                         "movement maximum distance must be between 1 and 64",
+                    );
+                }
+            }
+            RpgIrOperation::Push { subject, distance } => {
+                if *subject != RpgIrSubject::Target {
+                    self.error(
+                        RpgDiagnosticStage::Semantics,
+                        "RPG_IR_FORCED_MOVEMENT_SUBJECT_INVALID",
+                        format!("{path}.subject"),
+                        "push currently requires the selected participant target",
+                    );
+                }
+                self.require_target_binding(path, target_bound, action_target_maximum);
+                if *distance == 0 || *distance > 64 {
+                    self.error(
+                        RpgDiagnosticStage::Semantics,
+                        "RPG_IR_FORCED_MOVEMENT_BOUND_INVALID",
+                        format!("{path}.distance"),
+                        "push distance must be between 1 and 64",
+                    );
+                }
+            }
+            RpgIrOperation::Slide {
+                subject,
+                maximum_distance,
+            } => {
+                if *subject != RpgIrSubject::Target {
+                    self.error(
+                        RpgDiagnosticStage::Semantics,
+                        "RPG_IR_FORCED_MOVEMENT_SUBJECT_INVALID",
+                        format!("{path}.subject"),
+                        "slide currently requires the selected participant target",
+                    );
+                }
+                self.require_target_binding(path, target_bound, action_target_maximum);
+                if *maximum_distance == 0 || *maximum_distance > 64 {
+                    self.error(
+                        RpgDiagnosticStage::Semantics,
+                        "RPG_IR_FORCED_MOVEMENT_BOUND_INVALID",
+                        format!("{path}.maximumDistance"),
+                        "slide maximum distance must be between 1 and 64",
                     );
                 }
             }

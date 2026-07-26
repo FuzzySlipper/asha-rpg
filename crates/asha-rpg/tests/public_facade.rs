@@ -1970,6 +1970,521 @@ fn activation_budget_contracts_fail_closed_before_authority_state_exists() {
 }
 
 #[test]
+fn route_cost_movement_and_leave_adjacency_reaction_are_one_atomic_transaction() {
+    let bundle = compile_prepared_play_bundle(movement_contract_prepared()).unwrap();
+    let scenario = movement_contract_scenario(&bundle);
+    let mut session = RpgAuthoritySession::from_scenario(bundle.clone(), scenario.clone()).unwrap();
+    let initial = session.checkpoint().unwrap();
+    let view = session.encounter_view();
+    let actor = view
+        .participants
+        .iter()
+        .find(|participant| participant.id == "actor")
+        .unwrap();
+    assert_eq!(
+        actor
+            .movement_allowance
+            .as_ref()
+            .map(|allowance| allowance.remaining),
+        Some(4)
+    );
+    let movement = view
+        .actions
+        .iter()
+        .find(|action| action.definition_id == "action.move")
+        .unwrap();
+    let route = movement
+        .options
+        .cell_paths
+        .iter()
+        .find(|path| path.destination_cell_id == "cell-3-1")
+        .unwrap();
+    assert_eq!(route.cell_ids, ["cell-2-1", "cell-3-1"]);
+    assert_eq!(route.movement_cost, 3);
+
+    let before_hash = session.state_hash().unwrap();
+    let before_view = session.encounter_view();
+    let (outcome, first_entry) = submit_no_random(
+        &mut session,
+        RpgActionProposal {
+            expected_revision: 0,
+            action_id: "action.move".to_owned(),
+            actor_id: "actor".to_owned(),
+            target_ids: vec!["cell-3-1".to_owned()],
+            item_binding: None,
+        },
+    );
+    let RpgCommandOutcome::AwaitingReaction(pending) = outcome else {
+        panic!("voluntary leave-adjacency movement should await response: {outcome:?}");
+    };
+    assert_eq!(
+        pending.request.kind,
+        asha_rpg::RpgReactionKind::VoluntaryLeavesAdjacency
+    );
+    let context = pending.request.movement.as_ref().unwrap();
+    assert_eq!(context.owner_id, "reactor");
+    assert_eq!(context.source_definition_id, "feature.leave-response");
+    assert_eq!(context.trigger_start, GridPosition { x: 1, y: 1 });
+    assert_eq!(context.trigger_end, GridPosition { x: 3, y: 1 });
+    assert_eq!(context.response_action_id, "action.response");
+    assert!(context.line_of_effect_clear);
+    assert_ne!(session.state_hash().unwrap(), before_hash);
+    assert_eq!(session.state().revision(), 0);
+    assert_eq!(
+        session.state().entity("actor").unwrap().position(),
+        GridPosition { x: 1, y: 1 }
+    );
+    assert_eq!(session.encounter_view().log, before_view.log);
+    assert_eq!(
+        session
+            .encounter_view()
+            .participants
+            .iter()
+            .find(|participant| participant.id == "actor")
+            .unwrap()
+            .movement_allowance
+            .as_ref()
+            .unwrap()
+            .remaining,
+        4
+    );
+
+    let pending_checkpoint = session.checkpoint().unwrap();
+    let mut restored = RpgAuthoritySession::restore_checkpoint(pending_checkpoint).unwrap();
+    let restored_before = restored.state_hash().unwrap();
+    let stale = restored
+        .react_with_random_source_recorded(
+            RpgReactionProposal {
+                expected_revision: 0,
+                reaction_id: pending.request.reaction_id.clone(),
+                option_id: Some("respond".to_owned()),
+            },
+            &mut RpgRollTapeSource::new(restored.scenario().random_source.clone(), Vec::new()),
+        )
+        .unwrap();
+    assert!(matches!(
+        stale.0,
+        RpgCommandOutcome::Rejected(ref rejection)
+            if rejection.code == "RPG_REACTION_ID_MISMATCH"
+    ));
+    assert_eq!(restored.state_hash().unwrap(), restored_before);
+    let restored_reaction_id = restored
+        .pending_reaction()
+        .unwrap()
+        .request
+        .reaction_id
+        .clone();
+    assert_ne!(restored_reaction_id, pending.request.reaction_id);
+    let (restored_decline, _) = restored
+        .react_with_random_values_recorded(
+            RpgReactionProposal {
+                expected_revision: 0,
+                reaction_id: restored_reaction_id,
+                option_id: None,
+            },
+            Vec::new(),
+        )
+        .unwrap();
+    assert!(
+        matches!(restored_decline, RpgCommandOutcome::Accepted(_)),
+        "restored current reaction should remain usable: {restored_decline:?}"
+    );
+
+    let (declined, decline_entry) = session
+        .react_with_random_source_recorded(
+            RpgReactionProposal {
+                expected_revision: 0,
+                reaction_id: pending.request.reaction_id.clone(),
+                option_id: None,
+            },
+            &mut RpgRollTapeSource::new(session.scenario().random_source.clone(), Vec::new()),
+        )
+        .unwrap();
+    let RpgCommandOutcome::Accepted(declined) = declined else {
+        panic!("decline should commit only the movement: {declined:?}");
+    };
+    assert_eq!(
+        session.state().entity("actor").unwrap().position(),
+        GridPosition { x: 3, y: 1 }
+    );
+    assert_eq!(
+        session
+            .encounter_view()
+            .participants
+            .iter()
+            .find(|participant| participant.id == "actor")
+            .unwrap()
+            .movement_allowance
+            .as_ref()
+            .unwrap()
+            .remaining,
+        1
+    );
+    assert_eq!(
+        session.state().entity("actor").unwrap().vitality().current,
+        10
+    );
+    assert!(declined.events.iter().any(|event| matches!(
+        event,
+        RpgDomainEvent::MovementReactionResolved {
+            accepted: false,
+            ..
+        }
+    )));
+    let replayed =
+        RpgAuthoritySession::replay(initial.clone(), &[first_entry, decline_entry]).unwrap();
+    assert_eq!(
+        replayed.state_hash().unwrap(),
+        session.state_hash().unwrap(),
+        "replayed={:#?}\nrecorded={:#?}",
+        replayed.checkpoint().unwrap(),
+        session.checkpoint().unwrap()
+    );
+
+    let mut accepted = RpgAuthoritySession::from_scenario(bundle, scenario).unwrap();
+    let (outcome, _) = submit_no_random(
+        &mut accepted,
+        RpgActionProposal {
+            expected_revision: 0,
+            action_id: "action.move".to_owned(),
+            actor_id: "actor".to_owned(),
+            target_ids: vec!["cell-3-1".to_owned()],
+            item_binding: None,
+        },
+    );
+    let RpgCommandOutcome::AwaitingReaction(pending) = outcome else {
+        panic!("response should be pending");
+    };
+    let pending_hash = accepted.state_hash().unwrap();
+    let pending_checkpoint = accepted.checkpoint().unwrap();
+    let (invalid_evidence, _) = accepted
+        .react_with_random_values_recorded(
+            RpgReactionProposal {
+                expected_revision: 0,
+                reaction_id: pending.request.reaction_id.clone(),
+                option_id: Some("respond".to_owned()),
+            },
+            vec![1],
+        )
+        .unwrap();
+    assert!(matches!(
+        invalid_evidence,
+        RpgCommandOutcome::Rejected(ref rejection)
+            if rejection.code == "RPG_RANDOM_EVIDENCE_UNUSED"
+    ));
+    assert_eq!(accepted.state_hash().unwrap(), pending_hash);
+    assert_eq!(accepted.checkpoint().unwrap(), pending_checkpoint);
+    let (responded, _) = accepted
+        .react_with_random_source_recorded(
+            RpgReactionProposal {
+                expected_revision: 0,
+                reaction_id: pending.request.reaction_id,
+                option_id: Some("respond".to_owned()),
+            },
+            &mut RpgRollTapeSource::new(accepted.scenario().random_source.clone(), Vec::new()),
+        )
+        .unwrap();
+    let RpgCommandOutcome::Accepted(responded) = responded else {
+        panic!("accepted response should commit with movement: {responded:?}");
+    };
+    assert_eq!(
+        accepted.state().entity("actor").unwrap().position(),
+        GridPosition { x: 3, y: 1 }
+    );
+    assert_eq!(
+        accepted.state().entity("actor").unwrap().vitality().current,
+        12
+    );
+    assert_eq!(
+        accepted
+            .state()
+            .entity("reactor")
+            .unwrap()
+            .activation_budget("reaction"),
+        Some(0)
+    );
+    assert!(responded.events.iter().any(|event| matches!(
+        event,
+        RpgDomainEvent::MovementReactionResolved { accepted: true, .. }
+    )));
+
+    let mut invalid_checkpoint = accepted.checkpoint().unwrap();
+    invalid_checkpoint.state.entities[0].activation_budgets[0].value = 5;
+    let invalid_checkpoint =
+        RpgAuthoritySession::restore_checkpoint(invalid_checkpoint).unwrap_err();
+    assert!(invalid_checkpoint.diagnostics.iter().any(|diagnostic| {
+        matches!(
+            diagnostic.code.as_str(),
+            "RPG_CHECKPOINT_ACTIVATION_BUDGET_INVALID" | "RPG_CHECKPOINT_STATE_HASH_MISMATCH"
+        )
+    }));
+
+    let mut invalid_allowance = movement_contract_prepared();
+    invalid_allowance
+        .ruleset
+        .provides
+        .movement_allowance_budget_id = Some("reaction".to_owned());
+    let invalid_allowance = compile_prepared_play_bundle(invalid_allowance).unwrap_err();
+    assert!(invalid_allowance
+        .diagnostics
+        .iter()
+        .any(|diagnostic| { diagnostic.code == "RULESET_MOVEMENT_ALLOWANCE_INVALID" }));
+
+    let mut invalid_distance = movement_contract_prepared();
+    let push = invalid_distance
+        .materialized_definitions
+        .iter_mut()
+        .find(|definition| definition.id == "action.push")
+        .unwrap();
+    push.semantic["action"]["program"]["body"]["noRoll"]["operation"]["distance"] = json!(65);
+    push.fingerprint = materialized_definition_fingerprint(push).unwrap();
+    let invalid_distance = compile_prepared_play_bundle(invalid_distance).unwrap_err();
+    assert!(invalid_distance
+        .diagnostics
+        .iter()
+        .any(|diagnostic| { diagnostic.code == "RPG_IR_FORCED_MOVEMENT_BOUND_INVALID" }));
+
+    let mut legacy_movement = movement_contract_prepared();
+    let legacy_requirement = VersionedRpgRequirement {
+        id: "operation.move".to_owned(),
+        version: 1,
+    };
+    legacy_movement
+        .ruleset
+        .provides
+        .operations
+        .push(legacy_requirement.clone());
+    legacy_movement
+        .ruleset
+        .provides
+        .operations
+        .sort_by(|left, right| left.id.cmp(&right.id));
+    legacy_movement
+        .content_requirements
+        .operations
+        .push(legacy_requirement);
+    legacy_movement
+        .content_requirements
+        .operations
+        .sort_by(|left, right| left.id.cmp(&right.id));
+    let push = legacy_movement
+        .materialized_definitions
+        .iter_mut()
+        .find(|definition| definition.id == "action.push")
+        .unwrap();
+    push.semantic["action"]["program"]["body"]["noRoll"]["operation"] = json!({
+        "kind":"move",
+        "subject":"target",
+        "deltaX":{"kind":"constant","value":1},
+        "deltaY":{"kind":"constant","value":0},
+        "maximumDistance":4,
+        "provokes":false
+    });
+    push.fingerprint = materialized_definition_fingerprint(push).unwrap();
+    let legacy_movement = compile_prepared_play_bundle(legacy_movement).unwrap_err();
+    assert!(legacy_movement
+        .diagnostics
+        .iter()
+        .any(|diagnostic| { diagnostic.code == "ACTION_LEGACY_MOVEMENT_INCOMPATIBLE" }));
+
+    let mut invalid_reaction = movement_contract_prepared();
+    let feature = invalid_reaction
+        .materialized_definitions
+        .iter_mut()
+        .find(|definition| definition.id == "feature.leave-response")
+        .unwrap();
+    feature.semantic["movementReactions"][0]["maximumUses"] = json!(2);
+    feature.fingerprint = materialized_definition_fingerprint(feature).unwrap();
+    let invalid_reaction = compile_prepared_play_bundle(invalid_reaction).unwrap_err();
+    assert!(invalid_reaction
+        .diagnostics
+        .iter()
+        .any(|diagnostic| { diagnostic.code == "CHARACTER_FEATURE_MOVEMENT_REACTION_INVALID" }));
+}
+
+#[test]
+fn push_and_slide_share_authority_routes_never_provoke_and_replay_exactly() {
+    let bundle = compile_prepared_play_bundle(movement_contract_prepared()).unwrap();
+    let mut scenario = movement_contract_scenario(&bundle);
+    scenario.board.width = 5;
+    scenario.board.height = 2;
+    scenario
+        .participants
+        .iter_mut()
+        .find(|participant| participant.id == "actor")
+        .unwrap()
+        .position = GridPosition { x: 0, y: 0 };
+    scenario
+        .participants
+        .iter_mut()
+        .find(|participant| participant.id == "reactor")
+        .unwrap()
+        .position = GridPosition { x: 1, y: 0 };
+    let distant = scenario
+        .participants
+        .iter_mut()
+        .find(|participant| participant.id == "distant")
+        .unwrap();
+    distant.position = GridPosition { x: 3, y: 0 };
+    let mut watcher = participant("watcher", "Watcher", RpgTeamId::enemy(), 1, 20);
+    watcher.position = GridPosition { x: 1, y: 1 };
+    watcher.definition_ids = vec!["action.response".to_owned()];
+    watcher.class_definition_id = Some("class.reactor".to_owned());
+    watcher.feature_definition_ids = vec!["feature.leave-response".to_owned()];
+    scenario.participants.push(watcher);
+    scenario.turn.initiative_order.push("watcher".to_owned());
+
+    let mut push_session =
+        RpgAuthoritySession::from_scenario(bundle.clone(), scenario.clone()).unwrap();
+    let push_before = push_session.checkpoint().unwrap();
+    let (push, push_entry) = submit_no_random(
+        &mut push_session,
+        RpgActionProposal {
+            expected_revision: 0,
+            action_id: "action.push".to_owned(),
+            actor_id: "actor".to_owned(),
+            target_ids: vec!["reactor".to_owned()],
+            item_binding: None,
+        },
+    );
+    let RpgCommandOutcome::Accepted(push_receipt) = push else {
+        panic!("push should stop before the occupied blocker: {push:?}");
+    };
+    assert_eq!(
+        push_session.state().entity("reactor").unwrap().position(),
+        GridPosition { x: 2, y: 0 }
+    );
+    assert!(matches!(
+        push_receipt.events.first(),
+        Some(RpgDomainEvent::MovementTransition {
+            movement_kind: asha_rpg::RpgMovementKind::Push,
+            route_cell_ids,
+            movement_cost: 1,
+            provokes: false,
+            ..
+        }) if route_cell_ids == &["cell-2-0"]
+    ));
+    assert!(!push_receipt
+        .events
+        .iter()
+        .any(|event| matches!(event, RpgDomainEvent::MovementReactionOpened { .. })));
+    let replayed_push = RpgAuthoritySession::replay(push_before, &[push_entry]).unwrap();
+    assert_eq!(
+        replayed_push.state_hash().unwrap(),
+        push_session.state_hash().unwrap()
+    );
+
+    let mut slide_session = RpgAuthoritySession::from_scenario(bundle, scenario).unwrap();
+    let slide_initial = slide_session.checkpoint().unwrap();
+    let (slide, slide_entry) = submit_no_random(
+        &mut slide_session,
+        RpgActionProposal {
+            expected_revision: 0,
+            action_id: "action.slide".to_owned(),
+            actor_id: "actor".to_owned(),
+            target_ids: vec!["reactor".to_owned()],
+            item_binding: None,
+        },
+    );
+    let RpgCommandOutcome::AwaitingForcedMovement(pending) = slide else {
+        panic!("slide should expose a typed authority route choice: {slide:?}");
+    };
+    assert_eq!(slide_session.state().revision(), 0);
+    assert_eq!(
+        slide_session.state().entity("reactor").unwrap().position(),
+        GridPosition { x: 1, y: 0 }
+    );
+    let option = pending
+        .options
+        .iter()
+        .find(|option| option.route.destination_cell_id == "cell-2-0")
+        .cloned()
+        .unwrap();
+
+    let pending_checkpoint = slide_session.checkpoint().unwrap();
+    let mut restored = RpgAuthoritySession::restore_checkpoint(pending_checkpoint.clone()).unwrap();
+    let restored_before = restored.state_hash().unwrap();
+    let stale = restored
+        .resolve_forced_movement_recorded(
+            asha_rpg::RpgForcedMovementCommand {
+                option: option.clone(),
+            },
+            Vec::new(),
+        )
+        .unwrap();
+    assert!(matches!(
+        stale.0,
+        RpgCommandOutcome::Rejected(ref rejection)
+            if rejection.code == "RPG_FORCED_MOVEMENT_OPTION_STALE"
+    ));
+    assert_eq!(restored.state_hash().unwrap(), restored_before);
+    let restored_option = restored
+        .pending_forced_movement()
+        .unwrap()
+        .options
+        .iter()
+        .find(|candidate| candidate.route.destination_cell_id == option.route.destination_cell_id)
+        .cloned()
+        .unwrap();
+    let restored_accept = restored
+        .resolve_forced_movement_recorded(
+            asha_rpg::RpgForcedMovementCommand {
+                option: restored_option,
+            },
+            Vec::new(),
+        )
+        .unwrap();
+    assert!(matches!(restored_accept.0, RpgCommandOutcome::Accepted(_)));
+
+    let pending_hash = slide_session.state_hash().unwrap();
+    let invalid_evidence = slide_session
+        .resolve_forced_movement_recorded(
+            asha_rpg::RpgForcedMovementCommand {
+                option: option.clone(),
+            },
+            vec![1],
+        )
+        .unwrap();
+    assert!(matches!(
+        invalid_evidence.0,
+        RpgCommandOutcome::Rejected(ref rejection)
+            if rejection.code == "RPG_RANDOM_EVIDENCE_UNUSED"
+    ));
+    assert_eq!(slide_session.state_hash().unwrap(), pending_hash);
+
+    let (slid, slide_choice_entry) = slide_session
+        .resolve_forced_movement_recorded(asha_rpg::RpgForcedMovementCommand { option }, Vec::new())
+        .unwrap();
+    let RpgCommandOutcome::Accepted(slid) = slid else {
+        panic!("current slide option should commit: {slid:?}");
+    };
+    assert_eq!(
+        slide_session.state().entity("reactor").unwrap().position(),
+        GridPosition { x: 2, y: 0 }
+    );
+    assert!(matches!(
+        slid.events.first(),
+        Some(RpgDomainEvent::MovementTransition {
+            movement_kind: asha_rpg::RpgMovementKind::Slide,
+            route_cell_ids,
+            movement_cost: 1,
+            provokes: false,
+            ..
+        }) if route_cell_ids == &["cell-2-0"]
+    ));
+    assert!(!slid
+        .events
+        .iter()
+        .any(|event| matches!(event, RpgDomainEvent::MovementReactionOpened { .. })));
+    let replayed_slide =
+        RpgAuthoritySession::replay(slide_initial, &[slide_entry, slide_choice_entry]).unwrap();
+    assert_eq!(
+        replayed_slide.state_hash().unwrap(),
+        slide_session.state_hash().unwrap()
+    );
+}
+
+#[test]
 fn equipped_items_project_distinct_bound_actions_and_reject_tampering_atomically() {
     let bundle = item_bound_bundle();
     let mut changed_item = item_bound_prepared();
@@ -6782,6 +7297,316 @@ fn activation_budget_prepared() -> PreparedPlayBundle {
     prepared
 }
 
+fn movement_contract_prepared() -> PreparedPlayBundle {
+    let mut prepared = healing_prepared();
+    prepared.ruleset.models.action_economy = RulesetActionEconomyModel::VariableActivationBudgets {
+        version: 1,
+        accepted_activation_ceiling: 8,
+    };
+    prepared
+        .ruleset
+        .provides
+        .numeric_domains
+        .push(RulesetNumericDomain {
+            id: "movement-economy".to_owned(),
+            minimum: 0,
+            maximum: 4,
+        });
+    prepared
+        .ruleset
+        .provides
+        .numeric_domains
+        .sort_by(|left, right| left.id.cmp(&right.id));
+    prepared.ruleset.provides.activation_budgets = vec![
+        RulesetActivationBudget {
+            id: "movement".to_owned(),
+            version: 1,
+            label: "Movement".to_owned(),
+            numeric_domain_id: "movement-economy".to_owned(),
+            timing: RulesetActivationTiming::Action,
+            reset_boundary: RulesetActivationBudgetResetBoundary::OwnerTurnStart,
+            initial_amount: 4,
+        },
+        RulesetActivationBudget {
+            id: "reaction".to_owned(),
+            version: 1,
+            label: "Reaction".to_owned(),
+            numeric_domain_id: "movement-economy".to_owned(),
+            timing: RulesetActivationTiming::Reaction,
+            reset_boundary: RulesetActivationBudgetResetBoundary::OwnerTurnStart,
+            initial_amount: 1,
+        },
+    ];
+    prepared.ruleset.provides.movement_allowance_budget_id = Some("movement".to_owned());
+    prepared.ruleset.provides.operations = vec![
+        VersionedRpgRequirement {
+            id: "operation.heal".to_owned(),
+            version: 1,
+        },
+        VersionedRpgRequirement {
+            id: "operation.moveToCell".to_owned(),
+            version: 1,
+        },
+        VersionedRpgRequirement {
+            id: "operation.push".to_owned(),
+            version: 1,
+        },
+        VersionedRpgRequirement {
+            id: "operation.slide".to_owned(),
+            version: 1,
+        },
+    ];
+    prepared.ruleset.provides.capabilities = vec![
+        VersionedRpgRequirement {
+            id: "capability.activation-budgets".to_owned(),
+            version: 1,
+        },
+        VersionedRpgRequirement {
+            id: "capability.position".to_owned(),
+            version: 1,
+        },
+        VersionedRpgRequirement {
+            id: "capability.reactions".to_owned(),
+            version: 1,
+        },
+        VersionedRpgRequirement {
+            id: "capability.vitality".to_owned(),
+            version: 1,
+        },
+    ];
+    prepared.content_requirements.operations = prepared.ruleset.provides.operations.clone();
+    prepared.content_requirements.capabilities = prepared.ruleset.provides.capabilities.clone();
+
+    let base = prepared.materialized_definitions.remove(0);
+    let source = |id: &str| ContentDefinitionProvenance {
+        definition_id: id.to_owned(),
+        package_id: "consumer.package".to_owned(),
+        package_version: "1.0.0".to_owned(),
+        source: ContentSourceLocation {
+            module: "movement/movement.ts".to_owned(),
+            declaration: id.replace('.', "_"),
+        },
+    };
+    let make_action =
+        |id: &str, name: &str, targets: serde_json::Value, activation: serde_json::Value, body| {
+            let mut definition = base.clone();
+            definition.id = id.to_owned();
+            definition.provenance = source(id);
+            definition.presentation = json!({"label": name});
+            definition.semantic = json!({
+                "schema": {"identity": "asha.rpg.action-definition", "version": 1},
+                "kind": "inline",
+                "action": {
+                    "id": id,
+                    "name": name,
+                    "sourcePath": format!("movement/movement.ts#{}", id.replace('.', "_")),
+                    "tags": ["movement"],
+                    "targets": targets,
+                    "check": {"kind": "noRoll"},
+                    "rollScope": "none",
+                    "costs": [],
+                    "activation": activation,
+                    "program": {"kind": "atomic", "body": {
+                        "kind": "onCheck",
+                        "noRoll": body
+                    }}
+                }
+            });
+            definition.fingerprint = materialized_definition_fingerprint(&definition).unwrap();
+            definition
+        };
+    let action_activation = json!({"timing": "action", "costs": []});
+    let move_action = make_action(
+        "action.move",
+        "Move",
+        json!({"kind":"cell","team":"any","maximumRange":4,"maximumTargets":1}),
+        action_activation.clone(),
+        json!({"kind":"operation","operation":{
+            "kind":"moveToCell","maximumDistance":4,"provokes":true
+        }}),
+    );
+    let push_action = make_action(
+        "action.push",
+        "Push",
+        json!({"team":"hostile","maximumRange":1,"maximumTargets":1}),
+        action_activation.clone(),
+        json!({"kind":"operation","operation":{
+            "kind":"push","subject":"target","distance":3
+        }}),
+    );
+    let slide_action = make_action(
+        "action.slide",
+        "Slide",
+        json!({"team":"hostile","maximumRange":1,"maximumTargets":1}),
+        action_activation,
+        json!({"kind":"operation","operation":{
+            "kind":"slide","subject":"target","maximumDistance":2
+        }}),
+    );
+    let response_action = make_action(
+        "action.response",
+        "Response",
+        json!({"team":"hostile","maximumRange":1,"maximumTargets":1}),
+        json!({"timing":"reaction","costs":[{
+            "budget":{"rulesetId":"consumer.rules","id":"reaction"},
+            "amount":1
+        }]}),
+        json!({"kind":"operation","operation":{
+            "kind":"heal","amount":{"kind":"constant","value":2}
+        }}),
+    );
+    let mut feature = MaterializedContentDefinition {
+        id: "feature.leave-response".to_owned(),
+        kind: MaterializedContentDefinitionKind::CharacterFeature,
+        visibility: MaterializedContentVisibility::Exported,
+        extension_policy: ContentExtensionPolicy::Sealed,
+        semantic: json!({
+            "schema":{"identity":"asha.rpg.character-feature","version":4},
+            "contributions":[],
+            "outcomeBandShifts":[],
+            "poolContributions":[],
+            "damageResponses":[],
+            "movementReactions":[{
+                "id":"leave-response",
+                "trigger":"voluntaryLeavesAdjacency",
+                "responseActionId":"action.response",
+                "activationBudgetId":"reaction",
+                "activationCost":1,
+                "maximumUses":1,
+                "duration":"encounter",
+                "reach":1,
+                "requiresLineOfEffect":true
+            }]
+        }),
+        presentation: json!({"label":"Leave response"}),
+        references: vec!["action.response".to_owned()],
+        provenance: source("feature.leave-response"),
+        fingerprint: String::new(),
+    };
+    feature.fingerprint = materialized_definition_fingerprint(&feature).unwrap();
+    let mut class = MaterializedContentDefinition {
+        id: "class.reactor".to_owned(),
+        kind: MaterializedContentDefinitionKind::CharacterClass,
+        visibility: MaterializedContentVisibility::Exported,
+        extension_policy: ContentExtensionPolicy::Sealed,
+        semantic: json!({
+            "schema":{"identity":"asha.rpg.character-class","version":1},
+            "featureDefinitionIds":["feature.leave-response"]
+        }),
+        presentation: json!({"label":"Reactor"}),
+        references: vec!["feature.leave-response".to_owned()],
+        provenance: source("class.reactor"),
+        fingerprint: String::new(),
+    };
+    class.fingerprint = materialized_definition_fingerprint(&class).unwrap();
+    prepared.materialized_definitions = vec![
+        class,
+        move_action,
+        push_action,
+        response_action,
+        slide_action,
+        feature,
+    ];
+    prepared
+        .materialized_definitions
+        .sort_by(|left, right| left.id.cmp(&right.id));
+    prepared.exported_roots = prepared
+        .materialized_definitions
+        .iter()
+        .map(|definition| definition.id.clone())
+        .collect();
+    prepared.definition_provenance = prepared
+        .materialized_definitions
+        .iter()
+        .map(|definition| definition.provenance.clone())
+        .collect();
+    prepared.relationships = prepared
+        .exported_roots
+        .iter()
+        .enumerate()
+        .map(|(order, target)| ContentRelationshipProvenance {
+            kind: ContentRelationshipKind::Exports,
+            source: "consumer.package@1.0.0".to_owned(),
+            target: target.clone(),
+            order,
+        })
+        .chain([
+            ContentRelationshipProvenance {
+                kind: ContentRelationshipKind::DependsOn,
+                source: "class.reactor".to_owned(),
+                target: "feature.leave-response".to_owned(),
+                order: 0,
+            },
+            ContentRelationshipProvenance {
+                kind: ContentRelationshipKind::DependsOn,
+                source: "feature.leave-response".to_owned(),
+                target: "action.response".to_owned(),
+                order: 0,
+            },
+        ])
+        .collect();
+    prepared
+}
+
+fn movement_contract_scenario(bundle: &asha_rpg::CompiledPlayBundle) -> RpgScenario {
+    let mut actor = participant("actor", "Actor", RpgTeamId::ally(), 1, 10);
+    actor.position = GridPosition { x: 1, y: 1 };
+    actor.definition_ids = vec![
+        "action.move".to_owned(),
+        "action.push".to_owned(),
+        "action.slide".to_owned(),
+    ];
+    let mut reactor = participant("reactor", "Reactor", RpgTeamId::enemy(), 1, 20);
+    reactor.definition_ids = vec!["action.response".to_owned()];
+    reactor.class_definition_id = Some("class.reactor".to_owned());
+    reactor.feature_definition_ids = vec!["feature.leave-response".to_owned()];
+    let mut distant = participant("distant", "Distant", RpgTeamId::enemy(), 4, 20);
+    distant.definition_ids = vec!["action.response".to_owned()];
+    let cells = (0..2)
+        .flat_map(|y| {
+            (0..5).map(move |x| RpgCellSetup {
+                id: format!("cell-{x}-{y}"),
+                position: GridPosition { x, y },
+                capabilities: vec![RpgCellCapabilitySetup {
+                    id: "traversal".to_owned(),
+                    version: 1,
+                    definition_id: None,
+                    value: RpgCellCapabilityValue::Traversal {
+                        passable: true,
+                        movement_cost: if (x, y) == (2, 1) { 2 } else { 1 },
+                    },
+                }],
+            })
+        })
+        .collect();
+    RpgScenario {
+        schema: RpgScenario::schema(),
+        play_bundle_id: bundle.artifact().artifact_id.clone(),
+        board: RpgBoardSetup {
+            width: 5,
+            height: 2,
+            cells,
+        },
+        participants: vec![actor, reactor, distant],
+        turn: RpgTurnInitialization {
+            initiative_order: vec![
+                "actor".to_owned(),
+                "reactor".to_owned(),
+                "distant".to_owned(),
+            ],
+            current_actor_id: "actor".to_owned(),
+            round: 1,
+            turn: 1,
+        },
+        random_source: RpgRandomSourceBinding {
+            policy_id: "consumer.recorded-evidence".to_owned(),
+            policy_version: 1,
+            source_id: "consumer.roll-tape".to_owned(),
+            source_version: 1,
+        },
+    }
+}
+
 fn area_option(
     view: &asha_rpg::RpgEncounterView,
     action_id: &str,
@@ -8358,6 +9183,7 @@ fn healing_prepared() -> PreparedPlayBundle {
                 contribution_stacking_groups: Vec::new(),
                 scalar_test_profiles: Vec::new(),
                 activation_budgets: Vec::new(),
+                movement_allowance_budget_id: None,
                 heterogeneous_pool_profiles: Vec::new(),
             },
         },

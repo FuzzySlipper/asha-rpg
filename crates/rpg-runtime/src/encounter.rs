@@ -19,7 +19,7 @@ use serde::{Deserialize, Serialize};
 pub const RPG_SCENARIO_SCHEMA_ID: &str = "asha.rpg.scenario";
 pub const RPG_SCENARIO_SCHEMA_VERSION: u32 = 3;
 pub const RPG_ENCOUNTER_VIEW_SCHEMA_ID: &str = "asha.rpg.encounter.view";
-pub const RPG_ENCOUNTER_VIEW_SCHEMA_VERSION: u32 = 13;
+pub const RPG_ENCOUNTER_VIEW_SCHEMA_VERSION: u32 = 14;
 pub const RPG_END_TURN_CONTROL_ID: &str = "control.end-turn";
 pub const RPG_LINE_OF_EFFECT_OBSTRUCTION_ID: &str = "line-of-effect.obstruction";
 pub const RPG_LINE_OF_EFFECT_OBSTRUCTION_VERSION: u32 = 1;
@@ -298,6 +298,7 @@ pub struct RpgParticipantView {
     pub modifiers: Vec<RpgModifierView>,
     pub effects: Vec<RpgEffectView>,
     pub activation_budgets: Vec<RpgActivationBudgetView>,
+    pub movement_allowance: Option<RpgMovementAllowanceView>,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
@@ -307,6 +308,15 @@ pub struct RpgActivationBudgetView {
     pub label: String,
     pub timing: RulesetActivationTiming,
     pub reset_boundary: RulesetActivationBudgetResetBoundary,
+    pub initial_amount: i32,
+    pub remaining: i32,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase", deny_unknown_fields)]
+pub struct RpgMovementAllowanceView {
+    pub budget_id: String,
+    pub label: String,
     pub initial_amount: i32,
     pub remaining: i32,
 }
@@ -641,6 +651,7 @@ pub struct RpgEncounterView {
     pub actions: Vec<RpgActionView>,
     pub controls: Vec<RpgTurnControlView>,
     pub pending_reaction: Option<RpgReactionRequest>,
+    pub pending_forced_movement: Option<crate::RpgPendingForcedMovement>,
     pub pending_turn_save: Option<crate::RpgPendingTurnSave>,
     pub log: Vec<RpgEncounterLogEntry>,
     pub outcome: RpgEncounterOutcomeView,
@@ -2241,6 +2252,74 @@ pub(crate) fn movement_paths(
         .collect()
 }
 
+pub(crate) fn push_path(
+    board: &RpgBoardSetup,
+    state: &RpgCapabilityState,
+    source_id: &str,
+    moved_participant_id: &str,
+    distance: u32,
+) -> Option<RpgCellPathView> {
+    let source = state.entity(source_id)?;
+    let moved = state.entity(moved_participant_id)?;
+    let delta_x = i64::from(moved.position().x) - i64::from(source.position().x);
+    let delta_y = i64::from(moved.position().y) - i64::from(source.position().y);
+    if (delta_x == 0) == (delta_y == 0) {
+        return None;
+    }
+    let step_x = delta_x.signum();
+    let step_y = delta_y.signum();
+    let cells_by_position = board
+        .cells
+        .iter()
+        .map(|cell| ((cell.position.x, cell.position.y), cell))
+        .collect::<BTreeMap<_, _>>();
+    let occupied = state
+        .entities()
+        .filter(|entity| entity.id() != moved_participant_id)
+        .map(|entity| (entity.position().x, entity.position().y))
+        .collect::<BTreeSet<_>>();
+    let mut x = i64::from(moved.position().x);
+    let mut y = i64::from(moved.position().y);
+    let mut cell_ids = Vec::new();
+    let mut movement_cost = 0_u32;
+    let mut destination_cell_id = None;
+    for _ in 0..distance {
+        x = x.saturating_add(step_x);
+        y = y.saturating_add(step_y);
+        let (Ok(x), Ok(y)) = (u32::try_from(x), u32::try_from(y)) else {
+            break;
+        };
+        if x >= board.width || y >= board.height || occupied.contains(&(x, y)) {
+            break;
+        }
+        let Some(cell) = cells_by_position.get(&(x, y)) else {
+            break;
+        };
+        let (passable, cost) = cell
+            .capabilities
+            .iter()
+            .find_map(|capability| match capability.value {
+                RpgCellCapabilityValue::Traversal {
+                    passable,
+                    movement_cost,
+                } => Some((passable, movement_cost)),
+                _ => None,
+            })
+            .unwrap_or((true, 1));
+        if !passable || cost == 0 {
+            break;
+        }
+        movement_cost = movement_cost.saturating_add(cost);
+        cell_ids.push(cell.id.clone());
+        destination_cell_id = Some(cell.id.clone());
+    }
+    destination_cell_id.map(|destination_cell_id| RpgCellPathView {
+        destination_cell_id,
+        cell_ids,
+        movement_cost,
+    })
+}
+
 pub(crate) fn area_projection(
     board_index: &RpgAreaBoardIndex<'_>,
     state: &RpgCapabilityState,
@@ -2737,6 +2816,7 @@ pub(crate) struct RpgParticipantProjectionCatalogs<'a> {
     pub item_definitions: &'a BTreeMap<String, rpg_ir::CompiledItemDefinition>,
     pub effect_definitions: &'a BTreeMap<String, rpg_ir::CompiledEffectDefinition>,
     pub activation_budget_definitions: &'a [rpg_ir::RulesetActivationBudget],
+    pub movement_allowance_budget_id: Option<&'a str>,
 }
 
 pub(crate) fn participant_view(
@@ -2859,6 +2939,24 @@ pub(crate) fn participant_view(
                 remaining: entity.activation_budget(&budget.id).unwrap_or(0),
             })
             .collect(),
+        movement_allowance: catalogs
+            .movement_allowance_budget_id
+            .and_then(|budget_id| {
+                catalogs
+                    .activation_budget_definitions
+                    .iter()
+                    .find(|budget| budget.id == budget_id)
+            })
+            .and_then(|budget| {
+                entity
+                    .activation_budget(&budget.id)
+                    .map(|remaining| RpgMovementAllowanceView {
+                        budget_id: budget.id.clone(),
+                        label: budget.label.clone(),
+                        initial_amount: budget.initial_amount,
+                        remaining,
+                    })
+            }),
     }
 }
 
@@ -2911,12 +3009,13 @@ fn resolution_rejection(
     RpgResolutionRejection {
         code: code.to_owned(),
         path: path.into(),
-        message: message.into(),
+        message: message.into().into_boxed_str(),
         trace: Box::new(Vec::new()),
         random_evidence: Box::new(Vec::new()),
         random_attempted: 0,
         random_request: None,
         reaction_request: None,
+        forced_movement_request: None,
         unavailable_source: None,
     }
 }

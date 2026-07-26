@@ -9,7 +9,9 @@ export declare const RPG_OPERATION_VERSIONS: {
     readonly "operation.move": 1;
     readonly "operation.moveToCell": 1;
     readonly "operation.openReaction": 1;
+    readonly "operation.push": 1;
     readonly "operation.removeEffect": 1;
+    readonly "operation.slide": 1;
 };
 export type RpgOperationId = keyof typeof RPG_OPERATION_VERSIONS;
 export declare const RPG_CAPABILITY_VERSIONS: {

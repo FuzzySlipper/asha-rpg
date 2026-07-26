@@ -595,6 +595,36 @@ export function moveToCell(options: {
   );
 }
 
+export function pushEntity(options: {
+  readonly subject: RpgIrSubject;
+  readonly distance: number;
+  readonly timing?: AuthoringTiming;
+}): AuthoringProgram {
+  return operation(
+    frozen({
+      kind: 'push',
+      subject: options.subject,
+      distance: options.distance,
+    }),
+    options.timing,
+  );
+}
+
+export function slideEntity(options: {
+  readonly subject: RpgIrSubject;
+  readonly maximumDistance: number;
+  readonly timing?: AuthoringTiming;
+}): AuthoringProgram {
+  return operation(
+    frozen({
+      kind: 'slide',
+      subject: options.subject,
+      maximumDistance: options.maximumDistance,
+    }),
+    options.timing,
+  );
+}
+
 export function openReaction(options: {
   readonly id: RpgReactionId;
   readonly options: readonly {

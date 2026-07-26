@@ -32,6 +32,7 @@ import type {
   ContentPackIdentity,
   ContentMixinApplication,
   ContentMixinDefinition,
+  ContentMovementReaction,
   ContentPackManifest,
   ContentPatch,
   ContentPackRequest,
@@ -65,6 +66,13 @@ type PoolContributionInput = Omit<
   'schema' | 'subject'
 > & {
   readonly subject?: ContentPoolContribution['subject'];
+};
+
+export type MovementReactionInput = Omit<
+  ContentMovementReaction,
+  'responseActionId'
+> & {
+  readonly responseAction: ContentDefinitionReference;
 };
 
 const participantProfileCapabilityBrand: unique symbol = Symbol(
@@ -297,12 +305,20 @@ export function defineCharacterFeatureDefinition(
       readonly outcomeBandShifts?: readonly OutcomeBandShiftInput[];
       readonly poolContributions?: readonly PoolContributionInput[];
       readonly damageResponses?: readonly Omit<ContentDamageResponse, 'schema'>[];
+      readonly movementReactions?: readonly MovementReactionInput[];
     };
   },
 ): ContentCharacterFeatureDefinition {
   return immutable({
     ...input,
     kind: 'characterFeature' as const,
+    lowLevelReferences: (input.characterFeature.movementReactions ?? [])
+      .map((reaction) => ({ ...reaction.responseAction }))
+      .sort((left, right) =>
+        `${left.importAs ?? ''}#${left.definitionId}`.localeCompare(
+          `${right.importAs ?? ''}#${right.definitionId}`,
+        ),
+      ),
     characterFeature: {
       schema: {
         identity: 'asha.rpg.character-feature' as const,
@@ -320,6 +336,12 @@ export function defineCharacterFeatureDefinition(
       damageResponses: normalizeDamageResponses(
         input.characterFeature.damageResponses ?? [],
       ),
+      movementReactions: [...(input.characterFeature.movementReactions ?? [])]
+        .map(({ responseAction, ...reaction }) => ({
+          ...reaction,
+          responseActionId: responseAction.definitionId,
+        }))
+        .sort((left, right) => left.id.localeCompare(right.id)),
     },
   });
 }

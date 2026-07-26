@@ -20,16 +20,25 @@ session; a separate replay engine, event-applier, or state path is not an
 implementation claim.
 
 Scenario is setup-only data, not a gameplay runner, campaign save, AI plan, or
-product protocol. Version 3 claims entity target candidates and one
-artifact-authored cell-target shape for selected-destination movement: an
-unconditional no-roll branch containing only one `moveToCell` operation. Rust
-projects deterministic least-cost routes over orthogonally adjacent authored
-cells, charges each entered cell's traversal cost (or one by default), and
-excludes occupied or impassable cells. Commands submit only the destination;
-Rust recomputes the route against current authority state before atomically
-committing it within the authored movement-cost bound. Diagonal travel,
-participant footprints, forced movement, conditional, repeated,
-random-composed, and general cell-target semantics remain non-claims. The
+product protocol. Version 3 claims entity target candidates, one
+artifact-authored selected-destination `moveToCell` shape, typed cardinal
+source-relative push, and typed slide. Rust projects deterministic least-cost
+routes over orthogonally adjacent authored cells, charges each entered cell's
+traversal cost (or one by default), and excludes occupied or impassable cells.
+A Ruleset may bind exact route cost to one owner-turn movement-allowance
+budget. Slide exposes a bounded authority-owned pending route choice; push
+stops before the first unavailable cell. Forced movement never provokes. One
+closed feature registration may respond when voluntary movement leaves
+adjacency, using captured reach, line of effect, optional item binding, and an
+exclusive bounded reaction budget in the same staged transaction. Diagonal
+travel, participant footprints, pull, teleport, flying, per-step effects,
+conditional/repeated/random-composed movement, general trigger callbacks,
+ready/delay, and general cell-target semantics remain non-claims. The
+legacy fixed-delta `move` operation remains available only to Rulesets that do
+not opt into a route-cost movement allowance; such artifacts retain their
+older bounded-position semantics and are not part of the authored-board route
+contract. A route-cost Ruleset fails compilation if it mixes that legacy
+operation with `moveToCell`, push, or slide. The
 separate bounded-area contract supports only anchor-origin Manhattan diamonds
 and actor-origin orthogonal lines over authored square-grid cells. Selectors
 may require the version-1 Rust square-grid supercover line-of-effect policy

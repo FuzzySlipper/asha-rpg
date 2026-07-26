@@ -224,6 +224,14 @@ export type RpgIrOperation = {
     readonly maximumDistance: number;
     readonly provokes: boolean;
 } | {
+    readonly kind: 'push';
+    readonly subject: RpgIrSubject;
+    readonly distance: number;
+} | {
+    readonly kind: 'slide';
+    readonly subject: RpgIrSubject;
+    readonly maximumDistance: number;
+} | {
     readonly kind: 'openReaction';
     readonly reactionId: RpgReactionId;
     readonly options: readonly RpgIrReactionOption[];

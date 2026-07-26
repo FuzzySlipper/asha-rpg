@@ -8,16 +8,17 @@ use rpg_core::{
     RpgContributionTeamRelation, RpgContributionValueExpression, RpgDamagePartResolution,
     RpgDamageResponseDecision, RpgDamageResponseDefinition, RpgDamageResponseDisposition,
     RpgDamageResponseEffect, RpgDamageResponsePhase, RpgDamageResponseSchema, RpgDamageScaleStep,
-    RpgDomainEvent, RpgEffectMutation, RpgHeterogeneousRandomTerm, RpgHeterogeneousRandomValue,
-    RpgIntent, RpgModifierStackingPolicy, RpgNaturalDieEffect, RpgNaturalDieResolution,
-    RpgOutcomeBandShiftDecision, RpgOutcomeBandShiftDefinition, RpgOutcomeBandShiftDisposition,
-    RpgOutcomeBandShiftLedger, RpgPoolCancellationResult, RpgPoolContributionDecision,
-    RpgPoolContributionDefinition, RpgPoolContributionEffect, RpgPoolContributionLedger,
-    RpgPoolReplacementUnit, RpgRandomEvidence, RpgRandomRequest, RpgRandomRequestKind,
-    RpgReactionActivationBudgetCost, RpgReactionDecision, RpgReactionOption, RpgReactionRequest,
-    RpgReactionUnavailable, RpgResolutionContext, RpgResolutionReceipt, RpgResolutionRejection,
-    RpgRulesetValueKind, RpgScalarContributionDecision, RpgScalarContributionDefinition,
-    RpgScalarContributionLedger, RpgTraceStep, RpgUnavailableSource, MAXIMUM_RPG_DAMAGE_RESPONSES,
+    RpgDomainEvent, RpgEffectMutation, RpgForcedMovementRequest, RpgHeterogeneousRandomTerm,
+    RpgHeterogeneousRandomValue, RpgIntent, RpgModifierStackingPolicy, RpgNaturalDieEffect,
+    RpgNaturalDieResolution, RpgOutcomeBandShiftDecision, RpgOutcomeBandShiftDefinition,
+    RpgOutcomeBandShiftDisposition, RpgOutcomeBandShiftLedger, RpgPoolCancellationResult,
+    RpgPoolContributionDecision, RpgPoolContributionDefinition, RpgPoolContributionEffect,
+    RpgPoolContributionLedger, RpgPoolReplacementUnit, RpgRandomEvidence, RpgRandomRequest,
+    RpgRandomRequestKind, RpgReactionActivationBudgetCost, RpgReactionDecision, RpgReactionOption,
+    RpgReactionRequest, RpgReactionUnavailable, RpgResolutionContext, RpgResolutionReceipt,
+    RpgResolutionRejection, RpgRulesetValueKind, RpgScalarContributionDecision,
+    RpgScalarContributionDefinition, RpgScalarContributionLedger, RpgTraceStep,
+    RpgUnavailableSource, MAXIMUM_RPG_DAMAGE_RESPONSES,
 };
 use rpg_ir::{
     CompiledCharacterFeature, CompiledEffectDefinition, CompiledItemDefinition, RpgIrActivation,
@@ -58,7 +59,7 @@ impl CompiledRpgRules {
         intent: &RpgIntent,
         context: &RpgResolutionContext,
     ) -> Result<RpgResolutionReceipt, RpgResolutionRejection> {
-        self.resolve_internal(state, random, intent, None, context)
+        self.resolve_internal(state, random, intent, None, context, true)
     }
 
     pub fn resolve_with_reaction_decision(
@@ -85,7 +86,17 @@ impl CompiledRpgRules {
         reaction: &RpgReactionDecision,
         context: &RpgResolutionContext,
     ) -> Result<RpgResolutionReceipt, RpgResolutionRejection> {
-        self.resolve_internal(state, random, intent, Some(reaction), context)
+        self.resolve_internal(state, random, intent, Some(reaction), context, true)
+    }
+
+    pub fn resolve_embedded_with_context(
+        &self,
+        state: &mut RpgCapabilityState,
+        random: &mut DeterministicRandomStream,
+        intent: &RpgIntent,
+        context: &RpgResolutionContext,
+    ) -> Result<RpgResolutionReceipt, RpgResolutionRejection> {
+        self.resolve_internal(state, random, intent, None, context, false)
     }
 
     fn resolve_internal<'a>(
@@ -95,6 +106,7 @@ impl CompiledRpgRules {
         intent: &'a RpgIntent,
         reaction: Option<&'a RpgReactionDecision>,
         context: &'a RpgResolutionContext,
+        advance_revision: bool,
     ) -> Result<RpgResolutionReceipt, RpgResolutionRejection> {
         let action = self
             .action_for_binding(
@@ -155,10 +167,18 @@ impl CompiledRpgRules {
                 "the staged transaction did not reach its reaction window",
             ));
         }
-        let revision = execution.workspace.advance_revision();
+        let revision = if advance_revision {
+            execution.workspace.advance_revision()
+        } else {
+            execution.workspace.state().revision()
+        };
         execution.trace.push(RpgTraceStep {
             path: "$.resolution.commit".to_owned(),
-            code: "RPG_RESOLUTION_COMMITTED".to_owned(),
+            code: if advance_revision {
+                "RPG_RESOLUTION_COMMITTED".to_owned()
+            } else {
+                "RPG_EMBEDDED_RESOLUTION_COMMITTED".to_owned()
+            },
             detail: format!("state revision {revision}"),
         });
 
@@ -564,11 +584,18 @@ fn validate_intent(
 
     match action.targets.kind {
         RpgIrTargetKind::Participant => {
-            if !intent.cell_targets.is_empty() {
+            let forced_bindings_valid = intent.cell_targets.len() <= target_ids.len()
+                && intent.cell_targets.iter().all(|binding| {
+                    binding
+                        .id
+                        .strip_prefix("forced:")
+                        .is_some_and(|target_id| target_ids.iter().any(|id| id == target_id))
+                });
+            if !forced_bindings_valid {
                 return Err(rejection(
                     "RPG_INTENT_CELL_BINDING_UNEXPECTED",
                     "$.intent.cellTargets",
-                    "participant-target actions cannot include cell bindings",
+                    "participant-target actions accept only authority-owned forced-movement bindings for selected targets",
                 ));
             }
             for (index, target_id) in target_ids.iter().enumerate() {
@@ -3110,9 +3137,10 @@ impl Execution<'_> {
             RpgIrOperation::ApplyEffect { .. } | RpgIrOperation::RemoveEffect { .. } => {
                 RpgCapabilityId::Effects
             }
-            RpgIrOperation::Move { .. } | RpgIrOperation::MoveToCell { .. } => {
-                RpgCapabilityId::Position
-            }
+            RpgIrOperation::Move { .. }
+            | RpgIrOperation::MoveToCell { .. }
+            | RpgIrOperation::Push { .. }
+            | RpgIrOperation::Slide { .. } => RpgCapabilityId::Position,
             RpgIrOperation::OpenReaction { .. } => RpgCapabilityId::Reactions,
         };
         if operation
@@ -3367,11 +3395,22 @@ impl Execution<'_> {
                     .position_owner()
                     .move_entity(&entity_id, delta_x, delta_y, *maximum_distance)
                     .map_err(|error| self.mutation_rejection(error, path))?;
-                self.events.push(RpgDomainEvent::PositionChanged {
+                let movement_cost = previous
+                    .x
+                    .abs_diff(current.x)
+                    .saturating_add(previous.y.abs_diff(current.y));
+                self.events.push(RpgDomainEvent::MovementTransition {
                     source_id: self.intent.actor_id.clone(),
-                    entity_id,
-                    previous,
-                    current,
+                    moved_participant_id: entity_id,
+                    movement_kind: if *provokes {
+                        rpg_core::RpgMovementKind::Voluntary
+                    } else {
+                        rpg_core::RpgMovementKind::Push
+                    },
+                    start: previous,
+                    end: current,
+                    route_cell_ids: Vec::new(),
+                    movement_cost,
                     provokes: *provokes,
                 });
             }
@@ -3380,12 +3419,11 @@ impl Execution<'_> {
                 provokes,
             } => {
                 let target_id = self.target_id(path)?;
-                let destination =
+                let selected_route =
                     self.intent
                         .cell_targets
                         .iter()
                         .find(|target| target.id == target_id)
-                        .map(|target| target.position)
                         .ok_or_else(|| {
                             self.fail(
                         "RPG_RUNTIME_CELL_BINDING_MISSING",
@@ -3393,6 +3431,14 @@ impl Execution<'_> {
                         format!("selected cell {target_id} has no authoritative position binding"),
                     )
                         })?;
+                if selected_route.route_cell_ids.is_empty() || selected_route.movement_cost == 0 {
+                    return Err(self.fail(
+                        "RPG_RUNTIME_MOVEMENT_ROUTE_MISSING",
+                        path,
+                        "selected-destination movement requires an authoritative non-empty route",
+                    ));
+                }
+                let destination = selected_route.position;
                 let previous = self
                     .workspace
                     .state()
@@ -3426,13 +3472,61 @@ impl Execution<'_> {
                     .position_owner()
                     .move_entity(&self.intent.actor_id, delta_x, delta_y, *maximum_distance)
                     .map_err(|error| self.mutation_rejection(error, path))?;
-                self.events.push(RpgDomainEvent::PositionChanged {
+                if let Some(budget) = self.rules.movement_allowance_budget() {
+                    let amount = i32::try_from(selected_route.movement_cost).map_err(|_| {
+                        self.fail(
+                            "RPG_RUNTIME_MOVEMENT_COST_INVALID",
+                            path,
+                            "movement route cost exceeds the supported allowance domain",
+                        )
+                    })?;
+                    let accepted_activations =
+                        self.workspace.state().accepted_activations_this_turn();
+                    let (budget_previous, remaining) = self
+                        .workspace
+                        .activation_budgets_owner()
+                        .spend(&self.intent.actor_id, &budget.id, amount)
+                        .map_err(|error| self.mutation_rejection(error, path))?;
+                    self.events.push(RpgDomainEvent::ActivationBudgetSpent {
+                        entity_id: self.intent.actor_id.clone(),
+                        budget_id: budget.id.clone(),
+                        amount,
+                        previous: budget_previous,
+                        remaining,
+                        accepted_activations,
+                    });
+                }
+                self.events.push(RpgDomainEvent::MovementTransition {
                     source_id: self.intent.actor_id.clone(),
-                    entity_id: self.intent.actor_id.clone(),
-                    previous,
-                    current,
+                    moved_participant_id: self.intent.actor_id.clone(),
+                    movement_kind: rpg_core::RpgMovementKind::Voluntary,
+                    start: previous,
+                    end: current,
+                    route_cell_ids: selected_route.route_cell_ids.clone(),
+                    movement_cost: selected_route.movement_cost,
                     provokes: *provokes,
                 });
+            }
+            RpgIrOperation::Push { subject, distance } => {
+                let moved_participant_id = self.subject_id(*subject, path)?;
+                self.execute_forced_movement(
+                    &moved_participant_id,
+                    rpg_core::RpgMovementKind::Push,
+                    *distance,
+                    path,
+                )?;
+            }
+            RpgIrOperation::Slide {
+                subject,
+                maximum_distance,
+            } => {
+                let moved_participant_id = self.subject_id(*subject, path)?;
+                self.execute_forced_movement(
+                    &moved_participant_id,
+                    rpg_core::RpgMovementKind::Slide,
+                    *maximum_distance,
+                    path,
+                )?;
             }
             RpgIrOperation::OpenReaction {
                 reaction_id,
@@ -3461,7 +3555,7 @@ impl Execution<'_> {
                             .map(|rejection| RpgReactionUnavailable {
                                 code: rejection.code,
                                 path: rejection.path,
-                                message: rejection.message,
+                                message: rejection.message.into_string(),
                             })
                         });
                         let activation_costs = option
@@ -3490,12 +3584,14 @@ impl Execution<'_> {
                     })
                     .collect();
                 let request = RpgReactionRequest {
+                    kind: rpg_core::RpgReactionKind::BeforeDamageChoice,
                     reaction_id: reaction_id.clone(),
                     actor_id: self.intent.actor_id.clone(),
                     target_id: target_id.clone(),
                     action_id: self.intent.action_id.clone(),
                     options: request_options,
                     path: path.to_owned(),
+                    movement: None,
                 };
                 let decision = match self.reaction {
                     Some(decision) => decision,
@@ -3564,6 +3660,90 @@ impl Execution<'_> {
             path: path.to_owned(),
             code: "RPG_OPERATION_STAGED".to_owned(),
             detail: format!("{}@{}", operation.binding.id, operation.binding.version),
+        });
+        Ok(())
+    }
+
+    fn execute_forced_movement(
+        &mut self,
+        moved_participant_id: &str,
+        movement_kind: rpg_core::RpgMovementKind,
+        maximum_distance: u32,
+        path: &str,
+    ) -> Result<(), RpgResolutionRejection> {
+        let binding_id = format!("forced:{moved_participant_id}");
+        let selected_route = self
+            .intent
+            .cell_targets
+            .iter()
+            .find(|binding| binding.id == binding_id);
+        let Some(selected_route) = selected_route else {
+            let mut rejection = self.fail(
+                "RPG_FORCED_MOVEMENT_CHOICE_REQUIRED",
+                path,
+                "forced movement requires an authority-projected route",
+            );
+            rejection.forced_movement_request = Some(Box::new(RpgForcedMovementRequest {
+                movement_kind,
+                source_id: self.intent.actor_id.clone(),
+                moved_participant_id: moved_participant_id.to_owned(),
+                maximum_distance,
+                operation_path: path.to_owned(),
+            }));
+            return Err(rejection);
+        };
+        if selected_route.route_cell_ids.is_empty()
+            || selected_route.movement_cost == 0
+            || selected_route.movement_cost > maximum_distance
+        {
+            return Err(self.fail(
+                "RPG_FORCED_MOVEMENT_ROUTE_INVALID",
+                path,
+                "forced movement route is empty or exceeds the declared bound",
+            ));
+        }
+        let previous = self
+            .workspace
+            .state()
+            .entity(moved_participant_id)
+            .map(|entity| entity.position())
+            .ok_or_else(|| {
+                self.fail(
+                    "RPG_RUNTIME_TARGET_MISSING",
+                    path,
+                    format!("participant {moved_participant_id} is missing"),
+                )
+            })?;
+        let delta_x = i64::from(selected_route.position.x) - i64::from(previous.x);
+        let delta_y = i64::from(selected_route.position.y) - i64::from(previous.y);
+        let delta_x = i32::try_from(delta_x).map_err(|_| {
+            self.fail(
+                "RPG_RUNTIME_MOVEMENT_DELTA_INVALID",
+                path,
+                "forced movement x delta exceeds the supported position space",
+            )
+        })?;
+        let delta_y = i32::try_from(delta_y).map_err(|_| {
+            self.fail(
+                "RPG_RUNTIME_MOVEMENT_DELTA_INVALID",
+                path,
+                "forced movement y delta exceeds the supported position space",
+            )
+        })?;
+        let (start, end) = self
+            .workspace
+            .position_owner()
+            .move_entity(moved_participant_id, delta_x, delta_y, maximum_distance)
+            .map_err(|error| self.mutation_rejection(error, path))?;
+        self.events.push(RpgDomainEvent::MovementTransition {
+            source_id: self.intent.actor_id.clone(),
+            moved_participant_id: moved_participant_id.to_owned(),
+            movement_kind,
+            start,
+            end,
+            route_cell_ids: selected_route.route_cell_ids.clone(),
+            movement_cost: selected_route.movement_cost,
+            provokes: false,
         });
         Ok(())
     }
@@ -3873,7 +4053,7 @@ impl Execution<'_> {
         RpgResolutionRejection {
             code: code.to_owned(),
             path: path.to_owned(),
-            message: message.into(),
+            message: message.into().into_boxed_str(),
             trace: Box::new(self.trace.clone()),
             random_evidence: Box::new(self.random_evidence.clone()),
             random_attempted: u64::try_from(
@@ -3884,6 +4064,7 @@ impl Execution<'_> {
             .unwrap_or(u64::MAX),
             random_request: None,
             reaction_request: None,
+            forced_movement_request: None,
             unavailable_source: None,
         }
     }
@@ -4368,12 +4549,13 @@ fn rejection(
     RpgResolutionRejection {
         code: code.to_owned(),
         path: path.into(),
-        message: message.into(),
+        message: message.into().into_boxed_str(),
         trace: Box::new(Vec::new()),
         random_evidence: Box::new(Vec::new()),
         random_attempted: 0,
         random_request: None,
         reaction_request: None,
+        forced_movement_request: None,
         unavailable_source: None,
     }
 }

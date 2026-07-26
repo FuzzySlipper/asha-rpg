@@ -43,10 +43,11 @@ surface: a Ruleset, selected Content Packs, the compiled PlayBundle, and its
 Scenario-bound authority session are the single supported path.
 
 The initial operation set is deliberately closed: typed damage packets, healing, resource
-change, bounded grid movement, turn-bounded modifier application, named effect
+change, weighted route-cost grid movement, cardinal push, bounded slide choice,
+turn-bounded modifier application, named effect
 application/removal with fixed or target-turn-end save-ends tenure, closed
-action/movement condition restrictions, and a typed
-before-damage reaction window. Checks support attack, saving throw, generic
+action/movement condition restrictions, and typed before-damage and
+voluntary-leave-adjacency reaction windows. Checks support attack, saving throw, generic
 Ruleset-owned scalar tests, heterogeneous pools, and no-roll flows. Scalar profiles declare
 one d2..d100 primary die, checked numeric domains, complete margin thresholds,
 ordered outcome bands, disjoint natural rules, and an optional contribution
@@ -82,7 +83,11 @@ reactions, and action economy to Rust-supported model versions. The variable
 activation-budget model lets a Ruleset declare bounded action/reaction budgets,
 owner-turn-start or round-start reset boundaries, and a per-turn accepted
 activation ceiling. Rust pays those costs atomically with action/reaction
-consequences and projects remaining amounts and unavailable reasons. Content Packs
+consequences and projects remaining amounts and unavailable reasons. One
+owner-turn action budget may be designated as movement allowance and is charged
+the exact Rust-derived route cost. A registered leave-adjacency response uses
+an exclusive exact-capacity reaction budget and commits or declines with the
+movement in one revision. Content Packs
 may define inert typed items with tags, traits, allowed equipment slots, and
 bounded integer, identifier, dice, owner-bound catalog-reference, or
 Ruleset-reference attributes. Shared actions may read those attributes through

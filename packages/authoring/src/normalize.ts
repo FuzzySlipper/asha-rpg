@@ -42,6 +42,8 @@ const OPERATION_IDS: Record<RpgIrOperation['kind'], RpgOperationId> = {
   removeEffect: 'operation.removeEffect',
   move: 'operation.move',
   moveToCell: 'operation.moveToCell',
+  push: 'operation.push',
+  slide: 'operation.slide',
   openReaction: 'operation.openReaction',
 };
 
@@ -258,7 +260,7 @@ function validateAction(
   if (action.activation !== undefined) {
     validateActivation(
       action.activation,
-      'action',
+      action.activation.timing,
       `${path}.activation`,
       diagnostics,
       action.sourcePath,
@@ -1041,6 +1043,10 @@ function collectOperation(operation: RpgIrOperation, collection: Collection): vo
       collectFormula(operation.deltaY, collection);
       return;
     case 'moveToCell':
+      collection.capabilities.add('capability.position');
+      return;
+    case 'push':
+    case 'slide':
       collection.capabilities.add('capability.position');
       return;
     case 'openReaction':
