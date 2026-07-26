@@ -22,9 +22,9 @@ use crate::{
 
 pub const RPG_CHECKPOINT_SCHEMA_ID: &str = "asha.rpg.session.checkpoint";
 pub const RPG_REPLAY_ENTRY_SCHEMA_ID: &str = "asha.rpg.session.replay-entry";
-pub const RPG_CHECKPOINT_SCHEMA_VERSION: u32 = 10;
-pub const RPG_REPLAY_ENTRY_SCHEMA_VERSION: u32 = 11;
-pub const RPG_EVENT_SCHEMA_VERSION: u32 = 9;
+pub const RPG_CHECKPOINT_SCHEMA_VERSION: u32 = 11;
+pub const RPG_REPLAY_ENTRY_SCHEMA_VERSION: u32 = 12;
+pub const RPG_EVENT_SCHEMA_VERSION: u32 = 10;
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase", deny_unknown_fields)]
@@ -2761,6 +2761,7 @@ mod tests {
                         version: 1,
                     },
                     action_economy: RulesetActionEconomyModel::OneActionPlusReaction { version: 1 },
+                    line_of_effect: None,
                 },
                 provides: RulesetProvisions {
                     operations: operations.clone(),

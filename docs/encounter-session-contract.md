@@ -7,7 +7,7 @@ consumer compiles or loads a `CompiledPlayBundle` and calls
 `RpgAuthoritySession::from_scenario`. Rust validates the entire Scenario before
 creating mutable authority state.
 
-The schema is `asha.rpg.scenario@2`. `playBundleId` must exactly match the
+The schema is `asha.rpg.scenario@3`. `playBundleId` must exactly match the
 compiled artifact. Checkpoint schema `asha.rpg.session.checkpoint@10` stores the
 Scenario and its `fnv1a64.rpg-scenario.v1` fingerprint. Replay entry schema
 version 11 binds before/after boundaries to that Scenario, source binding,
@@ -123,6 +123,18 @@ shared checks atomically. Events and replay retain the proposal revision and
 exact derived set, including clipped or unauthored cells and team/living
 filter reasons; the opaque live session id is deliberately not portable.
 
+When a selector requires `line-of-effect.square-grid-supercover@1`, the action
+options also bind the exact session, artifact, Scenario fingerprint, revision,
+round, turn, actor, action, and item identity. Participant, destination-cell,
+and area projection all call the same Rust supercover traversal over authored
+cell centers. A typed `line-of-effect.obstruction@1` fact blocks intermediate
+cells; start and target cells do not block themselves. At an exact corner the
+traversal includes both adjacent cells in row-major order. Missing endpoint or
+traversed cells fail closed. Filtered readback and accepted area events retain
+generic reasons and blocker cell ids. Complete bound submissions are
+revalidated before randomness and stale, blocked, or tampered choices leave
+state, hash, revision, random position, log, positions, and vitality unchanged.
+
 ## Random evidence
 
 Interactive calls use a bound `RpgRandomSource`. Rust requests the exact draw,
@@ -137,10 +149,10 @@ randomness, or reapplies events.
 
 ## Non-claims
 
-The initial board authority does not claim diagonal or hex topology,
+The initial board authority does not claim diagonal movement or hex topology,
 jumping/flying/teleport movement, opportunity attacks, per-step effects,
-cones, arbitrary polygons, elevation, cover, line of effect, persistent auras,
-campaign persistence, scripted runners, AI control, Tester configuration,
-class levels or prerequisites, calculation owners beyond attack and
-scalar-test profiles, a general condition language, or Rulebench product
-protocols.
+cones, arbitrary polygons, elevation, cover, concealment, vision contests,
+arbitrary-topology or client-computed sight, persistent auras, campaign
+persistence, scripted runners, AI control, Tester configuration, class levels
+or prerequisites, calculation owners beyond attack and scalar-test profiles,
+a general condition language, or Rulebench product protocols.

@@ -14,18 +14,23 @@ use rpg_core::{
     RpgModifierTurnChange, RpgRandomEvidence, RpgReactionDecision, RpgReactionRequest,
     RpgResolutionContext, RpgResolutionReceipt, RpgResolutionRejection, RpgTraceStep,
 };
-use rpg_ir::{CompiledPlayBundleArtifact, RpgIrTargetKind, RulesetActivationBudgetResetBoundary};
+use rpg_ir::{
+    CompiledPlayBundleArtifact, RpgIrLineOfEffectRequirement, RpgIrTargetKind,
+    RulesetActivationBudgetResetBoundary,
+};
 use serde::{Deserialize, Serialize};
 
 use crate::encounter::{
-    action_view, area_projection, build_encounter, encounter_outcome, living_intent_rejection,
-    movement_paths, participant_view, random_failure, runtime_board_rejection,
-    RpgActionOptionsView, RpgActionProposal, RpgAreaActionProposal, RpgAreaBoardIndex,
-    RpgAreaOptionView, RpgAreaSubmissionResult, RpgEncounterAuthority, RpgEncounterOutcomeView,
-    RpgEncounterView, RpgParticipantProjectionCatalogs, RpgRandomSource, RpgRandomSourceFailure,
-    RpgReactionProposal, RpgScenario, RpgScenarioFailure, RpgSchemaIdentity, RpgTurnControl,
-    RpgTurnControlProposal, RpgTurnControlView, RPG_ENCOUNTER_VIEW_SCHEMA_ID,
-    RPG_ENCOUNTER_VIEW_SCHEMA_VERSION,
+    action_view, area_projection, build_encounter, encounter_outcome, line_of_effect_projection,
+    living_intent_rejection, movement_paths, participant_view, random_failure,
+    runtime_board_rejection, RpgActionOptionBindingView, RpgActionOptionsView, RpgActionProposal,
+    RpgAreaActionProposal, RpgAreaBoardIndex, RpgAreaOptionView, RpgAreaSubmissionResult,
+    RpgBoundActionProposal, RpgBoundActionSubmissionResult, RpgEncounterAuthority,
+    RpgEncounterOutcomeView, RpgEncounterView, RpgFilteredCellOptionView,
+    RpgFilteredParticipantOptionView, RpgParticipantProjectionCatalogs, RpgRandomSource,
+    RpgRandomSourceFailure, RpgReactionProposal, RpgScenario, RpgScenarioFailure,
+    RpgSchemaIdentity, RpgTurnControl, RpgTurnControlProposal, RpgTurnControlView,
+    RPG_ENCOUNTER_VIEW_SCHEMA_ID, RPG_ENCOUNTER_VIEW_SCHEMA_VERSION,
 };
 use crate::{RpgReplayEntry, RpgReplayFailure};
 
@@ -324,17 +329,25 @@ impl RpgAuthoritySession {
                 };
                 let mut first_rejection = binding_unavailable
                     .or_else(|| living_intent_rejection(&self.state, &actor_intent));
-                let target_kind = self
-                    .rules
-                    .target_kind_for_binding(
-                        &action.id,
-                        item_binding
-                            .as_ref()
-                            .map(|binding| binding.item_definition_id.as_str()),
-                    )
-                    .unwrap_or(RpgIrTargetKind::Participant);
+                let target_kind = action.targets.kind;
+                let option_binding = RpgActionOptionBindingView {
+                    session_binding_id: self.session_binding_id.clone(),
+                    artifact_id: self
+                        .artifact
+                        .as_ref()
+                        .map(|artifact| artifact.artifact_id.clone())
+                        .unwrap_or_default(),
+                    scenario_fingerprint: self.scenario_fingerprint.clone(),
+                    authority_revision: self.state.revision(),
+                    round: self.encounter.turn.round,
+                    turn: self.encounter.turn.turn,
+                    current_actor_id: actor_id.to_owned(),
+                    action_id: action.id.clone(),
+                    item_binding: item_binding.clone(),
+                };
                 let options = match target_kind {
                     RpgIrTargetKind::Participant => {
+                        let mut filtered_participants = Vec::new();
                         let legal_candidates = self
                             .rules
                             .candidate_ids_for_binding(
@@ -348,6 +361,34 @@ impl RpgAuthoritySession {
                             .unwrap_or_default()
                             .into_iter()
                             .filter(|target_id| {
+                                if action.targets.line_of_effect
+                                    == RpgIrLineOfEffectRequirement::Required
+                                {
+                                    let Some(actor) = self.state.entity(actor_id) else {
+                                        return false;
+                                    };
+                                    let Some(target) = self.state.entity(target_id) else {
+                                        return false;
+                                    };
+                                    let projection = line_of_effect_projection(
+                                        &area_board_index,
+                                        actor.position(),
+                                        target.position(),
+                                    );
+                                    if !projection.clear {
+                                        filtered_participants.push(
+                                            RpgFilteredParticipantOptionView {
+                                                participant_id: target_id.clone(),
+                                                reason: projection
+                                                    .reason
+                                                    .unwrap_or("lineOfEffectBlocked")
+                                                    .to_owned(),
+                                                blocking_cell_ids: projection.blocking_cell_ids,
+                                            },
+                                        );
+                                        return false;
+                                    }
+                                }
                                 let intent = RpgIntent {
                                     action_id: action.id.clone(),
                                     actor_id: actor_id.to_owned(),
@@ -375,12 +416,16 @@ impl RpgAuthoritySession {
                             })
                             .collect();
                         RpgActionOptionsView {
+                            binding: option_binding,
                             participant_ids: legal_candidates,
                             cell_paths: Vec::new(),
+                            filtered_participants,
+                            filtered_cells: Vec::new(),
                             area_options: Vec::new(),
                         }
                     }
                     RpgIrTargetKind::Cell => {
+                        let mut filtered_cells = Vec::new();
                         let legal_paths = action
                             .selected_destination_maximum_distance
                             .map(|maximum_distance| {
@@ -404,6 +449,29 @@ impl RpgAuthoritySession {
                                 else {
                                     return false;
                                 };
+                                if action.targets.line_of_effect
+                                    == RpgIrLineOfEffectRequirement::Required
+                                {
+                                    let Some(actor) = self.state.entity(actor_id) else {
+                                        return false;
+                                    };
+                                    let projection = line_of_effect_projection(
+                                        &area_board_index,
+                                        actor.position(),
+                                        cell.position,
+                                    );
+                                    if !projection.clear {
+                                        filtered_cells.push(RpgFilteredCellOptionView {
+                                            cell_id: cell.id.clone(),
+                                            reason: projection
+                                                .reason
+                                                .unwrap_or("lineOfEffectBlocked")
+                                                .to_owned(),
+                                            blocking_cell_ids: projection.blocking_cell_ids,
+                                        });
+                                        return false;
+                                    }
+                                }
                                 let mut intent = cell_intent(&action.id, actor_id, cell);
                                 intent.item_binding = item_binding.clone();
                                 if let Err(rejection) = self.rules.preflight(&self.state, &intent) {
@@ -416,12 +484,16 @@ impl RpgAuthoritySession {
                             })
                             .collect();
                         RpgActionOptionsView {
+                            binding: option_binding,
                             participant_ids: Vec::new(),
                             cell_paths: legal_paths,
+                            filtered_participants: Vec::new(),
+                            filtered_cells,
                             area_options: Vec::new(),
                         }
                     }
                     RpgIrTargetKind::Area => {
+                        let mut filtered_cells = Vec::new();
                         let area_options = self
                             .encounter
                             .scenario
@@ -429,6 +501,27 @@ impl RpgAuthoritySession {
                             .cells
                             .iter()
                             .filter_map(|anchor| {
+                                if action.targets.line_of_effect
+                                    == RpgIrLineOfEffectRequirement::Required
+                                {
+                                    let actor = self.state.entity(actor_id)?;
+                                    let projection = line_of_effect_projection(
+                                        &area_board_index,
+                                        actor.position(),
+                                        anchor.position,
+                                    );
+                                    if !projection.clear {
+                                        filtered_cells.push(RpgFilteredCellOptionView {
+                                            cell_id: anchor.id.clone(),
+                                            reason: projection
+                                                .reason
+                                                .unwrap_or("lineOfEffectBlocked")
+                                                .to_owned(),
+                                            blocking_cell_ids: projection.blocking_cell_ids,
+                                        });
+                                        return None;
+                                    }
+                                }
                                 let projection = area_projection(
                                     &area_board_index,
                                     &self.state,
@@ -466,8 +559,11 @@ impl RpgAuthoritySession {
                             })
                             .collect();
                         RpgActionOptionsView {
+                            binding: option_binding,
                             participant_ids: Vec::new(),
                             cell_paths: Vec::new(),
+                            filtered_participants: Vec::new(),
+                            filtered_cells,
                             area_options,
                         }
                     }
@@ -680,6 +776,9 @@ impl RpgAuthoritySession {
             return RpgCommandOutcome::Rejected(rejection);
         }
         if let Some(rejection) = self.movement_path_rejection(&command.intent) {
+            return RpgCommandOutcome::Rejected(rejection);
+        }
+        if let Some(rejection) = self.line_of_effect_rejection(&command.intent) {
             return RpgCommandOutcome::Rejected(rejection);
         }
 
@@ -977,6 +1076,46 @@ impl RpgAuthoritySession {
         self.submit_command_with_random_source_recorded(command, source, None)
     }
 
+    pub fn submit_bound_with_random_source_recorded(
+        &mut self,
+        proposal: RpgBoundActionProposal,
+        source: &mut dyn RpgRandomSource,
+    ) -> Result<RpgBoundActionSubmissionResult, RpgAutomaticCommandFailure> {
+        if let Some(rejection) = self.action_option_binding_rejection(&proposal.binding) {
+            return Ok(RpgBoundActionSubmissionResult {
+                outcome: RpgCommandOutcome::Rejected(rejection),
+                replay_entry: None,
+                encounter: self.encounter_view(),
+            });
+        }
+        let cell_targets = self.proposal_cell_targets(&RpgActionProposal {
+            expected_revision: proposal.binding.authority_revision,
+            action_id: proposal.binding.action_id.clone(),
+            actor_id: proposal.binding.current_actor_id.clone(),
+            target_ids: proposal.target_ids.clone(),
+            item_binding: proposal.binding.item_binding.clone(),
+        });
+        let command = RpgAuthorityCommand {
+            expected_revision: proposal.binding.authority_revision,
+            intent: RpgIntent {
+                action_id: proposal.binding.action_id,
+                actor_id: proposal.binding.current_actor_id,
+                target_ids: proposal.target_ids,
+                cell_targets,
+                item_binding: proposal.binding.item_binding,
+            },
+            random_values: Vec::new(),
+        };
+        self.require_random_source(source)?;
+        let (outcome, replay_entry) =
+            self.submit_command_with_random_source_recorded(command, source, None)?;
+        Ok(RpgBoundActionSubmissionResult {
+            outcome,
+            replay_entry: Some(replay_entry),
+            encounter: self.encounter_view(),
+        })
+    }
+
     pub fn submit_area_with_random_source_recorded(
         &mut self,
         proposal: RpgAreaActionProposal,
@@ -1084,6 +1223,44 @@ impl RpgAuthoritySession {
             replay_entry: Some(replay_entry),
             encounter: self.encounter_view(),
         })
+    }
+
+    pub fn submit_area_option_with_random_source_recorded(
+        &mut self,
+        option: RpgAreaOptionView,
+        source: &mut dyn RpgRandomSource,
+    ) -> Result<RpgAreaSubmissionResult, RpgAutomaticCommandFailure> {
+        let current = self.encounter_view().actions.into_iter().any(|action| {
+            action.definition_id == option.action_id
+                && action.item_binding == option.item_binding
+                && action
+                    .options
+                    .area_options
+                    .iter()
+                    .any(|candidate| candidate == &option)
+        });
+        if !current {
+            return Ok(RpgAreaSubmissionResult {
+                outcome: RpgCommandOutcome::Rejected(rejection(
+                    "RPG_AREA_OPTION_STALE",
+                    "$.option",
+                    "the complete area option does not match current authority readback",
+                )),
+                replay_entry: None,
+                encounter: self.encounter_view(),
+            });
+        }
+        self.submit_area_with_random_source_recorded(
+            RpgAreaActionProposal {
+                session_binding_id: option.session_binding_id,
+                authority_revision: option.authority_revision,
+                action_id: option.action_id,
+                actor_id: option.current_actor_id,
+                anchor_cell_id: option.anchor_cell_id,
+                item_binding: option.item_binding,
+            },
+            source,
+        )
     }
 
     fn submit_command_with_random_source_recorded(
@@ -1342,6 +1519,7 @@ impl RpgAuthoritySession {
                     x: cell.x,
                     y: cell.y,
                     reason: cell.reason.clone(),
+                    blocking_cell_ids: cell.blocking_cell_ids.clone(),
                 })
                 .collect(),
             included_participant_ids: projection.included_participant_ids.clone(),
@@ -1351,6 +1529,7 @@ impl RpgAuthoritySession {
                 .map(|participant| rpg_core::RpgAreaFilteredParticipant {
                     participant_id: participant.participant_id.clone(),
                     reason: participant.reason.clone(),
+                    blocking_cell_ids: participant.blocking_cell_ids.clone(),
                 })
                 .collect(),
         };
@@ -1396,6 +1575,134 @@ impl RpgAuthoritySession {
                 )
             })
         })
+    }
+
+    fn action_option_binding_rejection(
+        &self,
+        binding: &RpgActionOptionBindingView,
+    ) -> Option<RpgResolutionRejection> {
+        let artifact_id = self
+            .artifact
+            .as_ref()
+            .map(|artifact| artifact.artifact_id.as_str())
+            .unwrap_or_default();
+        let mismatch = if binding.session_binding_id != self.session_binding_id {
+            Some((
+                "$.proposal.binding.sessionBindingId",
+                "the option belongs to a different authority session",
+            ))
+        } else if binding.artifact_id != artifact_id {
+            Some((
+                "$.proposal.binding.artifactId",
+                "the option belongs to a different compiled artifact",
+            ))
+        } else if binding.scenario_fingerprint != self.scenario_fingerprint {
+            Some((
+                "$.proposal.binding.scenarioFingerprint",
+                "the option belongs to a different scenario",
+            ))
+        } else if binding.authority_revision != self.state.revision() {
+            Some((
+                "$.proposal.binding.authorityRevision",
+                "the option belongs to a different authority revision",
+            ))
+        } else if binding.round != self.encounter.turn.round {
+            Some((
+                "$.proposal.binding.round",
+                "the option belongs to a different round",
+            ))
+        } else if binding.turn != self.encounter.turn.turn {
+            Some((
+                "$.proposal.binding.turn",
+                "the option belongs to a different turn",
+            ))
+        } else if binding.current_actor_id != self.encounter.turn.current_actor_id {
+            Some((
+                "$.proposal.binding.currentActorId",
+                "the option belongs to a different current actor",
+            ))
+        } else {
+            let available = self.encounter_view().actions.into_iter().any(|action| {
+                action.definition_id == binding.action_id
+                    && action.item_binding == binding.item_binding
+                    && action.options.binding == *binding
+            });
+            (!available).then_some((
+                "$.proposal.binding",
+                "the action and item binding are not current authority options",
+            ))
+        };
+        mismatch.map(|(path, message)| rejection("RPG_ACTION_OPTION_STALE", path, message))
+    }
+
+    fn line_of_effect_rejection(&self, intent: &RpgIntent) -> Option<RpgResolutionRejection> {
+        let targets = self
+            .rules
+            .target_selector_for_binding(
+                &intent.action_id,
+                intent
+                    .item_binding
+                    .as_ref()
+                    .map(|binding| binding.item_definition_id.as_str()),
+            )
+            .ok()?;
+        if targets.line_of_effect != RpgIrLineOfEffectRequirement::Required
+            || targets.kind == RpgIrTargetKind::Area
+        {
+            return None;
+        }
+        let board_index = RpgAreaBoardIndex::new(&self.encounter.scenario.board, &self.state);
+        let actor = self.state.entity(&intent.actor_id)?;
+        match targets.kind {
+            RpgIrTargetKind::Participant => {
+                intent
+                    .target_ids
+                    .iter()
+                    .enumerate()
+                    .find_map(|(index, target_id)| {
+                        let target = self.state.entity(target_id)?;
+                        let projection = line_of_effect_projection(
+                            &board_index,
+                            actor.position(),
+                            target.position(),
+                        );
+                        (!projection.clear).then(|| {
+                            rejection(
+                                "RPG_LINE_OF_EFFECT_BLOCKED",
+                                format!("$.command.intent.targetIds[{index}]"),
+                                format!(
+                                    "line of effect is blocked by [{}]",
+                                    projection.blocking_cell_ids.join(", ")
+                                ),
+                            )
+                        })
+                    })
+            }
+            RpgIrTargetKind::Cell => {
+                intent
+                    .cell_targets
+                    .iter()
+                    .enumerate()
+                    .find_map(|(index, cell)| {
+                        let projection = line_of_effect_projection(
+                            &board_index,
+                            actor.position(),
+                            cell.position,
+                        );
+                        (!projection.clear).then(|| {
+                            rejection(
+                                "RPG_LINE_OF_EFFECT_BLOCKED",
+                                format!("$.command.intent.cellTargets[{index}]"),
+                                format!(
+                                    "line of effect is blocked by [{}]",
+                                    projection.blocking_cell_ids.join(", ")
+                                ),
+                            )
+                        })
+                    })
+            }
+            RpgIrTargetKind::Area => None,
+        }
     }
 
     fn require_random_source(
@@ -1849,7 +2156,7 @@ mod tests {
 
     fn reaction_ruleset() -> CompiledRpgRules {
         let source = br#"{
-          "schema":{"identity":"asha.rpg.ir","major":2},
+          "schema":{"identity":"asha.rpg.ir","major":3},
           "package":{"id":"session.test","version":"1.0.0"},
           "catalogs":{"resources":["focus"],"capabilities":[
             "capability.random","capability.reactions","capability.resources","capability.vitality"
@@ -1882,7 +2189,7 @@ mod tests {
 
     fn movement_ruleset() -> CompiledRpgRules {
         let source = br#"{
-          "schema":{"identity":"asha.rpg.ir","major":2},
+          "schema":{"identity":"asha.rpg.ir","major":3},
           "package":{"id":"movement.test","version":"1.0.0"},
           "catalogs":{"capabilities":["capability.position","capability.vitality"]},
           "requirements":[

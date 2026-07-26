@@ -1,6 +1,6 @@
 // Generated from the Rust semantic registry. Do not edit by hand.
 export const RPG_IR_IDENTITY = "asha.rpg.ir" as const;
-export const RPG_IR_MAJOR = 2 as const;
+export const RPG_IR_MAJOR = 3 as const;
 
 export const RPG_OPERATION_VERSIONS = {
   "operation.applyEffect": 1,

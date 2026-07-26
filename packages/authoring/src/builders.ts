@@ -82,23 +82,27 @@ export function targets(options: {
   readonly team: 'hostile' | 'ally' | 'any';
   readonly maximumRange: number;
   readonly maximumTargets?: number;
+  readonly lineOfEffect?: 'ignored' | 'required';
 }): RpgIrTargetSelector {
   return frozen({
     kind: 'participant',
     team: options.team,
     maximumRange: options.maximumRange,
     maximumTargets: options.maximumTargets ?? 1,
+    lineOfEffect: options.lineOfEffect ?? 'ignored',
   });
 }
 
 export function cells(options: {
   readonly range: number;
+  readonly lineOfEffect?: 'ignored' | 'required';
 }): RpgIrTargetSelector {
   return frozen({
     kind: 'cell',
     team: 'any',
     maximumRange: options.range,
     maximumTargets: 1,
+    lineOfEffect: options.lineOfEffect ?? 'ignored',
   });
 }
 
@@ -109,12 +113,14 @@ export function diamondArea(options: {
   readonly livingRequired?: boolean;
   readonly minimumTargets?: number;
   readonly maximumTargets?: number;
+  readonly lineOfEffect?: 'ignored' | 'required';
 }): RpgIrTargetSelector {
   return frozen({
     kind: 'area',
     team: options.team,
     maximumRange: options.range,
     maximumTargets: options.maximumTargets ?? 32,
+    lineOfEffect: options.lineOfEffect ?? 'ignored',
     area: frozen({
       schema: frozen({ identity: 'asha.rpg.area-selector', version: 1 }),
       origin: 'anchor',
@@ -132,12 +138,14 @@ export function orthogonalLineArea(options: {
   readonly livingRequired?: boolean;
   readonly minimumTargets?: number;
   readonly maximumTargets?: number;
+  readonly lineOfEffect?: 'ignored' | 'required';
 }): RpgIrTargetSelector {
   return frozen({
     kind: 'area',
     team: options.team,
     maximumRange: options.range,
     maximumTargets: options.maximumTargets ?? 32,
+    lineOfEffect: options.lineOfEffect ?? 'ignored',
     area: frozen({
       schema: frozen({ identity: 'asha.rpg.area-selector', version: 1 }),
       origin: 'actor',
@@ -151,26 +159,40 @@ export function orthogonalLineArea(options: {
 export function hostile(options: {
   readonly range: number;
   readonly maximum?: number;
+  readonly lineOfEffect?: 'ignored' | 'required';
 }): RpgIrTargetSelector {
+  const lineOfEffect = options.lineOfEffect ?? 'ignored';
   return options.maximum === undefined
-    ? targets({ team: 'hostile', maximumRange: options.range })
+    ? targets({
+        team: 'hostile',
+        maximumRange: options.range,
+        lineOfEffect,
+      })
     : targets({
         team: 'hostile',
         maximumRange: options.range,
         maximumTargets: options.maximum,
+        lineOfEffect,
       });
 }
 
 export function ally(options: {
   readonly range: number;
   readonly maximum?: number;
+  readonly lineOfEffect?: 'ignored' | 'required';
 }): RpgIrTargetSelector {
+  const lineOfEffect = options.lineOfEffect ?? 'ignored';
   return options.maximum === undefined
-    ? targets({ team: 'ally', maximumRange: options.range })
+    ? targets({
+        team: 'ally',
+        maximumRange: options.range,
+        lineOfEffect,
+      })
     : targets({
         team: 'ally',
         maximumRange: options.range,
         maximumTargets: options.maximum,
+        lineOfEffect,
       });
 }
 

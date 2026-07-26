@@ -4,11 +4,13 @@ use std::io::{self, Read};
 use asha_rpg::{
     compile_prepared_play_bundle_json, materialized_definition_fingerprint, BoundedValue,
     GridPosition, MaterializedContentDefinition, RpgActionProposal, RpgAuthoritySession,
-    RpgBoardSetup, RpgCommandOutcome, RpgContributionDisposition, RpgDomainEvent,
+    RpgBoardSetup, RpgBoundActionProposal, RpgCellCapabilitySetup, RpgCellCapabilityValue,
+    RpgCellSetup, RpgCommandOutcome, RpgContributionDisposition, RpgDomainEvent,
     RpgEquipmentSlotSetup, RpgInitialCapability, RpgIntentItemBinding, RpgItemInstanceSetup,
     RpgNaturalDieEffect, RpgParticipantSetup, RpgRandomRequest, RpgRandomRequestKind,
     RpgRandomSource, RpgRandomSourceBinding, RpgRandomSourceFailure, RpgScenario, RpgTeamId,
-    RpgTurnInitialization,
+    RpgTurnInitialization, RPG_LINE_OF_EFFECT_OBSTRUCTION_ID,
+    RPG_LINE_OF_EFFECT_OBSTRUCTION_VERSION,
 };
 use serde_json::Value;
 
@@ -22,6 +24,7 @@ fn main() {
 
     let bundle = compile_prepared_play_bundle_json(&prepared_source)
         .expect("compile the exact TypeScript-authored prepared bundle");
+    prove_line_of_effect_projection_staleness_and_atomicity(bundle.clone());
     let scenario = scenario(&bundle, 5);
     let mut session =
         RpgAuthoritySession::from_scenario(bundle.clone(), scenario.clone()).expect("scenario");
@@ -57,19 +60,28 @@ fn main() {
         .cloned()
         .expect("long spear binding");
 
+    let expose_binding = view
+        .actions
+        .iter()
+        .find(|action| action.definition_id == "action.expose")
+        .expect("expose action")
+        .options
+        .binding
+        .clone();
     let mut expose_source = ScriptedSource::new(&session, []);
-    let (expose_outcome, expose_replay) = session
-        .submit_with_random_source_recorded(
-            RpgActionProposal {
-                expected_revision: 0,
-                action_id: "action.expose".to_owned(),
-                actor_id: ACTOR_ID.to_owned(),
+    let expose_submission = session
+        .submit_bound_with_random_source_recorded(
+            RpgBoundActionProposal {
+                binding: expose_binding,
                 target_ids: vec![FIRST_TARGET_ID.to_owned()],
-                item_binding: None,
             },
             &mut expose_source,
         )
         .expect("unopposed expose action");
+    let expose_outcome = expose_submission.outcome;
+    let expose_replay = expose_submission
+        .replay_entry
+        .expect("accepted bound action has replay entry");
     let expose_receipt = accepted(expose_outcome);
     assert!(expose_receipt.events.iter().any(|event| matches!(
         event,
@@ -305,6 +317,262 @@ fn prove_prepared_input_rejects_tampering(prepared_source: &[u8]) {
             .expect("fingerprint tampered definition"),
     );
     assert_compile_rejects(&invalid_domain, "SCALAR_CONTRIBUTION_VALUE_OUT_OF_DOMAIN");
+
+    let mut incompatible_line_model: Value =
+        serde_json::from_slice(prepared_source).expect("decode prepared witness JSON");
+    incompatible_line_model["ruleset"]["models"]["lineOfEffect"]["version"] =
+        Value::Number(99_u64.into());
+    assert_compile_rejects(&incompatible_line_model, "RULESET_MODEL_UNSUPPORTED");
+
+    let mut missing_line_model: Value =
+        serde_json::from_slice(prepared_source).expect("decode prepared witness JSON");
+    missing_line_model["ruleset"]["models"]
+        .as_object_mut()
+        .expect("ruleset models")
+        .remove("lineOfEffect");
+    assert_compile_rejects(
+        &missing_line_model,
+        "ACTION_LINE_OF_EFFECT_MODEL_REQUIRED",
+    );
+
+    let mut missing_selector_requirement: Value =
+        serde_json::from_slice(prepared_source).expect("decode prepared witness JSON");
+    let definition = missing_selector_requirement["materializedDefinitions"]
+        .as_array_mut()
+        .expect("definitions")
+        .iter_mut()
+        .find(|definition| definition["id"] == "action.expose")
+        .expect("expose definition");
+    definition["semantic"]["action"]["targets"]
+        .as_object_mut()
+        .expect("target selector")
+        .remove("lineOfEffect");
+    let typed_definition: MaterializedContentDefinition =
+        serde_json::from_value(definition.clone()).expect("decode selector tamper");
+    definition["fingerprint"] = Value::String(
+        materialized_definition_fingerprint(&typed_definition)
+            .expect("fingerprint selector tamper"),
+    );
+    assert_compile_rejects(
+        &missing_selector_requirement,
+        "RPG_IR_LINE_OF_EFFECT_REQUIREMENT_MISSING",
+    );
+}
+
+fn prove_line_of_effect_projection_staleness_and_atomicity(
+    bundle: asha_rpg::CompiledPlayBundle,
+) {
+    let mut wrong_fact = scenario(&bundle, 5);
+    wrong_fact.board.cells[0].capabilities[0].value =
+        RpgCellCapabilityValue::Flag { value: true };
+    let wrong_fact_failure = RpgAuthoritySession::from_scenario(bundle.clone(), wrong_fact)
+        .expect_err("reserved obstruction identity rejects a generic flag");
+    assert!(wrong_fact_failure.diagnostics.iter().any(|diagnostic| {
+        diagnostic.code == "RPG_SCENARIO_LINE_OF_EFFECT_OBSTRUCTION_INVALID"
+            && diagnostic.path == "$.board.cells[0].capabilities[0]"
+    }));
+
+    let mut duplicate_fact = scenario(&bundle, 5);
+    let duplicate = duplicate_fact.board.cells[0].capabilities[0].clone();
+    duplicate_fact.board.cells[0].capabilities.push(duplicate);
+    let duplicate_failure = RpgAuthoritySession::from_scenario(bundle.clone(), duplicate_fact)
+        .expect_err("duplicate obstruction facts fail before session state");
+    assert!(duplicate_failure.diagnostics.iter().any(|diagnostic| {
+        diagnostic.code == "RPG_SCENARIO_CELL_CAPABILITY_ID_INVALID"
+            && diagnostic.path == "$.board.cells[0].capabilities[1].id"
+    }));
+
+    let mut blocked_scenario = scenario(&bundle, 5);
+    set_line_blocker(&mut blocked_scenario, 2, 1, true);
+    let session = RpgAuthoritySession::from_scenario(bundle.clone(), blocked_scenario.clone())
+        .expect("blocked setup");
+    let expose = session
+        .encounter_view()
+        .actions
+        .into_iter()
+        .find(|action| action.definition_id == "action.expose")
+        .expect("line-of-effect action");
+    assert_eq!(expose.options.participant_ids, [FIRST_TARGET_ID]);
+    assert!(expose.options.filtered_participants.iter().any(|candidate| {
+        candidate.participant_id == SECOND_TARGET_ID
+            && candidate.reason == "lineOfEffectBlocked"
+            && candidate.blocking_cell_ids == ["cell-2-1"]
+    }));
+
+    let binding = expose.options.binding;
+    let mut clone = session.clone();
+    let before_clone = clone.checkpoint().expect("clone checkpoint");
+    let mut no_random = ScriptedSource::new(&clone, []);
+    let stale = clone
+        .submit_bound_with_random_source_recorded(
+            RpgBoundActionProposal {
+                binding: binding.clone(),
+                target_ids: vec![FIRST_TARGET_ID.to_owned()],
+            },
+            &mut no_random,
+        )
+        .expect("stale binding is an outcome");
+    assert!(matches!(stale.outcome, RpgCommandOutcome::Rejected(_)));
+    assert!(stale.replay_entry.is_none());
+    assert_eq!(clone.checkpoint().expect("unchanged clone"), before_clone);
+
+    let mut session = session;
+    let before_blocked = session.checkpoint().expect("blocked checkpoint");
+    let mut no_random = ScriptedSource::new(&session, []);
+    let blocked = session
+        .submit_bound_with_random_source_recorded(
+            RpgBoundActionProposal {
+                binding,
+                target_ids: vec![SECOND_TARGET_ID.to_owned()],
+            },
+            &mut no_random,
+        )
+        .expect("blocked target is an authority outcome");
+    assert!(matches!(
+        blocked.outcome,
+        RpgCommandOutcome::Rejected(ref rejection)
+            if rejection.code == "RPG_LINE_OF_EFFECT_BLOCKED"
+    ));
+    assert_eq!(
+        session.checkpoint().expect("blocked submission unchanged"),
+        before_blocked
+    );
+    let shift = session
+        .encounter_view()
+        .actions
+        .into_iter()
+        .find(|action| action.definition_id == "action.shift")
+        .expect("line-of-effect cell action");
+    assert!(shift
+        .options
+        .cell_paths
+        .iter()
+        .any(|path| path.destination_cell_id == "cell-1-2"));
+    assert!(shift.options.filtered_cells.iter().any(|candidate| {
+        candidate.cell_id == "cell-4-1"
+            && candidate.reason == "lineOfEffectBlocked"
+            && candidate.blocking_cell_ids == ["cell-2-1"]
+    }));
+    let before_cell = session.checkpoint().expect("cell checkpoint");
+    let mut no_random = ScriptedSource::new(&session, []);
+    let blocked_cell = session
+        .submit_bound_with_random_source_recorded(
+            RpgBoundActionProposal {
+                binding: shift.options.binding,
+                target_ids: vec!["cell-4-1".to_owned()],
+            },
+            &mut no_random,
+        )
+        .expect("blocked cell is an authority outcome");
+    assert!(matches!(
+        blocked_cell.outcome,
+        RpgCommandOutcome::Rejected(ref rejection)
+            if rejection.code == "RPG_LINE_OF_EFFECT_BLOCKED"
+    ));
+    assert_eq!(
+        session.checkpoint().expect("blocked cell unchanged"),
+        before_cell
+    );
+
+    let mut area_session = RpgAuthoritySession::from_scenario(bundle.clone(), blocked_scenario)
+        .expect("blocked area setup");
+    let area_option = area_session
+        .encounter_view()
+        .actions
+        .into_iter()
+        .find(|action| action.definition_id == "action.burst")
+        .and_then(|action| {
+            action
+                .options
+                .area_options
+                .into_iter()
+                .find(|option| option.anchor_cell_id == "cell-1-1")
+        })
+        .expect("actor-anchored burst option");
+    assert_eq!(area_option.included_participant_ids, [FIRST_TARGET_ID]);
+    assert!(area_option.filtered_participants.iter().any(|participant| {
+        participant.participant_id == SECOND_TARGET_ID
+            && participant.reason == "lineOfEffectBlocked"
+            && participant.blocking_cell_ids == ["cell-2-1"]
+    }));
+    let initial_area = area_session.checkpoint().expect("initial area checkpoint");
+    let mut no_random = ScriptedSource::new(&area_session, []);
+    let area_submission = area_session
+        .submit_area_option_with_random_source_recorded(area_option, &mut no_random)
+        .expect("complete area option");
+    let area_receipt = accepted(area_submission.outcome);
+    assert!(area_receipt.events.iter().any(|event| matches!(
+        event,
+        RpgDomainEvent::AreaTargetsDerived {
+            included_participant_ids,
+            filtered_participants,
+            ..
+        } if included_participant_ids == &[FIRST_TARGET_ID]
+            && filtered_participants.iter().any(|participant| {
+                participant.participant_id == SECOND_TARGET_ID
+                    && participant.blocking_cell_ids == ["cell-2-1"]
+            })
+    )));
+    let replayed_area = RpgAuthoritySession::replay(
+        initial_area,
+        &[area_submission
+            .replay_entry
+            .expect("accepted area has replay entry")],
+    )
+    .expect("area replay");
+    assert_eq!(replayed_area.state(), area_session.state());
+    assert_eq!(
+        replayed_area.state_hash().expect("area replay hash"),
+        area_session.state_hash().expect("area authority hash")
+    );
+
+    let mut diagonal = scenario(&bundle, 5);
+    diagonal.participants[0].position = GridPosition { x: 0, y: 0 };
+    diagonal.participants[1].position = GridPosition { x: 2, y: 2 };
+    set_line_blocker(&mut diagonal, 1, 0, true);
+    set_line_blocker(&mut diagonal, 0, 1, true);
+    let diagonal = RpgAuthoritySession::from_scenario(bundle.clone(), diagonal)
+        .expect("diagonal tie setup")
+        .encounter_view();
+    let diagonal_filter = diagonal
+        .actions
+        .iter()
+        .find(|action| action.definition_id == "action.expose")
+        .and_then(|action| {
+            action
+                .options
+                .filtered_participants
+                .iter()
+                .find(|candidate| candidate.participant_id == FIRST_TARGET_ID)
+        })
+        .expect("diagonal target is filtered");
+    assert_eq!(
+        diagonal_filter.blocking_cell_ids,
+        ["cell-1-0", "cell-0-1"]
+    );
+
+    let mut missing = scenario(&bundle, 5);
+    missing
+        .board
+        .cells
+        .retain(|cell| cell.position != GridPosition { x: 2, y: 1 });
+    missing.participants[1].position = GridPosition { x: 3, y: 1 };
+    missing.participants[2].position = GridPosition { x: 4, y: 1 };
+    let missing = RpgAuthoritySession::from_scenario(bundle, missing)
+        .expect("sparse boundary setup")
+        .encounter_view();
+    assert!(missing
+        .actions
+        .iter()
+        .find(|action| action.definition_id == "action.expose")
+        .expect("expose action")
+        .options
+        .filtered_participants
+        .iter()
+        .any(|candidate| {
+            candidate.participant_id == FIRST_TARGET_ID
+                && candidate.reason == "lineOfEffectCellMissing"
+        }));
 }
 
 fn assert_compile_rejects(prepared: &Value, code: &str) {
@@ -458,7 +726,7 @@ fn scenario(bundle: &asha_rpg::CompiledPlayBundle, focus: i32) -> RpgScenario {
         board: RpgBoardSetup {
             width: 5,
             height: 3,
-            cells: Vec::new(),
+            cells: line_cells(5, 3),
         },
         participants: vec![
             actor(focus),
@@ -494,6 +762,33 @@ fn scenario(bundle: &asha_rpg::CompiledPlayBundle, focus: i32) -> RpgScenario {
     }
 }
 
+fn line_cells(width: u32, height: u32) -> Vec<RpgCellSetup> {
+    (0..height)
+        .flat_map(|y| {
+            (0..width).map(move |x| RpgCellSetup {
+                id: format!("cell-{x}-{y}"),
+                position: GridPosition { x, y },
+                capabilities: vec![RpgCellCapabilitySetup {
+                    id: RPG_LINE_OF_EFFECT_OBSTRUCTION_ID.to_owned(),
+                    version: RPG_LINE_OF_EFFECT_OBSTRUCTION_VERSION,
+                    definition_id: None,
+                    value: RpgCellCapabilityValue::LineOfEffectObstruction { blocks: false },
+                }],
+            })
+        })
+        .collect()
+}
+
+fn set_line_blocker(scenario: &mut RpgScenario, x: u32, y: u32, blocks: bool) {
+    let cell = scenario
+        .board
+        .cells
+        .iter_mut()
+        .find(|cell| cell.position == GridPosition { x, y })
+        .expect("line-of-effect cell");
+    cell.capabilities[0].value = RpgCellCapabilityValue::LineOfEffectObstruction { blocks };
+}
+
 fn actor(focus: i32) -> RpgParticipantSetup {
     let mut actor = participant(
         ACTOR_ID,
@@ -502,9 +797,11 @@ fn actor(focus: i32) -> RpgParticipantSetup {
         GridPosition { x: 1, y: 1 },
     );
     actor.definition_ids = vec![
+        "action.burst".to_owned(),
         "action.core-attack".to_owned(),
         "action.expose".to_owned(),
         "action.rally".to_owned(),
+        "action.shift".to_owned(),
     ];
     actor.class_definition_id = Some("class.vanguard".to_owned());
     actor.feature_definition_ids = vec!["feature.tactical-training".to_owned()];

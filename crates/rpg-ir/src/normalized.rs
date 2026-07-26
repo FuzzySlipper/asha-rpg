@@ -3,7 +3,7 @@ use std::collections::BTreeMap;
 use serde::{Deserialize, Serialize};
 
 pub const RPG_IR_IDENTITY: &str = "asha.rpg.ir";
-pub const RPG_IR_MAJOR: u32 = 2;
+pub const RPG_IR_MAJOR: u32 = 3;
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase", deny_unknown_fields)]
@@ -151,8 +151,18 @@ pub struct RpgIrTargetSelector {
     pub team: RpgIrTeamConstraint,
     pub maximum_range: u32,
     pub maximum_targets: u32,
+    #[serde(default)]
+    pub line_of_effect: RpgIrLineOfEffectRequirement,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub area: Option<Box<RpgIrAreaSelector>>,
+}
+
+#[derive(Debug, Default, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub enum RpgIrLineOfEffectRequirement {
+    #[default]
+    Ignored,
+    Required,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
@@ -467,7 +477,7 @@ mod tests {
     #[test]
     fn strict_decode_rejects_unknown_semantic_fields() {
         let source = br#"{
-          "schema":{"identity":"asha.rpg.ir","major":2},
+          "schema":{"identity":"asha.rpg.ir","major":3},
           "package":{"id":"consumer","version":"1.0.0","callback":"forbidden"},
           "catalogs":{},"requirements":[],"actions":[]
         }"#;

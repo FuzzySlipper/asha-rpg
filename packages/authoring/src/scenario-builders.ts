@@ -4,7 +4,20 @@ import type { Scenario, ScenarioTemplate } from "./play-bundle-types.js";
 export function defineScenario(input: Omit<Scenario, "schema">): Scenario {
   return immutable({
     ...input,
-    schema: { id: "asha.rpg.scenario" as const, version: 2 as const },
+    schema: { id: "asha.rpg.scenario" as const, version: 3 as const },
+  });
+}
+
+export function lineOfEffectObstruction(
+  blocks: boolean,
+): Scenario["board"]["cells"][number]["capabilities"][number] {
+  return immutable({
+    id: "line-of-effect.obstruction",
+    version: 1,
+    value: {
+      kind: "lineOfEffectObstruction",
+      blocks,
+    },
   });
 }
 

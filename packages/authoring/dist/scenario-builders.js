@@ -2,7 +2,17 @@ import { immutable } from "./canonical.js";
 export function defineScenario(input) {
     return immutable({
         ...input,
-        schema: { id: "asha.rpg.scenario", version: 2 },
+        schema: { id: "asha.rpg.scenario", version: 3 },
+    });
+}
+export function lineOfEffectObstruction(blocks) {
+    return immutable({
+        id: "line-of-effect.obstruction",
+        version: 1,
+        value: {
+            kind: "lineOfEffectObstruction",
+            blocks,
+        },
     });
 }
 export function defineScenarioTemplate(input) {

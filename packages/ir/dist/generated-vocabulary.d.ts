@@ -1,5 +1,5 @@
 export declare const RPG_IR_IDENTITY: "asha.rpg.ir";
-export declare const RPG_IR_MAJOR: 2;
+export declare const RPG_IR_MAJOR: 3;
 export declare const RPG_OPERATION_VERSIONS: {
     readonly "operation.applyEffect": 1;
     readonly "operation.applyModifier": 1;

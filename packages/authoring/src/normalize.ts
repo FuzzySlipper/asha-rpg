@@ -116,7 +116,10 @@ export function normalizeAction(action: AuthoredAction): RpgIrAction {
     name: action.name,
     sourcePath: action.sourcePath,
     tags: [...action.tags],
-    targets: action.targets,
+    targets: {
+      ...action.targets,
+      lineOfEffect: action.targets.lineOfEffect ?? 'ignored',
+    },
     check: action.check,
     rollScope: normalizedRollScope(action),
     costs: [...action.costs],
@@ -267,6 +270,20 @@ function validateAction(
         'normalization.targetBoundInvalid',
         `${path}.targets.maximumTargets`,
         'target maximum must be an integer between 1 and 32',
+        action.sourcePath,
+      ),
+    );
+  }
+  if (
+    action.targets.lineOfEffect !== undefined &&
+    action.targets.lineOfEffect !== 'ignored' &&
+    action.targets.lineOfEffect !== 'required'
+  ) {
+    diagnostics.push(
+      diagnostic(
+        'normalization.lineOfEffectInvalid',
+        `${path}.targets.lineOfEffect`,
+        'line of effect must be explicitly ignored or required',
         action.sourcePath,
       ),
     );

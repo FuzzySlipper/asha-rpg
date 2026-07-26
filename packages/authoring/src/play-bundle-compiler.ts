@@ -127,6 +127,9 @@ export const ASHA_RPG_PLAY_BUNDLE_TARGET: PlayBundleCompilerTarget = immutable({
       'action-economy.one-action-plus-reaction': 1,
       'action-economy.variable-activation-budgets': 1,
     },
+    lineOfEffect: {
+      'line-of-effect.square-grid-supercover': 1,
+    },
   },
 });
 
@@ -264,7 +267,7 @@ export function preparePlayBundle(options: {
   ].sort(compareRelationship);
 
   const prepared: PreparedPlayBundle = immutable({
-    schema: { identity: 'asha.rpg.play-bundle.prepared', major: 9 },
+    schema: { identity: 'asha.rpg.play-bundle.prepared', major: 10 },
     playBundleIdentity: options.bundle.identity,
     ruleset: options.bundle.ruleset,
     contentPacks: [...context.selected.values()]
@@ -334,6 +337,20 @@ function validateRuleset(
         'RULESET_MODEL_UNSUPPORTED',
         `$.bundle.ruleset.models.${model}`,
         `ruleset model ${binding.id}@${binding.version} is not bound by Rust authority`,
+      ),
+    );
+  }
+  const lineOfEffect = ruleset.models.lineOfEffect;
+  if (
+    lineOfEffect !== undefined &&
+    target.models.lineOfEffect[lineOfEffect.id] !== lineOfEffect.version
+  ) {
+    diagnostics.push(
+      diagnostic(
+        'compatibility',
+        'RULESET_MODEL_UNSUPPORTED',
+        '$.bundle.ruleset.models.lineOfEffect',
+        `ruleset model ${lineOfEffect.id}@${lineOfEffect.version} is not bound by Rust authority`,
       ),
     );
   }
@@ -4764,6 +4781,19 @@ function normalizeMaterializedActions(
     return undefined;
   }
   for (const [index, action] of result.artifact.actions.entries()) {
+    if (
+      action.targets.lineOfEffect === 'required' &&
+      bundle.ruleset.models.lineOfEffect === undefined
+    ) {
+      diagnostics.push(
+        diagnostic(
+          'compatibility',
+          'ACTION_LINE_OF_EFFECT_MODEL_REQUIRED',
+          `$.actions[${index}].targets.lineOfEffect`,
+          'selectors requiring line of effect need a compatible Ruleset line-of-effect model',
+        ),
+      );
+    }
     validateActionActivationContracts(
       action,
       bundle.ruleset,

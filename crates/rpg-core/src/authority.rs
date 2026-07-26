@@ -1224,6 +1224,8 @@ pub struct RpgIntentCellTarget {
 pub struct RpgAreaFilteredParticipant {
     pub participant_id: String,
     pub reason: String,
+    #[serde(default)]
+    pub blocking_cell_ids: Vec<String>,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
@@ -1232,6 +1234,8 @@ pub struct RpgAreaFilteredCell {
     pub x: i64,
     pub y: i64,
     pub reason: String,
+    #[serde(default)]
+    pub blocking_cell_ids: Vec<String>,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]

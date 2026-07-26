@@ -289,6 +289,7 @@ test('area selector builders emit only bounded immutable declarations accepted b
     livingRequired: true,
     minimumTargets: 0,
     maximumTargets: 3,
+    lineOfEffect: 'required',
   });
   const lineTargets = orthogonalLineArea({
     range: 4,
@@ -296,6 +297,7 @@ test('area selector builders emit only bounded immutable declarations accepted b
     team: 'any',
     minimumTargets: 1,
     maximumTargets: 4,
+    lineOfEffect: 'required',
   });
   const diamondSelector = diamondTargets.area;
   const lineSelector = lineTargets.area;
@@ -335,6 +337,8 @@ test('area selector builders emit only bounded immutable declarations accepted b
   if (!result.ok) return;
   assert.equal(Object.isFrozen(diamond.targets), true);
   assert.equal(Object.isFrozen(diamond.targets.area), true);
+  assert.equal(diamond.targets.lineOfEffect, 'required');
+  assert.equal(line.targets.lineOfEffect, 'required');
   assert.deepEqual(
     result.artifact.actions.map((candidate) => candidate.targets),
     [diamond.targets, line.targets],

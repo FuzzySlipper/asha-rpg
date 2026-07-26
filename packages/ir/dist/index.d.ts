@@ -15,7 +15,7 @@ export type RpgReactionId = RpgIdentifier<'reaction'>;
 export type RpgReactionOptionId = RpgIdentifier<'reactionOption'>;
 export interface RpgIrSchema {
     readonly identity: 'asha.rpg.ir';
-    readonly major: 2;
+    readonly major: 3;
 }
 export interface RpgIrPackageIdentity {
     readonly id: string;
@@ -40,6 +40,7 @@ export type RpgIrRequirement = {
 export type RpgIrTeamConstraint = 'hostile' | 'ally' | 'any';
 export type RpgIrTargetKind = 'participant' | 'cell' | 'area';
 export type RpgIrAreaOrigin = 'anchor' | 'actor';
+export type RpgIrLineOfEffectRequirement = 'ignored' | 'required';
 export type RpgIrAreaShape = {
     readonly kind: 'diamond';
     readonly radius: number;
@@ -56,6 +57,7 @@ export interface RpgIrTargetSelector {
     readonly team: RpgIrTeamConstraint;
     readonly maximumRange: number;
     readonly maximumTargets: number;
+    readonly lineOfEffect?: RpgIrLineOfEffectRequirement;
     readonly area?: {
         readonly schema: {
             readonly identity: 'asha.rpg.area-selector';

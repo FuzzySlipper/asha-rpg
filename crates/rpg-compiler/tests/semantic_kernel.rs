@@ -443,7 +443,7 @@ fn multi_target_state() -> RpgCapabilityState {
 
 fn single_target_source() -> String {
     r#"{
-      "schema":{"identity":"asha.rpg.ir","major":2},
+      "schema":{"identity":"asha.rpg.ir","major":3},
       "package":{"id":"consumer.package","version":"1.0.0"},
       "catalogs":{
         "stats":["power"],"defenses":["guard"],"resources":["focus"],
@@ -480,7 +480,7 @@ fn single_target_source() -> String {
 
 fn multi_target_source() -> String {
     r#"{
-      "schema":{"identity":"asha.rpg.ir","major":2},
+      "schema":{"identity":"asha.rpg.ir","major":3},
       "package":{"id":"consumer.package","version":"1.0.0"},
       "catalogs":{
         "defenses":["resolve"],"resources":["charge"],
@@ -517,7 +517,7 @@ fn multi_target_source() -> String {
 
 fn non_atomic_source() -> String {
     r#"{
-      "schema":{"identity":"asha.rpg.ir","major":2},
+      "schema":{"identity":"asha.rpg.ir","major":3},
       "package":{"id":"consumer.package","version":"1.0.0"},
       "catalogs":{"capabilities":["capability.vitality"]},
       "requirements":[
@@ -536,7 +536,7 @@ fn non_atomic_source() -> String {
 
 fn movement_source() -> String {
     r#"{
-      "schema":{"identity":"asha.rpg.ir","major":2},
+      "schema":{"identity":"asha.rpg.ir","major":3},
       "package":{"id":"consumer.package","version":"1.0.0"},
       "catalogs":{"capabilities":["capability.position"]},
       "requirements":[
@@ -557,7 +557,7 @@ fn movement_source() -> String {
 
 fn invalid_cell_target_source() -> String {
     r#"{
-      "schema":{"identity":"asha.rpg.ir","major":2},
+      "schema":{"identity":"asha.rpg.ir","major":3},
       "package":{"id":"consumer.package","version":"1.0.0"},
       "catalogs":{"capabilities":["capability.position","capability.vitality"]},
       "requirements":[
@@ -590,7 +590,7 @@ fn invalid_cell_target_source() -> String {
 
 fn invalid_cell_program_source() -> String {
     r#"{
-      "schema":{"identity":"asha.rpg.ir","major":2},
+      "schema":{"identity":"asha.rpg.ir","major":3},
       "package":{"id":"consumer.package","version":"1.0.0"},
       "catalogs":{"capabilities":["capability.position","capability.random","capability.vitality"]},
       "requirements":[

@@ -19,6 +19,7 @@ export function targets(options) {
         team: options.team,
         maximumRange: options.maximumRange,
         maximumTargets: options.maximumTargets ?? 1,
+        lineOfEffect: options.lineOfEffect ?? 'ignored',
     });
 }
 export function cells(options) {
@@ -27,6 +28,7 @@ export function cells(options) {
         team: 'any',
         maximumRange: options.range,
         maximumTargets: 1,
+        lineOfEffect: options.lineOfEffect ?? 'ignored',
     });
 }
 export function diamondArea(options) {
@@ -35,6 +37,7 @@ export function diamondArea(options) {
         team: options.team,
         maximumRange: options.range,
         maximumTargets: options.maximumTargets ?? 32,
+        lineOfEffect: options.lineOfEffect ?? 'ignored',
         area: frozen({
             schema: frozen({ identity: 'asha.rpg.area-selector', version: 1 }),
             origin: 'anchor',
@@ -50,6 +53,7 @@ export function orthogonalLineArea(options) {
         team: options.team,
         maximumRange: options.range,
         maximumTargets: options.maximumTargets ?? 32,
+        lineOfEffect: options.lineOfEffect ?? 'ignored',
         area: frozen({
             schema: frozen({ identity: 'asha.rpg.area-selector', version: 1 }),
             origin: 'actor',
@@ -60,21 +64,33 @@ export function orthogonalLineArea(options) {
     });
 }
 export function hostile(options) {
+    const lineOfEffect = options.lineOfEffect ?? 'ignored';
     return options.maximum === undefined
-        ? targets({ team: 'hostile', maximumRange: options.range })
+        ? targets({
+            team: 'hostile',
+            maximumRange: options.range,
+            lineOfEffect,
+        })
         : targets({
             team: 'hostile',
             maximumRange: options.range,
             maximumTargets: options.maximum,
+            lineOfEffect,
         });
 }
 export function ally(options) {
+    const lineOfEffect = options.lineOfEffect ?? 'ignored';
     return options.maximum === undefined
-        ? targets({ team: 'ally', maximumRange: options.range })
+        ? targets({
+            team: 'ally',
+            maximumRange: options.range,
+            lineOfEffect,
+        })
         : targets({
             team: 'ally',
             maximumRange: options.range,
             maximumTargets: options.maximum,
+            lineOfEffect,
         });
 }
 export function constant(value) {

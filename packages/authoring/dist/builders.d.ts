@@ -17,9 +17,11 @@ export declare function targets(options: {
     readonly team: 'hostile' | 'ally' | 'any';
     readonly maximumRange: number;
     readonly maximumTargets?: number;
+    readonly lineOfEffect?: 'ignored' | 'required';
 }): RpgIrTargetSelector;
 export declare function cells(options: {
     readonly range: number;
+    readonly lineOfEffect?: 'ignored' | 'required';
 }): RpgIrTargetSelector;
 export declare function diamondArea(options: {
     readonly range: number;
@@ -28,6 +30,7 @@ export declare function diamondArea(options: {
     readonly livingRequired?: boolean;
     readonly minimumTargets?: number;
     readonly maximumTargets?: number;
+    readonly lineOfEffect?: 'ignored' | 'required';
 }): RpgIrTargetSelector;
 export declare function orthogonalLineArea(options: {
     readonly range: number;
@@ -36,14 +39,17 @@ export declare function orthogonalLineArea(options: {
     readonly livingRequired?: boolean;
     readonly minimumTargets?: number;
     readonly maximumTargets?: number;
+    readonly lineOfEffect?: 'ignored' | 'required';
 }): RpgIrTargetSelector;
 export declare function hostile(options: {
     readonly range: number;
     readonly maximum?: number;
+    readonly lineOfEffect?: 'ignored' | 'required';
 }): RpgIrTargetSelector;
 export declare function ally(options: {
     readonly range: number;
     readonly maximum?: number;
+    readonly lineOfEffect?: 'ignored' | 'required';
 }): RpgIrTargetSelector;
 export declare function constant(value: number): RpgIrScalarExpression;
 export declare function readStat(subject: RpgIrSubject, id: AuthoredStatReference): RpgIrScalarExpression;

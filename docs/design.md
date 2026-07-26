@@ -16,8 +16,8 @@ ruleset:
 | --- | --- | --- |
 | `Ruleset` (`asha.rpg.ruleset@1`) | language compatibility, Rust-bound operation and capability provisions, named stat/defense contracts, numeric domains, scalar calculation selectors, contribution stacking groups, scalar-test profiles, heterogeneous-pool profiles | actions, spells, classes, creatures, items, conditions, presentation, setup |
 | `ContentPack` | authored definitions, presentation, dependencies, derivation, mixins, overlays | Rust execution callbacks, board/participants, commands or expected outcomes |
-| `PlayBundle` (`asha.rpg.play-bundle.prepared@9` / `.compiled@9`) | one Ruleset plus an exact compatible Content Pack closure and fingerprints | ambient discovery, executable TypeScript, scenario scripts |
-| `Scenario` (`asha.rpg.scenario@2`) | board, participants, selected definitions, initial values, initiative, and random-source policy for one PlayBundle | definitions, commands, targets, reactions, rolls, expected events/outcomes, Tester configuration |
+| `PlayBundle` (`asha.rpg.play-bundle.prepared@10` / `.compiled@10`) | one Ruleset plus an exact compatible Content Pack closure and fingerprints | ambient discovery, executable TypeScript, scenario scripts |
+| `Scenario` (`asha.rpg.scenario@3`) | board, participants, selected definitions, initial values, initiative, random-source policy, and typed line-of-effect obstruction facts for one PlayBundle | definitions, commands, targets, reactions, rolls, expected events/outcomes, Tester configuration |
 
 A Tester is a caller of the same accessible interaction surface as a person;
 it is not a field in any of these contracts.
@@ -130,6 +130,16 @@ support-definition capabilities on the actor or target cell. Boolean
 composition is limited to `not`, `all`, and `any`; it is not an option bag or a
 generic predicate VM. Flanking and surrounding retain their existing
 living-participant cardinal-grid definitions.
+
+Rulesets may additionally bind
+`line-of-effect.square-grid-supercover@1`. An authored selector explicitly
+chooses `required` or `ignored`; required participant, destination-cell, and
+bounded-area choices are projected by one Rust traversal over square-grid cell
+centers. Typed `line-of-effect.obstruction@1` Scenario facts are the only
+blockers. Exact corner crossings include both adjacent cells in row-major
+order, endpoint cells do not block their own target, missing traversed cells
+fail closed, and readback reports the canonical blocker identities. The
+TypeScript builders declare policy and facts but perform no ray casting.
 
 Rust gathers feature candidates plus contributions from the exact bound item
 after target and item validation. It evaluates every candidate against one
@@ -295,4 +305,5 @@ budgets, `F3@1`, named effects with bounded expiry, `F4@1`, typed damage
 packets and qualified responses, and `F6@1`, heterogeneous pools and vector
 outcomes, are implemented as described above. `F5@1`, bounded area selection
 and spatial legality, is also implemented through the session-bound authority
-path.
+path. The narrower square-grid line-of-effect extension uses the same
+session-bound option, submission, event, checkpoint, and replay authority.

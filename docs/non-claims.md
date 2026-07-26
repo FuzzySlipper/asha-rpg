@@ -20,7 +20,7 @@ session; a separate replay engine, event-applier, or state path is not an
 implementation claim.
 
 Scenario is setup-only data, not a gameplay runner, campaign save, AI plan, or
-product protocol. Version 1 claims entity target candidates and one
+product protocol. Version 3 claims entity target candidates and one
 artifact-authored cell-target shape for selected-destination movement: an
 unconditional no-roll branch containing only one `moveToCell` operation. Rust
 projects deterministic least-cost routes over orthogonally adjacent authored
@@ -31,9 +31,12 @@ committing it within the authored movement-cost bound. Diagonal travel,
 participant footprints, forced movement, conditional, repeated,
 random-composed, and general cell-target semantics remain non-claims. The
 separate bounded-area contract supports only anchor-origin Manhattan diamonds
-and actor-origin orthogonal lines over authored square-grid cells. Cones,
-arbitrary polygons, elevation, cover, line of effect, hex geometry, footprints,
-and persistent auras remain non-claims.
+and actor-origin orthogonal lines over authored square-grid cells. Selectors
+may require the version-1 Rust square-grid supercover line-of-effect policy
+over typed Scenario obstruction facts. This is not line of sight: cones,
+arbitrary polygons, elevation, cover, concealment, vision contests, hex
+geometry, footprints, persistent auras, arbitrary topology, and
+client-computed sight remain non-claims.
 
 Typed item instances and initial equipment are authority-owned setup facts.
 Inventory economy, loot, encumbrance, consumable depletion, and gameplay

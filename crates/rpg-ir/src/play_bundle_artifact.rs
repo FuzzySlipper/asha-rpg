@@ -11,7 +11,7 @@ use serde_json::Value;
 
 pub const PREPARED_PLAY_BUNDLE_IDENTITY: &str = "asha.rpg.play-bundle.prepared";
 pub const COMPILED_PLAY_BUNDLE_IDENTITY: &str = "asha.rpg.play-bundle.compiled";
-pub const PLAY_BUNDLE_ARTIFACT_MAJOR: u32 = 9;
+pub const PLAY_BUNDLE_ARTIFACT_MAJOR: u32 = 10;
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase", deny_unknown_fields)]
@@ -314,6 +314,8 @@ pub struct RulesetModels {
     pub initiative: VersionedRpgRequirement,
     pub reactions: VersionedRpgRequirement,
     pub action_economy: RulesetActionEconomyModel,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub line_of_effect: Option<VersionedRpgRequirement>,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]

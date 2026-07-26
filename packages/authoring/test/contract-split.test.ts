@@ -306,7 +306,7 @@ test("Ruleset scalar profiles author canonical ordered outcomes and reject gaps"
     result.ok ? "expected scalar profile" : JSON.stringify(result.diagnostics),
   );
   if (!result.ok) return;
-  assert.equal(result.prepared.schema.major, 9);
+  assert.equal(result.prepared.schema.major, 10);
   assert.deepEqual(
     result.prepared.ruleset.provides.scalarTestProfiles.map(
       (profile) => profile.id,
@@ -1510,7 +1510,7 @@ test("Scenario builder emits setup-only immutable data", () => {
     },
   });
 
-  assert.deepEqual(scenario.schema, { id: "asha.rpg.scenario", version: 2 });
+  assert.deepEqual(scenario.schema, { id: "asha.rpg.scenario", version: 3 });
   assert.equal(Object.isFrozen(scenario.board), true);
   assert.equal("commands" in scenario, false);
   assert.equal("rolls" in scenario, false);

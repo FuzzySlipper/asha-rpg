@@ -7479,6 +7479,7 @@ fn healing_prepared() -> PreparedPlayBundle {
                     version: 1,
                 },
                 action_economy: RulesetActionEconomyModel::OneActionPlusReaction { version: 1 },
+                line_of_effect: None,
             },
             provides: RulesetProvisions {
                 operations: vec![VersionedRpgRequirement {

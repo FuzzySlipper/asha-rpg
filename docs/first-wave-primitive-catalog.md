@@ -700,9 +700,32 @@ selection trace.
 - An area action proves per-target rolls, shared rolls, explicitly allowed and
   disallowed empty areas, team filtering, and minimum/maximum-bound rejection.
 
-`F5@1` does not claim cones, arbitrary polygons, elevation, cover, line of
-effect, diagonal movement, hex grids, footprints, aura persistence, collision
-volumes, or client-rendered template authority.
+`F5@1` does not claim cones, arbitrary polygons, elevation, cover, concealment,
+diagonal movement, hex grids, footprints, aura persistence, collision volumes,
+or client-rendered template authority. The later line-of-effect extension
+below narrows only the former broad line-of-effect non-claim.
+
+### Square-grid line-of-effect extension
+
+Task `#6259` adds one closed optional Ruleset model,
+`line-of-effect.square-grid-supercover@1`. Selectors explicitly declare
+`required` or `ignored`, and Scenario cells may carry one typed
+`line-of-effect.obstruction@1` fact. TypeScript performs no geometry.
+
+Rust independently validates the model, selector/model compatibility, reserved
+fact identity/version/value uniqueness, and board coordinates. One documented
+cell-center supercover traversal serves participant, destination-cell, and
+bounded-area projection. Start and target cells are excluded as blockers; an
+exact corner includes both adjacent cells in row-major order; missing cells
+fail closed. Filtered choices retain generic reasons and ordered blocker cell
+ids. Complete projected choices bind session, artifact, Scenario, revision,
+round, turn, actor, action, and item identity before submission.
+
+Blocked or stale submission consumes no random evidence and leaves authority
+state, hash, revision, log, position, and vitality unchanged. Accepted area
+events and replay retain the exact included and filtered ordering. This does
+not claim cover, concealment, elevation, vision contests, arbitrary topology,
+hex sight, or client-computed line of sight.
 
 ## F6 — Heterogeneous random pools and vector outcomes
 
@@ -917,7 +940,8 @@ bounded first-wave kits:
 - reroll, keep/drop, exploding dice, advantage/disadvantage, and user-edited
   roll pools;
 - object/willing/mixed-subject targets, self as a distinct selector, cones,
-  arbitrary templates, elevation, cover, and line of effect;
+  arbitrary templates, elevation, cover, concealment, and line-of-sight
+  semantics beyond the narrow square-grid supercover extension;
 - temporary vitality, healing responses, recurring/persistent damage, critical
   tables, and user-selected damage allocation;
 - rest/day/dawn/initiative recovery schedules (`P09`) and linked item-use

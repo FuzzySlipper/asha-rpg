@@ -241,6 +241,7 @@ export interface RulesetModels {
   readonly initiative: VersionedRpgRequirement;
   readonly reactions: VersionedRpgRequirement;
   readonly actionEconomy: RulesetActionEconomyModel;
+  readonly lineOfEffect?: VersionedRpgRequirement;
 }
 
 /** Rust-executed semantic vocabulary. This contract never contains content definitions. */
@@ -1072,6 +1073,7 @@ export interface PlayBundleCompilerTarget {
     readonly initiative: Readonly<Record<string, number>>;
     readonly reactions: Readonly<Record<string, number>>;
     readonly actionEconomy: Readonly<Record<string, number>>;
+    readonly lineOfEffect: Readonly<Record<string, number>>;
   };
 }
 
@@ -1244,7 +1246,7 @@ export interface MaterializedContentDefinition {
 export interface PreparedPlayBundle {
   readonly schema: {
     readonly identity: "asha.rpg.play-bundle.prepared";
-    readonly major: 9;
+    readonly major: 10;
   };
   readonly playBundleIdentity: PlayBundleIdentity;
   readonly ruleset: Ruleset;
@@ -1306,13 +1308,14 @@ export type ScenarioCellCapabilityValue =
       readonly movementCost: number;
     }
   | { readonly kind: "flag"; readonly value: boolean }
+  | { readonly kind: "lineOfEffectObstruction"; readonly blocks: boolean }
   | { readonly kind: "integer"; readonly value: number }
   | { readonly kind: "identifier"; readonly valueId: string };
 
 export interface Scenario {
   readonly schema: {
     readonly id: "asha.rpg.scenario";
-    readonly version: 2;
+    readonly version: 3;
   };
   readonly playBundleId: string;
   readonly board: {

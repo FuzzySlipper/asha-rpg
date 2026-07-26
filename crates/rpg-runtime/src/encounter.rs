@@ -11,16 +11,18 @@ use rpg_core::{
 };
 use rpg_ir::{
     MaterializedContentDefinitionKind, MaterializedContentVisibility, RpgIrActivation,
-    RpgIrAreaOrigin, RpgIrAreaShape, RpgIrTargetSelector, RulesetActivationBudgetResetBoundary,
-    RulesetActivationTiming, RulesetValueKind,
+    RpgIrAreaOrigin, RpgIrAreaShape, RpgIrLineOfEffectRequirement, RpgIrTargetSelector,
+    RulesetActivationBudgetResetBoundary, RulesetActivationTiming, RulesetValueKind,
 };
 use serde::{Deserialize, Serialize};
 
 pub const RPG_SCENARIO_SCHEMA_ID: &str = "asha.rpg.scenario";
-pub const RPG_SCENARIO_SCHEMA_VERSION: u32 = 2;
+pub const RPG_SCENARIO_SCHEMA_VERSION: u32 = 3;
 pub const RPG_ENCOUNTER_VIEW_SCHEMA_ID: &str = "asha.rpg.encounter.view";
-pub const RPG_ENCOUNTER_VIEW_SCHEMA_VERSION: u32 = 11;
+pub const RPG_ENCOUNTER_VIEW_SCHEMA_VERSION: u32 = 12;
 pub const RPG_END_TURN_CONTROL_ID: &str = "control.end-turn";
+pub const RPG_LINE_OF_EFFECT_OBSTRUCTION_ID: &str = "line-of-effect.obstruction";
+pub const RPG_LINE_OF_EFFECT_OBSTRUCTION_VERSION: u32 = 1;
 
 const MAXIMUM_BOARD_EXTENT: u32 = 1_024;
 
@@ -86,6 +88,7 @@ pub struct RpgCellCapabilitySetup {
 pub enum RpgCellCapabilityValue {
     Traversal { passable: bool, movement_cost: u32 },
     Flag { value: bool },
+    LineOfEffectObstruction { blocks: bool },
     Integer { value: i32 },
     Identifier { value_id: String },
 }
@@ -322,9 +325,42 @@ pub struct RpgItemInstanceView {
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase", deny_unknown_fields)]
 pub struct RpgActionOptionsView {
+    pub binding: RpgActionOptionBindingView,
     pub participant_ids: Vec<String>,
     pub cell_paths: Vec<RpgCellPathView>,
+    pub filtered_participants: Vec<RpgFilteredParticipantOptionView>,
+    pub filtered_cells: Vec<RpgFilteredCellOptionView>,
     pub area_options: Vec<RpgAreaOptionView>,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase", deny_unknown_fields)]
+pub struct RpgActionOptionBindingView {
+    pub session_binding_id: String,
+    pub artifact_id: String,
+    pub scenario_fingerprint: StateFingerprint,
+    pub authority_revision: u64,
+    pub round: u64,
+    pub turn: u64,
+    pub current_actor_id: String,
+    pub action_id: String,
+    pub item_binding: Option<RpgIntentItemBinding>,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase", deny_unknown_fields)]
+pub struct RpgFilteredParticipantOptionView {
+    pub participant_id: String,
+    pub reason: String,
+    pub blocking_cell_ids: Vec<String>,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase", deny_unknown_fields)]
+pub struct RpgFilteredCellOptionView {
+    pub cell_id: String,
+    pub reason: String,
+    pub blocking_cell_ids: Vec<String>,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
@@ -340,6 +376,8 @@ pub struct RpgCellPathView {
 pub struct RpgAreaFilteredParticipantView {
     pub participant_id: String,
     pub reason: String,
+    #[serde(default)]
+    pub blocking_cell_ids: Vec<String>,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
@@ -348,6 +386,8 @@ pub struct RpgAreaFilteredCellView {
     pub x: i64,
     pub y: i64,
     pub reason: String,
+    #[serde(default)]
+    pub blocking_cell_ids: Vec<String>,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
@@ -391,6 +431,13 @@ pub(crate) struct RpgAreaBoardIndex<'a> {
     participants_by_position: BTreeMap<GridPosition, Vec<&'a RpgEntityState>>,
 }
 
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub(crate) struct RpgLineOfEffectProjection {
+    pub clear: bool,
+    pub reason: Option<&'static str>,
+    pub blocking_cell_ids: Vec<String>,
+}
+
 impl<'a> RpgAreaBoardIndex<'a> {
     pub(crate) fn new(board: &'a RpgBoardSetup, state: &'a RpgCapabilityState) -> Self {
         let mut participants_by_position = BTreeMap::<_, Vec<_>>::new();
@@ -417,6 +464,116 @@ impl<'a> RpgAreaBoardIndex<'a> {
                 .collect(),
             participants_by_position,
         }
+    }
+}
+
+fn line_of_effect_supercover(start: GridPosition, end: GridPosition) -> Vec<GridPosition> {
+    let mut current_x = i64::from(start.x);
+    let mut current_y = i64::from(start.y);
+    let end_x = i64::from(end.x);
+    let end_y = i64::from(end.y);
+    let delta_x = end_x.abs_diff(current_x);
+    let delta_y = end_y.abs_diff(current_y);
+    let step_x = (end_x - current_x).signum();
+    let step_y = (end_y - current_y).signum();
+    let mut traversed_x = 0_u64;
+    let mut traversed_y = 0_u64;
+    let mut positions = Vec::new();
+    let mut seen = BTreeSet::new();
+    while traversed_x < delta_x || traversed_y < delta_y {
+        let x_crossing = traversed_x
+            .saturating_mul(2)
+            .saturating_add(1)
+            .saturating_mul(delta_y);
+        let y_crossing = traversed_y
+            .saturating_mul(2)
+            .saturating_add(1)
+            .saturating_mul(delta_x);
+        if x_crossing == y_crossing {
+            let mut corner_cells = [
+                (current_x.saturating_add(step_x), current_y),
+                (current_x, current_y.saturating_add(step_y)),
+            ];
+            corner_cells.sort_by_key(|(x, y)| (*y, *x));
+            for (x, y) in corner_cells {
+                if let (Ok(x), Ok(y)) = (u32::try_from(x), u32::try_from(y)) {
+                    let position = GridPosition { x, y };
+                    if seen.insert(position) {
+                        positions.push(position);
+                    }
+                }
+            }
+            current_x = current_x.saturating_add(step_x);
+            current_y = current_y.saturating_add(step_y);
+            traversed_x = traversed_x.saturating_add(1);
+            traversed_y = traversed_y.saturating_add(1);
+        } else if x_crossing < y_crossing {
+            current_x = current_x.saturating_add(step_x);
+            traversed_x = traversed_x.saturating_add(1);
+        } else {
+            current_y = current_y.saturating_add(step_y);
+            traversed_y = traversed_y.saturating_add(1);
+        }
+        if let (Ok(x), Ok(y)) = (u32::try_from(current_x), u32::try_from(current_y)) {
+            let position = GridPosition { x, y };
+            if seen.insert(position) {
+                positions.push(position);
+            }
+        }
+    }
+    positions
+}
+
+fn cell_blocks_line_of_effect(cell: &RpgCellSetup) -> bool {
+    cell.capabilities.iter().any(|capability| {
+        capability.id == RPG_LINE_OF_EFFECT_OBSTRUCTION_ID
+            && capability.version == RPG_LINE_OF_EFFECT_OBSTRUCTION_VERSION
+            && matches!(
+                capability.value,
+                RpgCellCapabilityValue::LineOfEffectObstruction { blocks: true }
+            )
+    })
+}
+
+pub(crate) fn line_of_effect_projection(
+    board_index: &RpgAreaBoardIndex<'_>,
+    start: GridPosition,
+    end: GridPosition,
+) -> RpgLineOfEffectProjection {
+    if !board_index.cells_by_position.contains_key(&start)
+        || !board_index.cells_by_position.contains_key(&end)
+    {
+        return RpgLineOfEffectProjection {
+            clear: false,
+            reason: Some("lineOfEffectCellMissing"),
+            blocking_cell_ids: Vec::new(),
+        };
+    }
+    let mut missing_cell = false;
+    let mut blocking_cell_ids = Vec::new();
+    for position in line_of_effect_supercover(start, end) {
+        if position == start || position == end {
+            continue;
+        }
+        let Some(cell) = board_index.cells_by_position.get(&position) else {
+            missing_cell = true;
+            continue;
+        };
+        if cell_blocks_line_of_effect(cell) {
+            blocking_cell_ids.push(cell.id.clone());
+        }
+    }
+    let reason = if missing_cell {
+        Some("lineOfEffectCellMissing")
+    } else if blocking_cell_ids.is_empty() {
+        None
+    } else {
+        Some("lineOfEffectBlocked")
+    };
+    RpgLineOfEffectProjection {
+        clear: reason.is_none(),
+        reason,
+        blocking_cell_ids,
     }
 }
 
@@ -499,6 +656,13 @@ pub struct RpgActionProposal {
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase", deny_unknown_fields)]
+pub struct RpgBoundActionProposal {
+    pub binding: RpgActionOptionBindingView,
+    pub target_ids: Vec<String>,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase", deny_unknown_fields)]
 pub struct RpgAreaActionProposal {
     pub session_binding_id: String,
     pub authority_revision: u64,
@@ -512,6 +676,14 @@ pub struct RpgAreaActionProposal {
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase", deny_unknown_fields)]
 pub struct RpgAreaSubmissionResult {
+    pub outcome: crate::RpgCommandOutcome,
+    pub replay_entry: Option<crate::RpgReplayEntry>,
+    pub encounter: RpgEncounterView,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase", deny_unknown_fields)]
+pub struct RpgBoundActionSubmissionResult {
     pub outcome: crate::RpgCommandOutcome,
     pub replay_entry: Option<crate::RpgReplayEntry>,
     pub encounter: RpgEncounterView,
@@ -1397,6 +1569,7 @@ fn validate_board(
         }
         let mut capability_ids = BTreeSet::new();
         let mut traversal_seen = false;
+        let mut line_of_effect_obstruction_seen = false;
         for (capability_index, capability) in cell.capabilities.iter().enumerate() {
             let capability_path = format!("{path}.capabilities[{capability_index}]");
             if capability.id.trim().is_empty() || !capability_ids.insert(capability.id.as_str()) {
@@ -1411,6 +1584,18 @@ fn validate_board(
                     "RPG_SCENARIO_CELL_CAPABILITY_VERSION_INVALID",
                     format!("{capability_path}.version"),
                     "cell capability version must be positive",
+                ));
+            }
+            if capability.id == RPG_LINE_OF_EFFECT_OBSTRUCTION_ID
+                && !matches!(
+                    capability.value,
+                    RpgCellCapabilityValue::LineOfEffectObstruction { .. }
+                )
+            {
+                diagnostics.push(scenario_diagnostic(
+                    "RPG_SCENARIO_LINE_OF_EFFECT_OBSTRUCTION_INVALID",
+                    &capability_path,
+                    "the reserved line-of-effect obstruction identity requires its typed value",
                 ));
             }
             if let Some(definition_id) = &capability.definition_id {
@@ -1445,6 +1630,31 @@ fn validate_board(
                         ));
                     }
                     traversal_seen = true;
+                }
+                RpgCellCapabilityValue::LineOfEffectObstruction { .. } => {
+                    let model_available = bundle
+                        .artifact()
+                        .ruleset
+                        .models
+                        .line_of_effect
+                        .as_ref()
+                        .is_some_and(|model| {
+                            model.id == "line-of-effect.square-grid-supercover"
+                                && model.version == 1
+                        });
+                    if line_of_effect_obstruction_seen
+                        || capability.id != RPG_LINE_OF_EFFECT_OBSTRUCTION_ID
+                        || capability.version != RPG_LINE_OF_EFFECT_OBSTRUCTION_VERSION
+                        || capability.definition_id.is_some()
+                        || !model_available
+                    {
+                        diagnostics.push(scenario_diagnostic(
+                            "RPG_SCENARIO_LINE_OF_EFFECT_OBSTRUCTION_INVALID",
+                            &capability_path,
+                            "line-of-effect obstruction requires one line-of-effect.obstruction@1 fact per cell, no definition, and the square-grid-supercover Ruleset model",
+                        ));
+                    }
+                    line_of_effect_obstruction_seen = true;
                 }
                 RpgCellCapabilityValue::Identifier { value_id } if value_id.trim().is_empty() => {
                     diagnostics.push(scenario_diagnostic(
@@ -2047,6 +2257,14 @@ pub(crate) fn area_projection(
     if anchor_range > targets.maximum_range {
         return None;
     }
+    if targets.line_of_effect == RpgIrLineOfEffectRequirement::Required {
+        let actor_cell = board_index.cells_by_position.get(&actor.position())?;
+        let anchor_projection =
+            line_of_effect_projection(board_index, actor_cell.position, anchor.position);
+        if !anchor_projection.clear {
+            return None;
+        }
+    }
 
     let (origin_cell_id, candidates) = match (&area.origin, &area.shape) {
         (RpgIrAreaOrigin::Anchor, RpgIrAreaShape::Diamond { radius }) => {
@@ -2105,6 +2323,10 @@ pub(crate) fn area_projection(
     if candidates.is_empty() || candidates.len() > 256 {
         return None;
     }
+    let origin_position = board_index
+        .cells_by_id
+        .get(origin_cell_id.as_str())?
+        .position;
     let mut ranked_cells = Vec::new();
     let mut filtered_cells = Vec::new();
     for (distance, x, y) in candidates {
@@ -2117,6 +2339,7 @@ pub(crate) fn area_projection(
                     x,
                     y,
                     reason: "outsideBoard".to_owned(),
+                    blocking_cell_ids: Vec::new(),
                 },
             ));
             continue;
@@ -2126,13 +2349,35 @@ pub(crate) fn area_projection(
             y: u32::try_from(y).ok()?,
         };
         match board_index.cells_by_position.get(&position) {
-            Some(cell) => ranked_cells.push(((distance, y, x, cell.id.as_str()), (*cell).clone())),
+            Some(cell) => {
+                if targets.line_of_effect == RpgIrLineOfEffectRequirement::Required {
+                    let projection =
+                        line_of_effect_projection(board_index, origin_position, cell.position);
+                    if !projection.clear {
+                        filtered_cells.push((
+                            (distance, y, x),
+                            RpgAreaFilteredCellView {
+                                x,
+                                y,
+                                reason: projection
+                                    .reason
+                                    .unwrap_or("lineOfEffectBlocked")
+                                    .to_owned(),
+                                blocking_cell_ids: projection.blocking_cell_ids,
+                            },
+                        ));
+                        continue;
+                    }
+                }
+                ranked_cells.push(((distance, y, x, cell.id.as_str()), (*cell).clone()));
+            }
             None => filtered_cells.push((
                 (distance, y, x),
                 RpgAreaFilteredCellView {
                     x,
                     y,
                     reason: "cellMissing".to_owned(),
+                    blocking_cell_ids: Vec::new(),
                 },
             )),
         }
@@ -2152,6 +2397,30 @@ pub(crate) fn area_projection(
     }
     let mut included_participant_ids = Vec::new();
     let mut filtered = Vec::new();
+    for cell in &filtered_cells {
+        if !matches!(
+            cell.reason.as_str(),
+            "lineOfEffectBlocked" | "lineOfEffectCellMissing"
+        ) {
+            continue;
+        }
+        let (Ok(x), Ok(y)) = (u32::try_from(cell.x), u32::try_from(cell.y)) else {
+            continue;
+        };
+        let Some(participants) = board_index
+            .participants_by_position
+            .get(&GridPosition { x, y })
+        else {
+            continue;
+        };
+        for participant in participants {
+            filtered.push(RpgAreaFilteredParticipantView {
+                participant_id: participant.id().to_owned(),
+                reason: cell.reason.clone(),
+                blocking_cell_ids: cell.blocking_cell_ids.clone(),
+            });
+        }
+    }
     for cell in &included_cells {
         let Some(participants) = board_index.participants_by_position.get(&cell.position) else {
             continue;
@@ -2173,6 +2442,7 @@ pub(crate) fn area_projection(
                 filtered.push(RpgAreaFilteredParticipantView {
                     participant_id: participant.id().to_owned(),
                     reason: reason.to_owned(),
+                    blocking_cell_ids: Vec::new(),
                 });
             } else {
                 included_participant_ids.push(participant.id().to_owned());
@@ -2691,5 +2961,104 @@ mod tests {
                 "field {field} must fail strict decode: {failure}"
             );
         }
+    }
+
+    fn line_board(width: u32, height: u32, blocked: &[(u32, u32)]) -> RpgBoardSetup {
+        RpgBoardSetup {
+            width,
+            height,
+            cells: (0..height)
+                .flat_map(|y| {
+                    (0..width).map(move |x| RpgCellSetup {
+                        id: format!("cell-{x}-{y}"),
+                        position: GridPosition { x, y },
+                        capabilities: vec![RpgCellCapabilitySetup {
+                            id: RPG_LINE_OF_EFFECT_OBSTRUCTION_ID.to_owned(),
+                            version: RPG_LINE_OF_EFFECT_OBSTRUCTION_VERSION,
+                            definition_id: None,
+                            value: RpgCellCapabilityValue::LineOfEffectObstruction {
+                                blocks: blocked.contains(&(x, y)),
+                            },
+                        }],
+                    })
+                })
+                .collect(),
+        }
+    }
+
+    #[test]
+    fn square_supercover_is_clear_and_reports_canonical_blockers() {
+        let clear_board = line_board(4, 1, &[]);
+        let state = RpgCapabilityState::restore(0, Vec::new()).unwrap();
+        let clear_index = RpgAreaBoardIndex::new(&clear_board, &state);
+        assert_eq!(
+            line_of_effect_projection(
+                &clear_index,
+                GridPosition { x: 0, y: 0 },
+                GridPosition { x: 3, y: 0 },
+            ),
+            RpgLineOfEffectProjection {
+                clear: true,
+                reason: None,
+                blocking_cell_ids: Vec::new(),
+            }
+        );
+
+        let blocked_board = line_board(5, 1, &[(1, 0), (3, 0)]);
+        let blocked_index = RpgAreaBoardIndex::new(&blocked_board, &state);
+        assert_eq!(
+            line_of_effect_projection(
+                &blocked_index,
+                GridPosition { x: 0, y: 0 },
+                GridPosition { x: 4, y: 0 },
+            ),
+            RpgLineOfEffectProjection {
+                clear: false,
+                reason: Some("lineOfEffectBlocked"),
+                blocking_cell_ids: vec!["cell-1-0".to_owned(), "cell-3-0".to_owned()],
+            }
+        );
+    }
+
+    #[test]
+    fn square_supercover_includes_both_cells_at_a_diagonal_corner_tie() {
+        let board = line_board(3, 3, &[(1, 0), (0, 1)]);
+        let state = RpgCapabilityState::restore(0, Vec::new()).unwrap();
+        let index = RpgAreaBoardIndex::new(&board, &state);
+        assert_eq!(
+            line_of_effect_projection(
+                &index,
+                GridPosition { x: 0, y: 0 },
+                GridPosition { x: 2, y: 2 },
+            )
+            .blocking_cell_ids,
+            vec!["cell-1-0".to_owned(), "cell-0-1".to_owned()]
+        );
+    }
+
+    #[test]
+    fn square_supercover_fails_closed_when_an_endpoint_or_traversed_cell_is_missing() {
+        let mut board = line_board(4, 1, &[]);
+        board.cells.retain(|cell| cell.position.x != 2);
+        let state = RpgCapabilityState::restore(0, Vec::new()).unwrap();
+        let index = RpgAreaBoardIndex::new(&board, &state);
+        assert_eq!(
+            line_of_effect_projection(
+                &index,
+                GridPosition { x: 0, y: 0 },
+                GridPosition { x: 3, y: 0 },
+            )
+            .reason,
+            Some("lineOfEffectCellMissing")
+        );
+        assert_eq!(
+            line_of_effect_projection(
+                &index,
+                GridPosition { x: 0, y: 0 },
+                GridPosition { x: 4, y: 0 },
+            )
+            .reason,
+            Some("lineOfEffectCellMissing")
+        );
     }
 }

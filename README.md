@@ -28,7 +28,7 @@ than this engine repository. Rulebench consumes them through public APIs.
 
 ## Current implementation
 
-The Rust semantic path is active. `rpg-ir` strictly decodes `asha.rpg.ir@2`,
+The Rust semantic path is active. `rpg-ir` strictly decodes `asha.rpg.ir@3`,
 `rpg-compiler` resolves exact requirements and references into an opaque
 compiled program with closed operation bindings, and `rpg-runtime` owns a
 versioned, PlayBundle-bound Scenario and authority session that stages
@@ -120,7 +120,7 @@ It exports distinct `Ruleset`, `ContentPack`, `PlayBundle`, and `Scenario`
 contracts. A Ruleset has no authored gameplay definitions; a Scenario has no
 definitions or gameplay script. It does not evaluate gameplay semantics or discover packages from global
 registries or the filesystem. Rust validates the prepared graph, creates the
-private executable plan, and emits the closed `asha.rpg.play-bundle.compiled@9`
+private executable plan, and emits the closed `asha.rpg.play-bundle.compiled@10`
 artifact with independent source, semantic, and presentation fingerprints.
 Representative consumer code lives in
 `examples/representative-actions.ts`; its normalized artifact is sent through

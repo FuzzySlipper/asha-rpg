@@ -687,6 +687,19 @@ fn validate_ruleset(prepared: &PreparedPlayBundle, diagnostics: &mut Vec<RpgDiag
             ),
         )),
     }
+    if let Some(model) = &ruleset.models.line_of_effect {
+        if model.id != "line-of-effect.square-grid-supercover" || model.version != 1 {
+            diagnostics.push(RpgDiagnostic::error(
+                RpgDiagnosticStage::Compatibility,
+                "RULESET_MODEL_UNSUPPORTED",
+                "$.ruleset.models.lineOfEffect",
+                format!(
+                    "ruleset model {}@{} is not bound by Rust authority",
+                    model.id, model.version
+                ),
+            ));
+        }
+    }
     validate_sorted_requirements(
         &ruleset.provides.operations,
         "$.ruleset.provides.operations",
@@ -3056,6 +3069,16 @@ fn validate_action_contribution_contracts(
         .collect::<BTreeSet<_>>();
     let mut diagnostics = Vec::new();
     for (index, action) in normalized.actions.iter().enumerate() {
+        if action.targets.line_of_effect == rpg_ir::RpgIrLineOfEffectRequirement::Required
+            && ruleset.models.line_of_effect.is_none()
+        {
+            diagnostics.push(RpgDiagnostic::error(
+                RpgDiagnosticStage::Compatibility,
+                "ACTION_LINE_OF_EFFECT_MODEL_REQUIRED",
+                format!("$.actions[{index}].targets.lineOfEffect"),
+                "selectors requiring line of effect need a compatible Ruleset line-of-effect model",
+            ));
+        }
         validate_activation_contract(
             action.activation.as_ref(),
             rpg_ir::RpgIrActivationTiming::Action,
@@ -5172,6 +5195,16 @@ fn normalized_ir_from_materialized(
     let mut actions = Vec::new();
     let mut bound_action_registrations = Vec::new();
 
+    if prepared.ruleset.models.line_of_effect.is_some() {
+        for (index, definition) in prepared.materialized_definitions.iter().enumerate() {
+            validate_explicit_line_of_effect_selectors(
+                &definition.semantic,
+                &format!("$.materializedDefinitions[{index}].semantic"),
+                &mut diagnostics,
+            );
+        }
+    }
+
     for (index, definition) in prepared.materialized_definitions.iter().enumerate() {
         if definition.kind != MaterializedContentDefinitionKind::ActionProcedure {
             continue;
@@ -5460,6 +5493,45 @@ fn normalized_ir_from_materialized(
         },
         bound_action_registrations,
     ))
+}
+
+fn validate_explicit_line_of_effect_selectors(
+    value: &Value,
+    path: &str,
+    diagnostics: &mut Vec<RpgDiagnostic>,
+) {
+    match value {
+        Value::Array(values) => {
+            for (index, value) in values.iter().enumerate() {
+                validate_explicit_line_of_effect_selectors(
+                    value,
+                    &format!("{path}[{index}]"),
+                    diagnostics,
+                );
+            }
+        }
+        Value::Object(object) => {
+            let target_selector = object.contains_key("team")
+                && object.contains_key("maximumRange")
+                && object.contains_key("maximumTargets");
+            if target_selector && !object.contains_key("lineOfEffect") {
+                diagnostics.push(RpgDiagnostic::error(
+                    RpgDiagnosticStage::Semantics,
+                    "RPG_IR_LINE_OF_EFFECT_REQUIREMENT_MISSING",
+                    format!("{path}.lineOfEffect"),
+                    "Rulesets binding line of effect require every target selector to explicitly declare ignored or required",
+                ));
+            }
+            for (key, value) in object {
+                validate_explicit_line_of_effect_selectors(
+                    value,
+                    &format!("{path}.{key}"),
+                    diagnostics,
+                );
+            }
+        }
+        _ => {}
+    }
 }
 
 fn validate_equipped_item_binding(
@@ -6149,6 +6221,16 @@ fn validate_expanded_action_procedure_body(
         &ruleset.models.action_economy,
         RulesetActionEconomyModel::VariableActivationBudgets { .. }
     );
+    if action.targets.line_of_effect == rpg_ir::RpgIrLineOfEffectRequirement::Required
+        && ruleset.models.line_of_effect.is_none()
+    {
+        diagnostics.push(RpgDiagnostic::error(
+            RpgDiagnosticStage::Compatibility,
+            "ACTION_LINE_OF_EFFECT_MODEL_REQUIRED",
+            format!("{path}.callable.targets.lineOfEffect"),
+            "selectors requiring line of effect need a compatible Ruleset line-of-effect model",
+        ));
+    }
     let activation_budgets = ruleset
         .provides
         .activation_budgets

@@ -6,6 +6,7 @@ import {
   ally,
   applyEffect,
   canonicalJson,
+  cells,
   composePlayBundle,
   constant,
   contentPackRequest,
@@ -20,13 +21,16 @@ import {
   defineEffectDefinition,
   defineItemDefinition,
   defineRuleset,
+  diamondArea,
   dice,
   equippedItemAttribute,
+  forEachTarget,
   heal,
   hostile,
   itemBoundedIntegerAttribute,
   itemCatalogReferenceAttribute,
   itemDiceAttribute,
+  moveToCell,
   noRoll,
   onCheck,
   preparePlayBundle,
@@ -61,6 +65,10 @@ const ruleset = defineRuleset({
       id: 'action-economy.variable-activation-budgets',
       version: 1,
       acceptedActivationCeiling: 8,
+    },
+    lineOfEffect: {
+      id: 'line-of-effect.square-grid-supercover',
+      version: 1,
     },
   },
   provides: {
@@ -360,6 +368,7 @@ const coreAttackProcedure = defineActionProcedureDefinition({
         team: 'hostile',
         maximumRange: actionProcedureParameterReference(rangeParameter),
         maximumTargets: 2,
+        lineOfEffect: 'required',
       },
       check: scalarTest({
         profile: attackProfile,
@@ -557,7 +566,7 @@ const exposeAction = action({
   id: actionId('action.expose'),
   name: 'Expose',
   sourcePath: `${sourceModule}#exposeAction`,
-  targets: hostile({ range: 4 }),
+  targets: hostile({ range: 4, lineOfEffect: 'required' }),
   check: noRoll(),
   activation: activation({
     timing: 'action',
@@ -577,6 +586,62 @@ const exposeDefinition = defineActionDefinition({
   source: { module: sourceModule, declaration: 'exposeAction' },
   presentation: { label: exposeAction.name },
   action: exposeAction,
+});
+
+const burstAction = action({
+  id: actionId('action.burst'),
+  name: 'Burst',
+  sourcePath: `${sourceModule}#burstAction`,
+  targets: diamondArea({
+    range: 0,
+    radius: 2,
+    team: 'hostile',
+    maximumTargets: 4,
+    lineOfEffect: 'required',
+  }),
+  check: noRoll(),
+  activation: activation({
+    timing: 'action',
+    costs: [{ budget: standardBudget, amount: 1 }],
+  }),
+  program: forEachTarget(
+    4,
+    applyEffect({
+      effect: { definitionId: exposedTarget.id },
+      rank: constant(1),
+    }),
+  ),
+});
+const burstDefinition = defineActionDefinition({
+  id: burstAction.id,
+  visibility: 'public',
+  extensionPolicy: 'sealed',
+  source: { module: sourceModule, declaration: 'burstAction' },
+  presentation: { label: burstAction.name },
+  action: burstAction,
+});
+
+const shiftAction = action({
+  id: actionId('action.shift'),
+  name: 'Shift',
+  sourcePath: `${sourceModule}#shiftAction`,
+  targets: cells({ range: 5, lineOfEffect: 'required' }),
+  check: noRoll(),
+  activation: activation({
+    timing: 'action',
+    costs: [{ budget: standardBudget, amount: 1 }],
+  }),
+  program: onCheck({
+    noRoll: moveToCell({ maximumDistance: 5, provokes: false }),
+  }),
+});
+const shiftDefinition = defineActionDefinition({
+  id: shiftAction.id,
+  visibility: 'public',
+  extensionPolicy: 'sealed',
+  source: { module: sourceModule, declaration: 'shiftAction' },
+  presentation: { label: shiftAction.name },
+  action: shiftAction,
 });
 
 const rallyAction = action({
@@ -628,7 +693,9 @@ const contentPack = defineContentPack({
     ...catalogs.definitions,
     coreAttackProcedure,
     coreAttack,
+    burstDefinition,
     exposeDefinition,
+    shiftDefinition,
     rallyDefinition,
     exposedTarget,
     vanguardClass,
@@ -639,7 +706,9 @@ const contentPack = defineContentPack({
   exports: [
     ...catalogs.definitions.map((definition) => definition.id),
     coreAttack.id,
+    burstDefinition.id,
     exposeDefinition.id,
+    shiftDefinition.id,
     rallyDefinition.id,
     exposedTarget.id,
     vanguardClass.id,
