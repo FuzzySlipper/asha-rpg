@@ -3134,12 +3134,20 @@ fn spatial_source_views(
                         rpg_core::RpgDomainEvent::SpatialSourceTriggerEvaluated {
                             boundary,
                             instance_id,
+                            definition_id,
+                            definition_version,
+                            owner_id,
+                            source_id,
                             cell_id,
                             participant_id,
                             operation_path,
                             disposition,
-                            ..
-                        } if instance_id == source.instance_id() => {
+                        } if instance_id == source.instance_id()
+                            && definition_id == source.definition_id()
+                            && *definition_version == source.definition_version()
+                            && owner_id == source.owner_entity_id()
+                            && source_id == source.source_entity_id() =>
+                        {
                             Some(RpgSpatialSourceTriggerEvidenceView {
                                 sequence: entry.sequence,
                                 state_revision: entry.state_revision,
