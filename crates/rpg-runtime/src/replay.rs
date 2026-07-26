@@ -2,8 +2,8 @@ use std::fmt;
 
 use rpg_compiler::load_compiled_play_bundle;
 use rpg_core::{
-    ActiveRpgEffect, ActiveRpgModifier, BoundedValue, GridPosition, RpgCapabilityState,
-    RpgEntityState, RpgResolutionReceipt, StateFingerprint, Team,
+    ActiveRpgEffect, ActiveRpgModifier, ActiveRpgSpatialSource, BoundedValue, GridPosition,
+    RpgCapabilityState, RpgEntityState, RpgResolutionReceipt, StateFingerprint, Team,
 };
 use rpg_ir::{
     CompiledEffectDefinition, CompiledPlayBundleArtifact, ContentPackDependencyLockEntry,
@@ -24,9 +24,9 @@ use crate::{
 
 pub const RPG_CHECKPOINT_SCHEMA_ID: &str = "asha.rpg.session.checkpoint";
 pub const RPG_REPLAY_ENTRY_SCHEMA_ID: &str = "asha.rpg.session.replay-entry";
-pub const RPG_CHECKPOINT_SCHEMA_VERSION: u32 = 13;
-pub const RPG_REPLAY_ENTRY_SCHEMA_VERSION: u32 = 14;
-pub const RPG_EVENT_SCHEMA_VERSION: u32 = 12;
+pub const RPG_CHECKPOINT_SCHEMA_VERSION: u32 = 14;
+pub const RPG_REPLAY_ENTRY_SCHEMA_VERSION: u32 = 15;
+pub const RPG_EVENT_SCHEMA_VERSION: u32 = 13;
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase", deny_unknown_fields)]
@@ -123,10 +123,30 @@ pub struct RpgPortableEntityState {
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase", deny_unknown_fields)]
+pub struct RpgPortableSpatialSource {
+    pub instance_id: String,
+    pub definition_id: String,
+    pub definition_version: u32,
+    pub owner_entity_id: String,
+    pub source_entity_id: String,
+    pub origin: GridPosition,
+    pub included_cell_ids: Vec<String>,
+    pub stacking_id: String,
+    pub stacking: rpg_core::RpgEffectStackingPolicy,
+    pub remaining_count: u32,
+    pub application_revision: u64,
+    pub duration_anchor: rpg_core::RpgEffectDurationAnchor,
+    pub trigger_revision: u64,
+    pub trigger_keys: Vec<String>,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase", deny_unknown_fields)]
 pub struct RpgPortableCapabilityState {
     pub revision: u64,
     pub accepted_activations_this_turn: u32,
     pub entities: Vec<RpgPortableEntityState>,
+    pub spatial_sources: Vec<RpgPortableSpatialSource>,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
@@ -353,6 +373,7 @@ impl RpgAuthoritySession {
             ));
         }
         validate_portable_effect_tenure(&checkpoint.state, bundle.effects())?;
+        validate_portable_spatial_sources(&checkpoint.state, bundle.spatial_sources())?;
         let state = restore_state(&checkpoint.state)?;
         let derived_diagnostics = validate_derived_state(&bundle, &state);
         if !derived_diagnostics.is_empty() {
@@ -953,6 +974,25 @@ fn portable_state(
                     .collect(),
             })
             .collect(),
+        spatial_sources: state
+            .spatial_sources()
+            .map(|source| RpgPortableSpatialSource {
+                instance_id: source.instance_id().to_owned(),
+                definition_id: source.definition_id().to_owned(),
+                definition_version: source.definition_version(),
+                owner_entity_id: source.owner_entity_id().to_owned(),
+                source_entity_id: source.source_entity_id().to_owned(),
+                origin: source.origin(),
+                included_cell_ids: source.included_cell_ids().to_vec(),
+                stacking_id: source.stacking_id().to_owned(),
+                stacking: source.stacking(),
+                remaining_count: source.remaining_count(),
+                application_revision: source.application_revision(),
+                duration_anchor: source.duration_anchor(),
+                trigger_revision: source.trigger_revision(),
+                trigger_keys: source.trigger_keys().to_vec(),
+            })
+            .collect(),
     }
 }
 
@@ -980,6 +1020,41 @@ fn validate_portable_effect_tenure(
                     ),
                 ));
             }
+        }
+    }
+    Ok(())
+}
+
+fn validate_portable_spatial_sources(
+    state: &RpgPortableCapabilityState,
+    definitions: &[rpg_ir::CompiledSpatialSourceDefinition],
+) -> Result<(), RpgReplayFailure> {
+    for (index, source) in state.spatial_sources.iter().enumerate() {
+        let Some(definition) = definitions.iter().find(|definition| {
+            definition.definition_id == source.definition_id
+                && definition.definition_version == source.definition_version
+        }) else {
+            return Err(replay_failure(
+                "RPG_CHECKPOINT_SPATIAL_SOURCE_DEFINITION_UNKNOWN",
+                format!("$.state.spatialSources[{index}].definitionId"),
+                format!(
+                    "spatial source {} references an unavailable definition",
+                    source.instance_id
+                ),
+            ));
+        };
+        if source.duration_anchor != definition.duration_anchor
+            || source.stacking_id != definition.stacking_id
+            || source.stacking != definition.stacking
+        {
+            return Err(replay_failure(
+                "RPG_CHECKPOINT_SPATIAL_SOURCE_STATE_MISMATCH",
+                format!("$.state.spatialSources[{index}]"),
+                format!(
+                    "spatial source {} does not match its compiled identity contract",
+                    source.instance_id
+                ),
+            ));
         }
     }
     Ok(())
@@ -1068,12 +1143,47 @@ fn restore_state(
         }
         entities.push(entity);
     }
-    RpgCapabilityState::restore_with_activation_count(
+    let mut restored = RpgCapabilityState::restore_with_activation_count(
         state.revision,
         entities,
         state.accepted_activations_this_turn,
     )
-    .map_err(|error| state_restore_failure("$.state", error))
+    .map_err(|error| state_restore_failure("$.state", error))?;
+    for (index, source) in state.spatial_sources.iter().enumerate() {
+        if source.application_revision > state.revision || source.trigger_revision > state.revision
+        {
+            return Err(state_restore_failure(
+                &format!("$.state.spatialSources[{index}]"),
+                rpg_core::RpgStateRestoreError::ValueOutOfBounds,
+            ));
+        }
+        restored
+            .restore_spatial_source(
+                ActiveRpgSpatialSource::restore(
+                    source.instance_id.clone(),
+                    source.definition_id.clone(),
+                    source.definition_version,
+                    source.owner_entity_id.clone(),
+                    source.source_entity_id.clone(),
+                    source.origin,
+                    source.included_cell_ids.clone(),
+                    source.stacking_id.clone(),
+                    source.stacking,
+                    source.remaining_count,
+                    source.application_revision,
+                    source.duration_anchor,
+                    source.trigger_revision,
+                    source.trigger_keys.clone(),
+                )
+                .map_err(|error| {
+                    state_restore_failure(&format!("$.state.spatialSources[{index}]"), error)
+                })?,
+            )
+            .map_err(|error| {
+                state_restore_failure(&format!("$.state.spatialSources[{index}]"), error)
+            })?;
+    }
+    Ok(restored)
 }
 
 fn state_restore_failure(path: &str, error: rpg_core::RpgStateRestoreError) -> RpgReplayFailure {

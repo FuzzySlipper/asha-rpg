@@ -40,6 +40,7 @@ const OPERATION_IDS: Record<RpgIrOperation['kind'], RpgOperationId> = {
   applyModifier: 'operation.applyModifier',
   applyEffect: 'operation.applyEffect',
   removeEffect: 'operation.removeEffect',
+  createSpatialSource: 'operation.createSpatialSource',
   move: 'operation.move',
   moveToCell: 'operation.moveToCell',
   push: 'operation.push',

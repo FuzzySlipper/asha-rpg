@@ -5,33 +5,36 @@ use rpg_core::{
     RpgContributionSubject, RpgContributionValueExpression, RpgDamageResponseDefinition,
     RpgDamageResponseEffect, RpgEffectDurationAnchor, RpgEffectTenure, RpgNaturalDieEffect,
     RpgOutcomeBandShiftDefinition, RpgPoolContributionDefinition, RpgPoolContributionEffect,
-    RpgRulesetValueKind, RpgScalarContributionDefinition, MAXIMUM_RPG_DAMAGE_RESPONSES,
-    MAXIMUM_RPG_DAMAGE_SCALE_COMPONENT, MAXIMUM_RPG_DAMAGE_TAGS,
+    RpgRulesetValueKind, RpgScalarContributionDefinition, RpgSpatialSourceBoundary,
+    MAXIMUM_RPG_DAMAGE_RESPONSES, MAXIMUM_RPG_DAMAGE_SCALE_COMPONENT, MAXIMUM_RPG_DAMAGE_TAGS,
 };
 use rpg_ir::{
     ActionProcedureImplementation, ActionProcedureParameter, CompiledCharacterClass,
     CompiledCharacterFeature, CompiledEffectDefinition, CompiledItemDefinition,
-    CompiledParticipantProfile, CompiledPlayBundleArtifact, ContentDefinitionCommitment,
-    ContentExtensionPolicy, ContentImpactPlane, ContentMaterializationStage,
-    ContentMaterializationValue, ContentMixinParameterCommitment, ContentMixinParameterType,
-    ContentPatch, ContentPatchChangeProvenance, ContentPatchMemberKey, ContentPatchMemberSelector,
+    CompiledParticipantProfile, CompiledPlayBundleArtifact, CompiledSpatialSourceDefinition,
+    CompiledSpatialSourceTrigger, ContentDefinitionCommitment, ContentExtensionPolicy,
+    ContentImpactPlane, ContentMaterializationStage, ContentMaterializationValue,
+    ContentMixinParameterCommitment, ContentMixinParameterType, ContentPatch,
+    ContentPatchChangeProvenance, ContentPatchMemberKey, ContentPatchMemberSelector,
     ContentPatchOperation, ContentPatchPathSegment, ContentPatchPosition, ContentRelationshipKind,
     ItemAttribute, MaterializedActionProcedureSemantic, MaterializedActionSemantic,
     MaterializedCharacterClassData, MaterializedCharacterFeatureData,
     MaterializedContentDefinition, MaterializedContentDefinitionKind,
     MaterializedContentVisibility, MaterializedEffectDefinitionData, MaterializedItemSemantic,
-    MaterializedParticipantProfileData, NormalizedRpgIr, ParticipantProfileInitialCapability,
-    PlayBundleArtifactSchema, PlayBundleFingerprints, PreparedPlayBundle, RpgIrAction,
-    RpgIrActionBody, RpgIrCatalogs, RpgIrCheck, RpgIrFormula, RpgIrOperation, RpgIrPackage,
-    RpgIrPredicate, RpgIrProgram, RpgIrRequirement, RpgIrRequirementKind, RpgIrResourceCost,
-    RpgIrScalarTestDifficulty, RpgIrSchema, RpgIrTargetKind, RpgIrTargetSelector, Ruleset,
-    RulesetActionEconomyModel, RulesetValueExpression, RulesetValueKind, RulesetValueSource,
-    VersionedRpgRequirement, ACTION_DEFINITION_IDENTITY, ACTION_DEFINITION_VERSION,
-    ACTION_PROCEDURE_IDENTITY, ACTION_PROCEDURE_VERSION, CHARACTER_CLASS_IDENTITY,
-    CHARACTER_CLASS_VERSION, CHARACTER_FEATURE_IDENTITY, CHARACTER_FEATURE_VERSION,
-    COMPILED_PLAY_BUNDLE_IDENTITY, EFFECT_DEFINITION_IDENTITY, EFFECT_DEFINITION_VERSION,
-    ITEM_IDENTITY, ITEM_VERSION, PARTICIPANT_PROFILE_IDENTITY, PARTICIPANT_PROFILE_VERSION,
-    PLAY_BUNDLE_ARTIFACT_MAJOR, PREPARED_PLAY_BUNDLE_IDENTITY, RPG_IR_IDENTITY, RPG_IR_MAJOR,
+    MaterializedParticipantProfileData, MaterializedSpatialSourceDefinitionData, NormalizedRpgIr,
+    ParticipantProfileInitialCapability, PlayBundleArtifactSchema, PlayBundleFingerprints,
+    PreparedPlayBundle, RpgIrAction, RpgIrActionBody, RpgIrCatalogs, RpgIrCheck, RpgIrFormula,
+    RpgIrOperation, RpgIrPackage, RpgIrPredicate, RpgIrProgram, RpgIrRequirement,
+    RpgIrRequirementKind, RpgIrResourceCost, RpgIrScalarTestDifficulty, RpgIrSchema,
+    RpgIrTargetKind, RpgIrTargetSelector, Ruleset, RulesetActionEconomyModel,
+    RulesetValueExpression, RulesetValueKind, RulesetValueSource, VersionedRpgRequirement,
+    ACTION_DEFINITION_IDENTITY, ACTION_DEFINITION_VERSION, ACTION_PROCEDURE_IDENTITY,
+    ACTION_PROCEDURE_VERSION, CHARACTER_CLASS_IDENTITY, CHARACTER_CLASS_VERSION,
+    CHARACTER_FEATURE_IDENTITY, CHARACTER_FEATURE_VERSION, COMPILED_PLAY_BUNDLE_IDENTITY,
+    EFFECT_DEFINITION_IDENTITY, EFFECT_DEFINITION_VERSION, ITEM_IDENTITY, ITEM_VERSION,
+    PARTICIPANT_PROFILE_IDENTITY, PARTICIPANT_PROFILE_VERSION, PLAY_BUNDLE_ARTIFACT_MAJOR,
+    PREPARED_PLAY_BUNDLE_IDENTITY, RPG_IR_IDENTITY, RPG_IR_MAJOR,
+    SPATIAL_SOURCE_DEFINITION_IDENTITY, SPATIAL_SOURCE_DEFINITION_VERSION,
 };
 use serde::{Deserialize, Serialize};
 use serde_json::{json, Value};
@@ -51,6 +54,7 @@ pub struct CompiledPlayBundle {
     character_classes: Vec<CompiledCharacterClass>,
     character_features: Vec<CompiledCharacterFeature>,
     effects: Vec<CompiledEffectDefinition>,
+    spatial_sources: Vec<CompiledSpatialSourceDefinition>,
     participant_profiles: Vec<CompiledParticipantProfile>,
 }
 
@@ -85,6 +89,10 @@ impl CompiledPlayBundle {
 
     pub fn effects(&self) -> &[CompiledEffectDefinition] {
         &self.effects
+    }
+
+    pub fn spatial_sources(&self) -> &[CompiledSpatialSourceDefinition] {
+        &self.spatial_sources
     }
 
     pub fn into_artifact(self) -> CompiledPlayBundleArtifact {
@@ -215,9 +223,10 @@ pub fn compile_prepared_play_bundle(
     let items = compile_items(&prepared)?;
     let character_features = compile_character_features(&prepared)?;
     let effects = compile_effects(&prepared)?;
+    let spatial_sources = compile_spatial_sources(&prepared)?;
     let character_classes = compile_character_classes(&prepared, &character_features)?;
     let (normalized_ir, bound_action_registrations) =
-        normalized_ir_from_materialized(&prepared, &items)?;
+        normalized_ir_from_materialized(&prepared, &items, &spatial_sources)?;
     validate_action_contribution_contracts(
         &normalized_ir,
         &prepared.ruleset,
@@ -231,6 +240,7 @@ pub fn compile_prepared_play_bundle(
     rules.register_character_features(&character_features);
     rules.register_items(&items);
     rules.register_effects(&effects);
+    rules.register_spatial_sources(&spatial_sources);
     rules.register_contribution_contracts(&prepared.ruleset);
     let value_plan = compile_ruleset_value_plan(&prepared.ruleset)?;
     let participant_profiles =
@@ -286,6 +296,7 @@ pub fn compile_prepared_play_bundle(
         character_classes,
         character_features,
         effects,
+        spatial_sources,
         participant_profiles,
     })
 }
@@ -2246,6 +2257,370 @@ fn compile_effects(
         Ok(effects)
     } else {
         Err(RpgCompileFailure { diagnostics })
+    }
+}
+
+fn compile_spatial_sources(
+    prepared: &PreparedPlayBundle,
+) -> Result<Vec<CompiledSpatialSourceDefinition>, RpgCompileFailure> {
+    let definitions = prepared
+        .materialized_definitions
+        .iter()
+        .map(|definition| (definition.id.as_str(), definition))
+        .collect::<BTreeMap<_, _>>();
+    let mut diagnostics = Vec::new();
+    let mut compiled = Vec::new();
+    let mut package_counts = BTreeMap::<&str, usize>::new();
+    let mut stacking_contracts = BTreeMap::new();
+    let ruleset_catalogs = ruleset_catalogs(&prepared.ruleset);
+    for (definition_index, definition) in prepared.materialized_definitions.iter().enumerate() {
+        if definition.kind != MaterializedContentDefinitionKind::SpatialSource {
+            continue;
+        }
+        let path = format!("$.materializedDefinitions[{definition_index}]");
+        *package_counts
+            .entry(definition.provenance.package_id.as_str())
+            .or_default() += 1;
+        if definition.extension_policy != ContentExtensionPolicy::Sealed {
+            diagnostics.push(RpgDiagnostic::error(
+                RpgDiagnosticStage::Semantics,
+                "SPATIAL_SOURCE_EXTENSION_POLICY_UNSUPPORTED",
+                format!("{path}.extensionPolicy"),
+                "spatial-source definitions are sealed in the current semantic contract",
+            ));
+        }
+        let source = match serde_json::from_value::<MaterializedSpatialSourceDefinitionData>(
+            definition.semantic.clone(),
+        ) {
+            Ok(source) => source,
+            Err(error) => {
+                diagnostics.push(RpgDiagnostic::error(
+                    RpgDiagnosticStage::Semantics,
+                    "SPATIAL_SOURCE_SEMANTIC_DECODE_FAILED",
+                    format!("{path}.semantic"),
+                    error.to_string(),
+                ));
+                continue;
+            }
+        };
+        if source.schema.identity != SPATIAL_SOURCE_DEFINITION_IDENTITY
+            || source.schema.version != SPATIAL_SOURCE_DEFINITION_VERSION
+        {
+            diagnostics.push(RpgDiagnostic::error(
+                RpgDiagnosticStage::Compatibility,
+                "SPATIAL_SOURCE_SCHEMA_UNSUPPORTED",
+                format!("{path}.semantic.schema"),
+                format!(
+                    "expected {SPATIAL_SOURCE_DEFINITION_IDENTITY}@{SPATIAL_SOURCE_DEFINITION_VERSION}"
+                ),
+            ));
+        }
+        let radius = match source.shape {
+            rpg_ir::RpgIrAreaShape::Diamond { radius } if (1..=8).contains(&radius) => radius,
+            _ => {
+                diagnostics.push(RpgDiagnostic::error(
+                    RpgDiagnosticStage::Semantics,
+                    "SPATIAL_SOURCE_SHAPE_INVALID",
+                    format!("{path}.semantic.shape"),
+                    "the fixed spatial-source shape must be a diamond with radius 1..=8",
+                ));
+                1
+            }
+        };
+        if !valid_identifier(&source.stacking_id) {
+            diagnostics.push(RpgDiagnostic::error(
+                RpgDiagnosticStage::Semantics,
+                "SPATIAL_SOURCE_STACKING_ID_INVALID",
+                format!("{path}.semantic.stackingId"),
+                "spatial-source stacking identity must be a portable identifier",
+            ));
+        }
+        if let Some(previous) =
+            stacking_contracts.insert(source.stacking_id.clone(), source.stacking)
+        {
+            if previous != source.stacking {
+                diagnostics.push(RpgDiagnostic::error(
+                    RpgDiagnosticStage::Semantics,
+                    "SPATIAL_SOURCE_STACKING_POLICY_CONFLICT",
+                    format!("{path}.semantic.stacking"),
+                    format!(
+                        "stacking identity {} must use one policy across the PlayBundle",
+                        source.stacking_id
+                    ),
+                ));
+            }
+        }
+        let (duration_anchor, duration_count) = match source.tenure {
+            RpgEffectTenure::Fixed { anchor, count }
+                if matches!(
+                    anchor,
+                    RpgEffectDurationAnchor::GlobalTurnTransition
+                        | RpgEffectDurationAnchor::RoundTransition
+                        | RpgEffectDurationAnchor::SourceTurnStart
+                ) && (1..=rpg_core::MAXIMUM_RPG_EFFECT_DURATION).contains(&count) =>
+            {
+                (anchor, count)
+            }
+            _ => {
+                diagnostics.push(RpgDiagnostic::error(
+                    RpgDiagnosticStage::Semantics,
+                    "SPATIAL_SOURCE_TENURE_INVALID",
+                    format!("{path}.semantic.tenure"),
+                    "spatial-source tenure requires a supported fixed anchor and count within 1..=1000",
+                ));
+                (RpgEffectDurationAnchor::GlobalTurnTransition, 1)
+            }
+        };
+        if source.triggers.is_empty() || source.triggers.len() > 4 {
+            diagnostics.push(RpgDiagnostic::error(
+                RpgDiagnosticStage::Semantics,
+                "SPATIAL_SOURCE_TRIGGER_LIMIT_INVALID",
+                format!("{path}.semantic.triggers"),
+                "a spatial source requires 1..=4 closed trigger procedures",
+            ));
+        }
+        let mut previous_boundary = None;
+        let mut triggers = Vec::new();
+        for (trigger_index, trigger) in source.triggers.iter().enumerate() {
+            let trigger_path = format!("{path}.semantic.triggers[{trigger_index}]");
+            if previous_boundary.is_some_and(|previous| previous >= trigger.boundary) {
+                diagnostics.push(RpgDiagnostic::error(
+                    RpgDiagnosticStage::Semantics,
+                    "SPATIAL_SOURCE_TRIGGERS_NOT_CANONICAL",
+                    &trigger_path,
+                    "trigger boundaries must be unique and canonically sorted",
+                ));
+            }
+            previous_boundary = Some(trigger.boundary);
+            if !definition
+                .references
+                .iter()
+                .any(|reference| reference == &trigger.procedure_id)
+            {
+                diagnostics.push(RpgDiagnostic::error(
+                    RpgDiagnosticStage::References,
+                    "SPATIAL_SOURCE_TRIGGER_PROCEDURE_UNDECLARED",
+                    format!("{trigger_path}.procedureId"),
+                    "the trigger procedure must be a direct definition reference",
+                ));
+                continue;
+            }
+            let Some(procedure_definition) = definitions.get(trigger.procedure_id.as_str()) else {
+                diagnostics.push(RpgDiagnostic::error(
+                    RpgDiagnosticStage::References,
+                    "SPATIAL_SOURCE_TRIGGER_PROCEDURE_MISSING",
+                    format!("{trigger_path}.procedureId"),
+                    format!("procedure {} is absent", trigger.procedure_id),
+                ));
+                continue;
+            };
+            if procedure_definition.kind != MaterializedContentDefinitionKind::ActionProcedure {
+                diagnostics.push(RpgDiagnostic::error(
+                    RpgDiagnosticStage::References,
+                    "SPATIAL_SOURCE_TRIGGER_PROCEDURE_INVALID",
+                    format!("{trigger_path}.procedureId"),
+                    "the trigger reference must resolve to an action procedure",
+                ));
+                continue;
+            }
+            let procedure = match serde_json::from_value::<MaterializedActionProcedureSemantic>(
+                procedure_definition.semantic.clone(),
+            ) {
+                Ok(procedure) => procedure,
+                Err(error) => {
+                    diagnostics.push(RpgDiagnostic::error(
+                        RpgDiagnosticStage::Semantics,
+                        "SPATIAL_SOURCE_TRIGGER_PROCEDURE_DECODE_FAILED",
+                        format!("{trigger_path}.procedureId"),
+                        error.to_string(),
+                    ));
+                    continue;
+                }
+            };
+            if procedure.owner_package_id != trigger.procedure_owner_package_id
+                || !procedure.parameters.is_empty()
+            {
+                diagnostics.push(RpgDiagnostic::error(
+                    RpgDiagnosticStage::References,
+                    "SPATIAL_SOURCE_TRIGGER_PROCEDURE_INVALID",
+                    format!("{trigger_path}.procedureId"),
+                    "trigger procedures require the exact owner package and no parameters",
+                ));
+                continue;
+            }
+            let mut effective_references = definition
+                .references
+                .iter()
+                .cloned()
+                .collect::<BTreeSet<_>>();
+            let mut visiting = Vec::new();
+            let Some(body) = expand_action_procedure(
+                &trigger.procedure_id,
+                &trigger.procedure_owner_package_id,
+                &BTreeMap::new(),
+                &definitions,
+                &prepared.ruleset,
+                &mut effective_references,
+                &mut visiting,
+                false,
+                &format!("{trigger_path}.procedure"),
+                &mut diagnostics,
+            ) else {
+                continue;
+            };
+            let mut action = RpgIrAction {
+                id: trigger.procedure_id.clone(),
+                name: trigger.procedure_id.clone(),
+                source_path: procedure_definition.provenance.source.module.clone(),
+                tags: Vec::new(),
+                targets: body.targets,
+                check: body.check,
+                roll_scope: body.roll_scope,
+                costs: body.costs,
+                activation: body.activation,
+                program: body.program,
+            };
+            let mut effective_definition = definition.clone();
+            effective_definition.references = effective_references.into_iter().collect();
+            resolve_action_catalogs(
+                &mut action,
+                &effective_definition,
+                &definitions,
+                &ruleset_catalogs,
+                &trigger_path,
+                &mut diagnostics,
+            );
+            let body = RpgIrActionBody {
+                targets: action.targets,
+                check: action.check,
+                roll_scope: action.roll_scope,
+                costs: action.costs,
+                activation: action.activation,
+                program: action.program,
+            };
+            validate_spatial_source_trigger_body(&body, &trigger_path, &mut diagnostics);
+            triggers.push(CompiledSpatialSourceTrigger {
+                boundary: trigger.boundary,
+                procedure_id: trigger.procedure_id.clone(),
+                operation_path: format!(
+                    "$.spatialSources.{}.{}",
+                    definition.id,
+                    spatial_boundary_name(trigger.boundary)
+                ),
+                body,
+            });
+        }
+        let label = required_definition_label(
+            definition,
+            definition_index,
+            "SPATIAL_SOURCE_LABEL_REQUIRED",
+            "spatial-source definitions require a presentation label",
+            &mut diagnostics,
+        );
+        compiled.push(CompiledSpatialSourceDefinition {
+            definition_id: definition.id.clone(),
+            definition_version: source.schema.version,
+            label: label.unwrap_or_else(|| definition.id.clone()),
+            description: definition
+                .presentation
+                .get("description")
+                .and_then(Value::as_str)
+                .map(str::to_owned),
+            radius,
+            target_filter: source.target_filter,
+            stacking_id: source.stacking_id,
+            stacking: source.stacking,
+            tenure: source.tenure,
+            duration_anchor,
+            duration_count,
+            triggers,
+        });
+    }
+    for (package_id, count) in package_counts {
+        if count > 128 {
+            diagnostics.push(RpgDiagnostic::error(
+                RpgDiagnosticStage::Semantics,
+                "SPATIAL_SOURCE_DEFINITION_LIMIT_EXCEEDED",
+                "$.materializedDefinitions",
+                format!("package {package_id} has {count} spatial sources; maximum is 128"),
+            ));
+        }
+    }
+    if diagnostics.is_empty() {
+        compiled.sort_by(|left, right| left.definition_id.cmp(&right.definition_id));
+        Ok(compiled)
+    } else {
+        Err(RpgCompileFailure { diagnostics })
+    }
+}
+
+fn validate_spatial_source_trigger_body(
+    body: &RpgIrActionBody,
+    path: &str,
+    diagnostics: &mut Vec<RpgDiagnostic>,
+) {
+    if body.targets.kind != RpgIrTargetKind::Participant
+        || body.targets.maximum_targets != 1
+        || body.targets.area.is_some()
+        || !matches!(body.check, RpgIrCheck::NoRoll)
+        || !matches!(body.roll_scope, rpg_ir::RpgIrRollScope::None)
+        || !body.costs.is_empty()
+        || body.activation.is_some()
+    {
+        diagnostics.push(RpgDiagnostic::error(
+            RpgDiagnosticStage::Compatibility,
+            "SPATIAL_SOURCE_TRIGGER_SIGNATURE_INVALID",
+            path,
+            "trigger procedures require one participant target, no roll, no root costs, and no activation",
+        ));
+    }
+    let value = serde_json::to_value(&body.program).expect("spatial trigger program serializes");
+    if value_contains_spatial_trigger_forbidden_semantics(&value) {
+        diagnostics.push(RpgDiagnostic::error(
+            RpgDiagnosticStage::Compatibility,
+            "SPATIAL_SOURCE_TRIGGER_SEMANTICS_UNSUPPORTED",
+            format!("{path}.procedure"),
+            "trigger procedures must be deterministic and may not move, open reactions, or create spatial sources recursively",
+        ));
+    }
+}
+
+fn value_contains_spatial_trigger_forbidden_semantics(value: &Value) -> bool {
+    match value {
+        Value::Array(values) => values
+            .iter()
+            .any(value_contains_spatial_trigger_forbidden_semantics),
+        Value::Object(object) => {
+            let forbidden = object
+                .get("kind")
+                .and_then(Value::as_str)
+                .is_some_and(|kind| {
+                    matches!(
+                        kind,
+                        "dice"
+                            | "move"
+                            | "moveToCell"
+                            | "push"
+                            | "slide"
+                            | "openReaction"
+                            | "createSpatialSource"
+                    )
+                });
+            forbidden
+                || object
+                    .values()
+                    .any(value_contains_spatial_trigger_forbidden_semantics)
+        }
+        _ => false,
+    }
+}
+
+fn spatial_boundary_name(boundary: RpgSpatialSourceBoundary) -> &'static str {
+    match boundary {
+        RpgSpatialSourceBoundary::Enter => "enter",
+        RpgSpatialSourceBoundary::StartTurn => "startTurn",
+        RpgSpatialSourceBoundary::EndTurn => "endTurn",
+        RpgSpatialSourceBoundary::Exit => "exit",
     }
 }
 
@@ -5545,6 +5920,7 @@ impl CatalogReferenceKind {
 fn normalized_ir_from_materialized(
     prepared: &PreparedPlayBundle,
     items: &[CompiledItemDefinition],
+    spatial_sources: &[CompiledSpatialSourceDefinition],
 ) -> Result<(NormalizedRpgIr, Vec<BoundActionRegistration>), RpgCompileFailure> {
     let definitions = prepared
         .materialized_definitions
@@ -5572,11 +5948,18 @@ fn normalized_ir_from_materialized(
             continue;
         }
         let path = format!("$.materializedDefinitions[{index}].semantic");
+        let authority_trigger = spatial_sources.iter().any(|spatial_source| {
+            spatial_source
+                .triggers
+                .iter()
+                .any(|trigger| trigger.procedure_id == definition.id)
+        });
         validate_action_procedure_definition(
             definition,
             &definitions,
             &prepared.ruleset,
             &path,
+            authority_trigger,
             &mut diagnostics,
         );
     }
@@ -6135,6 +6518,7 @@ fn validate_action_procedure_definition(
     definitions: &BTreeMap<&str, &MaterializedContentDefinition>,
     ruleset: &Ruleset,
     path: &str,
+    authority_trigger: bool,
     diagnostics: &mut Vec<RpgDiagnostic>,
 ) {
     let initial_diagnostic_count = diagnostics.len();
@@ -6258,6 +6642,7 @@ fn validate_action_procedure_definition(
         definitions,
         ruleset,
         path,
+        authority_trigger,
         diagnostics,
     );
 }
@@ -6505,6 +6890,7 @@ fn validate_action_procedure_callable(
     definitions: &BTreeMap<&str, &MaterializedContentDefinition>,
     ruleset: &Ruleset,
     path: &str,
+    authority_trigger: bool,
     diagnostics: &mut Vec<RpgDiagnostic>,
 ) {
     let mut base_references = definition
@@ -6555,7 +6941,14 @@ fn validate_action_procedure_callable(
             diagnostics,
         );
         if let Some(body) = expanded {
-            validate_expanded_action_procedure_body(definition, body, ruleset, path, diagnostics);
+            validate_expanded_action_procedure_body(
+                definition,
+                body,
+                ruleset,
+                path,
+                authority_trigger,
+                diagnostics,
+            );
         }
     }
 }
@@ -6565,6 +6958,7 @@ fn validate_expanded_action_procedure_body(
     body: RpgIrActionBody,
     ruleset: &Ruleset,
     path: &str,
+    authority_trigger: bool,
     diagnostics: &mut Vec<RpgDiagnostic>,
 ) {
     let action = RpgIrAction {
@@ -6612,15 +7006,17 @@ fn validate_expanded_action_procedure_body(
         .map_or(rpg_ir::RpgIrActivationTiming::Action, |activation| {
             activation.timing
         });
-    validate_activation_contract(
-        action.activation.as_ref(),
-        callable_timing,
-        variable_activation_model,
-        ruleset,
-        &activation_budgets,
-        &format!("{path}.callable.activation"),
-        diagnostics,
-    );
+    if action.activation.is_some() || !variable_activation_model || !authority_trigger {
+        validate_activation_contract(
+            action.activation.as_ref(),
+            callable_timing,
+            variable_activation_model,
+            ruleset,
+            &activation_budgets,
+            &format!("{path}.callable.activation"),
+            diagnostics,
+        );
+    }
     validate_program_activation_contracts(
         &action.program,
         variable_activation_model,
@@ -6909,7 +7305,14 @@ fn expand_action_procedure(
                 &format!("{path}.template"),
                 diagnostics,
             )?;
-            match serde_json::from_value::<RpgIrActionBody>(substituted) {
+            let materialized = materialize_inline_catalog_references(
+                &substituted,
+                definitions,
+                effective_references,
+                &format!("{path}.template"),
+                diagnostics,
+            )?;
+            match serde_json::from_value::<RpgIrActionBody>(materialized) {
                 Ok(body) => Some(body),
                 Err(error) => {
                     diagnostics.push(RpgDiagnostic::error(
@@ -6959,6 +7362,117 @@ fn expand_action_procedure(
     };
     visiting.pop();
     expanded
+}
+
+fn materialize_inline_catalog_references(
+    value: &Value,
+    definitions: &BTreeMap<&str, &MaterializedContentDefinition>,
+    effective_references: &BTreeSet<String>,
+    path: &str,
+    diagnostics: &mut Vec<RpgDiagnostic>,
+) -> Option<Value> {
+    match value {
+        Value::Object(object)
+            if object.len() == 3
+                && object.contains_key("definitionId")
+                && object.contains_key("category")
+                && object.contains_key("packageId") =>
+        {
+            let reference = match serde_json::from_value::<ProcedureCatalogReference>(value.clone())
+            {
+                Ok(reference) => reference,
+                Err(error) => {
+                    diagnostics.push(RpgDiagnostic::error(
+                        RpgDiagnosticStage::Semantics,
+                        "ACTION_PROCEDURE_CATALOG_REFERENCE_INVALID",
+                        path,
+                        error.to_string(),
+                    ));
+                    return None;
+                }
+            };
+            if !effective_references.contains(&reference.definition_id) {
+                diagnostics.push(RpgDiagnostic::error(
+                    RpgDiagnosticStage::References,
+                    "ACTION_PROCEDURE_CATALOG_REFERENCE_UNDECLARED",
+                    path,
+                    format!(
+                        "catalog definition {} must be in the closed procedure graph",
+                        reference.definition_id
+                    ),
+                ));
+                return None;
+            }
+            let Some(definition) = definitions.get(reference.definition_id.as_str()) else {
+                diagnostics.push(RpgDiagnostic::error(
+                    RpgDiagnosticStage::References,
+                    "ACTION_PROCEDURE_CATALOG_REFERENCE_MISSING",
+                    path,
+                    format!("catalog definition {} is absent", reference.definition_id),
+                ));
+                return None;
+            };
+            if definition.provenance.package_id != reference.package_id {
+                diagnostics.push(RpgDiagnostic::error(
+                    RpgDiagnosticStage::References,
+                    "ACTION_PROCEDURE_CATALOG_REFERENCE_OWNER_MISMATCH",
+                    path,
+                    format!(
+                        "catalog definition {} belongs to {}, not {}",
+                        reference.definition_id,
+                        definition.provenance.package_id,
+                        reference.package_id
+                    ),
+                ));
+                return None;
+            }
+            if definition.kind != MaterializedContentDefinitionKind::Support
+                || definition.semantic.get("catalog").and_then(Value::as_str)
+                    != Some(reference.category.as_str())
+            {
+                diagnostics.push(RpgDiagnostic::error(
+                    RpgDiagnosticStage::References,
+                    "ACTION_PROCEDURE_CATALOG_REFERENCE_CATEGORY_MISMATCH",
+                    path,
+                    format!(
+                        "catalog definition {} is not {} support data",
+                        reference.definition_id, reference.category
+                    ),
+                ));
+                return None;
+            }
+            Some(Value::String(reference.definition_id))
+        }
+        Value::Array(values) => values
+            .iter()
+            .enumerate()
+            .map(|(index, value)| {
+                materialize_inline_catalog_references(
+                    value,
+                    definitions,
+                    effective_references,
+                    &format!("{path}[{index}]"),
+                    diagnostics,
+                )
+            })
+            .collect::<Option<Vec<_>>>()
+            .map(Value::Array),
+        Value::Object(object) => object
+            .iter()
+            .map(|(field, value)| {
+                materialize_inline_catalog_references(
+                    value,
+                    definitions,
+                    effective_references,
+                    &format!("{path}.{field}"),
+                    diagnostics,
+                )
+                .map(|value| (field.clone(), value))
+            })
+            .collect::<Option<serde_json::Map<_, _>>>()
+            .map(Value::Object),
+        _ => Some(value.clone()),
+    }
 }
 
 #[allow(clippy::too_many_arguments)]
@@ -7470,6 +7984,16 @@ fn resolve_operation_catalogs(
             &format!("{path}.effectDefinitionId"),
             diagnostics,
         ),
+        RpgIrOperation::CreateSpatialSource {
+            spatial_source_definition_id,
+            ..
+        } => validate_spatial_source_operation_reference(
+            spatial_source_definition_id,
+            action_definition,
+            definitions,
+            &format!("{path}.spatialSourceDefinitionId"),
+            diagnostics,
+        ),
         RpgIrOperation::Move {
             delta_x, delta_y, ..
         } => {
@@ -7494,6 +8018,33 @@ fn resolve_operation_catalogs(
         | RpgIrOperation::Push { .. }
         | RpgIrOperation::Slide { .. } => {}
         RpgIrOperation::OpenReaction { .. } => {}
+    }
+}
+
+fn validate_spatial_source_operation_reference(
+    definition_id: &str,
+    action_definition: &MaterializedContentDefinition,
+    definitions: &BTreeMap<&str, &MaterializedContentDefinition>,
+    path: &str,
+    diagnostics: &mut Vec<RpgDiagnostic>,
+) {
+    let valid = definitions.get(definition_id).is_some_and(|definition| {
+        definition.kind == MaterializedContentDefinitionKind::SpatialSource
+            && (definition_id == action_definition.id
+                || action_definition
+                    .references
+                    .binary_search(&definition_id.to_owned())
+                    .is_ok())
+    });
+    if !valid {
+        diagnostics.push(RpgDiagnostic::error(
+            RpgDiagnosticStage::References,
+            "SPATIAL_SOURCE_OPERATION_REFERENCE_INVALID",
+            path,
+            format!(
+                "spatial-source definition {definition_id} must resolve through the action graph"
+            ),
+        ));
     }
 }
 
@@ -7842,6 +8393,7 @@ fn collect_operation_catalogs(operation: &RpgIrOperation, catalogs: &mut Derived
             collect_formula_catalogs(rank, catalogs);
         }
         RpgIrOperation::RemoveEffect { .. } => {}
+        RpgIrOperation::CreateSpatialSource { .. } => {}
         RpgIrOperation::Move {
             delta_x, delta_y, ..
         } => {

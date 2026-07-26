@@ -12,7 +12,8 @@ use rpg_compiler::{CompiledPlayBundle, CompiledRpgRules};
 use rpg_core::{
     DeterministicRandomStream, RpgCapabilityState, RpgIntent, RpgIntentCellTarget,
     RpgModifierTurnChange, RpgRandomEvidence, RpgReactionDecision, RpgReactionRequest,
-    RpgResolutionContext, RpgResolutionReceipt, RpgResolutionRejection, RpgTraceStep,
+    RpgResolutionContext, RpgResolutionReceipt, RpgResolutionRejection, RpgSpatialSourceBoundary,
+    RpgSpatialSourceTargetFilter, RpgSpatialSourceTriggerDisposition, RpgTraceStep,
 };
 use rpg_ir::{
     CompiledPlayBundleArtifact, RpgIrLineOfEffectRequirement, RpgIrTargetKind,
@@ -29,8 +30,9 @@ use crate::encounter::{
     RpgEncounterOutcomeView, RpgEncounterView, RpgFilteredCellOptionView,
     RpgFilteredParticipantOptionView, RpgParticipantProjectionCatalogs, RpgRandomSource,
     RpgRandomSourceFailure, RpgReactionProposal, RpgScenario, RpgScenarioFailure,
-    RpgSchemaIdentity, RpgTurnControl, RpgTurnControlProposal, RpgTurnControlView,
-    RPG_ENCOUNTER_VIEW_SCHEMA_ID, RPG_ENCOUNTER_VIEW_SCHEMA_VERSION,
+    RpgSchemaIdentity, RpgSpatialSourceTriggerEvidenceView, RpgSpatialSourceView, RpgTurnControl,
+    RpgTurnControlProposal, RpgTurnControlView, RPG_ENCOUNTER_VIEW_SCHEMA_ID,
+    RPG_ENCOUNTER_VIEW_SCHEMA_VERSION,
 };
 use crate::{RpgReplayEntry, RpgReplayFailure};
 
@@ -837,6 +839,7 @@ impl RpgAuthoritySession {
         } else {
             None
         };
+        let spatial_sources = spatial_source_views(&self.state, &self.rules, &self.encounter.log);
         RpgEncounterView {
             schema: RpgSchemaIdentity {
                 id: RPG_ENCOUNTER_VIEW_SCHEMA_ID.to_owned(),
@@ -854,6 +857,7 @@ impl RpgAuthoritySession {
             random_source: self.encounter.scenario.random_source.clone(),
             board: self.encounter.scenario.board.clone(),
             participants,
+            spatial_sources,
             turn: self.encounter.turn.clone(),
             accepted_activations_this_turn: self.state.accepted_activations_this_turn(),
             accepted_activation_ceiling: self.rules.accepted_activation_ceiling(),
@@ -1060,6 +1064,15 @@ impl RpgAuthoritySession {
         if let Some(area_event) = area_event {
             prepend_area_evidence(&mut receipt, area_event);
         }
+        if let Err(rejection) = append_spatial_movement_triggers(
+            &self.rules,
+            &self.encounter.scenario,
+            &mut staged_state,
+            &mut random,
+            &mut receipt,
+        ) {
+            return RpgCommandOutcome::Rejected(rejection);
+        }
         if let Some(rejection) =
             runtime_board_rejection(&self.encounter.scenario.board, &staged_state)
         {
@@ -1081,20 +1094,28 @@ impl RpgAuthoritySession {
                 return RpgCommandOutcome::Rejected(rejection);
             }
         }
-        if random.remaining() != 0 {
-            return RpgCommandOutcome::Rejected(unused_random_rejection(random.remaining()));
-        }
-        let next_turn = advances_turn.then(|| {
-            append_turn_events(
+        let next_turn = if advances_turn {
+            match append_turn_events(
                 &self.rules,
                 &self.encounter,
                 &self.state,
                 &mut staged_state,
+                &mut random,
                 &mut receipt.events,
+                &mut receipt.trace,
+                &mut receipt.random_evidence,
                 refreshed,
                 receipt.state_revision,
-            )
-        });
+            ) {
+                Ok(next_turn) => Some(next_turn),
+                Err(rejection) => return RpgCommandOutcome::Rejected(rejection),
+            }
+        } else {
+            None
+        };
+        if random.remaining() != 0 {
+            return RpgCommandOutcome::Rejected(unused_random_rejection(random.remaining()));
+        }
         self.state = staged_state;
         self.accepted_random_values = self
             .accepted_random_values
@@ -1559,57 +1580,13 @@ impl RpgAuthoritySession {
             &decision,
             &resolution_context,
         ) {
-            Ok(mut receipt) => {
-                if let Some(area_event) = transaction.area_event {
-                    prepend_area_evidence(&mut receipt, area_event);
+            Ok(receipt) => {
+                let outcome =
+                    self.commit_resolved(receipt, staged_state, random, transaction.area_event);
+                if matches!(outcome, RpgCommandOutcome::Accepted(_)) {
+                    self.pending = None;
                 }
-                if let Some(rejection) =
-                    runtime_board_rejection(&self.encounter.scenario.board, &staged_state)
-                {
-                    return RpgCommandOutcome::Rejected(rejection);
-                }
-                let advances_turn = !self.rules.uses_variable_activation_budgets()
-                    && matches!(
-                        encounter_outcome(&staged_state),
-                        RpgEncounterOutcomeView::InProgress
-                    );
-                let refreshed = refreshed_modifiers(&receipt.events);
-                if advances_turn {
-                    if let Err(rejection) = append_automatic_turn_saves(
-                        &self.encounter,
-                        &mut staged_state,
-                        &mut random,
-                        &mut receipt,
-                    ) {
-                        return RpgCommandOutcome::Rejected(rejection);
-                    }
-                }
-                if random.remaining() != 0 {
-                    return RpgCommandOutcome::Rejected(unused_random_rejection(
-                        random.remaining(),
-                    ));
-                }
-                let next_turn = advances_turn.then(|| {
-                    append_turn_events(
-                        &self.rules,
-                        &self.encounter,
-                        &self.state,
-                        &mut staged_state,
-                        &mut receipt.events,
-                        refreshed,
-                        receipt.state_revision,
-                    )
-                });
-                self.pending = None;
-                self.state = staged_state;
-                self.accepted_random_values = self
-                    .accepted_random_values
-                    .saturating_add(receipt.random_consumed);
-                self.encounter.record(&receipt);
-                if let Some(next_turn) = next_turn {
-                    self.encounter.set_turn(next_turn);
-                }
-                RpgCommandOutcome::Accepted(receipt)
+                outcome
             }
             Err(error) => RpgCommandOutcome::Rejected(error),
         }
@@ -1851,22 +1828,31 @@ impl RpgAuthoritySession {
         }
 
         let mut staged_state = self.state.clone();
+        let mut random = DeterministicRandomStream::new(Vec::new());
         let mut events = Vec::new();
-        let next_turn = append_turn_events(
+        let mut trace = Vec::new();
+        let mut random_evidence = Vec::new();
+        let next_turn = match append_turn_events(
             &self.rules,
             &self.encounter,
             &self.state,
             &mut staged_state,
+            &mut random,
             &mut events,
+            &mut trace,
+            &mut random_evidence,
             BTreeSet::new(),
             self.state.revision().saturating_add(1),
-        );
+        ) {
+            Ok(next_turn) => next_turn,
+            Err(rejection) => return RpgCommandOutcome::Rejected(rejection),
+        };
         let state_revision = staged_state.advance_revision();
         let receipt = RpgTurnControlReceipt {
             control: command.control,
             actor_id: command.actor_id,
             events,
-            random_evidence: Vec::new(),
+            random_evidence,
             random_consumed: 0,
             state_revision,
         };
@@ -1943,6 +1929,7 @@ impl RpgAuthoritySession {
         }
 
         let mut staged_state = self.state.clone();
+        let mut trigger_random = DeterministicRandomStream::new(Vec::new());
         let mut events = Vec::new();
         let mut random_evidence = Vec::with_capacity(pending.candidates.len());
         for (candidate, roll) in pending
@@ -1988,15 +1975,22 @@ impl RpgAuthoritySession {
                 });
             }
         }
-        let next_turn = append_turn_events(
+        let mut trace = Vec::new();
+        let next_turn = match append_turn_events(
             &self.rules,
             &self.encounter,
             &self.state,
             &mut staged_state,
+            &mut trigger_random,
             &mut events,
+            &mut trace,
+            &mut random_evidence,
             BTreeSet::new(),
             self.state.revision().saturating_add(1),
-        );
+        ) {
+            Ok(next_turn) => next_turn,
+            Err(rejection) => return RpgCommandOutcome::Rejected(rejection),
+        };
         let state_revision = staged_state.advance_revision();
         let random_consumed = u64::try_from(random_evidence.len()).unwrap_or(u64::MAX);
         let receipt = RpgTurnControlReceipt {
@@ -3109,16 +3103,400 @@ fn append_automatic_turn_saves(
     Ok(())
 }
 
+#[derive(Debug, Clone, PartialEq, Eq, PartialOrd, Ord)]
+struct SpatialTriggerCandidate {
+    boundary: RpgSpatialSourceBoundary,
+    definition_id: String,
+    definition_version: u32,
+    source_id: String,
+    instance_id: String,
+    cell_id: String,
+    participant_id: String,
+    operation_path: String,
+}
+
+fn spatial_source_views(
+    state: &RpgCapabilityState,
+    rules: &CompiledRpgRules,
+    log: &[crate::RpgEncounterLogEntry],
+) -> Vec<RpgSpatialSourceView> {
+    state
+        .spatial_sources()
+        .map(|source| {
+            let definition = rules
+                .spatial_source(source.definition_id())
+                .expect("active spatial-source definition remains compiled");
+            let mut trigger_evidence = log
+                .iter()
+                .rev()
+                .flat_map(|entry| {
+                    entry.events.iter().rev().filter_map(|event| match event {
+                        rpg_core::RpgDomainEvent::SpatialSourceTriggerEvaluated {
+                            boundary,
+                            instance_id,
+                            cell_id,
+                            participant_id,
+                            operation_path,
+                            disposition,
+                            ..
+                        } if instance_id == source.instance_id() => {
+                            Some(RpgSpatialSourceTriggerEvidenceView {
+                                sequence: entry.sequence,
+                                state_revision: entry.state_revision,
+                                boundary: *boundary,
+                                cell_id: cell_id.clone(),
+                                participant_id: participant_id.clone(),
+                                operation_path: operation_path.clone(),
+                                disposition: disposition.clone(),
+                            })
+                        }
+                        _ => None,
+                    })
+                })
+                .take(64)
+                .collect::<Vec<_>>();
+            trigger_evidence.reverse();
+            RpgSpatialSourceView {
+                instance_id: source.instance_id().to_owned(),
+                definition_id: source.definition_id().to_owned(),
+                definition_version: source.definition_version(),
+                label: definition.label.clone(),
+                description: definition.description.clone(),
+                owner_entity_id: source.owner_entity_id().to_owned(),
+                source_entity_id: source.source_entity_id().to_owned(),
+                origin: source.origin(),
+                included_cell_ids: source.included_cell_ids().to_vec(),
+                radius: definition.radius,
+                target_filter: definition.target_filter,
+                stacking_id: source.stacking_id().to_owned(),
+                stacking: source.stacking(),
+                tenure: definition.tenure,
+                duration_anchor: source.duration_anchor(),
+                remaining_count: source.remaining_count(),
+                application_revision: source.application_revision(),
+                trigger_boundaries: definition
+                    .triggers
+                    .iter()
+                    .map(|trigger| trigger.boundary)
+                    .collect(),
+                trigger_evidence,
+            }
+        })
+        .collect()
+}
+
+fn append_spatial_movement_triggers(
+    rules: &CompiledRpgRules,
+    scenario: &RpgScenario,
+    staged_state: &mut RpgCapabilityState,
+    random: &mut DeterministicRandomStream,
+    receipt: &mut RpgResolutionReceipt,
+) -> Result<(), RpgResolutionRejection> {
+    let context = encounter_resolution_context(scenario, staged_state);
+    let movements = receipt
+        .events
+        .iter()
+        .filter_map(|event| match event {
+            rpg_core::RpgDomainEvent::MovementTransition {
+                moved_participant_id,
+                start,
+                end,
+                route_cell_ids,
+                ..
+            } => Some((
+                moved_participant_id.clone(),
+                *start,
+                *end,
+                route_cell_ids.clone(),
+            )),
+            _ => None,
+        })
+        .collect::<Vec<_>>();
+    let sources = staged_state.spatial_sources().cloned().collect::<Vec<_>>();
+    let mut candidates = Vec::new();
+    for (participant_id, start, end, route_cell_ids) in movements {
+        let start_cell_id = context.cell_ids_by_position.get(&start).cloned();
+        let end_cell_id = context.cell_ids_by_position.get(&end).cloned();
+        let mut traversed_cell_ids = route_cell_ids;
+        if traversed_cell_ids.is_empty() {
+            if let Some(end_cell_id) = end_cell_id {
+                traversed_cell_ids.push(end_cell_id);
+            }
+        }
+        for source in &sources {
+            let definition = rules
+                .spatial_source(source.definition_id())
+                .ok_or_else(|| {
+                    rejection(
+                        "RPG_SPATIAL_SOURCE_DEFINITION_UNKNOWN",
+                        "$.spatialSources",
+                        format!(
+                            "active spatial source {} references unavailable definition {}",
+                            source.instance_id(),
+                            source.definition_id()
+                        ),
+                    )
+                })?;
+            if source.definition_version() != definition.definition_version {
+                return Err(rejection(
+                    "RPG_SPATIAL_SOURCE_DEFINITION_VERSION_MISMATCH",
+                    "$.spatialSources",
+                    format!(
+                        "active spatial source {} references {}@{}, but authority compiled {}@{}",
+                        source.instance_id(),
+                        source.definition_id(),
+                        source.definition_version(),
+                        definition.definition_id,
+                        definition.definition_version
+                    ),
+                ));
+            }
+            let mut previous_cell = start_cell_id.clone();
+            let mut previous_in_source = previous_cell
+                .as_ref()
+                .is_some_and(|cell_id| source.included_cell_ids().binary_search(cell_id).is_ok());
+            for cell_id in &traversed_cell_ids {
+                let current_in_source = source.included_cell_ids().binary_search(cell_id).is_ok();
+                let boundary = match (previous_in_source, current_in_source) {
+                    (false, true) => Some(RpgSpatialSourceBoundary::Enter),
+                    (true, false) => Some(RpgSpatialSourceBoundary::Exit),
+                    _ => None,
+                };
+                if let Some(boundary) = boundary {
+                    if let Some(trigger) = definition
+                        .triggers
+                        .iter()
+                        .find(|trigger| trigger.boundary == boundary)
+                    {
+                        let boundary_cell_id = if boundary == RpgSpatialSourceBoundary::Exit {
+                            previous_cell.clone().unwrap_or_else(|| cell_id.clone())
+                        } else {
+                            cell_id.clone()
+                        };
+                        candidates.push(SpatialTriggerCandidate {
+                            boundary,
+                            definition_id: source.definition_id().to_owned(),
+                            definition_version: source.definition_version(),
+                            source_id: source.source_entity_id().to_owned(),
+                            instance_id: source.instance_id().to_owned(),
+                            cell_id: boundary_cell_id,
+                            participant_id: participant_id.clone(),
+                            operation_path: trigger.operation_path.clone(),
+                        });
+                    }
+                }
+                previous_in_source = current_in_source;
+                previous_cell = Some(cell_id.clone());
+            }
+        }
+    }
+    candidates.sort();
+    candidates.dedup();
+    append_spatial_trigger_candidates(
+        rules,
+        staged_state,
+        random,
+        receipt.state_revision,
+        &context,
+        candidates,
+        &mut receipt.events,
+        &mut receipt.trace,
+        &mut receipt.random_evidence,
+    )
+}
+
+#[allow(clippy::too_many_arguments)]
+fn append_spatial_trigger_candidates(
+    rules: &CompiledRpgRules,
+    staged_state: &mut RpgCapabilityState,
+    random: &mut DeterministicRandomStream,
+    transition_revision: u64,
+    context: &RpgResolutionContext,
+    candidates: Vec<SpatialTriggerCandidate>,
+    events: &mut Vec<rpg_core::RpgDomainEvent>,
+    trace: &mut Vec<RpgTraceStep>,
+    random_evidence: &mut Vec<RpgRandomEvidence>,
+) -> Result<(), RpgResolutionRejection> {
+    for candidate in candidates {
+        let source = staged_state
+            .spatial_source_exact(
+                &candidate.definition_id,
+                candidate.definition_version,
+                &candidate.source_id,
+                &candidate.instance_id,
+            )
+            .cloned()
+            .ok_or_else(|| {
+                rejection(
+                    "RPG_SPATIAL_SOURCE_INSTANCE_UNKNOWN",
+                    "$.spatialSources",
+                    format!(
+                        "trigger candidate references missing spatial source {}",
+                        candidate.instance_id
+                    ),
+                )
+            })?;
+        let definition = rules
+            .spatial_source(&candidate.definition_id)
+            .ok_or_else(|| {
+                rejection(
+                    "RPG_SPATIAL_SOURCE_DEFINITION_UNKNOWN",
+                    "$.spatialSources",
+                    format!(
+                        "trigger candidate references missing definition {}",
+                        candidate.definition_id
+                    ),
+                )
+            })?;
+        let trigger_key = format!(
+            "{:?}:{}:{}:{}:{}",
+            candidate.boundary,
+            candidate.definition_id,
+            candidate.source_id,
+            candidate.cell_id,
+            candidate.participant_id
+        );
+        let recorded = staged_state
+            .spatial_sources_owner()
+            .record_trigger(
+                &candidate.definition_id,
+                candidate.definition_version,
+                &candidate.source_id,
+                &candidate.instance_id,
+                transition_revision,
+                trigger_key,
+            )
+            .map_err(|error| {
+                rejection(
+                    "RPG_SPATIAL_SOURCE_TRIGGER_BOOKKEEPING_INVALID",
+                    "$.spatialSources",
+                    format!("spatial-source trigger bookkeeping failed: {error:?}"),
+                )
+            })?;
+        let disposition = if !recorded {
+            RpgSpatialSourceTriggerDisposition::Suppressed {
+                reason: if source.application_revision() == transition_revision {
+                    "applicationRevision".to_owned()
+                } else {
+                    "duplicateTransition".to_owned()
+                },
+            }
+        } else if !spatial_source_target_matches(
+            staged_state,
+            source.owner_entity_id(),
+            &candidate.participant_id,
+            definition.target_filter,
+        )? {
+            RpgSpatialSourceTriggerDisposition::Inapplicable {
+                reason: "targetFilter".to_owned(),
+            }
+        } else {
+            match rules.resolve_spatial_source_trigger_with_context(
+                staged_state,
+                random,
+                &candidate.definition_id,
+                candidate.boundary,
+                source.owner_entity_id(),
+                &candidate.participant_id,
+                context,
+            ) {
+                Ok(trigger_receipt) => {
+                    if trigger_receipt.random_consumed != 0
+                        || !trigger_receipt.random_evidence.is_empty()
+                    {
+                        return Err(rejection(
+                            "RPG_SPATIAL_SOURCE_TRIGGER_RANDOMNESS_UNSUPPORTED",
+                            &candidate.operation_path,
+                            "spatial-source trigger attempted to consume randomness",
+                        ));
+                    }
+                    events.extend(trigger_receipt.events);
+                    trace.extend(trigger_receipt.trace);
+                    random_evidence.extend(trigger_receipt.random_evidence);
+                    RpgSpatialSourceTriggerDisposition::Applied
+                }
+                Err(error) if error.code.starts_with("RPG_INTENT_") => {
+                    RpgSpatialSourceTriggerDisposition::Inapplicable { reason: error.code }
+                }
+                Err(error) => return Err(error),
+            }
+        };
+        events.push(rpg_core::RpgDomainEvent::SpatialSourceTriggerEvaluated {
+            boundary: candidate.boundary,
+            instance_id: candidate.instance_id,
+            definition_id: candidate.definition_id,
+            definition_version: source.definition_version(),
+            owner_id: source.owner_entity_id().to_owned(),
+            source_id: candidate.source_id,
+            cell_id: candidate.cell_id,
+            participant_id: candidate.participant_id,
+            operation_path: candidate.operation_path,
+            disposition,
+        });
+    }
+    Ok(())
+}
+
+fn spatial_source_target_matches(
+    state: &RpgCapabilityState,
+    owner_id: &str,
+    participant_id: &str,
+    filter: RpgSpatialSourceTargetFilter,
+) -> Result<bool, RpgResolutionRejection> {
+    let owner = state.entity(owner_id).ok_or_else(|| {
+        rejection(
+            "RPG_SPATIAL_SOURCE_OWNER_UNKNOWN",
+            "$.spatialSources",
+            format!("spatial-source owner {owner_id} is unavailable"),
+        )
+    })?;
+    let participant = state.entity(participant_id).ok_or_else(|| {
+        rejection(
+            "RPG_SPATIAL_SOURCE_PARTICIPANT_UNKNOWN",
+            "$.spatialSources",
+            format!("spatial-source participant {participant_id} is unavailable"),
+        )
+    })?;
+    Ok(match filter {
+        RpgSpatialSourceTargetFilter::All => true,
+        RpgSpatialSourceTargetFilter::Allies => owner.team() == participant.team(),
+        RpgSpatialSourceTargetFilter::Hostiles => owner.team() != participant.team(),
+    })
+}
+
+#[allow(clippy::too_many_arguments)]
 fn append_turn_events(
     rules: &CompiledRpgRules,
     encounter: &RpgEncounterAuthority,
     previous_state: &RpgCapabilityState,
     staged_state: &mut RpgCapabilityState,
+    random: &mut DeterministicRandomStream,
     events: &mut Vec<rpg_core::RpgDomainEvent>,
+    trace: &mut Vec<RpgTraceStep>,
+    random_evidence: &mut Vec<RpgRandomEvidence>,
     refreshed_modifiers: BTreeSet<(String, String)>,
     transition_revision: u64,
-) -> crate::RpgTurnState {
+) -> Result<crate::RpgTurnState, RpgResolutionRejection> {
     let next_turn = encounter.next_turn(staged_state);
+    let context = encounter_resolution_context(&encounter.scenario, staged_state);
+    let end_turn_candidates = spatial_turn_trigger_candidates(
+        rules,
+        staged_state,
+        &context,
+        &encounter.turn.current_actor_id,
+        RpgSpatialSourceBoundary::EndTurn,
+    )?;
+    append_spatial_trigger_candidates(
+        rules,
+        staged_state,
+        random,
+        transition_revision,
+        &context,
+        end_turn_candidates,
+        events,
+        trace,
+        random_evidence,
+    )?;
     if next_turn.round != encounter.turn.round {
         events.push(rpg_core::RpgDomainEvent::RoundTransitioned {
             previous_round: encounter.turn.round,
@@ -3133,6 +3511,13 @@ fn append_turn_events(
     });
     events.extend(effect_boundary_events(
         &encounter.effect_definitions,
+        staged_state,
+        transition_revision,
+        &encounter.turn.current_actor_id,
+        &next_turn.current_actor_id,
+        next_turn.round != encounter.turn.round,
+    ));
+    events.extend(spatial_source_boundary_events(
         staged_state,
         transition_revision,
         &encounter.turn.current_actor_id,
@@ -3182,7 +3567,145 @@ fn append_turn_events(
             current,
         });
     }
-    next_turn
+    let start_context = encounter_resolution_context(&encounter.scenario, staged_state);
+    let start_turn_candidates = spatial_turn_trigger_candidates(
+        rules,
+        staged_state,
+        &start_context,
+        &next_turn.current_actor_id,
+        RpgSpatialSourceBoundary::StartTurn,
+    )?;
+    append_spatial_trigger_candidates(
+        rules,
+        staged_state,
+        random,
+        transition_revision,
+        &start_context,
+        start_turn_candidates,
+        events,
+        trace,
+        random_evidence,
+    )?;
+    Ok(next_turn)
+}
+
+fn spatial_turn_trigger_candidates(
+    rules: &CompiledRpgRules,
+    state: &RpgCapabilityState,
+    context: &RpgResolutionContext,
+    participant_id: &str,
+    boundary: RpgSpatialSourceBoundary,
+) -> Result<Vec<SpatialTriggerCandidate>, RpgResolutionRejection> {
+    let participant = state.entity(participant_id).ok_or_else(|| {
+        rejection(
+            "RPG_SPATIAL_SOURCE_PARTICIPANT_UNKNOWN",
+            "$.turn.currentActorId",
+            format!("turn participant {participant_id} is unavailable"),
+        )
+    })?;
+    let Some(cell_id) = context
+        .cell_ids_by_position
+        .get(&participant.position())
+        .cloned()
+    else {
+        return Ok(Vec::new());
+    };
+    let mut candidates = Vec::new();
+    for source in state.spatial_sources() {
+        if source.included_cell_ids().binary_search(&cell_id).is_err() {
+            continue;
+        }
+        let definition = rules
+            .spatial_source(source.definition_id())
+            .ok_or_else(|| {
+                rejection(
+                    "RPG_SPATIAL_SOURCE_DEFINITION_UNKNOWN",
+                    "$.spatialSources",
+                    format!(
+                        "active spatial source {} references unavailable definition {}",
+                        source.instance_id(),
+                        source.definition_id()
+                    ),
+                )
+            })?;
+        if source.definition_version() != definition.definition_version {
+            return Err(rejection(
+                "RPG_SPATIAL_SOURCE_DEFINITION_VERSION_MISMATCH",
+                "$.spatialSources",
+                format!(
+                    "active spatial source {} references {}@{}, but authority compiled {}@{}",
+                    source.instance_id(),
+                    source.definition_id(),
+                    source.definition_version(),
+                    definition.definition_id,
+                    definition.definition_version
+                ),
+            ));
+        }
+        if let Some(trigger) = definition
+            .triggers
+            .iter()
+            .find(|trigger| trigger.boundary == boundary)
+        {
+            candidates.push(SpatialTriggerCandidate {
+                boundary,
+                definition_id: source.definition_id().to_owned(),
+                definition_version: source.definition_version(),
+                source_id: source.source_entity_id().to_owned(),
+                instance_id: source.instance_id().to_owned(),
+                cell_id: cell_id.clone(),
+                participant_id: participant_id.to_owned(),
+                operation_path: trigger.operation_path.clone(),
+            });
+        }
+    }
+    candidates.sort();
+    Ok(candidates)
+}
+
+fn spatial_source_boundary_events(
+    staged_state: &mut RpgCapabilityState,
+    transition_revision: u64,
+    previous_actor_id: &str,
+    current_actor_id: &str,
+    round_transitioned: bool,
+) -> Vec<rpg_core::RpgDomainEvent> {
+    staged_state
+        .spatial_sources_owner()
+        .advance_boundaries(
+            transition_revision,
+            previous_actor_id,
+            current_actor_id,
+            round_transitioned,
+        )
+        .into_iter()
+        .map(|change| match change {
+            rpg_core::RpgSpatialSourceBoundaryChange::Aged {
+                source,
+                previous_count,
+            } => rpg_core::RpgDomainEvent::SpatialSourceDurationChanged {
+                instance_id: source.instance_id().to_owned(),
+                definition_id: source.definition_id().to_owned(),
+                definition_version: source.definition_version(),
+                source_id: source.source_entity_id().to_owned(),
+                duration_anchor: source.duration_anchor(),
+                previous_count,
+                remaining_count: source.remaining_count(),
+            },
+            rpg_core::RpgSpatialSourceBoundaryChange::Expired { source } => {
+                rpg_core::RpgDomainEvent::SpatialSourceExpired {
+                    instance_id: source.instance_id().to_owned(),
+                    definition_id: source.definition_id().to_owned(),
+                    definition_version: source.definition_version(),
+                    owner_id: source.owner_entity_id().to_owned(),
+                    source_id: source.source_entity_id().to_owned(),
+                    origin: source.origin(),
+                    included_cell_ids: source.included_cell_ids().to_vec(),
+                    duration_anchor: source.duration_anchor(),
+                }
+            }
+        })
+        .collect()
 }
 
 fn effect_boundary_events(
@@ -3413,8 +3936,15 @@ fn encounter_resolution_context(
             )
         })
         .collect();
+    let cell_ids_by_position = scenario
+        .board
+        .cells
+        .iter()
+        .map(|cell| (cell.position, cell.id.clone()))
+        .collect();
     RpgResolutionContext {
         entity_cell_capability_ids,
+        cell_ids_by_position,
     }
 }
 

@@ -7,6 +7,9 @@ use crate::{BoundedValue, GridPosition, StateFingerprint, Team};
 pub const MAXIMUM_RPG_MODIFIER_TURNS: u32 = 1_000;
 pub const MAXIMUM_RPG_EFFECT_DURATION: u32 = 1_000;
 pub const MAXIMUM_ACTIVE_RPG_EFFECTS: usize = 64;
+pub const MAXIMUM_ACTIVE_RPG_SPATIAL_SOURCES: usize = 64;
+pub const MAXIMUM_RPG_SPATIAL_SOURCE_CELLS: usize = 512;
+pub const MAXIMUM_RPG_SPATIAL_TRIGGER_KEYS: usize = 256;
 pub const MAXIMUM_RPG_DAMAGE_PARTS: usize = 16;
 pub const MAXIMUM_RPG_DAMAGE_RESPONSES: usize = 64;
 pub const MAXIMUM_RPG_DAMAGE_TAGS: usize = 16;
@@ -29,6 +32,7 @@ pub enum RpgCapabilityId {
     Reactions,
     ActivationBudgets,
     Effects,
+    SpatialSources,
 }
 
 impl RpgCapabilityId {
@@ -44,6 +48,7 @@ impl RpgCapabilityId {
             Self::Reactions => "capability.reactions",
             Self::ActivationBudgets => "capability.activation-budgets",
             Self::Effects => "capability.effects",
+            Self::SpatialSources => "capability.spatial-sources",
         }
     }
 }
@@ -404,6 +409,23 @@ pub enum RpgEffectStackingPolicy {
     Refresh,
 }
 
+#[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub enum RpgSpatialSourceBoundary {
+    Enter,
+    StartTurn,
+    EndTurn,
+    Exit,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub enum RpgSpatialSourceTargetFilter {
+    All,
+    Allies,
+    Hostiles,
+}
+
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct ActiveRpgEffect {
     instance_id: String,
@@ -516,6 +538,161 @@ impl ActiveRpgEffect {
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
+pub struct ActiveRpgSpatialSource {
+    instance_id: String,
+    definition_id: String,
+    definition_version: u32,
+    owner_entity_id: String,
+    source_entity_id: String,
+    origin: GridPosition,
+    included_cell_ids: Vec<String>,
+    stacking_id: String,
+    stacking: RpgEffectStackingPolicy,
+    remaining_count: u32,
+    application_revision: u64,
+    duration_anchor: RpgEffectDurationAnchor,
+    trigger_revision: u64,
+    trigger_keys: Vec<String>,
+}
+
+impl ActiveRpgSpatialSource {
+    #[allow(clippy::too_many_arguments)]
+    pub fn restore(
+        instance_id: impl Into<String>,
+        definition_id: impl Into<String>,
+        definition_version: u32,
+        owner_entity_id: impl Into<String>,
+        source_entity_id: impl Into<String>,
+        origin: GridPosition,
+        included_cell_ids: Vec<String>,
+        stacking_id: impl Into<String>,
+        stacking: RpgEffectStackingPolicy,
+        remaining_count: u32,
+        application_revision: u64,
+        duration_anchor: RpgEffectDurationAnchor,
+        trigger_revision: u64,
+        trigger_keys: Vec<String>,
+    ) -> Result<Self, RpgStateRestoreError> {
+        let instance_id = instance_id.into();
+        let definition_id = definition_id.into();
+        let owner_entity_id = owner_entity_id.into();
+        let source_entity_id = source_entity_id.into();
+        let stacking_id = stacking_id.into();
+        let identities_valid = [
+            instance_id.as_str(),
+            definition_id.as_str(),
+            stacking_id.as_str(),
+        ]
+        .iter()
+        .all(|identity| portable_authority_identity(identity))
+            && !owner_entity_id.is_empty()
+            && !source_entity_id.is_empty();
+        let cells_canonical = !included_cell_ids.is_empty()
+            && included_cell_ids.len() <= MAXIMUM_RPG_SPATIAL_SOURCE_CELLS
+            && included_cell_ids.windows(2).all(|pair| pair[0] < pair[1])
+            && included_cell_ids.iter().all(|cell_id| !cell_id.is_empty());
+        let trigger_keys_canonical = trigger_keys.len() <= MAXIMUM_RPG_SPATIAL_TRIGGER_KEYS
+            && trigger_keys.windows(2).all(|pair| pair[0] < pair[1])
+            && trigger_keys.iter().all(|key| !key.is_empty());
+        if !identities_valid || definition_version == 0 {
+            return Err(RpgStateRestoreError::EmptyIdentity);
+        }
+        if !(1..=MAXIMUM_RPG_EFFECT_DURATION).contains(&remaining_count)
+            || application_revision == 0
+            || (trigger_revision == 0 && !trigger_keys.is_empty())
+            || !cells_canonical
+            || !trigger_keys_canonical
+        {
+            return Err(RpgStateRestoreError::ValueOutOfBounds);
+        }
+        Ok(Self {
+            instance_id,
+            definition_id,
+            definition_version,
+            owner_entity_id,
+            source_entity_id,
+            origin,
+            included_cell_ids,
+            stacking_id,
+            stacking,
+            remaining_count,
+            application_revision,
+            duration_anchor,
+            trigger_revision,
+            trigger_keys,
+        })
+    }
+
+    pub fn instance_id(&self) -> &str {
+        &self.instance_id
+    }
+
+    pub fn definition_id(&self) -> &str {
+        &self.definition_id
+    }
+
+    pub fn definition_version(&self) -> u32 {
+        self.definition_version
+    }
+
+    pub fn owner_entity_id(&self) -> &str {
+        &self.owner_entity_id
+    }
+
+    pub fn source_entity_id(&self) -> &str {
+        &self.source_entity_id
+    }
+
+    pub fn origin(&self) -> GridPosition {
+        self.origin
+    }
+
+    pub fn included_cell_ids(&self) -> &[String] {
+        &self.included_cell_ids
+    }
+
+    pub fn stacking_id(&self) -> &str {
+        &self.stacking_id
+    }
+
+    pub fn stacking(&self) -> RpgEffectStackingPolicy {
+        self.stacking
+    }
+
+    pub fn remaining_count(&self) -> u32 {
+        self.remaining_count
+    }
+
+    pub fn application_revision(&self) -> u64 {
+        self.application_revision
+    }
+
+    pub fn duration_anchor(&self) -> RpgEffectDurationAnchor {
+        self.duration_anchor
+    }
+
+    pub fn trigger_revision(&self) -> u64 {
+        self.trigger_revision
+    }
+
+    pub fn trigger_keys(&self) -> &[String] {
+        &self.trigger_keys
+    }
+}
+
+fn portable_authority_identity(value: &str) -> bool {
+    let mut characters = value.chars();
+    characters
+        .next()
+        .is_some_and(|character| character.is_ascii_lowercase())
+        && characters.all(|character| {
+            character.is_ascii_lowercase()
+                || character.is_ascii_digit()
+                || matches!(character, '.' | '_' | '-')
+        })
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
 pub struct ActiveRpgModifier {
     id: String,
     value: i32,
@@ -566,6 +743,7 @@ impl ActiveRpgModifier {
 pub struct RpgCapabilityState {
     revision: u64,
     entities: BTreeMap<String, RpgEntityState>,
+    spatial_sources: BTreeMap<(String, u32, String, String), ActiveRpgSpatialSource>,
     accepted_activations_this_turn: u32,
 }
 
@@ -577,6 +755,7 @@ impl RpgCapabilityState {
         let mut restored = Self {
             revision,
             entities: BTreeMap::new(),
+            spatial_sources: BTreeMap::new(),
             accepted_activations_this_turn: 0,
         };
         for entity in entities {
@@ -617,6 +796,50 @@ impl RpgCapabilityState {
         self.accepted_activations_this_turn
     }
 
+    pub fn spatial_source(&self, instance_id: &str) -> Option<&ActiveRpgSpatialSource> {
+        self.spatial_sources
+            .values()
+            .find(|source| source.instance_id == instance_id)
+    }
+
+    pub fn spatial_source_exact(
+        &self,
+        definition_id: &str,
+        definition_version: u32,
+        source_entity_id: &str,
+        instance_id: &str,
+    ) -> Option<&ActiveRpgSpatialSource> {
+        self.spatial_sources.get(&(
+            definition_id.to_owned(),
+            definition_version,
+            source_entity_id.to_owned(),
+            instance_id.to_owned(),
+        ))
+    }
+
+    pub fn spatial_sources(&self) -> impl Iterator<Item = &ActiveRpgSpatialSource> {
+        self.spatial_sources.values()
+    }
+
+    pub fn restore_spatial_source(
+        &mut self,
+        source: ActiveRpgSpatialSource,
+    ) -> Result<(), RpgStateRestoreError> {
+        if self.spatial_sources.len() >= MAXIMUM_ACTIVE_RPG_SPATIAL_SOURCES {
+            return Err(RpgStateRestoreError::ValueOutOfBounds);
+        }
+        let key = (
+            source.definition_id.clone(),
+            source.definition_version,
+            source.source_entity_id.clone(),
+            source.instance_id.clone(),
+        );
+        if self.spatial_sources.insert(key, source).is_some() {
+            return Err(RpgStateRestoreError::DuplicateIdentity);
+        }
+        Ok(())
+    }
+
     pub fn insert_entity(&mut self, entity: RpgEntityState) -> Option<RpgEntityState> {
         self.entities.insert(entity.id.clone(), entity)
     }
@@ -643,6 +866,10 @@ impl RpgCapabilityState {
 
     pub fn effects_owner(&mut self) -> RpgEffectsOwner<'_> {
         RpgEffectsOwner { state: self }
+    }
+
+    pub fn spatial_sources_owner(&mut self) -> RpgSpatialSourcesOwner<'_> {
+        RpgSpatialSourcesOwner { state: self }
     }
 
     pub fn advance_revision(&mut self) -> u64 {
@@ -732,6 +959,10 @@ impl RpgCapabilityWorkspace {
 
     pub fn effects_owner(&mut self) -> RpgEffectsOwner<'_> {
         self.state.effects_owner()
+    }
+
+    pub fn spatial_sources_owner(&mut self) -> RpgSpatialSourcesOwner<'_> {
+        self.state.spatial_sources_owner()
     }
 
     pub fn random_owner(&mut self) -> RpgRandomOwner<'_> {
@@ -1175,6 +1406,243 @@ impl RpgEffectsOwner<'_> {
     }
 }
 
+pub struct RpgSpatialSourcesOwner<'a> {
+    state: &'a mut RpgCapabilityState,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum RpgSpatialSourceMutation {
+    Applied {
+        source: ActiveRpgSpatialSource,
+        replaced_sources: Vec<ActiveRpgSpatialSource>,
+    },
+    Refreshed {
+        previous: ActiveRpgSpatialSource,
+        current: Box<ActiveRpgSpatialSource>,
+        removed_sources: Vec<ActiveRpgSpatialSource>,
+    },
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum RpgSpatialSourceBoundaryChange {
+    Aged {
+        source: ActiveRpgSpatialSource,
+        previous_count: u32,
+    },
+    Expired {
+        source: ActiveRpgSpatialSource,
+    },
+}
+
+impl RpgSpatialSourcesOwner<'_> {
+    #[allow(clippy::too_many_arguments)]
+    pub fn apply(
+        &mut self,
+        instance_id: &str,
+        definition_id: &str,
+        definition_version: u32,
+        owner_entity_id: &str,
+        source_entity_id: &str,
+        origin: GridPosition,
+        included_cell_ids: Vec<String>,
+        stacking_id: &str,
+        stacking: RpgEffectStackingPolicy,
+        remaining_count: u32,
+        application_revision: u64,
+        duration_anchor: RpgEffectDurationAnchor,
+    ) -> Result<RpgSpatialSourceMutation, RpgCapabilityMutationError> {
+        if self.state.entity(owner_entity_id).is_none()
+            || self.state.entity(source_entity_id).is_none()
+        {
+            return Err(RpgCapabilityMutationError::UnknownEntity);
+        }
+        let matching = self
+            .state
+            .spatial_sources
+            .iter()
+            .filter(|(_, source)| {
+                source.stacking_id == stacking_id
+                    && (stacking != RpgEffectStackingPolicy::IndependentBySource
+                        || source.source_entity_id == source_entity_id)
+            })
+            .map(|(key, _)| key.clone())
+            .collect::<Vec<_>>();
+        let retained_key = matching.first().cloned();
+        let actual_instance_id = match stacking {
+            RpgEffectStackingPolicy::IndependentBySource | RpgEffectStackingPolicy::Refresh => {
+                retained_key
+                    .as_ref()
+                    .map(|key| key.3.as_str())
+                    .unwrap_or(instance_id)
+            }
+            RpgEffectStackingPolicy::Replace => instance_id,
+        };
+        let current_key = (
+            definition_id.to_owned(),
+            definition_version,
+            source_entity_id.to_owned(),
+            actual_instance_id.to_owned(),
+        );
+        if self.state.spatial_sources.contains_key(&current_key) && !matching.contains(&current_key)
+        {
+            return Err(RpgCapabilityMutationError::SpatialSourceIdentityInvalid);
+        }
+        let current = ActiveRpgSpatialSource::restore(
+            actual_instance_id,
+            definition_id,
+            definition_version,
+            owner_entity_id,
+            source_entity_id,
+            origin,
+            included_cell_ids,
+            stacking_id,
+            stacking,
+            remaining_count,
+            application_revision,
+            duration_anchor,
+            0,
+            Vec::new(),
+        )
+        .map_err(|_| RpgCapabilityMutationError::SpatialSourceTenureInvalid)?;
+        let previous = retained_key
+            .as_ref()
+            .and_then(|key| self.state.spatial_sources.get(key))
+            .cloned();
+        let mut removed_sources = Vec::new();
+        for key in matching {
+            let removed = self
+                .state
+                .spatial_sources
+                .remove(&key)
+                .expect("matching spatial source remains present");
+            if stacking == RpgEffectStackingPolicy::Replace || Some(&key) != retained_key.as_ref() {
+                removed_sources.push(removed);
+            }
+        }
+        if previous.is_none()
+            && self.state.spatial_sources.len() >= MAXIMUM_ACTIVE_RPG_SPATIAL_SOURCES
+        {
+            return Err(RpgCapabilityMutationError::TooManyActiveSpatialSources);
+        }
+        self.state
+            .spatial_sources
+            .insert(current_key, current.clone());
+        Ok(match (stacking, previous) {
+            (RpgEffectStackingPolicy::Replace, _) => RpgSpatialSourceMutation::Applied {
+                source: current,
+                replaced_sources: removed_sources,
+            },
+            (_, Some(previous)) => RpgSpatialSourceMutation::Refreshed {
+                previous,
+                current: Box::new(current),
+                removed_sources,
+            },
+            (_, None) => RpgSpatialSourceMutation::Applied {
+                source: current,
+                replaced_sources: removed_sources,
+            },
+        })
+    }
+
+    pub fn record_trigger(
+        &mut self,
+        definition_id: &str,
+        definition_version: u32,
+        source_entity_id: &str,
+        instance_id: &str,
+        transition_revision: u64,
+        key: String,
+    ) -> Result<bool, RpgCapabilityMutationError> {
+        let source = self
+            .state
+            .spatial_sources
+            .get_mut(&(
+                definition_id.to_owned(),
+                definition_version,
+                source_entity_id.to_owned(),
+                instance_id.to_owned(),
+            ))
+            .ok_or(RpgCapabilityMutationError::SpatialSourceIdentityInvalid)?;
+        if source.application_revision == transition_revision {
+            return Ok(false);
+        }
+        if source.trigger_revision != transition_revision {
+            source.trigger_revision = transition_revision;
+            source.trigger_keys.clear();
+        }
+        match source.trigger_keys.binary_search(&key) {
+            Ok(_) => Ok(false),
+            Err(index) => {
+                if source.trigger_keys.len() >= MAXIMUM_RPG_SPATIAL_TRIGGER_KEYS {
+                    return Err(RpgCapabilityMutationError::SpatialSourceTriggerLimitExceeded);
+                }
+                source.trigger_keys.insert(index, key);
+                Ok(true)
+            }
+        }
+    }
+
+    pub fn advance_boundaries(
+        &mut self,
+        transition_revision: u64,
+        previous_actor_id: &str,
+        current_actor_id: &str,
+        round_transitioned: bool,
+    ) -> Vec<RpgSpatialSourceBoundaryChange> {
+        let mut candidates = self
+            .state
+            .spatial_sources
+            .values()
+            .filter_map(|source| {
+                let matches = match source.duration_anchor {
+                    RpgEffectDurationAnchor::GlobalTurnTransition => {
+                        previous_actor_id != current_actor_id || round_transitioned
+                    }
+                    RpgEffectDurationAnchor::RoundTransition => round_transitioned,
+                    RpgEffectDurationAnchor::SourceTurnStart => {
+                        source.source_entity_id == current_actor_id
+                    }
+                    RpgEffectDurationAnchor::TargetTurnStart
+                    | RpgEffectDurationAnchor::TargetTurnEndSave => false,
+                };
+                (matches && source.application_revision != transition_revision).then(|| {
+                    (
+                        source.duration_anchor,
+                        source.definition_id.clone(),
+                        source.source_entity_id.clone(),
+                        source.instance_id.clone(),
+                        source.definition_version,
+                    )
+                })
+            })
+            .collect::<Vec<_>>();
+        candidates.sort();
+        let mut changes = Vec::new();
+        for (_, definition_id, source_entity_id, instance_id, definition_version) in candidates {
+            let key = (
+                definition_id,
+                definition_version,
+                source_entity_id,
+                instance_id,
+            );
+            let Some(source) = self.state.spatial_sources.get_mut(&key) else {
+                continue;
+            };
+            if source.remaining_count > 1 {
+                let previous_count = source.remaining_count;
+                source.remaining_count -= 1;
+                changes.push(RpgSpatialSourceBoundaryChange::Aged {
+                    source: source.clone(),
+                    previous_count,
+                });
+            } else if let Some(source) = self.state.spatial_sources.remove(&key) {
+                changes.push(RpgSpatialSourceBoundaryChange::Expired { source });
+            }
+        }
+        changes
+    }
+}
+
 pub struct RpgActivationBudgetsOwner<'a> {
     state: &'a mut RpgCapabilityState,
 }
@@ -1264,6 +1732,10 @@ pub enum RpgCapabilityMutationError {
     ModifierTenureInvalid,
     EffectTenureInvalid,
     TooManyActiveEffects,
+    SpatialSourceTenureInvalid,
+    SpatialSourceIdentityInvalid,
+    SpatialSourceTriggerLimitExceeded,
+    TooManyActiveSpatialSources,
     MovementDistanceInvalid,
     PositionOutOfBounds,
 }
@@ -1984,6 +2456,15 @@ pub struct RpgNaturalDieResolution {
 #[derive(Debug, Clone, Default, PartialEq, Eq)]
 pub struct RpgResolutionContext {
     pub entity_cell_capability_ids: BTreeMap<String, Vec<String>>,
+    pub cell_ids_by_position: BTreeMap<GridPosition, String>,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(tag = "status", rename_all = "camelCase", deny_unknown_fields)]
+pub enum RpgSpatialSourceTriggerDisposition {
+    Applied,
+    Inapplicable { reason: String },
+    Suppressed { reason: String },
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
@@ -2204,6 +2685,76 @@ pub enum RpgDomainEvent {
         roll: u32,
         difficulty: u32,
         saved: bool,
+    },
+    SpatialSourceCreated {
+        owner_id: String,
+        source_id: String,
+        instance_id: String,
+        definition_id: String,
+        definition_version: u32,
+        origin: GridPosition,
+        included_cell_ids: Vec<String>,
+        stacking_id: String,
+        stacking: RpgEffectStackingPolicy,
+        duration_anchor: RpgEffectDurationAnchor,
+        remaining_count: u32,
+        application_revision: u64,
+        replaced_instance_ids: Vec<String>,
+    },
+    SpatialSourceRefreshed {
+        owner_id: String,
+        source_id: String,
+        instance_id: String,
+        definition_id: String,
+        definition_version: u32,
+        origin: GridPosition,
+        included_cell_ids: Vec<String>,
+        stacking_id: String,
+        stacking: RpgEffectStackingPolicy,
+        duration_anchor: RpgEffectDurationAnchor,
+        previous_count: u32,
+        remaining_count: u32,
+        application_revision: u64,
+        removed_instance_ids: Vec<String>,
+    },
+    SpatialSourceDurationChanged {
+        instance_id: String,
+        definition_id: String,
+        definition_version: u32,
+        source_id: String,
+        duration_anchor: RpgEffectDurationAnchor,
+        previous_count: u32,
+        remaining_count: u32,
+    },
+    SpatialSourceExpired {
+        instance_id: String,
+        definition_id: String,
+        definition_version: u32,
+        owner_id: String,
+        source_id: String,
+        origin: GridPosition,
+        included_cell_ids: Vec<String>,
+        duration_anchor: RpgEffectDurationAnchor,
+    },
+    SpatialSourceRemoved {
+        instance_id: String,
+        definition_id: String,
+        definition_version: u32,
+        owner_id: String,
+        source_id: String,
+        reason: String,
+    },
+    SpatialSourceTriggerEvaluated {
+        boundary: RpgSpatialSourceBoundary,
+        instance_id: String,
+        definition_id: String,
+        definition_version: u32,
+        owner_id: String,
+        source_id: String,
+        cell_id: String,
+        participant_id: String,
+        operation_path: String,
+        disposition: RpgSpatialSourceTriggerDisposition,
     },
     MovementTransition {
         source_id: String,

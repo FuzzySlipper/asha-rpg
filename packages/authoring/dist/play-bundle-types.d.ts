@@ -362,7 +362,7 @@ export interface EquippedItemBindingRequirement {
 type ProcedureReferenceType<Value> = [
     Value
 ] extends [number] ? "boundedInteger" : [Value] extends [boolean] ? "boolean" : [Value] extends [string] ? "identifier" | "catalogReference" | "rulesetValueReference" : [Value] extends [RpgIrFormula] ? "formula" : [Value] extends [RpgIrTargetSelector] ? "targeting" : [Value] extends [RpgIrCheck] ? "check" : [Value] extends [readonly RpgIrResourceCost[]] ? "costs" : [Value] extends [RpgIrProgram] ? "program" | "semanticBranches" : never;
-type ActionProcedureTemplateNode<Value> = ActionProcedureParameterReference<ProcedureReferenceType<Value>> | (Value extends readonly (infer Entry)[] ? readonly ActionProcedureTemplateNode<Entry>[] : Value extends object ? {
+type ActionProcedureTemplateNode<Value> = ActionProcedureParameterReference<ProcedureReferenceType<Value>> | (Value extends readonly (infer Entry)[] ? readonly ActionProcedureTemplateNode<Entry>[] : Value extends string ? Value | ContentCatalogReference<ContentCatalogCategory, string> : Value extends object ? {
     readonly [Key in keyof Value]: ActionProcedureTemplateNode<Value[Key]>;
 } : Value);
 /** A normalized action body whose leaves may be supplied by typed parameters. */
@@ -676,6 +676,35 @@ export interface ContentEffectDefinition extends ContentDefinitionBase {
     readonly kind: "effect";
     readonly effect: ContentEffectData;
 }
+export type ContentSpatialSourceBoundary = "enter" | "startTurn" | "endTurn" | "exit";
+export interface ContentSpatialSourceTrigger {
+    readonly boundary: ContentSpatialSourceBoundary;
+    readonly procedureId: string;
+    readonly procedureOwnerPackageId: string;
+}
+export interface ContentSpatialSourceData {
+    readonly schema: {
+        readonly identity: "asha.rpg.spatial-source";
+        readonly version: 1;
+    };
+    readonly shape: {
+        readonly kind: "diamond";
+        readonly radius: number;
+    };
+    readonly targetFilter: "all" | "allies" | "hostiles";
+    readonly stackingId: string;
+    readonly stacking: "independentBySource" | "replace" | "refresh";
+    readonly tenure: {
+        readonly kind: "fixed";
+        readonly anchor: "globalTurnTransition" | "roundTransition" | "sourceTurnStart";
+        readonly count: number;
+    };
+    readonly triggers: readonly ContentSpatialSourceTrigger[];
+}
+export interface ContentSpatialSourceDefinition extends ContentDefinitionBase {
+    readonly kind: "spatialSource";
+    readonly spatialSource: ContentSpatialSourceData;
+}
 export interface ContentSupportDefinition extends ContentDefinitionBase {
     readonly kind: "support";
     readonly semantic: {
@@ -746,7 +775,7 @@ export interface ContentMixinDefinition extends ContentDefinitionBase {
     readonly parameters: readonly ContentMixinParameter[];
     readonly patch: ContentPatch;
 }
-export type ContentDefinition = ContentConcreteActionDefinition | ContentActionProcedureDefinition | ContentCharacterClassDefinition | ContentCharacterFeatureDefinition | ContentEffectDefinition | ContentItemDefinition | ContentSupportDefinition | ContentTemplateDefinition | ContentDerivedDefinition | ContentMixinDefinition;
+export type ContentDefinition = ContentConcreteActionDefinition | ContentActionProcedureDefinition | ContentCharacterClassDefinition | ContentCharacterFeatureDefinition | ContentEffectDefinition | ContentSpatialSourceDefinition | ContentItemDefinition | ContentSupportDefinition | ContentTemplateDefinition | ContentDerivedDefinition | ContentMixinDefinition;
 export interface ContentPolicyBinding {
     readonly id: string;
     readonly policyId: string;
@@ -868,7 +897,7 @@ export interface ContentPatchChangeProvenance {
 }
 export interface ContentMaterializationStage {
     readonly id: string;
-    readonly kind: "action" | "actionProcedure" | "characterClass" | "characterFeature" | "effect" | "item" | "support";
+    readonly kind: "action" | "actionProcedure" | "characterClass" | "characterFeature" | "effect" | "spatialSource" | "item" | "support";
     readonly extensionPolicy: ContentExtensionPolicy;
     readonly value: {
         readonly semantic: unknown;
@@ -940,7 +969,7 @@ export interface ContentOverlayProvenance {
 }
 export interface MaterializedContentDefinition {
     readonly id: string;
-    readonly kind: "action" | "actionProcedure" | "characterClass" | "characterFeature" | "effect" | "item" | "support";
+    readonly kind: "action" | "actionProcedure" | "characterClass" | "characterFeature" | "effect" | "spatialSource" | "item" | "support";
     readonly visibility: "exported" | "support";
     readonly extensionPolicy: ContentExtensionPolicy;
     readonly semantic: unknown;
@@ -952,7 +981,7 @@ export interface MaterializedContentDefinition {
 export interface PreparedPlayBundle {
     readonly schema: {
         readonly identity: "asha.rpg.play-bundle.prepared";
-        readonly major: 12;
+        readonly major: 13;
     };
     readonly playBundleIdentity: PlayBundleIdentity;
     readonly ruleset: Ruleset;

@@ -537,6 +537,28 @@ export function removeEffect(options: {
   return operation(frozen(declaration), options.timing);
 }
 
+export function createSpatialSource(options: {
+  readonly spatialSource: ContentDefinitionReference;
+  readonly instanceId: string;
+  readonly owner: RpgIrSubject;
+  readonly source: RpgIrSubject;
+  readonly timing?: AuthoringTiming;
+}): AuthoringProgram {
+  const declaration = {
+    kind: 'createSpatialSource',
+    spatialSourceDefinitionId: options.spatialSource.definitionId,
+    instanceId: options.instanceId,
+    owner: options.owner,
+    source: options.source,
+  } as const;
+  retainDefinitionOwnership(
+    declaration,
+    'spatialSourceDefinitionId',
+    options.spatialSource,
+  );
+  return operation(frozen(declaration), options.timing);
+}
+
 function retainDefinitionOwnership(
   value: object,
   field: string,

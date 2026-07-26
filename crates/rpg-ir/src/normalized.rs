@@ -379,6 +379,12 @@ pub enum RpgIrOperation {
     RemoveEffect {
         effect_definition_id: String,
     },
+    CreateSpatialSource {
+        spatial_source_definition_id: String,
+        instance_id: String,
+        owner: RpgIrSubject,
+        source: RpgIrSubject,
+    },
     Move {
         subject: RpgIrSubject,
         delta_x: RpgIrFormula,
@@ -422,6 +428,7 @@ impl RpgIrOperation {
             Self::ApplyModifier { .. } => "operation.applyModifier",
             Self::ApplyEffect { .. } => "operation.applyEffect",
             Self::RemoveEffect { .. } => "operation.removeEffect",
+            Self::CreateSpatialSource { .. } => "operation.createSpatialSource",
             Self::Move { .. } => "operation.move",
             Self::MoveToCell { .. } => "operation.moveToCell",
             Self::Push { .. } => "operation.push",

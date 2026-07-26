@@ -1,6 +1,6 @@
 import type { ContentCatalogReference } from './catalogs.js';
 import type { RulesetValueReference } from './ruleset-builders.js';
-import type { ContentActionDefinition, ContentActionProcedureDefinition, ContentCharacterClassData, ContentCharacterClassDefinition, ContentCharacterFeatureDefinition, ContentEffectDefinition, ContentInvokedActionDefinition, ActionProcedureArgumentsFor, ActionProcedureCompositionArgumentsFor, ActionProcedureParameter, ActionProcedureParameterReference, ActionProcedureParameterType, ContentItemAttribute, ContentItemData, ContentItemDefinition, EquippedItemAttributeReference, EquippedItemBindingRequirement, PlayBundleManifest, ContentDefinition, ContentDefinitionReference, ContentParticipantProfileData, ContentParticipantProfileCapability, ContentDerivedDefinition, ContentDamageResponse, ContentPackDependency, ContentPackIdentity, ContentMixinApplication, ContentMixinDefinition, ContentMovementReaction, ContentPackManifest, ContentPatch, ContentPackRequest, ContentPackSource, ContentPolicyBinding, ContentReservedRelationship, ContentOutcomeBandShift, ContentPoolContribution, ContentScalarContribution, ContentSupportDefinition, ContentTemplateDefinition, ScenarioBoundedValue } from './play-bundle-types.js';
+import type { ContentActionDefinition, ContentActionProcedureDefinition, ContentCharacterClassData, ContentCharacterClassDefinition, ContentCharacterFeatureDefinition, ContentEffectDefinition, ContentSpatialSourceDefinition, ContentInvokedActionDefinition, ActionProcedureArgumentsFor, ActionProcedureCompositionArgumentsFor, ActionProcedureParameter, ActionProcedureParameterReference, ActionProcedureParameterType, ContentItemAttribute, ContentItemData, ContentItemDefinition, EquippedItemAttributeReference, EquippedItemBindingRequirement, PlayBundleManifest, ContentDefinition, ContentDefinitionReference, ContentParticipantProfileData, ContentParticipantProfileCapability, ContentDerivedDefinition, ContentDamageResponse, ContentPackDependency, ContentPackIdentity, ContentMixinApplication, ContentMixinDefinition, ContentMovementReaction, ContentPackManifest, ContentPatch, ContentPackRequest, ContentPackSource, ContentPolicyBinding, ContentReservedRelationship, ContentOutcomeBandShift, ContentPoolContribution, ContentScalarContribution, ContentSupportDefinition, ContentTemplateDefinition, ScenarioBoundedValue } from './play-bundle-types.js';
 type ScalarContributionInput = Omit<ContentScalarContribution, 'schema' | 'subject'> & {
     readonly subject?: ContentScalarContribution['subject'];
 };
@@ -80,6 +80,16 @@ export declare function defineEffectDefinition(input: Omit<OrdinaryDefinitionInp
         readonly damageResponses?: readonly Omit<ContentDamageResponse, 'schema'>[];
     };
 }): ContentEffectDefinition;
+export type SpatialSourceTriggerInput = {
+    readonly boundary: ContentSpatialSourceDefinition['spatialSource']['triggers'][number]['boundary'];
+    readonly procedure: ContentActionProcedureDefinition<readonly []>;
+};
+export declare function defineSpatialSourceDefinition(input: Omit<OrdinaryDefinitionInput<ContentSpatialSourceDefinition>, 'spatialSource' | 'lowLevelReferences'> & {
+    readonly lowLevelReferences?: readonly ContentDefinitionReference[];
+    readonly spatialSource: Omit<ContentSpatialSourceDefinition['spatialSource'], 'schema' | 'triggers'> & {
+        readonly triggers: readonly SpatialSourceTriggerInput[];
+    };
+}): ContentSpatialSourceDefinition;
 export declare function defineCharacterClassDefinition(input: Omit<OrdinaryDefinitionInput<ContentCharacterClassDefinition>, 'characterClass'> & {
     readonly characterClass: Omit<ContentCharacterClassData, 'schema'>;
 }): ContentCharacterClassDefinition;

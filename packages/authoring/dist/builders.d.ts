@@ -156,6 +156,13 @@ export declare function removeEffect(options: {
     readonly effect: ContentDefinitionReference;
     readonly timing?: AuthoringTiming;
 }): AuthoringProgram;
+export declare function createSpatialSource(options: {
+    readonly spatialSource: ContentDefinitionReference;
+    readonly instanceId: string;
+    readonly owner: RpgIrSubject;
+    readonly source: RpgIrSubject;
+    readonly timing?: AuthoringTiming;
+}): AuthoringProgram;
 /** @internal Reads typed definition edges retained by operation builders. */
 export declare function definitionOwnershipOf(value: object): readonly AuthoredDefinitionOwnership[];
 export declare function moveEntity(options: {

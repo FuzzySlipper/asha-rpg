@@ -489,9 +489,11 @@ type ActionProcedureTemplateNode<Value> =
   | ActionProcedureParameterReference<ProcedureReferenceType<Value>>
   | (Value extends readonly (infer Entry)[]
       ? readonly ActionProcedureTemplateNode<Entry>[]
-      : Value extends object
-        ? { readonly [Key in keyof Value]: ActionProcedureTemplateNode<Value[Key]> }
-        : Value);
+      : Value extends string
+        ? Value | ContentCatalogReference<ContentCatalogCategory, string>
+        : Value extends object
+          ? { readonly [Key in keyof Value]: ActionProcedureTemplateNode<Value[Key]> }
+          : Value);
 
 /** A normalized action body whose leaves may be supplied by typed parameters. */
 export interface ActionProcedureTemplate {
@@ -946,6 +948,46 @@ export interface ContentEffectDefinition extends ContentDefinitionBase {
   readonly effect: ContentEffectData;
 }
 
+export type ContentSpatialSourceBoundary =
+  | "enter"
+  | "startTurn"
+  | "endTurn"
+  | "exit";
+
+export interface ContentSpatialSourceTrigger {
+  readonly boundary: ContentSpatialSourceBoundary;
+  readonly procedureId: string;
+  readonly procedureOwnerPackageId: string;
+}
+
+export interface ContentSpatialSourceData {
+  readonly schema: {
+    readonly identity: "asha.rpg.spatial-source";
+    readonly version: 1;
+  };
+  readonly shape: {
+    readonly kind: "diamond";
+    readonly radius: number;
+  };
+  readonly targetFilter: "all" | "allies" | "hostiles";
+  readonly stackingId: string;
+  readonly stacking: "independentBySource" | "replace" | "refresh";
+  readonly tenure: {
+    readonly kind: "fixed";
+    readonly anchor:
+      | "globalTurnTransition"
+      | "roundTransition"
+      | "sourceTurnStart";
+    readonly count: number;
+  };
+  readonly triggers: readonly ContentSpatialSourceTrigger[];
+}
+
+export interface ContentSpatialSourceDefinition extends ContentDefinitionBase {
+  readonly kind: "spatialSource";
+  readonly spatialSource: ContentSpatialSourceData;
+}
+
 export interface ContentSupportDefinition extends ContentDefinitionBase {
   readonly kind: "support";
   readonly semantic: {
@@ -1032,6 +1074,7 @@ export type ContentDefinition =
   | ContentCharacterClassDefinition
   | ContentCharacterFeatureDefinition
   | ContentEffectDefinition
+  | ContentSpatialSourceDefinition
   | ContentItemDefinition
   | ContentSupportDefinition
   | ContentTemplateDefinition
@@ -1187,6 +1230,7 @@ export interface ContentMaterializationStage {
     | "characterClass"
     | "characterFeature"
     | "effect"
+    | "spatialSource"
     | "item"
     | "support";
   readonly extensionPolicy: ContentExtensionPolicy;
@@ -1273,6 +1317,7 @@ export interface MaterializedContentDefinition {
     | "characterClass"
     | "characterFeature"
     | "effect"
+    | "spatialSource"
     | "item"
     | "support";
   readonly visibility: "exported" | "support";
@@ -1287,7 +1332,7 @@ export interface MaterializedContentDefinition {
 export interface PreparedPlayBundle {
   readonly schema: {
     readonly identity: "asha.rpg.play-bundle.prepared";
-    readonly major: 12;
+    readonly major: 13;
   };
   readonly playBundleIdentity: PlayBundleIdentity;
   readonly ruleset: Ruleset;

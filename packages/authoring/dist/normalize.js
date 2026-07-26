@@ -6,6 +6,7 @@ const OPERATION_IDS = {
     applyModifier: 'operation.applyModifier',
     applyEffect: 'operation.applyEffect',
     removeEffect: 'operation.removeEffect',
+    createSpatialSource: 'operation.createSpatialSource',
     move: 'operation.move',
     moveToCell: 'operation.moveToCell',
     push: 'operation.push',

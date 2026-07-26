@@ -10,6 +10,7 @@ import type {
   ContentCharacterClassDefinition,
   ContentCharacterFeatureDefinition,
   ContentEffectDefinition,
+  ContentSpatialSourceDefinition,
   ContentInvokedActionDefinition,
   ActionProcedureArgumentsFor,
   ActionProcedureCompositionArgumentsFor,
@@ -387,6 +388,58 @@ export function defineEffectDefinition(
       damageResponses: normalizeDamageResponses(
         input.effect.damageResponses ?? [],
       ),
+    },
+  });
+}
+
+export type SpatialSourceTriggerInput = {
+  readonly boundary:
+    ContentSpatialSourceDefinition['spatialSource']['triggers'][number]['boundary'];
+  readonly procedure: ContentActionProcedureDefinition<readonly []>;
+};
+
+export function defineSpatialSourceDefinition(
+  input: Omit<
+    OrdinaryDefinitionInput<ContentSpatialSourceDefinition>,
+    'spatialSource' | 'lowLevelReferences'
+  > & {
+    readonly lowLevelReferences?: readonly ContentDefinitionReference[];
+    readonly spatialSource: Omit<
+      ContentSpatialSourceDefinition['spatialSource'],
+      'schema' | 'triggers'
+    > & {
+      readonly triggers: readonly SpatialSourceTriggerInput[];
+    };
+  },
+): ContentSpatialSourceDefinition {
+  const { spatialSource, lowLevelReferences, ...definition } = input;
+  const procedureReferences = spatialSource.triggers.map(({ procedure }) => ({
+    definitionId: procedure.id,
+  }));
+  return immutable({
+    ...definition,
+    kind: 'spatialSource' as const,
+    lowLevelReferences: uniqueDefinitionReferences([
+      ...(lowLevelReferences ?? []),
+      ...procedureReferences,
+    ]),
+    spatialSource: {
+      ...spatialSource,
+      schema: {
+        identity: 'asha.rpg.spatial-source' as const,
+        version: 1 as const,
+      },
+      triggers: [...spatialSource.triggers]
+        .map(({ boundary, procedure }) => ({
+          boundary,
+          procedureId: procedure.id,
+          procedureOwnerPackageId: procedure.ownerPackageId,
+        }))
+        .sort(
+          (left, right) =>
+            spatialSourceBoundaryOrder(left.boundary) -
+            spatialSourceBoundaryOrder(right.boundary),
+        ),
     },
   });
 }
@@ -850,6 +903,28 @@ export function composePlayBundle(
 
 function emptyPatch(): ContentPatch {
   return immutable({ version: 1, operations: [] });
+}
+
+function uniqueDefinitionReferences(
+  references: readonly ContentDefinitionReference[],
+): readonly ContentDefinitionReference[] {
+  const byIdentity = new Map<string, ContentDefinitionReference>();
+  for (const reference of references) {
+    const key = `${reference.importAs ?? ''}#${reference.definitionId}`;
+    byIdentity.set(key, { ...reference });
+  }
+  return [...byIdentity.values()].sort((left, right) =>
+    `${left.importAs ?? ''}#${left.definitionId}`.localeCompare(
+      `${right.importAs ?? ''}#${right.definitionId}`,
+    ),
+  );
+}
+
+function spatialSourceBoundaryOrder(
+  boundary:
+    ContentSpatialSourceDefinition['spatialSource']['triggers'][number]['boundary'],
+): number {
+  return ['enter', 'startTurn', 'endTurn', 'exit'].indexOf(boundary);
 }
 
 function patchPlane(

@@ -17,8 +17,9 @@ use rpg_core::{
     RpgRandomRequestKind, RpgReactionActivationBudgetCost, RpgReactionDecision, RpgReactionOption,
     RpgReactionRequest, RpgReactionUnavailable, RpgResolutionContext, RpgResolutionReceipt,
     RpgResolutionRejection, RpgRulesetValueKind, RpgScalarContributionDecision,
-    RpgScalarContributionDefinition, RpgScalarContributionLedger, RpgTraceStep,
-    RpgUnavailableSource, MAXIMUM_RPG_DAMAGE_RESPONSES,
+    RpgScalarContributionDefinition, RpgScalarContributionLedger, RpgSpatialSourceBoundary,
+    RpgSpatialSourceMutation, RpgTraceStep, RpgUnavailableSource, MAXIMUM_RPG_DAMAGE_RESPONSES,
+    MAXIMUM_RPG_SPATIAL_SOURCE_CELLS,
 };
 use rpg_ir::{
     CompiledCharacterFeature, CompiledEffectDefinition, CompiledItemDefinition, RpgIrActivation,
@@ -97,6 +98,87 @@ impl CompiledRpgRules {
         context: &RpgResolutionContext,
     ) -> Result<RpgResolutionReceipt, RpgResolutionRejection> {
         self.resolve_internal(state, random, intent, None, context, false)
+    }
+
+    #[allow(clippy::too_many_arguments)]
+    pub fn resolve_spatial_source_trigger_with_context(
+        &self,
+        state: &mut RpgCapabilityState,
+        random: &mut DeterministicRandomStream,
+        definition_id: &str,
+        boundary: RpgSpatialSourceBoundary,
+        owner_id: &str,
+        participant_id: &str,
+        context: &RpgResolutionContext,
+    ) -> Result<RpgResolutionReceipt, RpgResolutionRejection> {
+        let action = self
+            .spatial_source_trigger(definition_id, boundary)
+            .ok_or_else(|| {
+                rejection(
+                    "RPG_SPATIAL_SOURCE_TRIGGER_UNKNOWN",
+                    "$.spatialSourceTrigger",
+                    format!(
+                        "spatial-source definition {definition_id} has no {boundary:?} trigger"
+                    ),
+                )
+            })?;
+        let intent = RpgIntent {
+            action_id: action.source_path.clone(),
+            actor_id: owner_id.to_owned(),
+            target_ids: vec![participant_id.to_owned()],
+            cell_targets: Vec::new(),
+            item_binding: None,
+        };
+        let target_ids = validate_intent(action, state, &intent)?;
+        let random_start = random.consumed();
+        let mut execution = Execution {
+            rules: self,
+            action,
+            intent: &intent,
+            target_ids,
+            workspace: RpgCapabilityWorkspace::stage(state, random),
+            random_start,
+            outcomes: BTreeMap::new(),
+            events: Vec::new(),
+            trace: Vec::new(),
+            random_evidence: Vec::new(),
+            current_target: None,
+            reaction: None,
+            reaction_consumed: false,
+            pending_damage_reduction: 0,
+            next_effect_ordinal: 0,
+            character_features: Vec::new(),
+            bound_item: None,
+            context,
+        };
+        execution.resolve_checks()?;
+        execution.execute_program(&action.program, "$.spatialSourceTrigger.program")?;
+        if execution.workspace.random_consumed() != random_start {
+            return Err(execution.fail(
+                "RPG_SPATIAL_SOURCE_TRIGGER_RANDOMNESS_UNSUPPORTED",
+                "$.spatialSourceTrigger",
+                "spatial-source trigger procedures must remain deterministic",
+            ));
+        }
+        let revision = execution.workspace.state().revision();
+        execution.trace.push(RpgTraceStep {
+            path: "$.spatialSourceTrigger.commit".to_owned(),
+            code: "RPG_SPATIAL_SOURCE_TRIGGER_STAGED".to_owned(),
+            detail: format!("state revision {revision}"),
+        });
+        let receipt = RpgResolutionReceipt {
+            action_id: intent.action_id.clone(),
+            actor_id: intent.actor_id.clone(),
+            target_ids: execution.target_ids.clone(),
+            item_binding: None,
+            events: execution.events,
+            trace: execution.trace,
+            random_evidence: execution.random_evidence,
+            random_consumed: 0,
+            state_revision: revision,
+        };
+        execution.workspace.commit(state, random);
+        Ok(receipt)
     }
 
     fn resolve_internal<'a>(
@@ -3141,6 +3223,7 @@ impl Execution<'_> {
             | RpgIrOperation::MoveToCell { .. }
             | RpgIrOperation::Push { .. }
             | RpgIrOperation::Slide { .. } => RpgCapabilityId::Position,
+            RpgIrOperation::CreateSpatialSource { .. } => RpgCapabilityId::SpatialSources,
             RpgIrOperation::OpenReaction { .. } => RpgCapabilityId::Reactions,
         };
         if operation
@@ -3527,6 +3610,157 @@ impl Execution<'_> {
                     *maximum_distance,
                     path,
                 )?;
+            }
+            RpgIrOperation::CreateSpatialSource {
+                spatial_source_definition_id,
+                instance_id,
+                owner,
+                source,
+            } => {
+                let owner_id = self.subject_id(*owner, path)?;
+                let source_id = self.subject_id(*source, path)?;
+                let definition = self
+                    .rules
+                    .spatial_source(spatial_source_definition_id)
+                    .cloned()
+                    .ok_or_else(|| {
+                        self.fail(
+                            "RPG_RUNTIME_SPATIAL_SOURCE_DEFINITION_UNKNOWN",
+                            &format!("{path}.spatialSourceDefinitionId"),
+                            format!(
+                                "spatial-source definition {spatial_source_definition_id} is unavailable"
+                            ),
+                        )
+                    })?;
+                let origin = self
+                    .workspace
+                    .state()
+                    .entity(&source_id)
+                    .map(|entity| entity.position())
+                    .ok_or_else(|| {
+                        self.fail(
+                            "RPG_RUNTIME_SPATIAL_SOURCE_ORIGIN_UNKNOWN",
+                            path,
+                            format!("spatial-source entity {source_id} is unavailable"),
+                        )
+                    })?;
+                let mut included_cell_ids = self
+                    .context
+                    .cell_ids_by_position
+                    .iter()
+                    .filter_map(|(position, cell_id)| {
+                        let distance = origin
+                            .x
+                            .abs_diff(position.x)
+                            .saturating_add(origin.y.abs_diff(position.y));
+                        (distance <= definition.radius).then(|| cell_id.clone())
+                    })
+                    .collect::<Vec<_>>();
+                included_cell_ids.sort();
+                included_cell_ids.dedup();
+                if included_cell_ids.is_empty()
+                    || included_cell_ids.len() > MAXIMUM_RPG_SPATIAL_SOURCE_CELLS
+                {
+                    return Err(self.fail(
+                        "RPG_RUNTIME_SPATIAL_SOURCE_CELLS_INVALID",
+                        path,
+                        format!(
+                            "fixed spatial-source geometry materialized {} cells; expected 1..={MAXIMUM_RPG_SPATIAL_SOURCE_CELLS}",
+                            included_cell_ids.len()
+                        ),
+                    ));
+                }
+                let application_revision = self.workspace.state().revision().saturating_add(1);
+                let mutation = self
+                    .workspace
+                    .spatial_sources_owner()
+                    .apply(
+                        instance_id,
+                        &definition.definition_id,
+                        definition.definition_version,
+                        &owner_id,
+                        &source_id,
+                        origin,
+                        included_cell_ids,
+                        &definition.stacking_id,
+                        definition.stacking,
+                        definition.duration_count,
+                        application_revision,
+                        definition.duration_anchor,
+                    )
+                    .map_err(|error| self.mutation_rejection(error, path))?;
+                match mutation {
+                    RpgSpatialSourceMutation::Applied {
+                        source,
+                        replaced_sources,
+                    } => {
+                        let replaced_instance_ids = replaced_sources
+                            .iter()
+                            .map(|replaced| replaced.instance_id().to_owned())
+                            .collect::<Vec<_>>();
+                        for replaced in replaced_sources {
+                            self.events.push(RpgDomainEvent::SpatialSourceRemoved {
+                                instance_id: replaced.instance_id().to_owned(),
+                                definition_id: replaced.definition_id().to_owned(),
+                                definition_version: replaced.definition_version(),
+                                owner_id: replaced.owner_entity_id().to_owned(),
+                                source_id: replaced.source_entity_id().to_owned(),
+                                reason: "replaced".to_owned(),
+                            });
+                        }
+                        self.events.push(RpgDomainEvent::SpatialSourceCreated {
+                            owner_id: source.owner_entity_id().to_owned(),
+                            source_id: source.source_entity_id().to_owned(),
+                            instance_id: source.instance_id().to_owned(),
+                            definition_id: source.definition_id().to_owned(),
+                            definition_version: source.definition_version(),
+                            origin: source.origin(),
+                            included_cell_ids: source.included_cell_ids().to_vec(),
+                            stacking_id: source.stacking_id().to_owned(),
+                            stacking: source.stacking(),
+                            duration_anchor: source.duration_anchor(),
+                            remaining_count: source.remaining_count(),
+                            application_revision: source.application_revision(),
+                            replaced_instance_ids,
+                        });
+                    }
+                    RpgSpatialSourceMutation::Refreshed {
+                        previous,
+                        current,
+                        removed_sources,
+                    } => {
+                        let removed_instance_ids = removed_sources
+                            .iter()
+                            .map(|removed| removed.instance_id().to_owned())
+                            .collect::<Vec<_>>();
+                        for removed in removed_sources {
+                            self.events.push(RpgDomainEvent::SpatialSourceRemoved {
+                                instance_id: removed.instance_id().to_owned(),
+                                definition_id: removed.definition_id().to_owned(),
+                                definition_version: removed.definition_version(),
+                                owner_id: removed.owner_entity_id().to_owned(),
+                                source_id: removed.source_entity_id().to_owned(),
+                                reason: "refreshCollapsed".to_owned(),
+                            });
+                        }
+                        self.events.push(RpgDomainEvent::SpatialSourceRefreshed {
+                            owner_id: current.owner_entity_id().to_owned(),
+                            source_id: current.source_entity_id().to_owned(),
+                            instance_id: current.instance_id().to_owned(),
+                            definition_id: current.definition_id().to_owned(),
+                            definition_version: current.definition_version(),
+                            origin: current.origin(),
+                            included_cell_ids: current.included_cell_ids().to_vec(),
+                            stacking_id: current.stacking_id().to_owned(),
+                            stacking: current.stacking(),
+                            duration_anchor: current.duration_anchor(),
+                            previous_count: previous.remaining_count(),
+                            remaining_count: current.remaining_count(),
+                            application_revision: current.application_revision(),
+                            removed_instance_ids,
+                        });
+                    }
+                }
             }
             RpgIrOperation::OpenReaction {
                 reaction_id,
@@ -4032,6 +4266,22 @@ impl Execution<'_> {
             RpgCapabilityMutationError::EffectTenureInvalid => (
                 "RPG_MUTATION_EFFECT_TENURE_INVALID",
                 "effect tenure is outside the supported boundary bounds",
+            ),
+            RpgCapabilityMutationError::SpatialSourceTenureInvalid => (
+                "RPG_MUTATION_SPATIAL_SOURCE_TENURE_INVALID",
+                "spatial-source tenure or geometry is outside the supported bounds",
+            ),
+            RpgCapabilityMutationError::SpatialSourceIdentityInvalid => (
+                "RPG_MUTATION_SPATIAL_SOURCE_IDENTITY_INVALID",
+                "spatial-source identity conflicts with authority state",
+            ),
+            RpgCapabilityMutationError::SpatialSourceTriggerLimitExceeded => (
+                "RPG_MUTATION_SPATIAL_SOURCE_TRIGGER_LIMIT_EXCEEDED",
+                "spatial-source trigger bookkeeping exceeds its supported bound",
+            ),
+            RpgCapabilityMutationError::TooManyActiveSpatialSources => (
+                "RPG_MUTATION_SPATIAL_SOURCE_LIMIT_EXCEEDED",
+                "authority state has the maximum number of active spatial sources",
             ),
             RpgCapabilityMutationError::TooManyActiveEffects => (
                 "RPG_MUTATION_EFFECT_LIMIT_EXCEEDED",

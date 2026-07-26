@@ -199,6 +199,11 @@ export function preparePlayBundle(options: {
     options.bundle.ruleset,
     diagnostics,
   );
+  validateSpatialSourceDefinitions(
+    graph.materialized,
+    graph.resolvedReferences,
+    diagnostics,
+  );
   validateParticipantProfiles(
     graph.materialized,
     graph.resolvedReferences,
@@ -267,7 +272,7 @@ export function preparePlayBundle(options: {
   ].sort(compareRelationship);
 
   const prepared: PreparedPlayBundle = immutable({
-    schema: { identity: 'asha.rpg.play-bundle.prepared', major: 12 },
+    schema: { identity: 'asha.rpg.play-bundle.prepared', major: 13 },
     playBundleIdentity: options.bundle.identity,
     ruleset: options.bundle.ruleset,
     contentPacks: [...context.selected.values()]
@@ -1499,6 +1504,7 @@ function materializeSelectedDefinitions(
       record.definition.kind === 'characterClass' ||
       record.definition.kind === 'characterFeature' ||
       record.definition.kind === 'effect' ||
+      record.definition.kind === 'spatialSource' ||
       record.definition.kind === 'item' ||
       record.definition.kind === 'support'
     ) {
@@ -1738,6 +1744,7 @@ function materializeSelectedDefinitions(
         record.definition.kind === 'characterClass' ||
         record.definition.kind === 'characterFeature' ||
         record.definition.kind === 'effect' ||
+        record.definition.kind === 'spatialSource' ||
         record.definition.kind === 'item' ||
         record.definition.kind === 'support' ||
         record.definition.kind === 'derived'
@@ -2082,6 +2089,12 @@ function definitionValue(record: DefinitionRecord): PatchedValue {
   if (record.definition.kind === 'effect') {
     return {
       semantic: materializedEffectData(record.definition.effect),
+      presentation: record.definition.presentation ?? null,
+    };
+  }
+  if (record.definition.kind === 'spatialSource') {
+    return {
+      semantic: record.definition.spatialSource,
       presentation: record.definition.presentation ?? null,
     };
   }
@@ -2520,6 +2533,7 @@ function definitionMaterializationStage(
     record.definition.kind !== 'characterClass' &&
     record.definition.kind !== 'characterFeature' &&
     record.definition.kind !== 'effect' &&
+    record.definition.kind !== 'spatialSource' &&
     record.definition.kind !== 'item' &&
     record.definition.kind !== 'support'
   ) {
@@ -2665,6 +2679,7 @@ export function contentDefinitionMaterializationFingerprint(
         | 'characterClass'
         | 'characterFeature'
         | 'effect'
+        | 'spatialSource'
         | 'item'
         | 'support';
     }
@@ -2709,6 +2724,11 @@ export function contentDefinitionMaterializationFingerprint(
                       semantic: materializedEffectData(definition.effect),
                       presentation: definition.presentation ?? null,
                     }
+                  : definition.kind === 'spatialSource'
+                    ? {
+                        semantic: definition.spatialSource,
+                        presentation: definition.presentation ?? null,
+                      }
           : {
               semantic: definition.semantic,
               presentation: definition.presentation ?? null,
@@ -2956,6 +2976,12 @@ function normalizedDefinitionValue(record: DefinitionRecord): PatchedValue {
       presentation: record.definition.presentation ?? null,
     };
   }
+  if (record.definition.kind === 'spatialSource') {
+    return {
+      semantic: record.definition.spatialSource,
+      presentation: record.definition.presentation ?? null,
+    };
+  }
   if (record.definition.kind === 'support') {
     return {
       semantic: record.definition.semantic,
@@ -3191,6 +3217,12 @@ function authoredCatalogReferences(
     );
   } else if (definition.kind === 'effect') {
     collectCatalogReferences(definition.effect, '$.effect', byIdentity);
+  } else if (definition.kind === 'spatialSource') {
+    collectCatalogReferences(
+      definition.spatialSource,
+      '$.spatialSource',
+      byIdentity,
+    );
   } else if (definition.kind === 'mixin') {
     collectCatalogReferences(definition.patch, '$.patch', byIdentity);
   } else if (
@@ -3734,6 +3766,16 @@ function validateActionProcedureGraph(
   const recordsByGlobalId = new Map(
     records.map((record) => [globalDefinitionId(record), record]),
   );
+  const spatialTriggerProcedures = new Set(
+    records.flatMap((record) =>
+      record.definition.kind === 'spatialSource'
+        ? record.definition.spatialSource.triggers.map(
+            (trigger) =>
+              `${trigger.procedureOwnerPackageId}#${trigger.procedureId}`,
+          )
+        : [],
+    ),
+  );
   for (const record of records) {
     if (record.definition.kind === 'actionProcedure') {
       const path = `$.packages[${record.package.key}].definitions.${record.definition.id}`;
@@ -3814,6 +3856,9 @@ function validateActionProcedureGraph(
           `${path}.implementation.template`,
           record,
           diagnostics,
+          spatialTriggerProcedures.has(
+            `${record.definition.ownerPackageId}#${record.definition.id}`,
+          ),
         );
       } else {
         validateProcedureInvocation(
@@ -4071,6 +4116,7 @@ function validateProcedureInlineTemplate(
   path: string,
   record: DefinitionRecord,
   diagnostics: PlayBundleCompilerDiagnostic[],
+  authorityTrigger: boolean,
 ): void {
   const substitutions = new Map(
     [...parameters].map(([parameterId, parameter]) => [
@@ -4112,7 +4158,11 @@ function validateProcedureInlineTemplate(
   if (
     materializedVariants.some(
       (materialized) =>
-        !procedureActivationContractIsValid(materialized, ruleset),
+        !procedureActivationContractIsValid(
+          materialized,
+          ruleset,
+          authorityTrigger,
+        ),
     )
   ) {
     diagnostics.push(
@@ -4130,11 +4180,23 @@ function validateProcedureInlineTemplate(
 function procedureActivationContractIsValid(
   body: unknown,
   ruleset: Ruleset,
+  authorityTrigger: boolean,
 ): boolean {
   if (!isRecord(body)) return false;
   const variableModel =
     ruleset.models.actionEconomy.id ===
     'action-economy.variable-activation-budgets';
+  if (
+    variableModel &&
+    authorityTrigger &&
+    body['activation'] === undefined
+  ) {
+    return (
+      Array.isArray(body['costs']) &&
+      body['costs'].length === 0 &&
+      procedureProgramActivationContractIsValid(body['program'], false)
+    );
+  }
   if (variableModel !== (body['activation'] !== undefined)) return false;
   return procedureProgramActivationContractIsValid(
     body['program'],
@@ -5793,6 +5855,174 @@ function validateEffectTenure(
   }
 }
 
+function validateSpatialSourceDefinitions(
+  records: readonly DefinitionRecord[],
+  resolvedReferences: ReadonlyMap<string, readonly string[]>,
+  diagnostics: PlayBundleCompilerDiagnostic[],
+): void {
+  const recordsByGlobalId = new Map(
+    records.map((record) => [globalDefinitionId(record), record]),
+  );
+  const packageCounts = new Map<string, number>();
+  const stackingPolicies = new Map<string, string>();
+  for (const record of records) {
+    if (record.definition.kind !== 'spatialSource') continue;
+    const packageId = record.package.source.manifest.identity.id;
+    packageCounts.set(packageId, (packageCounts.get(packageId) ?? 0) + 1);
+    const path = `$.packages[${record.package.key}].definitions.${record.definition.id}.spatialSource`;
+    const data = record.definition.spatialSource;
+    if (record.definition.extensionPolicy !== 'sealed') {
+      diagnostics.push(diagnostic(
+        'compatibility',
+        'SPATIAL_SOURCE_EXTENSION_POLICY_UNSUPPORTED',
+        `$.packages[${record.package.key}].definitions.${record.definition.id}.extensionPolicy`,
+        'spatial-source definitions are sealed in the current semantic contract',
+        profileDiagnosticContext(record),
+      ));
+    }
+    if (
+      data.schema.identity !== 'asha.rpg.spatial-source' ||
+      data.schema.version !== 1
+    ) {
+      diagnostics.push(diagnostic(
+        'compatibility',
+        'SPATIAL_SOURCE_SCHEMA_UNSUPPORTED',
+        `${path}.schema`,
+        'spatial-source definitions require asha.rpg.spatial-source@1',
+        profileDiagnosticContext(record),
+      ));
+    }
+    if (
+      data.shape.kind !== 'diamond' ||
+      !Number.isSafeInteger(data.shape.radius) ||
+      data.shape.radius < 1 ||
+      data.shape.radius > 8
+    ) {
+      diagnostics.push(diagnostic(
+        'source',
+        'SPATIAL_SOURCE_SHAPE_INVALID',
+        `${path}.shape`,
+        'the fixed spatial-source shape must be a diamond with radius 1..=8',
+        profileDiagnosticContext(record),
+      ));
+    }
+    if (!['all', 'allies', 'hostiles'].includes(data.targetFilter)) {
+      diagnostics.push(diagnostic(
+        'source',
+        'SPATIAL_SOURCE_TARGET_FILTER_INVALID',
+        `${path}.targetFilter`,
+        'the target filter must be all, allies, or hostiles',
+        profileDiagnosticContext(record),
+      ));
+    }
+    if (!validPortableIdentifier(data.stackingId)) {
+      diagnostics.push(diagnostic(
+        'source',
+        'SPATIAL_SOURCE_STACKING_ID_INVALID',
+        `${path}.stackingId`,
+        'spatial-source stacking identity must be portable',
+        profileDiagnosticContext(record),
+      ));
+    }
+    const previousPolicy = stackingPolicies.get(data.stackingId);
+    if (previousPolicy !== undefined && previousPolicy !== data.stacking) {
+      diagnostics.push(diagnostic(
+        'source',
+        'SPATIAL_SOURCE_STACKING_POLICY_CONFLICT',
+        `${path}.stacking`,
+        `stacking identity ${data.stackingId} must use one policy across the PlayBundle`,
+        profileDiagnosticContext(record),
+      ));
+    }
+    stackingPolicies.set(data.stackingId, data.stacking);
+    if (
+      data.tenure.kind !== 'fixed' ||
+      !['globalTurnTransition', 'roundTransition', 'sourceTurnStart'].includes(
+        data.tenure.anchor,
+      ) ||
+      !Number.isSafeInteger(data.tenure.count) ||
+      data.tenure.count < 1 ||
+      data.tenure.count > 1_000
+    ) {
+      diagnostics.push(diagnostic(
+        'source',
+        'SPATIAL_SOURCE_TENURE_INVALID',
+        `${path}.tenure`,
+        'spatial-source tenure must be a supported fixed anchor with count 1..=1000',
+        profileDiagnosticContext(record),
+      ));
+    }
+    if (data.triggers.length < 1 || data.triggers.length > 4) {
+      diagnostics.push(diagnostic(
+        'source',
+        'SPATIAL_SOURCE_TRIGGER_LIMIT_INVALID',
+        `${path}.triggers`,
+        'a spatial source requires 1..=4 closed trigger procedures',
+        profileDiagnosticContext(record),
+      ));
+    }
+    let previousBoundaryOrder: number | undefined;
+    const sourceReferences =
+      resolvedReferences.get(globalDefinitionId(record)) ?? [];
+    for (const [index, trigger] of data.triggers.entries()) {
+      const triggerPath = `${path}.triggers[${index}]`;
+      const boundaryOrder = [
+        'enter',
+        'startTurn',
+        'endTurn',
+        'exit',
+      ].indexOf(trigger.boundary);
+      if (
+        boundaryOrder < 0 ||
+        (previousBoundaryOrder !== undefined &&
+          previousBoundaryOrder >= boundaryOrder)
+      ) {
+        diagnostics.push(diagnostic(
+          'source',
+          'SPATIAL_SOURCE_TRIGGERS_NOT_CANONICAL',
+          triggerPath,
+          'trigger boundaries must be unique and canonically sorted',
+          profileDiagnosticContext(record),
+        ));
+      }
+      previousBoundaryOrder = boundaryOrder;
+      const procedureRecord = sourceReferences
+        .map((reference) => recordsByGlobalId.get(reference))
+        .find(
+          (candidate) =>
+            candidate?.definition.id === trigger.procedureId &&
+            candidate.package.source.manifest.identity.id ===
+              trigger.procedureOwnerPackageId,
+        );
+      if (
+        procedureRecord?.definition.kind !== 'actionProcedure' ||
+        procedureRecord.definition.ownerPackageId !==
+          trigger.procedureOwnerPackageId ||
+        procedureRecord.definition.parameters.length !== 0
+      ) {
+        diagnostics.push(diagnostic(
+          'graph',
+          'SPATIAL_SOURCE_TRIGGER_PROCEDURE_INVALID',
+          `${triggerPath}.procedureId`,
+          'trigger procedures must resolve through the closed graph, have the exact owner package, and declare no parameters',
+          profileDiagnosticContext(record),
+        ));
+      }
+    }
+  }
+  for (const [packageId, count] of packageCounts) {
+    if (count > 128) {
+      diagnostics.push(diagnostic(
+        'source',
+        'SPATIAL_SOURCE_DEFINITION_LIMIT_EXCEEDED',
+        '$.materializedDefinitions',
+        `package ${packageId} has ${count} spatial sources; maximum is 128`,
+        {},
+      ));
+    }
+  }
+}
+
 function validateEffectCondition(
   condition: import('./play-bundle-types.js').ContentEffectData['condition'],
   path: string,
@@ -7445,6 +7675,7 @@ function materializeDefinitions(
               | 'characterClass'
               | 'characterFeature'
               | 'effect'
+              | 'spatialSource'
               | 'item'
               | 'support';
           }
@@ -7455,6 +7686,7 @@ function materializeDefinitions(
         record.definition.kind === 'characterClass' ||
         record.definition.kind === 'characterFeature' ||
         record.definition.kind === 'effect' ||
+        record.definition.kind === 'spatialSource' ||
         record.definition.kind === 'item' ||
         record.definition.kind === 'support',
     )
@@ -7485,6 +7717,8 @@ function materializeDefinitions(
                 ? materializedCharacterFeatureData(definition.characterFeature)
                 : definition.kind === 'effect'
                   ? materializedEffectData(definition.effect)
+                  : definition.kind === 'spatialSource'
+                    ? definition.spatialSource
             : definition.kind === 'item'
               ? materializedItemData(definition.item)
             : materializedSupportSemantic(definition);

@@ -237,6 +237,13 @@ export type RpgIrOperation =
       readonly effectDefinitionId: string;
     }
   | {
+      readonly kind: 'createSpatialSource';
+      readonly spatialSourceDefinitionId: string;
+      readonly instanceId: string;
+      readonly owner: RpgIrSubject;
+      readonly source: RpgIrSubject;
+    }
+  | {
       readonly kind: 'move';
       readonly subject: RpgIrSubject;
       readonly deltaX: RpgIrFormula;

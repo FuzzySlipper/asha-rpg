@@ -4,6 +4,7 @@ export declare const RPG_OPERATION_VERSIONS: {
     readonly "operation.applyEffect": 1;
     readonly "operation.applyModifier": 1;
     readonly "operation.changeResource": 1;
+    readonly "operation.createSpatialSource": 1;
     readonly "operation.damage": 2;
     readonly "operation.heal": 1;
     readonly "operation.move": 1;
@@ -23,6 +24,7 @@ export declare const RPG_CAPABILITY_VERSIONS: {
     readonly "capability.random": 1;
     readonly "capability.reactions": 1;
     readonly "capability.resources": 1;
+    readonly "capability.spatial-sources": 1;
     readonly "capability.stats": 1;
     readonly "capability.vitality": 1;
 };

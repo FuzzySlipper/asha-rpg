@@ -101,6 +101,16 @@ const REGISTRATIONS: &[RpgOperationRegistration] = &[
         replay_implications: "Replay verifies explicit removal events and resulting authoritative active-effect state.",
     },
     RpgOperationRegistration {
+        id: "operation.createSpatialSource",
+        version: 1,
+        reads: &[RpgCapabilityId::Position, RpgCapabilityId::SpatialSources],
+        mutation_owner: RpgCapabilityId::SpatialSources,
+        validation_behavior: "Resolve one exact bounded spatial-source definition, owner/source, fixed origin, and canonical board cell set before staging the instance.",
+        accepted_events: &["SpatialSourceCreated", "SpatialSourceRefreshed", "SpatialSourceRemoved"],
+        trace_behavior: "Record exact definition/source/owner/instance, origin, included cells, stacking decision, tenure, and commit.",
+        replay_implications: "Replay verifies the exact source lifecycle events and authority-owned spatial-source state.",
+    },
+    RpgOperationRegistration {
         id: "operation.move",
         version: 1,
         reads: &[RpgCapabilityId::Position],
@@ -191,6 +201,10 @@ const CAPABILITIES: &[RpgCapabilityRegistration] = &[
     },
     RpgCapabilityRegistration {
         id: RpgCapabilityId::Effects,
+        version: 1,
+    },
+    RpgCapabilityRegistration {
+        id: RpgCapabilityId::SpatialSources,
         version: 1,
     },
 ];

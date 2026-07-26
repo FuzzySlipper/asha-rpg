@@ -265,6 +265,17 @@ export function removeEffect(options) {
     retainDefinitionOwnership(declaration, 'effectDefinitionId', options.effect);
     return operation(frozen(declaration), options.timing);
 }
+export function createSpatialSource(options) {
+    const declaration = {
+        kind: 'createSpatialSource',
+        spatialSourceDefinitionId: options.spatialSource.definitionId,
+        instanceId: options.instanceId,
+        owner: options.owner,
+        source: options.source,
+    };
+    retainDefinitionOwnership(declaration, 'spatialSourceDefinitionId', options.spatialSource);
+    return operation(frozen(declaration), options.timing);
+}
 function retainDefinitionOwnership(value, field, reference) {
     Object.defineProperty(value, authoredDefinitionOwnership, {
         value: frozenList([frozen({ field, reference })]),

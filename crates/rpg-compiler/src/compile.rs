@@ -2,16 +2,17 @@ use std::collections::{BTreeMap, BTreeSet};
 
 use rpg_core::{
     RpgCapabilityId, RpgContributionStackingPolicy, RpgRandomRequest, RpgRandomRequestKind,
-    MAXIMUM_RPG_DAMAGE_PARTS, MAXIMUM_RPG_DAMAGE_TAGS, MAXIMUM_RPG_MODIFIER_TURNS,
+    RpgSpatialSourceBoundary, MAXIMUM_RPG_DAMAGE_PARTS, MAXIMUM_RPG_DAMAGE_TAGS,
+    MAXIMUM_RPG_MODIFIER_TURNS,
 };
 use rpg_ir::{
     CompiledCharacterFeature, CompiledEffectDefinition, CompiledItemDefinition,
-    EquippedItemBindingRequirement, NormalizedRpgIr, RpgIrAction, RpgIrActivation,
-    RpgIrActivationTiming, RpgIrCheck, RpgIrFormula, RpgIrOperation, RpgIrPredicate, RpgIrProgram,
-    RpgIrRequirementKind, RpgIrResourceCost, RpgIrRollScope, RpgIrScalarTestDifficulty,
-    RpgIrSubject, RpgIrTargetKind, RpgIrTargetSelector, RpgIrTeamConstraint, Ruleset,
-    RulesetActivationBudget, RulesetHeterogeneousPoolProfile, RulesetScalarTestProfile,
-    RPG_IR_IDENTITY, RPG_IR_MAJOR,
+    CompiledSpatialSourceDefinition, EquippedItemBindingRequirement, NormalizedRpgIr, RpgIrAction,
+    RpgIrActivation, RpgIrActivationTiming, RpgIrCheck, RpgIrFormula, RpgIrOperation,
+    RpgIrPredicate, RpgIrProgram, RpgIrRequirementKind, RpgIrResourceCost, RpgIrRollScope,
+    RpgIrScalarTestDifficulty, RpgIrSubject, RpgIrTargetKind, RpgIrTargetSelector,
+    RpgIrTeamConstraint, Ruleset, RulesetActivationBudget, RulesetHeterogeneousPoolProfile,
+    RulesetScalarTestProfile, RPG_IR_IDENTITY, RPG_IR_MAJOR,
 };
 use serde::Serialize;
 
@@ -92,6 +93,8 @@ pub struct CompiledRpgRules {
     binding_requirements: BTreeMap<String, EquippedItemBindingRequirement>,
     character_features: BTreeMap<String, CompiledCharacterFeature>,
     effects: BTreeMap<String, CompiledEffectDefinition>,
+    spatial_sources: BTreeMap<String, CompiledSpatialSourceDefinition>,
+    spatial_source_triggers: BTreeMap<(String, RpgSpatialSourceBoundary), CompiledAction>,
     items: BTreeMap<String, CompiledItemDefinition>,
     calculation_selectors: BTreeMap<String, CompiledCalculationSelector>,
     contribution_stacking_groups: BTreeMap<String, RpgContributionStackingPolicy>,
@@ -243,6 +246,44 @@ impl CompiledRpgRules {
             .collect();
     }
 
+    pub(crate) fn register_spatial_sources(
+        &mut self,
+        definitions: &[CompiledSpatialSourceDefinition],
+    ) {
+        self.spatial_source_triggers = definitions
+            .iter()
+            .flat_map(|definition| {
+                definition.triggers.iter().map(|trigger| {
+                    let action_id = trigger.operation_path.clone();
+                    let body = trigger.body.clone();
+                    (
+                        (definition.definition_id.clone(), trigger.boundary),
+                        compile_action(
+                            RpgIrAction {
+                                id: action_id.clone(),
+                                name: action_id,
+                                source_path: trigger.operation_path.clone(),
+                                tags: Vec::new(),
+                                targets: body.targets,
+                                check: body.check,
+                                roll_scope: body.roll_scope,
+                                costs: body.costs,
+                                activation: body.activation,
+                                program: body.program,
+                            },
+                            None,
+                        ),
+                    )
+                })
+            })
+            .collect();
+        self.spatial_sources = definitions
+            .iter()
+            .cloned()
+            .map(|definition| (definition.definition_id.clone(), definition))
+            .collect();
+    }
+
     pub(crate) fn register_contribution_contracts(&mut self, ruleset: &Ruleset) {
         let domains = ruleset
             .provides
@@ -335,6 +376,19 @@ impl CompiledRpgRules {
 
     pub(crate) fn effect(&self, definition_id: &str) -> Option<&CompiledEffectDefinition> {
         self.effects.get(definition_id)
+    }
+
+    pub fn spatial_source(&self, definition_id: &str) -> Option<&CompiledSpatialSourceDefinition> {
+        self.spatial_sources.get(definition_id)
+    }
+
+    pub(crate) fn spatial_source_trigger(
+        &self,
+        definition_id: &str,
+        boundary: RpgSpatialSourceBoundary,
+    ) -> Option<&CompiledAction> {
+        self.spatial_source_triggers
+            .get(&(definition_id.to_owned(), boundary))
     }
 
     pub(crate) fn calculation_selector(
@@ -691,6 +745,8 @@ pub(crate) fn compile_normalized_rpg_ir_with_ruleset(
         binding_requirements: BTreeMap::new(),
         character_features: BTreeMap::new(),
         effects: BTreeMap::new(),
+        spatial_sources: BTreeMap::new(),
+        spatial_source_triggers: BTreeMap::new(),
         items: BTreeMap::new(),
         calculation_selectors: BTreeMap::new(),
         contribution_stacking_groups: BTreeMap::new(),
@@ -847,6 +903,7 @@ fn collect_program_random_plan(
             RpgIrOperation::MoveToCell { .. }
             | RpgIrOperation::Push { .. }
             | RpgIrOperation::Slide { .. } => {}
+            RpgIrOperation::CreateSpatialSource { .. } => {}
             RpgIrOperation::OpenReaction { .. } => {}
         },
         RpgIrProgram::Sequence { steps } => {
@@ -2106,6 +2163,22 @@ impl<'a> Validator<'a> {
                         format!("{path}.maximumDistance"),
                         "slide maximum distance must be between 1 and 64",
                     );
+                }
+            }
+            RpgIrOperation::CreateSpatialSource {
+                spatial_source_definition_id,
+                instance_id,
+                owner,
+                source,
+            } => {
+                self.require_capability(RpgCapabilityId::SpatialSources.as_str(), path);
+                self.require_identifier(
+                    spatial_source_definition_id,
+                    &format!("{path}.spatialSourceDefinitionId"),
+                );
+                self.require_identifier(instance_id, &format!("{path}.instanceId"));
+                if *owner == RpgIrSubject::Target || *source == RpgIrSubject::Target {
+                    self.require_target_binding(path, target_bound, action_target_maximum);
                 }
             }
             RpgIrOperation::OpenReaction {

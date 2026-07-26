@@ -19,7 +19,7 @@ use serde::{Deserialize, Serialize};
 pub const RPG_SCENARIO_SCHEMA_ID: &str = "asha.rpg.scenario";
 pub const RPG_SCENARIO_SCHEMA_VERSION: u32 = 3;
 pub const RPG_ENCOUNTER_VIEW_SCHEMA_ID: &str = "asha.rpg.encounter.view";
-pub const RPG_ENCOUNTER_VIEW_SCHEMA_VERSION: u32 = 14;
+pub const RPG_ENCOUNTER_VIEW_SCHEMA_VERSION: u32 = 15;
 pub const RPG_END_TURN_CONTROL_ID: &str = "control.end-turn";
 pub const RPG_LINE_OF_EFFECT_OBSTRUCTION_ID: &str = "line-of-effect.obstruction";
 pub const RPG_LINE_OF_EFFECT_OBSTRUCTION_VERSION: u32 = 1;
@@ -277,6 +277,42 @@ pub struct RpgEffectView {
     pub contributions: Vec<rpg_core::RpgScalarContributionDefinition>,
     pub outcome_band_shifts: Vec<rpg_core::RpgOutcomeBandShiftDefinition>,
     pub pool_contributions: Vec<rpg_core::RpgPoolContributionDefinition>,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase", deny_unknown_fields)]
+pub struct RpgSpatialSourceTriggerEvidenceView {
+    pub sequence: u64,
+    pub state_revision: u64,
+    pub boundary: rpg_core::RpgSpatialSourceBoundary,
+    pub cell_id: String,
+    pub participant_id: String,
+    pub operation_path: String,
+    pub disposition: rpg_core::RpgSpatialSourceTriggerDisposition,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase", deny_unknown_fields)]
+pub struct RpgSpatialSourceView {
+    pub instance_id: String,
+    pub definition_id: String,
+    pub definition_version: u32,
+    pub label: String,
+    pub description: Option<String>,
+    pub owner_entity_id: String,
+    pub source_entity_id: String,
+    pub origin: GridPosition,
+    pub included_cell_ids: Vec<String>,
+    pub radius: u32,
+    pub target_filter: rpg_core::RpgSpatialSourceTargetFilter,
+    pub stacking_id: String,
+    pub stacking: rpg_core::RpgEffectStackingPolicy,
+    pub tenure: rpg_core::RpgEffectTenure,
+    pub duration_anchor: rpg_core::RpgEffectDurationAnchor,
+    pub remaining_count: u32,
+    pub application_revision: u64,
+    pub trigger_boundaries: Vec<rpg_core::RpgSpatialSourceBoundary>,
+    pub trigger_evidence: Vec<RpgSpatialSourceTriggerEvidenceView>,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
@@ -645,6 +681,7 @@ pub struct RpgEncounterView {
     pub random_source: RpgRandomSourceBinding,
     pub board: RpgBoardSetup,
     pub participants: Vec<RpgParticipantView>,
+    pub spatial_sources: Vec<RpgSpatialSourceView>,
     pub turn: RpgTurnState,
     pub accepted_activations_this_turn: u32,
     pub accepted_activation_ceiling: Option<u32>,
@@ -1625,7 +1662,8 @@ fn validate_board(
                         | MaterializedContentDefinitionKind::CharacterClass
                         | MaterializedContentDefinitionKind::CharacterFeature
                         | MaterializedContentDefinitionKind::Effect
-                        | MaterializedContentDefinitionKind::Item,
+                        | MaterializedContentDefinitionKind::Item
+                        | MaterializedContentDefinitionKind::SpatialSource,
                     ) => diagnostics.push(scenario_diagnostic(
                         "RPG_SCENARIO_CELL_DEFINITION_INCOMPATIBLE",
                         format!("{capability_path}.definitionId"),
@@ -1858,6 +1896,8 @@ pub(crate) fn validate_derived_state(
     state: &RpgCapabilityState,
 ) -> Vec<RpgScenarioDiagnostic> {
     let mut diagnostics = Vec::new();
+    let mut non_independent_spatial_stacks = BTreeSet::new();
+    let mut independent_spatial_stacks = BTreeSet::new();
     for (entity_index, entity) in state.entities().enumerate() {
         let mut non_independent_stacks = BTreeSet::new();
         let mut independent_stacks = BTreeSet::new();
@@ -1962,6 +2002,51 @@ pub(crate) fn validate_derived_state(
                     "active effects violate the compiled source-aware stacking invariant",
                 ));
             }
+        }
+    }
+    for (source_index, source) in state.spatial_sources().enumerate() {
+        let source_path = format!("$.state.spatialSources[{source_index}]");
+        let definition = bundle.spatial_sources().iter().find(|definition| {
+            definition.definition_id == source.definition_id()
+                && definition.definition_version == source.definition_version()
+        });
+        let valid = definition.is_some_and(|definition| {
+            state.entity(source.owner_entity_id()).is_some()
+                && state.entity(source.source_entity_id()).is_some()
+                && source.stacking_id() == definition.stacking_id
+                && source.stacking() == definition.stacking
+                && source.duration_anchor() == definition.duration_anchor
+                && source.remaining_count() <= definition.duration_count
+                && source.application_revision() <= state.revision()
+                && source.trigger_revision() <= state.revision()
+        });
+        if !valid {
+            diagnostics.push(scenario_diagnostic(
+                "RPG_CHECKPOINT_SPATIAL_SOURCE_STATE_MISMATCH",
+                &source_path,
+                format!(
+                    "active spatial source {} does not match its compiled definition, entities, duration, or revision",
+                    source.instance_id()
+                ),
+            ));
+        }
+        let stacking_valid = match source.stacking() {
+            rpg_core::RpgEffectStackingPolicy::IndependentBySource => independent_spatial_stacks
+                .insert((
+                    source.stacking_id().to_owned(),
+                    source.source_entity_id().to_owned(),
+                )),
+            rpg_core::RpgEffectStackingPolicy::Replace
+            | rpg_core::RpgEffectStackingPolicy::Refresh => {
+                non_independent_spatial_stacks.insert(source.stacking_id().to_owned())
+            }
+        };
+        if !stacking_valid {
+            diagnostics.push(scenario_diagnostic(
+                "RPG_CHECKPOINT_SPATIAL_SOURCE_STACKING_MISMATCH",
+                &source_path,
+                "active spatial sources violate the compiled source-aware stacking invariant",
+            ));
         }
     }
     diagnostics
@@ -2682,6 +2767,52 @@ pub(crate) fn validate_restored_encounter(
             rejection.path,
             format!("{}: {}", rejection.code, rejection.message),
         ));
+    }
+    let cell_ids_by_position = authority
+        .scenario
+        .board
+        .cells
+        .iter()
+        .map(|cell| (cell.position, cell.id.as_str()))
+        .collect::<BTreeMap<_, _>>();
+    for (index, source) in state.spatial_sources().enumerate() {
+        let path = format!("$.state.spatialSources[{index}]");
+        let Some(definition) = rules.spatial_source(source.definition_id()) else {
+            diagnostics.push(scenario_diagnostic(
+                "RPG_CHECKPOINT_SPATIAL_SOURCE_DEFINITION_UNKNOWN",
+                format!("{path}.definitionId"),
+                format!(
+                    "active spatial source {} references an unavailable definition",
+                    source.instance_id()
+                ),
+            ));
+            continue;
+        };
+        let mut expected_cells = cell_ids_by_position
+            .iter()
+            .filter_map(|(position, cell_id)| {
+                let distance = source
+                    .origin()
+                    .x
+                    .abs_diff(position.x)
+                    .saturating_add(source.origin().y.abs_diff(position.y));
+                (distance <= definition.radius).then(|| (*cell_id).to_owned())
+            })
+            .collect::<Vec<_>>();
+        expected_cells.sort();
+        let geometry_valid = cell_ids_by_position.contains_key(&source.origin())
+            && source.definition_version() == definition.definition_version
+            && source.included_cell_ids() == expected_cells;
+        if !geometry_valid {
+            diagnostics.push(scenario_diagnostic(
+                "RPG_CHECKPOINT_SPATIAL_SOURCE_GEOMETRY_MISMATCH",
+                format!("{path}.includedCellIds"),
+                format!(
+                    "active spatial source {} must match its fixed compiled diamond over the restored Scenario",
+                    source.instance_id()
+                ),
+            ));
+        }
     }
     for (index, entry) in authority.log.iter().enumerate() {
         let expected_sequence = u64::try_from(index).unwrap_or(u64::MAX).saturating_add(1);

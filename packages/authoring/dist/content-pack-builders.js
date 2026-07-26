@@ -145,6 +145,35 @@ export function defineEffectDefinition(input) {
         },
     });
 }
+export function defineSpatialSourceDefinition(input) {
+    const { spatialSource, lowLevelReferences, ...definition } = input;
+    const procedureReferences = spatialSource.triggers.map(({ procedure }) => ({
+        definitionId: procedure.id,
+    }));
+    return immutable({
+        ...definition,
+        kind: 'spatialSource',
+        lowLevelReferences: uniqueDefinitionReferences([
+            ...(lowLevelReferences ?? []),
+            ...procedureReferences,
+        ]),
+        spatialSource: {
+            ...spatialSource,
+            schema: {
+                identity: 'asha.rpg.spatial-source',
+                version: 1,
+            },
+            triggers: [...spatialSource.triggers]
+                .map(({ boundary, procedure }) => ({
+                boundary,
+                procedureId: procedure.id,
+                procedureOwnerPackageId: procedure.ownerPackageId,
+            }))
+                .sort((left, right) => spatialSourceBoundaryOrder(left.boundary) -
+                spatialSourceBoundaryOrder(right.boundary)),
+        },
+    });
+}
 function normalizeOutcomeBandShifts(shifts) {
     return shifts
         .map((shift) => ({
@@ -405,6 +434,17 @@ export function composePlayBundle(input) {
 }
 function emptyPatch() {
     return immutable({ version: 1, operations: [] });
+}
+function uniqueDefinitionReferences(references) {
+    const byIdentity = new Map();
+    for (const reference of references) {
+        const key = `${reference.importAs ?? ''}#${reference.definitionId}`;
+        byIdentity.set(key, { ...reference });
+    }
+    return [...byIdentity.values()].sort((left, right) => `${left.importAs ?? ''}#${left.definitionId}`.localeCompare(`${right.importAs ?? ''}#${right.definitionId}`));
+}
+function spatialSourceBoundaryOrder(boundary) {
+    return ['enter', 'startTurn', 'endTurn', 'exit'].indexOf(boundary);
 }
 function patchPlane(patch) {
     const planes = new Set(patch.operations.map((operation) => operation.plane));

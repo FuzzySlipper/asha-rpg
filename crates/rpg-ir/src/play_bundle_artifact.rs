@@ -5,13 +5,14 @@ use rpg_core::{
     RpgConditionDefinition, RpgContributionStackingPolicy, RpgDamageResponseDefinition,
     RpgEffectDurationAnchor, RpgEffectStackingPolicy, RpgEffectTenure, RpgNaturalDieEffect,
     RpgOutcomeBandShiftDefinition, RpgPoolContributionDefinition, RpgScalarContributionDefinition,
+    RpgSpatialSourceBoundary, RpgSpatialSourceTargetFilter,
 };
 use serde::{Deserialize, Serialize};
 use serde_json::Value;
 
 pub const PREPARED_PLAY_BUNDLE_IDENTITY: &str = "asha.rpg.play-bundle.prepared";
 pub const COMPILED_PLAY_BUNDLE_IDENTITY: &str = "asha.rpg.play-bundle.compiled";
-pub const PLAY_BUNDLE_ARTIFACT_MAJOR: u32 = 12;
+pub const PLAY_BUNDLE_ARTIFACT_MAJOR: u32 = 13;
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase", deny_unknown_fields)]
@@ -405,6 +406,7 @@ pub enum MaterializedContentDefinitionKind {
     CharacterClass,
     CharacterFeature,
     Effect,
+    SpatialSource,
     Item,
     Support,
 }
@@ -415,12 +417,14 @@ pub const ITEM_IDENTITY: &str = "asha.rpg.item";
 pub const CHARACTER_CLASS_IDENTITY: &str = "asha.rpg.character-class";
 pub const CHARACTER_FEATURE_IDENTITY: &str = "asha.rpg.character-feature";
 pub const EFFECT_DEFINITION_IDENTITY: &str = "asha.rpg.effect";
+pub const SPATIAL_SOURCE_DEFINITION_IDENTITY: &str = "asha.rpg.spatial-source";
 pub const ACTION_DEFINITION_VERSION: u32 = 1;
 pub const ACTION_PROCEDURE_VERSION: u32 = 1;
 pub const ITEM_VERSION: u32 = 4;
 pub const CHARACTER_CLASS_VERSION: u32 = 1;
 pub const CHARACTER_FEATURE_VERSION: u32 = 4;
 pub const EFFECT_DEFINITION_VERSION: u32 = 2;
+pub const SPATIAL_SOURCE_DEFINITION_VERSION: u32 = 1;
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase", deny_unknown_fields)]
@@ -807,6 +811,59 @@ pub struct CompiledEffectDefinition {
     pub outcome_band_shifts: Vec<RpgOutcomeBandShiftDefinition>,
     pub pool_contributions: Vec<RpgPoolContributionDefinition>,
     pub damage_responses: Vec<RpgDamageResponseDefinition>,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase", deny_unknown_fields)]
+pub struct SpatialSourceDefinitionSchema {
+    pub identity: String,
+    pub version: u32,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase", deny_unknown_fields)]
+pub struct MaterializedSpatialSourceTrigger {
+    pub boundary: RpgSpatialSourceBoundary,
+    pub procedure_id: String,
+    pub procedure_owner_package_id: String,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase", deny_unknown_fields)]
+pub struct MaterializedSpatialSourceDefinitionData {
+    pub schema: SpatialSourceDefinitionSchema,
+    pub shape: crate::RpgIrAreaShape,
+    pub target_filter: RpgSpatialSourceTargetFilter,
+    pub stacking_id: String,
+    pub stacking: RpgEffectStackingPolicy,
+    pub tenure: RpgEffectTenure,
+    pub triggers: Vec<MaterializedSpatialSourceTrigger>,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase", deny_unknown_fields)]
+pub struct CompiledSpatialSourceTrigger {
+    pub boundary: RpgSpatialSourceBoundary,
+    pub procedure_id: String,
+    pub operation_path: String,
+    pub body: crate::RpgIrActionBody,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase", deny_unknown_fields)]
+pub struct CompiledSpatialSourceDefinition {
+    pub definition_id: String,
+    pub definition_version: u32,
+    pub label: String,
+    pub description: Option<String>,
+    pub radius: u32,
+    pub target_filter: RpgSpatialSourceTargetFilter,
+    pub stacking_id: String,
+    pub stacking: RpgEffectStackingPolicy,
+    pub tenure: RpgEffectTenure,
+    pub duration_anchor: RpgEffectDurationAnchor,
+    pub duration_count: u32,
+    pub triggers: Vec<CompiledSpatialSourceTrigger>,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
