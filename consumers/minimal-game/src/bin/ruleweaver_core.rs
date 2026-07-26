@@ -1238,6 +1238,27 @@ fn prove_fixed_spatial_source_lifecycle(bundle: asha_rpg::CompiledPlayBundle) {
             ("fixed-hazard", ACTOR_ID)
         ]
     );
+    let first_target_source = overlap_view
+        .spatial_sources
+        .iter()
+        .find(|source| source.source_entity_id == FIRST_TARGET_ID)
+        .expect("second independently owned spatial source");
+    assert!(
+        first_target_source.trigger_evidence.is_empty(),
+        "new same-instance source must not inherit another source's trigger evidence"
+    );
+    let actor_source = overlap_view
+        .spatial_sources
+        .iter()
+        .find(|source| source.source_entity_id == ACTOR_ID)
+        .expect("original independently owned spatial source");
+    assert!(
+        actor_source.trigger_evidence.iter().any(|evidence| {
+            evidence.boundary == asha_rpg::RpgSpatialSourceBoundary::StartTurn
+                && evidence.participant_id == FIRST_TARGET_ID
+        }),
+        "original source retains only its own trigger history"
+    );
 
     let mut application_revision =
         RpgAuthoritySession::from_scenario(bundle, setup).expect("application-revision setup");
