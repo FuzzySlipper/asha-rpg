@@ -126,6 +126,12 @@ Representative consumer code lives in
 `examples/representative-actions.ts`; its normalized artifact is sent through
 the Rust compiler during `npm test`.
 
+The cross-contract core composition witness is documented in
+[`docs/ruleweaver-core-composition.md`](docs/ruleweaver-core-composition.md).
+Its TypeScript source prepares a bounded scalar/economy/item/procedure bundle,
+and the independent Git consumer proves the exact Rust authority, rejection,
+checkpoint, and replay behavior without a consumer-side evaluator.
+
 Derivation, ordered typed mixins, local relational patches, package overlays,
 and exposed configuration options are materialized deterministically during
 authoring compilation. The emitted artifact contains no runtime inheritance or
@@ -162,6 +168,8 @@ cargo test --workspace
 cargo clippy --workspace --all-targets -- -D warnings
 node examples/generate-portable-replay-source.ts | \
   cargo run --manifest-path consumers/minimal-game/Cargo.toml
+node examples/generate-ruleweaver-core-source.ts | \
+  cargo run --manifest-path consumers/minimal-game/Cargo.toml --bin ruleweaver_core
 ```
 
 The canonical architecture is [docs/design.md](docs/design.md), and the public

@@ -8,3 +8,4 @@ publish = false
 
 [dependencies]
 asha-rpg = { git = "https://github.com/FuzzySlipper/asha-rpg.git", rev = "7c59d9ebc19bc4ee1aacdf74ba5242afecf56b38" }
+serde_json = "1"

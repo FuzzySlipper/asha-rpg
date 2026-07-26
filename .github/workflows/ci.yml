@@ -18,3 +18,4 @@ jobs:
       - run: npm test
       - run: cargo test --workspace
       - run: node examples/generate-portable-replay-source.ts | cargo run --manifest-path consumers/minimal-game/Cargo.toml
+      - run: node examples/generate-ruleweaver-core-source.ts | cargo run --manifest-path consumers/minimal-game/Cargo.toml --bin ruleweaver_core

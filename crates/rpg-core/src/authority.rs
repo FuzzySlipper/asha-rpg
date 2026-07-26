@@ -1839,7 +1839,12 @@ pub struct RpgOutcomeBandShiftLedger {
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
-#[serde(tag = "kind", rename_all = "camelCase", deny_unknown_fields)]
+#[serde(
+    tag = "kind",
+    rename_all = "camelCase",
+    rename_all_fields = "camelCase",
+    deny_unknown_fields
+)]
 pub enum RpgNaturalDieEffect {
     SetBand { band_id: String },
     Shift { amount: i32 },
