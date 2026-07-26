@@ -54,6 +54,7 @@ type RulesetInput = Omit<Ruleset, 'provides'> & {
         readonly contributionStackingGroups?: Ruleset['provides']['contributionStackingGroups'];
         readonly scalarTestProfiles?: Ruleset['provides']['scalarTestProfiles'];
         readonly activationBudgets?: Ruleset['provides']['activationBudgets'];
+        readonly movementAllowanceBudgetId?: Ruleset['provides']['movementAllowanceBudgetId'];
         readonly heterogeneousPoolProfiles?: Ruleset['provides']['heterogeneousPoolProfiles'];
     };
 };

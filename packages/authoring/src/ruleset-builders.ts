@@ -118,6 +118,7 @@ type RulesetInput = Omit<Ruleset, 'provides'> & {
     readonly contributionStackingGroups?: Ruleset['provides']['contributionStackingGroups'];
     readonly scalarTestProfiles?: Ruleset['provides']['scalarTestProfiles'];
     readonly activationBudgets?: Ruleset['provides']['activationBudgets'];
+    readonly movementAllowanceBudgetId?: Ruleset['provides']['movementAllowanceBudgetId'];
     readonly heterogeneousPoolProfiles?: Ruleset['provides']['heterogeneousPoolProfiles'];
   };
 };
@@ -153,6 +154,12 @@ export function defineRuleset(input: RulesetInput): Ruleset {
       activationBudgets: [...(input.provides.activationBudgets ?? [])].sort(
         (left, right) => left.id.localeCompare(right.id),
       ),
+      ...(input.provides.movementAllowanceBudgetId === undefined
+        ? {}
+        : {
+            movementAllowanceBudgetId:
+              input.provides.movementAllowanceBudgetId,
+          }),
       heterogeneousPoolProfiles: [
         ...(input.provides.heterogeneousPoolProfiles ?? []),
       ].sort((left, right) => left.id.localeCompare(right.id)),

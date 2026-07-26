@@ -26,6 +26,11 @@ export function defineRuleset(input) {
             ].sort((left, right) => left.id.localeCompare(right.id)),
             scalarTestProfiles: [...(input.provides.scalarTestProfiles ?? [])].sort((left, right) => left.id.localeCompare(right.id)),
             activationBudgets: [...(input.provides.activationBudgets ?? [])].sort((left, right) => left.id.localeCompare(right.id)),
+            ...(input.provides.movementAllowanceBudgetId === undefined
+                ? {}
+                : {
+                    movementAllowanceBudgetId: input.provides.movementAllowanceBudgetId,
+                }),
             heterogeneousPoolProfiles: [
                 ...(input.provides.heterogeneousPoolProfiles ?? []),
             ].sort((left, right) => left.id.localeCompare(right.id)),

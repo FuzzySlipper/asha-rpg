@@ -174,12 +174,18 @@ test("Variable activation budgets require exact owner-bound action declarations"
           initialAmount: 3,
         },
       ],
+      movementAllowanceBudgetId: "normal",
       numericDomains: [
         { id: "activation", minimum: 0, maximum: 3 },
         ...semanticRuleset.provides.numericDomains,
       ],
     },
   });
+  assert.equal(
+    variableRuleset.provides.movementAllowanceBudgetId,
+    "normal",
+    "the Ruleset builder must retain the authoritative movement-budget binding",
+  );
   const normal = rulesetActivationBudget(variableRuleset, "normal");
   const prepare = (activationDeclaration?: ReturnType<typeof activation>) => {
     const authoredAction = action({
