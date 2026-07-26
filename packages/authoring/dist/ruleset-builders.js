@@ -4,6 +4,7 @@ const authoredRulesetValueOwnership = Symbol('asha-rpg.authored-ruleset-value-ow
 const rulesetCalculationSelectorReferenceBrand = Symbol('asha-rpg.calculation-selector-reference');
 const rulesetContributionStackingGroupReferenceBrand = Symbol('asha-rpg.contribution-stacking-group-reference');
 const rulesetScalarTestProfileReferenceBrand = Symbol('asha-rpg.scalar-test-profile-reference');
+const rulesetActivationBudgetReferenceBrand = Symbol('asha-rpg.activation-budget-reference');
 export function defineRuleset(input) {
     return immutable({
         ...input,
@@ -23,6 +24,7 @@ export function defineRuleset(input) {
                 ...(input.provides.contributionStackingGroups ?? []),
             ].sort((left, right) => left.id.localeCompare(right.id)),
             scalarTestProfiles: [...(input.provides.scalarTestProfiles ?? [])].sort((left, right) => left.id.localeCompare(right.id)),
+            activationBudgets: [...(input.provides.activationBudgets ?? [])].sort((left, right) => left.id.localeCompare(right.id)),
         },
     });
 }
@@ -92,6 +94,16 @@ export function rulesetScalarTestProfile(ruleset, id) {
         rulesetId: ruleset.identity.id,
         id,
         [rulesetScalarTestProfileReferenceBrand]: true,
+    });
+}
+export function rulesetActivationBudget(ruleset, id) {
+    if (!ruleset.provides.activationBudgets.some((candidate) => candidate.id === id)) {
+        throw new Error(`ruleset ${ruleset.identity.id}@${ruleset.identity.version} does not provide activation budget ${id}`);
+    }
+    return immutable({
+        rulesetId: ruleset.identity.id,
+        id,
+        [rulesetActivationBudgetReferenceBrand]: true,
     });
 }
 export function rulesetValueId(reference) {

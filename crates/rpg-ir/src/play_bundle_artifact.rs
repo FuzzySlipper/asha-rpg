@@ -10,7 +10,7 @@ use serde_json::Value;
 
 pub const PREPARED_PLAY_BUNDLE_IDENTITY: &str = "asha.rpg.play-bundle.prepared";
 pub const COMPILED_PLAY_BUNDLE_IDENTITY: &str = "asha.rpg.play-bundle.compiled";
-pub const PLAY_BUNDLE_ARTIFACT_MAJOR: u32 = 4;
+pub const PLAY_BUNDLE_ARTIFACT_MAJOR: u32 = 5;
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase", deny_unknown_fields)]
@@ -154,6 +154,32 @@ pub struct RulesetScalarTestProfile {
     pub natural_die_rules: Vec<RulesetNaturalDieRule>,
 }
 
+#[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub enum RulesetActivationTiming {
+    Action,
+    Reaction,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub enum RulesetActivationBudgetResetBoundary {
+    OwnerTurnStart,
+    RoundStart,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase", deny_unknown_fields)]
+pub struct RulesetActivationBudget {
+    pub id: String,
+    pub version: u32,
+    pub label: String,
+    pub numeric_domain_id: String,
+    pub timing: RulesetActivationTiming,
+    pub reset_boundary: RulesetActivationBudgetResetBoundary,
+    pub initial_amount: i32,
+}
+
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase", deny_unknown_fields)]
 pub struct RulesetProvisions {
@@ -167,6 +193,46 @@ pub struct RulesetProvisions {
     pub contribution_stacking_groups: Vec<RulesetContributionStackingGroupContract>,
     #[serde(default)]
     pub scalar_test_profiles: Vec<RulesetScalarTestProfile>,
+    #[serde(default)]
+    pub activation_budgets: Vec<RulesetActivationBudget>,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(tag = "id", rename_all_fields = "camelCase", deny_unknown_fields)]
+pub enum RulesetActionEconomyModel {
+    #[serde(rename = "action-economy.one-action-plus-reaction")]
+    OneActionPlusReaction { version: u32 },
+    #[serde(rename = "action-economy.variable-activation-budgets")]
+    VariableActivationBudgets {
+        version: u32,
+        accepted_activation_ceiling: u32,
+    },
+}
+
+impl RulesetActionEconomyModel {
+    pub fn id(&self) -> &'static str {
+        match self {
+            Self::OneActionPlusReaction { .. } => "action-economy.one-action-plus-reaction",
+            Self::VariableActivationBudgets { .. } => "action-economy.variable-activation-budgets",
+        }
+    }
+
+    pub fn version(&self) -> u32 {
+        match self {
+            Self::OneActionPlusReaction { version }
+            | Self::VariableActivationBudgets { version, .. } => *version,
+        }
+    }
+
+    pub fn accepted_activation_ceiling(&self) -> Option<u32> {
+        match self {
+            Self::OneActionPlusReaction { .. } => None,
+            Self::VariableActivationBudgets {
+                accepted_activation_ceiling,
+                ..
+            } => Some(*accepted_activation_ceiling),
+        }
+    }
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
@@ -176,7 +242,7 @@ pub struct RulesetModels {
     pub turns: VersionedRpgRequirement,
     pub initiative: VersionedRpgRequirement,
     pub reactions: VersionedRpgRequirement,
-    pub action_economy: VersionedRpgRequirement,
+    pub action_economy: RulesetActionEconomyModel,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]

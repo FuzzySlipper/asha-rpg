@@ -22,6 +22,7 @@ import {
   defineContentCatalog,
   defineContentPack,
   defineItemDefinition,
+  defineRuleset,
   equippedItemAttribute,
   hostile,
   itemBoundedIntegerAttribute,
@@ -982,6 +983,81 @@ test('uninvoked procedures reject interacting bounded domains that exceed semant
   );
 });
 
+test('uninvoked procedures retain variable activation contracts before invocation', () => {
+  const variableRuleset = defineRuleset({
+    ...contractTestRuleset,
+    models: {
+      ...contractTestRuleset.models,
+      actionEconomy: {
+        id: 'action-economy.variable-activation-budgets',
+        version: 1,
+        acceptedActivationCeiling: 4,
+      },
+    },
+    provides: {
+      ...contractTestRuleset.provides,
+      activationBudgets: [
+        {
+          id: 'normal',
+          version: 1,
+          label: 'Normal activations',
+          numericDomainId: 'integer',
+          timing: 'action',
+          resetBoundary: 'ownerTurnStart',
+          initialAmount: 3,
+        },
+      ],
+    },
+  });
+  if (basicAttackProcedure.implementation.kind !== 'inline') {
+    assert.fail('fixture procedure must be inline');
+  }
+  const activatedProcedure = defineActionProcedureDefinition({
+    ...basicAttackProcedure,
+    implementation: {
+      kind: 'inline',
+      template: {
+        ...basicAttackProcedure.implementation.template,
+        activation: {
+          timing: 'action',
+          costs: [
+            {
+              budget: {
+                rulesetId: variableRuleset.identity.id,
+                id: 'normal',
+              },
+              amount: 1,
+            },
+          ],
+        },
+      },
+    },
+  });
+  const accepted = prepareUninvokedProcedure(
+    activatedProcedure,
+    variableRuleset,
+  );
+  if (!accepted.ok) assert.fail(JSON.stringify(accepted.diagnostics));
+  const compilation = compilePrepared(accepted.prepared);
+  assert.equal(compilation.ok, true, JSON.stringify(compilation));
+
+  const missing = prepareUninvokedProcedure(
+    basicAttackProcedure,
+    variableRuleset,
+  );
+  assert.equal(missing.ok, false);
+  if (!missing.ok) {
+    assert.ok(
+      missing.diagnostics.some(
+        (diagnostic) =>
+          diagnostic.code ===
+          'ACTION_PROCEDURE_ACTIVATION_MODEL_MISMATCH',
+      ),
+      JSON.stringify(missing.diagnostics),
+    );
+  }
+});
+
 test('missing, extra, wrong-typed, and wrong-owner invocation arguments fail preparation', () => {
   const cases = [
     {
@@ -1214,6 +1290,7 @@ function acceptedPreparedActions(
 
 function prepareUninvokedProcedure(
   procedureDefinition: ContentDefinition,
+  ruleset = contractTestRuleset,
 ): ReturnType<typeof preparePlayBundle> {
   const ownerPackageId =
     procedureDefinition.kind === 'actionProcedure'
@@ -1226,6 +1303,15 @@ function prepareUninvokedProcedure(
   const requirements = {
     operations: [{ id: 'operation.damage' as const, version: 1 }],
     capabilities: [
+      ...(ruleset.models.actionEconomy.id ===
+      'action-economy.variable-activation-budgets'
+        ? [
+            {
+              id: 'capability.activation-budgets' as const,
+              version: 1,
+            },
+          ]
+        : []),
       { id: 'capability.defenses' as const, version: 1 },
       { id: 'capability.random' as const, version: 1 },
       { id: 'capability.vitality' as const, version: 1 },
@@ -1258,7 +1344,7 @@ function prepareUninvokedProcedure(
   return preparePlayBundle({
     bundle: composePlayBundle({
       identity: { id: 'procedure.uninvoked.bundle', version: '1.0.0' },
-      ruleset: contractTestRuleset,
+      ruleset,
       base: contentPackRequest({
         id: ownerPackageId,
         version: '1.0.0',

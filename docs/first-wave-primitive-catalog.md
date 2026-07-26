@@ -5,8 +5,8 @@
 This document is the architecture brief produced by Den task `#6179`. It
 selects the smallest coherent semantic expansion needed for three independently
 authored representative kits. It is a versioned implementation map. `F0@1` and
-`F1@1` are implemented by tasks `#6180` and `#6197`; `F2` through `F6` remain
-planned and are not support claims. Current support remains exactly what `design.md`,
+`F1@1`, and `F2@1` are implemented by tasks `#6180`, `#6197`, and `#6198`;
+`F3` through `F6` remain planned and are not support claims. Current support remains exactly what `design.md`,
 `non-claims.md`, and the checked-in code say.
 
 The catalog is intentionally not a Foundry adapter, a source-system
@@ -77,7 +77,7 @@ the neutral families `F0` through `F6`.
 | sealed class/feature selection and attack contribution provenance | `P15` subset, `P16` subset, `PFX-P09` subset | `S4`: already supported; generalized through implemented `F0` |
 | typed contextual contributions and deterministic suppression | `P16`, `PFX-M03`, `PFX-C04`, `FFG-M05` | `F0@1`: implemented by `#6180` |
 | generic scalar tests, ordered outcome bands, critical policy, and band adjustment | `P02`, `P03`, `PFX-O02`, `PFX-D05`, `FFG-E07` outcome subset, `FFG-C10` | `F1`: implemented |
-| variable activation budgets | `P12` economy subset, `PFX-A01` | `F2`: needs generalization |
+| variable activation budgets | `P12` economy subset, `PFX-A01` | `F2`: implemented |
 | named effect instances with bounded authority-relative expiry | `P10`, `P11`, `PFX-E07`, `FFG-E07` effect subset | `F3`: requires a new primitive |
 | typed damage packets and qualified responses | `P06`, `P07`, `PFX-I06`, `P16` damage trace subset | `F4`: needs generalization |
 | bounded area selection and spatial legality | `P05`, `PFX-S08` | `F5`: requires a new primitive |

@@ -24,7 +24,10 @@ export const ASHA_RPG_PLAY_BUNDLE_TARGET = immutable({
         turns: { 'turn.ordered-one-action': 1 },
         initiative: { 'initiative.scenario-ordered': 1 },
         reactions: { 'reaction.before-damage-choice': 1 },
-        actionEconomy: { 'action-economy.one-action-plus-reaction': 1 },
+        actionEconomy: {
+            'action-economy.one-action-plus-reaction': 1,
+            'action-economy.variable-activation-budgets': 1,
+        },
     },
 });
 export function preparePlayBundle(options) {
@@ -97,7 +100,7 @@ export function preparePlayBundle(options) {
         })),
     ].sort(compareRelationship);
     const prepared = immutable({
-        schema: { identity: 'asha.rpg.play-bundle.prepared', major: 4 },
+        schema: { identity: 'asha.rpg.play-bundle.prepared', major: 5 },
         playBundleIdentity: options.bundle.identity,
         ruleset: options.bundle.ruleset,
         contentPacks: [...context.selected.values()]
@@ -145,6 +148,13 @@ function validateRuleset(ruleset, target, diagnostics) {
             continue;
         diagnostics.push(diagnostic('compatibility', 'RULESET_MODEL_UNSUPPORTED', `$.bundle.ruleset.models.${model}`, `ruleset model ${binding.id}@${binding.version} is not bound by Rust authority`));
     }
+    if (ruleset.models.actionEconomy.id ===
+        'action-economy.variable-activation-budgets' &&
+        (!Number.isSafeInteger(ruleset.models.actionEconomy.acceptedActivationCeiling) ||
+            ruleset.models.actionEconomy.acceptedActivationCeiling < 1 ||
+            ruleset.models.actionEconomy.acceptedActivationCeiling > 64)) {
+        diagnostics.push(diagnostic('compatibility', 'RULESET_ACTIVATION_CEILING_INVALID', '$.bundle.ruleset.models.actionEconomy.acceptedActivationCeiling', 'the variable activation-budget model requires a ceiling from 1 through 64'));
+    }
     requireIdentifier(ruleset.identity.id, '$.bundle.ruleset.identity.id', diagnostics);
     requireExactVersion(ruleset.identity.version, '$.bundle.ruleset.identity.version', diagnostics);
     if (ruleset.language.id !== target.language.id ||
@@ -191,6 +201,40 @@ function validateRuleset(ruleset, target, diagnostics) {
                 maximum: provision.maximum,
             });
         }
+    }
+    if (ruleset.provides.activationBudgets.length > 8) {
+        diagnostics.push(diagnostic('source', 'RULESET_ACTIVATION_BUDGET_LIMIT_EXCEEDED', '$.bundle.ruleset.provides.activationBudgets', 'a ruleset may declare at most 8 activation budgets'));
+    }
+    let previousBudgetId;
+    const activationBudgetIds = new Set();
+    for (const [index, budget] of ruleset.provides.activationBudgets.entries()) {
+        const domain = numericDomains.get(budget.numericDomainId);
+        const path = `$.bundle.ruleset.provides.activationBudgets[${index}]`;
+        const duplicate = activationBudgetIds.has(budget.id);
+        activationBudgetIds.add(budget.id);
+        if (duplicate ||
+            !validPortableIdentifier(budget.id) ||
+            (previousBudgetId !== undefined && previousBudgetId >= budget.id) ||
+            budget.version !== 1 ||
+            budget.label.trim().length === 0 ||
+            domain === undefined ||
+            domain.minimum > 0 ||
+            domain.maximum < 0 ||
+            !Number.isSafeInteger(budget.initialAmount) ||
+            budget.initialAmount < 0 ||
+            budget.initialAmount < (domain?.minimum ?? 0) ||
+            budget.initialAmount > (domain?.maximum ?? -1) ||
+            !['action', 'reaction'].includes(budget.timing) ||
+            !['ownerTurnStart', 'roundStart'].includes(budget.resetBoundary)) {
+            diagnostics.push(diagnostic('source', 'RULESET_ACTIVATION_BUDGET_INVALID', path, 'activation budgets must be unique sorted portable version-1 ids, labelled, non-negative, and use a declared domain containing zero and the initial amount'));
+        }
+        previousBudgetId = budget.id;
+    }
+    const variableActivationModel = ruleset.models.actionEconomy.id ===
+        'action-economy.variable-activation-budgets';
+    if (variableActivationModel !==
+        (ruleset.provides.activationBudgets.length > 0)) {
+        diagnostics.push(diagnostic('source', 'RULESET_ACTIVATION_BUDGET_MODEL_MISMATCH', '$.bundle.ruleset.provides.activationBudgets', 'only the variable activation-budget model may declare budgets, and it requires at least one'));
     }
     const selectorIds = new Set();
     const selectorDomains = new Map();
@@ -2006,7 +2050,7 @@ function validateActionProcedureGraph(records, resolvedReferences, ruleset, diag
             }
             if (record.definition.implementation.kind === 'inline') {
                 validateProcedureTemplateMarkers(record.definition.implementation.template, parameters, `${path}.implementation.template`, record, diagnostics, usedParameterIds);
-                validateProcedureInlineTemplate(record.definition.implementation.template, parameters, `${path}.implementation.template`, record, diagnostics);
+                validateProcedureInlineTemplate(record.definition.implementation.template, parameters, ruleset, `${path}.implementation.template`, record, diagnostics);
             }
             else {
                 validateProcedureInvocation(record, record.definition.implementation.invocation, parameters, resolvedReferences, recordsByGlobalId, ruleset, `${path}.implementation.invocation`, diagnostics, usedParameterIds);
@@ -2095,7 +2139,7 @@ function validateProcedureTemplateMarkers(value, parameters, path, record, diagn
         validateProcedureTemplateMarkers(child, parameters, `${path}.${field}`, record, diagnostics, usedParameterIds);
     }
 }
-function validateProcedureInlineTemplate(template, parameters, path, record, diagnostics) {
+function validateProcedureInlineTemplate(template, parameters, ruleset, path, record, diagnostics) {
     const substitutions = new Map([...parameters].map(([parameterId, parameter]) => [
         parameterId,
         procedureParameterValidationSample(parameter),
@@ -2112,10 +2156,61 @@ function validateProcedureInlineTemplate(template, parameters, path, record, dia
             return variant;
         }),
     ];
-    if (variants.every((variant) => isStructurallyValidActionBody(materializeProcedureTemplateForValidation(template, variant)))) {
+    const materializedVariants = variants.map((variant) => materializeProcedureTemplateForValidation(template, variant));
+    if (materializedVariants.some((materialized) => !isStructurallyValidActionBody(materialized))) {
+        diagnostics.push(diagnostic('source', 'ACTION_PROCEDURE_TEMPLATE_INVALID', path, 'procedure template does not materialize to a structurally valid action body', profileDiagnosticContext(record)));
         return;
     }
-    diagnostics.push(diagnostic('source', 'ACTION_PROCEDURE_TEMPLATE_INVALID', path, 'procedure template does not materialize to a structurally valid action body', profileDiagnosticContext(record)));
+    if (materializedVariants.some((materialized) => !procedureActivationContractIsValid(materialized, ruleset))) {
+        diagnostics.push(diagnostic('compatibility', 'ACTION_PROCEDURE_ACTIVATION_MODEL_MISMATCH', `${path}.activation`, 'procedure action and reaction activations must match the selected action-economy model', profileDiagnosticContext(record)));
+    }
+}
+function procedureActivationContractIsValid(body, ruleset) {
+    if (!isRecord(body))
+        return false;
+    const variableModel = ruleset.models.actionEconomy.id ===
+        'action-economy.variable-activation-budgets';
+    if (variableModel !== (body['activation'] !== undefined))
+        return false;
+    return procedureProgramActivationContractIsValid(body['program'], variableModel);
+}
+function procedureProgramActivationContractIsValid(program, variableModel) {
+    if (!isRecord(program) || typeof program['kind'] !== 'string')
+        return false;
+    switch (program['kind']) {
+        case 'operation': {
+            const operation = program['operation'];
+            if (!isRecord(operation) || operation['kind'] !== 'openReaction') {
+                return true;
+            }
+            const options = operation['options'];
+            return (Array.isArray(options) &&
+                options.every((option) => isRecord(option) &&
+                    variableModel === (option['activation'] !== undefined)));
+        }
+        case 'sequence':
+            return (Array.isArray(program['steps']) &&
+                program['steps'].every((step) => procedureProgramActivationContractIsValid(step, variableModel)));
+        case 'when':
+            return (procedureProgramActivationContractIsValid(program['then'], variableModel) &&
+                (program['otherwise'] === undefined ||
+                    procedureProgramActivationContractIsValid(program['otherwise'], variableModel)));
+        case 'repeat':
+        case 'forEachTarget':
+        case 'atomic':
+            return procedureProgramActivationContractIsValid(program['body'], variableModel);
+        case 'onCheck':
+            return ['hit', 'miss', 'saved', 'failed', 'noRoll'].every((branch) => program[branch] === undefined ||
+                procedureProgramActivationContractIsValid(program[branch], variableModel));
+        case 'onOutcome': {
+            const branches = program['branches'];
+            return (isRecord(branches) &&
+                Object.values(branches).every((branch) => procedureProgramActivationContractIsValid(branch, variableModel)) &&
+                procedureProgramActivationContractIsValid(program['default'], variableModel));
+        }
+        default:
+            return false;
+    }
 }
 function procedureParameterValidationSample(parameter) {
     switch (parameter.type) {
@@ -2165,9 +2260,10 @@ function materializeProcedureTemplateForValidation(value, substitutions) {
     ]));
 }
 function isStructurallyValidActionBody(value) {
+    const fields = isRecord(value) ? Object.keys(value).sort().join(',') : '';
     if (!isRecord(value) ||
-        Object.keys(value).sort().join(',') !==
-            'check,costs,program,rollScope,targets') {
+        (fields !== 'check,costs,program,rollScope,targets' &&
+            fields !== 'activation,check,costs,program,rollScope,targets')) {
         return false;
     }
     const targets = value['targets'];
@@ -2436,6 +2532,7 @@ function normalizeMaterializedActions(bundle, graph, diagnostics) {
         return undefined;
     }
     for (const [index, action] of result.artifact.actions.entries()) {
+        validateActionActivationContracts(action, bundle.ruleset, `$.actions[${index}]`, diagnostics);
         if (action.check.kind === 'attack') {
             const selector = action.check.contributionSelector;
             if (selector !== undefined &&
@@ -2471,6 +2568,91 @@ function normalizeMaterializedActions(bundle, graph, diagnostics) {
     if (diagnostics.length > 0)
         return undefined;
     return result.artifact;
+}
+function validateActionActivationContracts(action, ruleset, path, diagnostics) {
+    const variableModel = ruleset.models.actionEconomy.id ===
+        'action-economy.variable-activation-budgets';
+    if (variableModel !== (action.activation !== undefined)) {
+        diagnostics.push(diagnostic('compatibility', 'ACTION_ACTIVATION_MODEL_MISMATCH', `${path}.activation`, variableModel
+            ? 'the variable activation-budget model requires every action to declare an activation'
+            : 'the legacy action-economy model does not accept activation declarations'));
+    }
+    if (action.activation !== undefined) {
+        validateActivationCosts(action.activation, 'action', ruleset, `${path}.activation`, diagnostics);
+    }
+    validateProgramActivationContracts(action.program, variableModel, ruleset, `${path}.program`, diagnostics);
+}
+function validateProgramActivationContracts(program, variableModel, ruleset, path, diagnostics) {
+    switch (program.kind) {
+        case 'operation':
+            if (program.operation.kind !== 'openReaction')
+                return;
+            for (const [index, option] of program.operation.options.entries()) {
+                const activationPath = `${path}.operation.options[${index}].activation`;
+                if (variableModel !== (option.activation !== undefined)) {
+                    diagnostics.push(diagnostic('compatibility', 'REACTION_ACTIVATION_MODEL_MISMATCH', activationPath, variableModel
+                        ? 'the variable activation-budget model requires every selectable reaction to declare an activation'
+                        : 'the legacy action-economy model does not accept reaction activation declarations'));
+                }
+                if (option.activation !== undefined) {
+                    validateActivationCosts(option.activation, 'reaction', ruleset, activationPath, diagnostics);
+                }
+            }
+            return;
+        case 'sequence':
+            for (const [index, step] of program.steps.entries()) {
+                validateProgramActivationContracts(step, variableModel, ruleset, `${path}.steps[${index}]`, diagnostics);
+            }
+            return;
+        case 'when':
+            validateProgramActivationContracts(program.then, variableModel, ruleset, `${path}.then`, diagnostics);
+            if (program.otherwise !== undefined) {
+                validateProgramActivationContracts(program.otherwise, variableModel, ruleset, `${path}.otherwise`, diagnostics);
+            }
+            return;
+        case 'repeat':
+        case 'forEachTarget':
+            validateProgramActivationContracts(program.body, variableModel, ruleset, `${path}.body`, diagnostics);
+            return;
+        case 'onCheck':
+            for (const [label, branch] of [
+                ['hit', program.hit],
+                ['miss', program.miss],
+                ['saved', program.saved],
+                ['failed', program.failed],
+                ['noRoll', program.noRoll],
+            ]) {
+                if (branch !== undefined) {
+                    validateProgramActivationContracts(branch, variableModel, ruleset, `${path}.${label}`, diagnostics);
+                }
+            }
+            return;
+        case 'onOutcome':
+            for (const [id, branch] of Object.entries(program.branches)) {
+                validateProgramActivationContracts(branch, variableModel, ruleset, `${path}.branches.${id}`, diagnostics);
+            }
+            validateProgramActivationContracts(program.default, variableModel, ruleset, `${path}.default`, diagnostics);
+            return;
+        case 'atomic':
+            validateProgramActivationContracts(program.body, variableModel, ruleset, `${path}.body`, diagnostics);
+    }
+}
+function validateActivationCosts(activation, timing, ruleset, path, diagnostics) {
+    if (activation.timing !== timing) {
+        diagnostics.push(diagnostic('compatibility', 'ACTIVATION_TIMING_INVALID', `${path}.timing`, `activation timing must be ${timing}`));
+    }
+    for (const [index, cost] of activation.costs.entries()) {
+        const budget = ruleset.provides.activationBudgets.find((candidate) => candidate.id === cost.budget.id);
+        if (cost.budget.rulesetId !== ruleset.identity.id ||
+            budget === undefined ||
+            budget.timing !== timing) {
+            diagnostics.push(diagnostic('compatibility', 'ACTIVATION_BUDGET_REFERENCE_INVALID', `${path}.costs[${index}].budget`, 'activation costs must reference a same-owner budget with matching timing'));
+            continue;
+        }
+        if (cost.amount > budget.initialAmount) {
+            diagnostics.push(diagnostic('source', 'ACTIVATION_BUDGET_COST_UNREACHABLE', `${path}.costs[${index}].amount`, `activation cost ${cost.amount} exceeds budget ${budget.id} initial amount ${budget.initialAmount}`));
+        }
+    }
 }
 function collectOutcomePrograms(program) {
     if (program.kind === 'onOutcome')

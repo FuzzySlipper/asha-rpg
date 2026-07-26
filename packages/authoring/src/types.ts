@@ -2,6 +2,7 @@ import type {
   NormalizedRpgIr,
   RpgActionId,
   RpgIrAction,
+  RpgIrActivation,
   RpgIrCheck,
   RpgIrFormula,
   RpgIrOperation,
@@ -68,6 +69,7 @@ export interface AuthoredAction {
   readonly check: RpgIrCheck;
   readonly rollScope: RpgIrRollScope | undefined;
   readonly costs: readonly RpgIrResourceCost[];
+  readonly activation?: RpgIrActivation;
   readonly program: AuthoringProgram;
 }
 
@@ -112,6 +114,7 @@ export interface ActionInputBase {
   readonly tags?: readonly string[];
   readonly targets: RpgIrTargetSelector;
   readonly costs?: readonly RpgIrResourceCost[];
+  readonly activation?: RpgIrActivation;
   readonly program: AuthoringProgram;
 }
 

@@ -8,12 +8,13 @@ consumer compiles or loads a `CompiledPlayBundle` and calls
 creating mutable authority state.
 
 The schema is `asha.rpg.scenario@2`. `playBundleId` must exactly match the
-compiled artifact. Checkpoint schema `asha.rpg.session.checkpoint@5` stores the
+compiled artifact. Checkpoint schema `asha.rpg.session.checkpoint@6` stores the
 Scenario and its `fnv1a64.rpg-scenario.v1` fingerprint. Replay entry schema
-version 6 binds before/after boundaries to that Scenario, source binding, turn,
-revision, and state hash. Accepted event schema version 4 carries the
-contextual contribution ledger, and encounter-view schema version 6 exposes
-that event history plus explicit class/feature selection.
+version 7 binds before/after boundaries to that Scenario, source binding, turn,
+revision, and state hash. Accepted event schema version 5 carries the
+contextual contribution ledger and activation transitions, and encounter-view
+schema version 7 exposes that event history plus explicit class/feature
+selection and activation-budget readback.
 
 ## Setup-only data
 
@@ -46,13 +47,19 @@ state hashing, and replay; it is not a host-supplied modifier list.
 
 Scenario is not an execution script. It cannot encode definitions, commands,
 targets, reactions, roll values, expected events/outcomes, or Tester settings.
-Strict decoding rejects every additional field.
+It also cannot submit activation-budget values; Rust initializes them from the
+compiled Ruleset. Strict decoding rejects every additional field.
 
 ## Authority and readbacks
 
 Accepted actions, including artifact-authored selected-cell movement, and
 explicit end-turn controls atomically update state, modifier tenure, accepted
-events, and the next living initiative participant.
+events, and the next living initiative participant. Under the variable
+activation-budget model, action and selected-reaction costs stage with their
+consequences, several actions may occur in one turn, zero-cost activations
+still count toward the ceiling, and only explicit end-turn advances
+initiative. Owner-turn-start and round-start budgets reset only at their exact
+boundary.
 A pending reaction blocks other commands until resolved. Rejections preserve
 state, log, turn, reaction, and accepted-random position.
 
@@ -70,7 +77,8 @@ support capabilities from one staged revision. Defeated, repositioned, or
 differently equipped participants therefore change later resolutions without
 changing content declarations.
 
-`RpgAuthoritySession::encounter_view` exposes board/cells, participant state,
+`RpgAuthoritySession::encounter_view` exposes board/cells, participant state
+and remaining activation budgets, the accepted activation count and ceiling,
 inventory/equipment, current actor and initiative, selected and legal actions
 plus participant or cell options, available turn controls, pending reaction
 options, accepted events, and encounter outcome. An item-bound action is

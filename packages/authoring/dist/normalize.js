@@ -72,6 +72,9 @@ export function normalizeAction(action) {
         check: action.check,
         rollScope: normalizedRollScope(action),
         costs: [...action.costs],
+        ...(action.activation === undefined
+            ? {}
+            : { activation: action.activation }),
         program: { kind: 'atomic', body: normalizeProgram(action.program) },
     };
 }
@@ -151,6 +154,9 @@ function validateAction(action, path, diagnostics) {
             validateScalarExpression(action.check.difficulty.value, `${path}.check.difficulty.value`, diagnostics, action.sourcePath);
         }
     }
+    if (action.activation !== undefined) {
+        validateActivation(action.activation, 'action', `${path}.activation`, diagnostics, action.sourcePath);
+    }
     if (!integerInRange(action.targets.maximumTargets, 1, 32)) {
         diagnostics.push(diagnostic('normalization.targetBoundInvalid', `${path}.targets.maximumTargets`, 'target maximum must be an integer between 1 and 32', action.sourcePath));
     }
@@ -175,6 +181,24 @@ function validateAction(action, path, diagnostics) {
         }
     }
     validateProgram(action.program, `${path}.program`, 1, action.check.kind, diagnostics, action.sourcePath);
+}
+function validateActivation(activation, expectedTiming, path, diagnostics, sourcePath) {
+    if (activation.timing !== expectedTiming) {
+        diagnostics.push(diagnostic('normalization.activationTimingInvalid', `${path}.timing`, `activation timing must be ${expectedTiming}`, sourcePath));
+    }
+    let previousBudget;
+    for (const [index, cost] of activation.costs.entries()) {
+        const key = `${cost.budget.rulesetId}:${cost.budget.id}`;
+        if (cost.budget.rulesetId.trim().length === 0 ||
+            cost.budget.id.trim().length === 0 ||
+            previousBudget !== undefined && previousBudget >= key ||
+            !Number.isSafeInteger(cost.amount) ||
+            cost.amount < 0 ||
+            cost.amount > 2_147_483_647) {
+            diagnostics.push(diagnostic('normalization.activationCostInvalid', `${path}.costs[${index}]`, 'activation costs must be unique sorted owned budget references with bounded non-negative amounts', sourcePath));
+        }
+        previousBudget = key;
+    }
 }
 function validateScalarExpression(formula, path, diagnostics, sourcePath) {
     switch (formula.kind) {
@@ -333,6 +357,9 @@ function validateOperation(operation, path, diagnostics, sourcePath) {
             if (!integerInRange(option.damageReduction, 0, 10_000)) {
                 diagnostics.push(diagnostic('normalization.reactionReductionInvalid', `${path}.operation.options[${index}].damageReduction`, 'reaction damage reduction must be a bounded non-negative integer', sourcePath));
             }
+            if (option.activation !== undefined) {
+                validateActivation(option.activation, 'reaction', `${path}.operation.options[${index}].activation`, diagnostics, sourcePath);
+            }
         }
     }
 }
@@ -340,6 +367,9 @@ function collectAction(action, collection) {
     for (const cost of action.costs) {
         collection.resources.add(cost.resourceId);
         collection.capabilities.add('capability.resources');
+    }
+    if (action.activation !== undefined) {
+        collection.capabilities.add('capability.activation-budgets');
     }
     switch (action.check.kind) {
         case 'noRoll':
@@ -428,6 +458,9 @@ function collectOperation(operation, collection) {
             return;
         case 'openReaction':
             collection.capabilities.add('capability.reactions');
+            if (operation.options.some((option) => option.activation !== undefined)) {
+                collection.capabilities.add('capability.activation-budgets');
+            }
     }
 }
 function collectFormula(formula, collection) {

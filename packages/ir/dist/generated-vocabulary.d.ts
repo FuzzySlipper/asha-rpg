@@ -11,6 +11,7 @@ export declare const RPG_OPERATION_VERSIONS: {
 };
 export type RpgOperationId = keyof typeof RPG_OPERATION_VERSIONS;
 export declare const RPG_CAPABILITY_VERSIONS: {
+    readonly "capability.activation-budgets": 1;
     readonly "capability.defenses": 1;
     readonly "capability.modifiers": 1;
     readonly "capability.position": 1;

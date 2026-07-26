@@ -22,9 +22,9 @@ use crate::{
 
 pub const RPG_CHECKPOINT_SCHEMA_ID: &str = "asha.rpg.session.checkpoint";
 pub const RPG_REPLAY_ENTRY_SCHEMA_ID: &str = "asha.rpg.session.replay-entry";
-pub const RPG_CHECKPOINT_SCHEMA_VERSION: u32 = 5;
-pub const RPG_REPLAY_ENTRY_SCHEMA_VERSION: u32 = 6;
-pub const RPG_EVENT_SCHEMA_VERSION: u32 = 4;
+pub const RPG_CHECKPOINT_SCHEMA_VERSION: u32 = 6;
+pub const RPG_REPLAY_ENTRY_SCHEMA_VERSION: u32 = 7;
+pub const RPG_EVENT_SCHEMA_VERSION: u32 = 5;
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase", deny_unknown_fields)]
@@ -99,12 +99,14 @@ pub struct RpgPortableEntityState {
     pub defenses: Vec<RpgPortableNamedInteger>,
     pub resources: Vec<RpgPortableNamedBoundedValue>,
     pub modifiers: Vec<RpgPortableModifier>,
+    pub activation_budgets: Vec<RpgPortableNamedInteger>,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase", deny_unknown_fields)]
 pub struct RpgPortableCapabilityState {
     pub revision: u64,
+    pub accepted_activations_this_turn: u32,
     pub entities: Vec<RpgPortableEntityState>,
 }
 
@@ -763,6 +765,7 @@ fn validate_replay_entry_schema(
 fn portable_state(state: &RpgCapabilityState) -> RpgPortableCapabilityState {
     RpgPortableCapabilityState {
         revision: state.revision(),
+        accepted_activations_this_turn: state.accepted_activations_this_turn(),
         entities: state
             .entities()
             .map(|entity| RpgPortableEntityState {
@@ -800,6 +803,13 @@ fn portable_state(state: &RpgCapabilityState) -> RpgPortableCapabilityState {
                         id: modifier.id().to_owned(),
                         value: modifier.value(),
                         remaining_turns: modifier.remaining_turns(),
+                    })
+                    .collect(),
+                activation_budgets: entity
+                    .activation_budgets()
+                    .map(|(id, value)| RpgPortableNamedInteger {
+                        id: id.to_owned(),
+                        value,
                     })
                     .collect(),
             })
@@ -856,10 +866,21 @@ fn restore_state(
                 )
                 .map_err(|error| state_restore_failure(&format!("{path}.modifiers"), error))?;
         }
+        for budget in &source.activation_budgets {
+            entity
+                .restore_activation_budget(budget.id.clone(), budget.value)
+                .map_err(|error| {
+                    state_restore_failure(&format!("{path}.activationBudgets"), error)
+                })?;
+        }
         entities.push(entity);
     }
-    RpgCapabilityState::restore(state.revision, entities)
-        .map_err(|error| state_restore_failure("$.state", error))
+    RpgCapabilityState::restore_with_activation_count(
+        state.revision,
+        entities,
+        state.accepted_activations_this_turn,
+    )
+    .map_err(|error| state_restore_failure("$.state", error))
 }
 
 fn state_restore_failure(path: &str, error: rpg_core::RpgStateRestoreError) -> RpgReplayFailure {
@@ -1000,7 +1021,7 @@ fn session_state_hash(
         hash = hash.wrapping_mul(0x100000001b3);
     }
     Ok(StateFingerprint {
-        algorithm: "fnv1a64.rpg-session.v2".to_owned(),
+        algorithm: "fnv1a64.rpg-session.v3".to_owned(),
         value: format!("{hash:016x}"),
     })
 }
@@ -1277,10 +1298,11 @@ mod tests {
         ContentPackDependencyRelationship, ContentPackRequirements, ContentRelationshipKind,
         ContentRelationshipProvenance, ContentSourceLocation, MaterializedContentDefinition,
         MaterializedContentDefinitionKind, MaterializedContentVisibility, PlayBundleArtifactSchema,
-        PreparedPlayBundle, ResolvedContentPack, RpgVersionedIdentity, Ruleset, RulesetModels,
-        RulesetNumericDomain, RulesetProvisions, RulesetSchema, RulesetValueContract,
-        RulesetValueKind, RulesetValueSource, VersionedRpgRequirement, PLAY_BUNDLE_ARTIFACT_MAJOR,
-        PREPARED_PLAY_BUNDLE_IDENTITY,
+        PreparedPlayBundle, ResolvedContentPack, RpgVersionedIdentity, Ruleset,
+        RulesetActionEconomyModel, RulesetActivationBudget, RulesetActivationBudgetResetBoundary,
+        RulesetActivationTiming, RulesetModels, RulesetNumericDomain, RulesetProvisions,
+        RulesetSchema, RulesetValueContract, RulesetValueKind, RulesetValueSource,
+        VersionedRpgRequirement, PLAY_BUNDLE_ARTIFACT_MAJOR, PREPARED_PLAY_BUNDLE_IDENTITY,
     };
     use serde_json::json;
 
@@ -2089,6 +2111,217 @@ mod tests {
         assert_eq!(unused.code, "RPG_RANDOM_TAPE_UNUSED_EVIDENCE");
     }
 
+    #[test]
+    fn activation_budgets_stage_reactions_reset_exact_boundaries_and_replay() {
+        let bundle = activation_reaction_bundle();
+        let mut session =
+            RpgAuthoritySession::from_scenario(bundle.clone(), standard_setup(&bundle)).unwrap();
+        let initial = session.checkpoint().unwrap();
+
+        assert_eq!(
+            session
+                .state()
+                .entity("hero")
+                .unwrap()
+                .activation_budget("normal"),
+            Some(3)
+        );
+        let (awaiting, submit_entry) = session.submit_recorded(command()).unwrap();
+        let RpgCommandOutcome::AwaitingReaction(pending) = awaiting else {
+            panic!("activation transaction must await reaction");
+        };
+        assert_eq!(session.state().accepted_activations_this_turn(), 0);
+        assert_eq!(
+            session
+                .state()
+                .entity("hero")
+                .unwrap()
+                .activation_budget("normal"),
+            Some(3),
+            "the staged action cost must roll back while the reaction is pending"
+        );
+        let ward = &pending.request.options[0];
+        assert!(ward.unavailable.is_none());
+        assert_eq!(ward.activation_costs[0].budget_id, "reaction");
+        assert_eq!(ward.activation_costs[0].remaining, 1);
+
+        let pending_checkpoint = session.checkpoint().unwrap();
+        let restored_pending = RpgAuthoritySession::restore_checkpoint(pending_checkpoint).unwrap();
+        assert_eq!(
+            restored_pending
+                .state()
+                .entity("hero")
+                .unwrap()
+                .activation_budget("normal"),
+            Some(3)
+        );
+
+        let before_invalid_reaction = session.state_hash().unwrap();
+        let invalid_reaction = session.react(RpgReactionCommand {
+            expected_revision: 0,
+            reaction_id: "reaction.ward".to_owned(),
+            option_id: Some("ward".to_owned()),
+            additional_random_values: vec![2],
+        });
+        assert!(matches!(
+            invalid_reaction,
+            RpgCommandOutcome::Rejected(ref rejection)
+                if rejection.code == "RPG_RANDOM_EXHAUSTED"
+        ));
+        assert_eq!(session.state_hash().unwrap(), before_invalid_reaction);
+        assert!(session.pending_reaction().is_some());
+        assert_eq!(session.state().accepted_activations_this_turn(), 0);
+        assert_eq!(
+            session
+                .state()
+                .entity("guardian")
+                .unwrap()
+                .activation_budget("reaction"),
+            Some(1)
+        );
+
+        let (accepted, reaction_entry) = session.react_recorded(reaction_command()).unwrap();
+        let RpgCommandOutcome::Accepted(receipt) = accepted else {
+            panic!("selected reaction must commit atomically");
+        };
+        assert_eq!(session.state().accepted_activations_this_turn(), 2);
+        assert_eq!(
+            session
+                .state()
+                .entity("hero")
+                .unwrap()
+                .activation_budget("normal"),
+            Some(2)
+        );
+        assert_eq!(
+            session
+                .state()
+                .entity("guardian")
+                .unwrap()
+                .activation_budget("reaction"),
+            Some(0)
+        );
+        assert_eq!(
+            receipt
+                .events
+                .iter()
+                .filter(|event| matches!(event, RpgDomainEvent::ActivationBudgetSpent { .. }))
+                .count(),
+            2
+        );
+
+        let (hero_end, hero_end_entry) = session
+            .control_recorded(crate::RpgTurnControlProposal {
+                expected_revision: 1,
+                actor_id: "hero".to_owned(),
+                control: crate::RpgTurnControl::EndTurn,
+            })
+            .unwrap();
+        let RpgCommandOutcome::ControlAccepted(hero_end) = hero_end else {
+            panic!("hero end turn must commit");
+        };
+        assert_eq!(session.state().accepted_activations_this_turn(), 0);
+        assert!(hero_end.events.iter().any(|event| matches!(
+            event,
+            RpgDomainEvent::ActivationBudgetReset {
+                entity_id,
+                budget_id,
+                ..
+            } if entity_id == "guardian" && budget_id == "normal"
+        )));
+        let hero_turn_index = hero_end
+            .events
+            .iter()
+            .position(|event| matches!(event, RpgDomainEvent::TurnTransitioned { .. }))
+            .unwrap();
+        let hero_modifier_index = hero_end
+            .events
+            .iter()
+            .position(|event| matches!(event, RpgDomainEvent::ModifierDurationChanged { .. }))
+            .unwrap();
+        let hero_reset_index = hero_end
+            .events
+            .iter()
+            .position(|event| matches!(event, RpgDomainEvent::ActivationBudgetReset { .. }))
+            .unwrap();
+        assert!(hero_turn_index < hero_modifier_index);
+        assert!(hero_modifier_index < hero_reset_index);
+        assert_eq!(
+            session
+                .state()
+                .entity("guardian")
+                .unwrap()
+                .activation_budget("reaction"),
+            Some(0),
+            "round-start budget must not reset at an owner-turn boundary"
+        );
+
+        let (guardian_end, guardian_end_entry) = session
+            .control_recorded(crate::RpgTurnControlProposal {
+                expected_revision: 2,
+                actor_id: "guardian".to_owned(),
+                control: crate::RpgTurnControl::EndTurn,
+            })
+            .unwrap();
+        let RpgCommandOutcome::ControlAccepted(guardian_end) = guardian_end else {
+            panic!("guardian end turn must commit");
+        };
+        assert!(guardian_end.events.iter().any(|event| matches!(
+            event,
+            RpgDomainEvent::RoundTransitioned {
+                previous_round: 1,
+                current_round: 2
+            }
+        )));
+        let round_index = guardian_end
+            .events
+            .iter()
+            .position(|event| matches!(event, RpgDomainEvent::RoundTransitioned { .. }))
+            .unwrap();
+        let turn_index = guardian_end
+            .events
+            .iter()
+            .position(|event| matches!(event, RpgDomainEvent::TurnTransitioned { .. }))
+            .unwrap();
+        let modifier_index = guardian_end
+            .events
+            .iter()
+            .position(|event| matches!(event, RpgDomainEvent::ModifierExpired { .. }))
+            .unwrap();
+        let reset_index = guardian_end
+            .events
+            .iter()
+            .position(|event| matches!(event, RpgDomainEvent::ActivationBudgetReset { .. }))
+            .unwrap();
+        assert!(round_index < turn_index);
+        assert!(turn_index < modifier_index);
+        assert!(modifier_index < reset_index);
+        assert_eq!(
+            session
+                .state()
+                .entity("guardian")
+                .unwrap()
+                .activation_budget("reaction"),
+            Some(1)
+        );
+
+        let replayed = RpgAuthoritySession::replay(
+            initial,
+            &[
+                submit_entry,
+                reaction_entry,
+                hero_end_entry,
+                guardian_end_entry,
+            ],
+        )
+        .unwrap();
+        assert_eq!(
+            replayed.state_hash().unwrap(),
+            session.state_hash().unwrap()
+        );
+        assert_eq!(replayed.turn(), session.turn());
+    }
+
     fn required_request(outcome: RpgCommandOutcome) -> rpg_core::RpgRandomRequest {
         let RpgCommandOutcome::Rejected(rejection) = outcome else {
             panic!("expected a random request rejection: {outcome:?}");
@@ -2099,6 +2332,108 @@ mod tests {
     }
 
     fn artifact_bundle() -> CompiledPlayBundle {
+        compile_prepared_play_bundle(artifact_prepared())
+            .expect("prepared replay artifact compiles")
+    }
+
+    fn activation_reaction_bundle() -> CompiledPlayBundle {
+        let mut prepared = artifact_prepared();
+        prepared.ruleset.models.action_economy =
+            RulesetActionEconomyModel::VariableActivationBudgets {
+                version: 1,
+                accepted_activation_ceiling: 4,
+            };
+        prepared
+            .ruleset
+            .provides
+            .numeric_domains
+            .push(RulesetNumericDomain {
+                id: "activation".to_owned(),
+                minimum: 0,
+                maximum: 3,
+            });
+        prepared
+            .ruleset
+            .provides
+            .numeric_domains
+            .sort_by(|left, right| left.id.cmp(&right.id));
+        prepared.ruleset.provides.activation_budgets = vec![
+            RulesetActivationBudget {
+                id: "normal".to_owned(),
+                version: 1,
+                label: "Normal activations".to_owned(),
+                numeric_domain_id: "activation".to_owned(),
+                timing: RulesetActivationTiming::Action,
+                reset_boundary: RulesetActivationBudgetResetBoundary::OwnerTurnStart,
+                initial_amount: 3,
+            },
+            RulesetActivationBudget {
+                id: "reaction".to_owned(),
+                version: 1,
+                label: "Reaction activations".to_owned(),
+                numeric_domain_id: "activation".to_owned(),
+                timing: RulesetActivationTiming::Reaction,
+                reset_boundary: RulesetActivationBudgetResetBoundary::RoundStart,
+                initial_amount: 1,
+            },
+        ];
+        let activation_capability = VersionedRpgRequirement {
+            id: "capability.activation-budgets".to_owned(),
+            version: 1,
+        };
+        prepared
+            .ruleset
+            .provides
+            .capabilities
+            .push(activation_capability.clone());
+        prepared
+            .ruleset
+            .provides
+            .capabilities
+            .sort_by(|left, right| left.id.cmp(&right.id));
+        prepared
+            .content_requirements
+            .capabilities
+            .push(activation_capability);
+        prepared
+            .content_requirements
+            .capabilities
+            .sort_by(|left, right| left.id.cmp(&right.id));
+
+        for definition in prepared
+            .materialized_definitions
+            .iter_mut()
+            .filter(|definition| definition.kind == MaterializedContentDefinitionKind::Action)
+        {
+            let costs = if definition.id == "action.reactive" {
+                json!([{
+                    "budget": {"rulesetId": "replay.rules", "id": "normal"},
+                    "amount": 1
+                }])
+            } else {
+                json!([])
+            };
+            definition.semantic["action"]["activation"] = json!({
+                "timing": "action",
+                "costs": costs
+            });
+            if definition.id == "action.reactive" {
+                definition.semantic["action"]["program"]["body"]["steps"][0]["operation"]
+                    ["options"][0]["activation"] = json!({
+                    "timing": "reaction",
+                    "costs": [{
+                        "budget": {"rulesetId": "replay.rules", "id": "reaction"},
+                        "amount": 1
+                    }]
+                });
+            }
+            definition.fingerprint = materialized_definition_fingerprint(definition).unwrap();
+        }
+        compile_prepared_play_bundle(prepared)
+            .expect("variable activation-budget replay artifact compiles")
+    }
+
+    fn artifact_prepared() -> PreparedPlayBundle {
         let source_location = ContentSourceLocation {
             module: "actions/replay.rs".to_owned(),
             declaration: "reactiveStrike".to_owned(),
@@ -2290,7 +2625,7 @@ mod tests {
             },
         ];
         let package_identity = "replay.test@1.0.0".to_owned();
-        let prepared = PreparedPlayBundle {
+        PreparedPlayBundle {
             schema: PlayBundleArtifactSchema {
                 identity: PREPARED_PLAY_BUNDLE_IDENTITY.to_owned(),
                 major: PLAY_BUNDLE_ARTIFACT_MAJOR,
@@ -2329,10 +2664,7 @@ mod tests {
                         id: "reaction.before-damage-choice".to_owned(),
                         version: 1,
                     },
-                    action_economy: VersionedRpgRequirement {
-                        id: "action-economy.one-action-plus-reaction".to_owned(),
-                        version: 1,
-                    },
+                    action_economy: RulesetActionEconomyModel::OneActionPlusReaction { version: 1 },
                 },
                 provides: RulesetProvisions {
                     operations: operations.clone(),
@@ -2361,6 +2693,7 @@ mod tests {
                     calculation_selectors: Vec::new(),
                     contribution_stacking_groups: Vec::new(),
                     scalar_test_profiles: Vec::new(),
+                    activation_budgets: Vec::new(),
                 },
             },
             content_packs: vec![ResolvedContentPack {
@@ -2429,8 +2762,7 @@ mod tests {
             ],
             derivation_provenance: Vec::new(),
             overlay_provenance: Vec::new(),
-        };
-        compile_prepared_play_bundle(prepared).expect("prepared replay artifact compiles")
+        }
     }
 
     fn artifact_session() -> RpgAuthoritySession {

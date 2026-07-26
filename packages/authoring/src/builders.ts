@@ -1,5 +1,7 @@
 import type {
   RpgActionId,
+  RpgIrActivation,
+  RpgIrActivationTiming,
   RpgIrComparison,
   RpgIrFormula,
   RpgIrPredicate,
@@ -35,6 +37,7 @@ import {
 } from './ruleset-builders.js';
 import type {
   RulesetCalculationSelectorReference,
+  RulesetActivationBudgetReference,
   RulesetScalarTestProfileReference,
   RulesetValueReference,
 } from './ruleset-builders.js';
@@ -266,6 +269,32 @@ export function spend(
   );
 }
 
+export function activation(options: {
+  readonly timing: RpgIrActivationTiming;
+  readonly costs?: readonly {
+    readonly budget: RulesetActivationBudgetReference<string, string>;
+    readonly amount: number;
+  }[];
+}): RpgIrActivation {
+  return frozen({
+    timing: options.timing,
+    costs: frozenList(
+      (options.costs ?? [])
+        .map((cost) =>
+          frozen({
+            budget: cost.budget,
+            amount: cost.amount,
+          }),
+        )
+        .sort(
+          (left, right) =>
+            left.budget.rulesetId.localeCompare(right.budget.rulesetId) ||
+            left.budget.id.localeCompare(right.budget.id),
+        ),
+    ),
+  });
+}
+
 export function immediate(): AuthoringTiming {
   return frozen({ kind: 'immediate' });
 }
@@ -395,6 +424,7 @@ export function openReaction(options: {
     readonly id: RpgReactionOptionId;
     readonly label: string;
     readonly damageReduction: number;
+    readonly activation?: RpgIrActivation;
   }[];
   readonly timing?: AuthoringTiming;
 }): AuthoringProgram {
@@ -459,6 +489,7 @@ export function action(input: ActionInput): AuthoredAction {
     check: input.check,
     rollScope,
     costs: frozenList(input.costs ?? []),
+    ...(input.activation === undefined ? {} : { activation: input.activation }),
     program: input.program,
   });
 }

@@ -25,6 +25,9 @@ const rulesetContributionStackingGroupReferenceBrand: unique symbol = Symbol(
 const rulesetScalarTestProfileReferenceBrand: unique symbol = Symbol(
   'asha-rpg.scalar-test-profile-reference',
 );
+const rulesetActivationBudgetReferenceBrand: unique symbol = Symbol(
+  'asha-rpg.activation-budget-reference',
+);
 
 export interface AuthoredRulesetValueOwnership {
   readonly field: string;
@@ -79,6 +82,15 @@ export type RulesetScalarTestProfileReference<
   readonly [rulesetScalarTestProfileReferenceBrand]: true;
 }>;
 
+export type RulesetActivationBudgetReference<
+  RulesetId extends string,
+  BudgetId extends string,
+> = Readonly<{
+  readonly rulesetId: RulesetId;
+  readonly id: BudgetId;
+  readonly [rulesetActivationBudgetReferenceBrand]: true;
+}>;
+
 type RulesetInput = Omit<Ruleset, 'provides'> & {
   readonly provides: Omit<
     Ruleset['provides'],
@@ -86,11 +98,13 @@ type RulesetInput = Omit<Ruleset, 'provides'> & {
     | 'calculationSelectors'
     | 'contributionStackingGroups'
     | 'scalarTestProfiles'
+    | 'activationBudgets'
   > & {
     readonly values: readonly RulesetValueInput[];
     readonly calculationSelectors?: Ruleset['provides']['calculationSelectors'];
     readonly contributionStackingGroups?: Ruleset['provides']['contributionStackingGroups'];
     readonly scalarTestProfiles?: Ruleset['provides']['scalarTestProfiles'];
+    readonly activationBudgets?: Ruleset['provides']['activationBudgets'];
   };
 };
 
@@ -120,6 +134,9 @@ export function defineRuleset(input: RulesetInput): Ruleset {
         ...(input.provides.contributionStackingGroups ?? []),
       ].sort((left, right) => left.id.localeCompare(right.id)),
       scalarTestProfiles: [...(input.provides.scalarTestProfiles ?? [])].sort(
+        (left, right) => left.id.localeCompare(right.id),
+      ),
+      activationBudgets: [...(input.provides.activationBudgets ?? [])].sort(
         (left, right) => left.id.localeCompare(right.id),
       ),
     },
@@ -265,6 +282,31 @@ export function rulesetScalarTestProfile<
     rulesetId: ruleset.identity.id,
     id,
     [rulesetScalarTestProfileReferenceBrand]: true as const,
+  });
+}
+
+export function rulesetActivationBudget<
+  const RulesetId extends string,
+  const BudgetId extends string,
+>(
+  ruleset: Ruleset & {
+    readonly identity: RulesetIdentity & { readonly id: RulesetId };
+  },
+  id: BudgetId,
+): RulesetActivationBudgetReference<RulesetId, BudgetId> {
+  if (
+    !ruleset.provides.activationBudgets.some(
+      (candidate) => candidate.id === id,
+    )
+  ) {
+    throw new Error(
+      `ruleset ${ruleset.identity.id}@${ruleset.identity.version} does not provide activation budget ${id}`,
+    );
+  }
+  return immutable({
+    rulesetId: ruleset.identity.id,
+    id,
+    [rulesetActivationBudgetReferenceBrand]: true as const,
   });
 }
 

@@ -1,15 +1,16 @@
 use std::collections::{BTreeMap, BTreeSet};
 
 use rpg_core::{
-    RpgContributionStackingPolicy, RpgRandomRequest, RpgRandomRequestKind,
+    RpgCapabilityId, RpgContributionStackingPolicy, RpgRandomRequest, RpgRandomRequestKind,
     MAXIMUM_RPG_MODIFIER_TURNS,
 };
 use rpg_ir::{
     CompiledCharacterFeature, CompiledItemDefinition, EquippedItemBindingRequirement,
-    NormalizedRpgIr, RpgIrAction, RpgIrCheck, RpgIrFormula, RpgIrOperation, RpgIrPredicate,
-    RpgIrProgram, RpgIrRequirementKind, RpgIrResourceCost, RpgIrRollScope,
-    RpgIrScalarTestDifficulty, RpgIrSubject, RpgIrTargetKind, RpgIrTargetSelector,
-    RpgIrTeamConstraint, Ruleset, RulesetScalarTestProfile, RPG_IR_IDENTITY, RPG_IR_MAJOR,
+    NormalizedRpgIr, RpgIrAction, RpgIrActivation, RpgIrActivationTiming, RpgIrCheck, RpgIrFormula,
+    RpgIrOperation, RpgIrPredicate, RpgIrProgram, RpgIrRequirementKind, RpgIrResourceCost,
+    RpgIrRollScope, RpgIrScalarTestDifficulty, RpgIrSubject, RpgIrTargetKind, RpgIrTargetSelector,
+    RpgIrTeamConstraint, Ruleset, RulesetActivationBudget, RulesetScalarTestProfile,
+    RPG_IR_IDENTITY, RPG_IR_MAJOR,
 };
 use serde::Serialize;
 
@@ -89,6 +90,8 @@ pub struct CompiledRpgRules {
     calculation_selectors: BTreeMap<String, CompiledCalculationSelector>,
     contribution_stacking_groups: BTreeMap<String, RpgContributionStackingPolicy>,
     scalar_test_profiles: BTreeMap<String, CompiledScalarTestProfile>,
+    activation_budgets: BTreeMap<String, RulesetActivationBudget>,
+    accepted_activation_ceiling: Option<u32>,
 }
 
 #[derive(Debug, Clone)]
@@ -249,6 +252,15 @@ impl CompiledRpgRules {
                     })
             })
             .collect();
+        self.activation_budgets = ruleset
+            .provides
+            .activation_budgets
+            .iter()
+            .cloned()
+            .map(|budget| (budget.id.clone(), budget))
+            .collect();
+        self.accepted_activation_ceiling =
+            ruleset.models.action_economy.accepted_activation_ceiling();
         self.contribution_stacking_groups = ruleset
             .provides
             .contribution_stacking_groups
@@ -307,6 +319,18 @@ impl CompiledRpgRules {
     ) -> Option<&CompiledScalarTestProfile> {
         self.scalar_test_profiles.get(profile_id)
     }
+
+    pub fn uses_variable_activation_budgets(&self) -> bool {
+        self.accepted_activation_ceiling.is_some()
+    }
+
+    pub fn accepted_activation_ceiling(&self) -> Option<u32> {
+        self.accepted_activation_ceiling
+    }
+
+    pub fn activation_budgets(&self) -> impl Iterator<Item = &RulesetActivationBudget> {
+        self.activation_budgets.values()
+    }
 }
 
 #[derive(Debug, Clone)]
@@ -328,6 +352,7 @@ pub struct CompiledRpgAction {
     pub check: RpgIrCheck,
     pub roll_scope: RpgIrRollScope,
     pub costs: Vec<RpgIrResourceCost>,
+    pub activation: Option<RpgIrActivation>,
     pub random_plan: Vec<RpgRandomPlanEntry>,
     pub selected_destination_maximum_distance: Option<u32>,
     #[serde(skip_serializing_if = "Option::is_none")]
@@ -355,6 +380,7 @@ fn compiled_action_projection(
         check: action.check.clone(),
         roll_scope: action.roll_scope,
         costs: action.costs.clone(),
+        activation: action.activation.clone(),
         random_plan: action.random_plan.clone(),
         selected_destination_maximum_distance: selected_destination_maximum_distance(
             &action.program,
@@ -433,6 +459,7 @@ pub(crate) struct CompiledAction {
     pub(crate) check: RpgIrCheck,
     pub(crate) roll_scope: RpgIrRollScope,
     pub(crate) costs: Vec<RpgIrResourceCost>,
+    pub(crate) activation: Option<RpgIrActivation>,
     pub(crate) program: CompiledProgram,
     pub(crate) random_plan: Vec<RpgRandomPlanEntry>,
 }
@@ -505,7 +532,61 @@ pub fn compile_normalized_rpg_ir(
             )],
         });
     }
+    if let Some((index, path)) = source
+        .actions
+        .iter()
+        .enumerate()
+        .find_map(|(index, action)| {
+            action
+                .activation
+                .as_ref()
+                .map(|_| (index, "activation"))
+                .or_else(|| program_activation_path(&action.program).map(|path| (index, path)))
+        })
+    {
+        return Err(RpgCompileFailure {
+            diagnostics: vec![RpgDiagnostic::error(
+                RpgDiagnosticStage::References,
+                "RPG_IR_ACTIVATION_RULESET_REQUIRED",
+                format!("$.actions[{index}].{path}"),
+                "activation budgets must be compiled through a PlayBundle with their exact Ruleset",
+            )],
+        });
+    }
     compile_normalized_rpg_ir_with_ruleset(source, None)
+}
+
+fn program_activation_path(program: &RpgIrProgram) -> Option<&'static str> {
+    match program {
+        RpgIrProgram::Operation {
+            operation: RpgIrOperation::OpenReaction { options, .. },
+        } if options.iter().any(|option| option.activation.is_some()) => {
+            Some("program.operation.options.activation")
+        }
+        RpgIrProgram::Operation { .. } => None,
+        RpgIrProgram::Sequence { steps } => steps.iter().find_map(program_activation_path),
+        RpgIrProgram::When {
+            then, otherwise, ..
+        } => program_activation_path(then)
+            .or_else(|| otherwise.as_deref().and_then(program_activation_path)),
+        RpgIrProgram::Repeat { body, .. }
+        | RpgIrProgram::ForEachTarget { body, .. }
+        | RpgIrProgram::Atomic { body } => program_activation_path(body),
+        RpgIrProgram::OnCheck {
+            hit,
+            miss,
+            saved,
+            failed,
+            no_roll,
+        } => [hit, miss, saved, failed, no_roll]
+            .into_iter()
+            .flatten()
+            .find_map(|branch| program_activation_path(branch)),
+        RpgIrProgram::OnOutcome { branches, default } => branches
+            .values()
+            .find_map(|branch| program_activation_path(branch))
+            .or_else(|| program_activation_path(default)),
+    }
 }
 
 pub(crate) fn compile_normalized_rpg_ir_with_ruleset(
@@ -548,6 +629,8 @@ pub(crate) fn compile_normalized_rpg_ir_with_ruleset(
         calculation_selectors: BTreeMap::new(),
         contribution_stacking_groups: BTreeMap::new(),
         scalar_test_profiles: BTreeMap::new(),
+        activation_budgets: BTreeMap::new(),
+        accepted_activation_ceiling: None,
     })
 }
 
@@ -561,6 +644,7 @@ fn compile_action(action: RpgIrAction, ruleset: Option<&Ruleset>) -> CompiledAct
         check: action.check,
         roll_scope: action.roll_scope,
         costs: action.costs,
+        activation: action.activation,
         program: compile_program(action.program),
         random_plan,
     }
@@ -1105,6 +1189,13 @@ impl<'a> Validator<'a> {
                 }
             }
             self.validate_check(action, &path);
+            if let Some(activation) = &action.activation {
+                self.validate_activation(
+                    activation,
+                    RpgIrActivationTiming::Action,
+                    &format!("{path}.activation"),
+                );
+            }
             for (cost_index, cost) in action.costs.iter().enumerate() {
                 let cost_path = format!("{path}.costs[{cost_index}]");
                 self.require_reference(
@@ -1684,8 +1775,60 @@ impl<'a> Validator<'a> {
                             "reaction damage reduction exceeds the supported bound",
                         );
                     }
+                    if let Some(activation) = &option.activation {
+                        self.validate_activation(
+                            activation,
+                            RpgIrActivationTiming::Reaction,
+                            &format!("{option_path}.activation"),
+                        );
+                    }
                 }
             }
+        }
+    }
+
+    fn validate_activation(
+        &mut self,
+        activation: &RpgIrActivation,
+        expected_timing: RpgIrActivationTiming,
+        path: &str,
+    ) {
+        self.require_capability(RpgCapabilityId::ActivationBudgets.as_str(), path);
+        if activation.timing != expected_timing {
+            self.error(
+                RpgDiagnosticStage::Semantics,
+                "RPG_IR_ACTIVATION_TIMING_INVALID",
+                format!("{path}.timing"),
+                "activation timing does not match its action or reaction position",
+            );
+        }
+
+        let mut previous = None::<(&str, &str)>;
+        for (index, cost) in activation.costs.iter().enumerate() {
+            let cost_path = format!("{path}.costs[{index}]");
+            self.require_identifier(
+                &cost.budget.ruleset_id,
+                &format!("{cost_path}.budget.rulesetId"),
+            );
+            self.require_identifier(&cost.budget.id, &format!("{cost_path}.budget.id"));
+            let current = (cost.budget.ruleset_id.as_str(), cost.budget.id.as_str());
+            if previous.is_some_and(|prior| prior >= current) {
+                self.error(
+                    RpgDiagnosticStage::Semantics,
+                    "RPG_IR_ACTIVATION_COSTS_NOT_CANONICAL",
+                    cost_path.clone(),
+                    "activation costs must be unique and sorted by ruleset and budget id",
+                );
+            }
+            if cost.amount < 0 {
+                self.error(
+                    RpgDiagnosticStage::Semantics,
+                    "RPG_IR_ACTIVATION_COST_INVALID",
+                    format!("{cost_path}.amount"),
+                    "activation budget costs must be nonnegative",
+                );
+            }
+            previous = Some(current);
         }
     }
 

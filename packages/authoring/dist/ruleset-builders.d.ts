@@ -4,6 +4,7 @@ declare const rulesetValueReferenceBrand: unique symbol;
 declare const rulesetCalculationSelectorReferenceBrand: unique symbol;
 declare const rulesetContributionStackingGroupReferenceBrand: unique symbol;
 declare const rulesetScalarTestProfileReferenceBrand: unique symbol;
+declare const rulesetActivationBudgetReferenceBrand: unique symbol;
 export interface AuthoredRulesetValueOwnership {
     readonly field: string;
     readonly kind: RulesetValueKind;
@@ -35,12 +36,18 @@ export type RulesetScalarTestProfileReference<RulesetId extends string, ProfileI
     readonly id: ProfileId;
     readonly [rulesetScalarTestProfileReferenceBrand]: true;
 }>;
+export type RulesetActivationBudgetReference<RulesetId extends string, BudgetId extends string> = Readonly<{
+    readonly rulesetId: RulesetId;
+    readonly id: BudgetId;
+    readonly [rulesetActivationBudgetReferenceBrand]: true;
+}>;
 type RulesetInput = Omit<Ruleset, 'provides'> & {
-    readonly provides: Omit<Ruleset['provides'], 'values' | 'calculationSelectors' | 'contributionStackingGroups' | 'scalarTestProfiles'> & {
+    readonly provides: Omit<Ruleset['provides'], 'values' | 'calculationSelectors' | 'contributionStackingGroups' | 'scalarTestProfiles' | 'activationBudgets'> & {
         readonly values: readonly RulesetValueInput[];
         readonly calculationSelectors?: Ruleset['provides']['calculationSelectors'];
         readonly contributionStackingGroups?: Ruleset['provides']['contributionStackingGroups'];
         readonly scalarTestProfiles?: Ruleset['provides']['scalarTestProfiles'];
+        readonly activationBudgets?: Ruleset['provides']['activationBudgets'];
     };
 };
 export declare function defineRuleset(input: RulesetInput): Ruleset;
@@ -74,6 +81,11 @@ export declare function rulesetScalarTestProfile<const RulesetId extends string,
         readonly id: RulesetId;
     };
 }, id: ProfileId): RulesetScalarTestProfileReference<RulesetId, ProfileId>;
+export declare function rulesetActivationBudget<const RulesetId extends string, const BudgetId extends string>(ruleset: Ruleset & {
+    readonly identity: RulesetIdentity & {
+        readonly id: RulesetId;
+    };
+}, id: BudgetId): RulesetActivationBudgetReference<RulesetId, BudgetId>;
 export declare function rulesetValueId<Kind extends RulesetValueKind>(reference: RulesetValueReference<Kind, string, string>): RulesetValueId<Kind>;
 /** @internal Retains Ruleset owner identity on an AST node without serializing it. */
 export declare function retainRulesetValueOwnership<Value extends object>(value: Value, fields: readonly {

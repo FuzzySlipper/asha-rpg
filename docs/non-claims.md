@@ -45,8 +45,14 @@ contracts, not a generic modifier or scripting facility. They do not provide
 arbitrary option bags,
 mutable toggles, user-authored predicates, pool/category transformations,
 probability previews, or calculation owners beyond the currently bound attack
-modifier and scalar-test profiles. `F2` through `F6` in the first-wave catalog
+modifier and scalar-test profiles. `F3` through `F6` in the first-wave catalog
 remain implementation non-claims.
+
+The implemented variable activation-budget model is deliberately turn-relative:
+Rulesets may declare action and reaction budgets with owner-turn-start or
+round-start reset boundaries and a bounded accepted-activation ceiling. It is
+not a scheduler, real-time economy, rest/day recovery system,
+initiative-derived budget calculator, borrowing model, or delay/ready system.
 
 Scalar-test base and explicit-difficulty expressions cannot request formula
 dice. The profile's one primary die is their complete random surface;

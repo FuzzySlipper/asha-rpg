@@ -21,6 +21,7 @@ pub enum RpgCapabilityId {
     Position,
     Random,
     Reactions,
+    ActivationBudgets,
 }
 
 impl RpgCapabilityId {
@@ -34,6 +35,7 @@ impl RpgCapabilityId {
             Self::Position => "capability.position",
             Self::Random => "capability.random",
             Self::Reactions => "capability.reactions",
+            Self::ActivationBudgets => "capability.activation-budgets",
         }
     }
 }
@@ -50,6 +52,7 @@ pub struct RpgEntityState {
     defenses: BTreeMap<String, i32>,
     resources: BTreeMap<String, BoundedValue>,
     modifiers: BTreeMap<String, ActiveRpgModifier>,
+    activation_budgets: BTreeMap<String, i32>,
 }
 
 impl RpgEntityState {
@@ -68,6 +71,7 @@ impl RpgEntityState {
             defenses: BTreeMap::new(),
             resources: BTreeMap::new(),
             modifiers: BTreeMap::new(),
+            activation_budgets: BTreeMap::new(),
         }
     }
 
@@ -116,6 +120,7 @@ impl RpgEntityState {
             defenses: BTreeMap::new(),
             resources: BTreeMap::new(),
             modifiers: BTreeMap::new(),
+            activation_budgets: BTreeMap::new(),
         })
     }
 
@@ -177,6 +182,24 @@ impl RpgEntityState {
             return Err(RpgStateRestoreError::EmptyIdentity);
         }
         if self.modifiers.insert(stacking_group, modifier).is_some() {
+            return Err(RpgStateRestoreError::DuplicateIdentity);
+        }
+        Ok(())
+    }
+
+    pub fn restore_activation_budget(
+        &mut self,
+        id: impl Into<String>,
+        value: i32,
+    ) -> Result<(), RpgStateRestoreError> {
+        let id = id.into();
+        if id.is_empty() {
+            return Err(RpgStateRestoreError::EmptyIdentity);
+        }
+        if value < 0 {
+            return Err(RpgStateRestoreError::ValueOutOfBounds);
+        }
+        if self.activation_budgets.insert(id, value).is_some() {
             return Err(RpgStateRestoreError::DuplicateIdentity);
         }
         Ok(())
@@ -257,6 +280,10 @@ impl RpgEntityState {
         self.modifiers.get(group)
     }
 
+    pub fn activation_budget(&self, id: &str) -> Option<i32> {
+        self.activation_budgets.get(id).copied()
+    }
+
     pub fn stats(&self) -> impl Iterator<Item = (&str, i32)> {
         self.stats.iter().map(|(id, value)| (id.as_str(), *value))
     }
@@ -277,6 +304,12 @@ impl RpgEntityState {
         self.modifiers
             .iter()
             .map(|(group, modifier)| (group.as_str(), modifier))
+    }
+
+    pub fn activation_budgets(&self) -> impl Iterator<Item = (&str, i32)> {
+        self.activation_budgets
+            .iter()
+            .map(|(id, value)| (id.as_str(), *value))
     }
 }
 
@@ -331,6 +364,7 @@ impl ActiveRpgModifier {
 pub struct RpgCapabilityState {
     revision: u64,
     entities: BTreeMap<String, RpgEntityState>,
+    accepted_activations_this_turn: u32,
 }
 
 impl RpgCapabilityState {
@@ -341,6 +375,7 @@ impl RpgCapabilityState {
         let mut restored = Self {
             revision,
             entities: BTreeMap::new(),
+            accepted_activations_this_turn: 0,
         };
         for entity in entities {
             if restored
@@ -354,6 +389,16 @@ impl RpgCapabilityState {
         Ok(restored)
     }
 
+    pub fn restore_with_activation_count(
+        revision: u64,
+        entities: impl IntoIterator<Item = RpgEntityState>,
+        accepted_activations_this_turn: u32,
+    ) -> Result<Self, RpgStateRestoreError> {
+        let mut restored = Self::restore(revision, entities)?;
+        restored.accepted_activations_this_turn = accepted_activations_this_turn;
+        Ok(restored)
+    }
+
     pub fn entity(&self, id: &str) -> Option<&RpgEntityState> {
         self.entities.get(id)
     }
@@ -364,6 +409,10 @@ impl RpgCapabilityState {
 
     pub fn entities(&self) -> impl Iterator<Item = &RpgEntityState> {
         self.entities.values()
+    }
+
+    pub fn accepted_activations_this_turn(&self) -> u32 {
+        self.accepted_activations_this_turn
     }
 
     pub fn insert_entity(&mut self, entity: RpgEntityState) -> Option<RpgEntityState> {
@@ -384,6 +433,10 @@ impl RpgCapabilityState {
 
     pub fn position_owner(&mut self) -> RpgPositionOwner<'_> {
         RpgPositionOwner { state: self }
+    }
+
+    pub fn activation_budgets_owner(&mut self) -> RpgActivationBudgetsOwner<'_> {
+        RpgActivationBudgetsOwner { state: self }
     }
 
     pub fn advance_revision(&mut self) -> u64 {
@@ -409,6 +462,17 @@ impl RpgCapabilityState {
             .resources
             .get_mut(resource_id)
             .ok_or(RpgCapabilityMutationError::UnknownResource)
+    }
+
+    fn activation_budget_mut(
+        &mut self,
+        entity_id: &str,
+        budget_id: &str,
+    ) -> Result<&mut i32, RpgCapabilityMutationError> {
+        self.entity_mut_for_owner(entity_id)?
+            .activation_budgets
+            .get_mut(budget_id)
+            .ok_or(RpgCapabilityMutationError::UnknownActivationBudget)
     }
 }
 
@@ -454,6 +518,10 @@ impl RpgCapabilityWorkspace {
 
     pub fn position_owner(&mut self) -> RpgPositionOwner<'_> {
         self.state.position_owner()
+    }
+
+    pub fn activation_budgets_owner(&mut self) -> RpgActivationBudgetsOwner<'_> {
+        self.state.activation_budgets_owner()
     }
 
     pub fn random_owner(&mut self) -> RpgRandomOwner<'_> {
@@ -683,6 +751,57 @@ pub struct RpgPositionOwner<'a> {
     state: &'a mut RpgCapabilityState,
 }
 
+pub struct RpgActivationBudgetsOwner<'a> {
+    state: &'a mut RpgCapabilityState,
+}
+
+impl RpgActivationBudgetsOwner<'_> {
+    pub fn spend(
+        &mut self,
+        entity_id: &str,
+        budget_id: &str,
+        amount: i32,
+    ) -> Result<(i32, i32), RpgCapabilityMutationError> {
+        if amount < 0 {
+            return Err(RpgCapabilityMutationError::InvalidAmount);
+        }
+        let budget = self.state.activation_budget_mut(entity_id, budget_id)?;
+        if *budget < amount {
+            return Err(RpgCapabilityMutationError::InsufficientActivationBudget);
+        }
+        let previous = *budget;
+        *budget -= amount;
+        Ok((previous, *budget))
+    }
+
+    pub fn accept_activation(&mut self, ceiling: u32) -> Result<u32, RpgCapabilityMutationError> {
+        if self.state.accepted_activations_this_turn >= ceiling {
+            return Err(RpgCapabilityMutationError::ActivationCeilingExceeded);
+        }
+        self.state.accepted_activations_this_turn += 1;
+        Ok(self.state.accepted_activations_this_turn)
+    }
+
+    pub fn reset_budget(
+        &mut self,
+        entity_id: &str,
+        budget_id: &str,
+        value: i32,
+    ) -> Result<(i32, i32), RpgCapabilityMutationError> {
+        if value < 0 {
+            return Err(RpgCapabilityMutationError::InvalidAmount);
+        }
+        let budget = self.state.activation_budget_mut(entity_id, budget_id)?;
+        let previous = *budget;
+        *budget = value;
+        Ok((previous, *budget))
+    }
+
+    pub fn reset_activation_count(&mut self) {
+        self.state.accepted_activations_this_turn = 0;
+    }
+}
+
 impl RpgPositionOwner<'_> {
     pub fn move_entity(
         &mut self,
@@ -712,8 +831,11 @@ impl RpgPositionOwner<'_> {
 pub enum RpgCapabilityMutationError {
     UnknownEntity,
     UnknownResource,
+    UnknownActivationBudget,
     InvalidAmount,
     InsufficientResource,
+    InsufficientActivationBudget,
+    ActivationCeilingExceeded,
     ResourceOutOfBounds,
     ModifierTenureInvalid,
     MovementDistanceInvalid,
@@ -805,10 +927,28 @@ pub struct RpgRandomEvidence {
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase", deny_unknown_fields)]
+pub struct RpgReactionActivationBudgetCost {
+    pub budget_id: String,
+    pub amount: i32,
+    pub remaining: i32,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase", deny_unknown_fields)]
+pub struct RpgReactionUnavailable {
+    pub code: String,
+    pub path: String,
+    pub message: String,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase", deny_unknown_fields)]
 pub struct RpgReactionOption {
     pub id: String,
     pub label: String,
     pub damage_reduction: u32,
+    pub activation_costs: Vec<RpgReactionActivationBudgetCost>,
+    pub unavailable: Option<RpgReactionUnavailable>,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
@@ -1095,6 +1235,30 @@ pub struct RpgResolutionContext {
     rename_all_fields = "camelCase"
 )]
 pub enum RpgDomainEvent {
+    ActivationBudgetSpent {
+        entity_id: String,
+        budget_id: String,
+        amount: i32,
+        previous: i32,
+        remaining: i32,
+        accepted_activations: u32,
+    },
+    ActivationBudgetReset {
+        entity_id: String,
+        budget_id: String,
+        previous: i32,
+        current: i32,
+    },
+    RoundTransitioned {
+        previous_round: u64,
+        current_round: u64,
+    },
+    TurnTransitioned {
+        previous_actor_id: String,
+        current_actor_id: String,
+        round: u64,
+        turn: u64,
+    },
     ResourceSpent {
         entity_id: String,
         resource_id: String,

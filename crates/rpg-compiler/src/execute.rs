@@ -8,16 +8,16 @@ use rpg_core::{
     RpgDomainEvent, RpgIntent, RpgModifierStackingPolicy, RpgNaturalDieEffect,
     RpgNaturalDieResolution, RpgOutcomeBandShiftDecision, RpgOutcomeBandShiftDefinition,
     RpgOutcomeBandShiftDisposition, RpgOutcomeBandShiftLedger, RpgRandomEvidence, RpgRandomRequest,
-    RpgRandomRequestKind, RpgReactionDecision, RpgReactionOption, RpgReactionRequest,
-    RpgResolutionContext, RpgResolutionReceipt, RpgResolutionRejection, RpgRulesetValueKind,
-    RpgScalarContributionDecision, RpgScalarContributionDefinition, RpgScalarContributionLedger,
-    RpgTraceStep,
+    RpgRandomRequestKind, RpgReactionActivationBudgetCost, RpgReactionDecision, RpgReactionOption,
+    RpgReactionRequest, RpgReactionUnavailable, RpgResolutionContext, RpgResolutionReceipt,
+    RpgResolutionRejection, RpgRulesetValueKind, RpgScalarContributionDecision,
+    RpgScalarContributionDefinition, RpgScalarContributionLedger, RpgTraceStep,
 };
 use rpg_ir::{
-    CompiledCharacterFeature, CompiledItemDefinition, RpgIrCheck, RpgIrComparison, RpgIrFormula,
-    RpgIrOperation, RpgIrPredicate, RpgIrRollScope, RpgIrScalarTestDifficulty, RpgIrSubject,
-    RpgIrTargetKind, RpgIrTeamConstraint, RulesetMarginBandRule, RulesetNaturalDieRule,
-    RulesetOutcomeBand,
+    CompiledCharacterFeature, CompiledItemDefinition, RpgIrActivation, RpgIrCheck, RpgIrComparison,
+    RpgIrFormula, RpgIrOperation, RpgIrPredicate, RpgIrRollScope, RpgIrScalarTestDifficulty,
+    RpgIrSubject, RpgIrTargetKind, RpgIrTeamConstraint, RulesetMarginBandRule,
+    RulesetNaturalDieRule, RulesetOutcomeBand,
 };
 
 use crate::compile::{CompiledAction, CompiledOperation, CompiledProgram};
@@ -133,6 +133,9 @@ impl CompiledRpgRules {
             context,
         };
 
+        if let Some(activation) = &action.activation {
+            execution.spend_activation(&intent.actor_id, activation, "$.action.activation")?;
+        }
         execution.spend_costs()?;
         execution.resolve_checks()?;
         execution.execute_program(&action.program, "$.action.program")?;
@@ -297,8 +300,71 @@ impl CompiledRpgRules {
                     format!("unknown action {}", intent.action_id),
                 )
             })?;
-        validate_intent(action, state, intent).map(|_| ())
+        validate_intent(action, state, intent)?;
+        if let Some(activation) = &action.activation {
+            activation_rejection(
+                self,
+                state,
+                &intent.actor_id,
+                activation,
+                "$.action.activation",
+            )?;
+        }
+        Ok(())
     }
+}
+
+fn activation_rejection(
+    rules: &CompiledRpgRules,
+    state: &RpgCapabilityState,
+    entity_id: &str,
+    activation: &RpgIrActivation,
+    path: &str,
+) -> Result<(), RpgResolutionRejection> {
+    let Some(ceiling) = rules.accepted_activation_ceiling() else {
+        return Err(rejection(
+            "RPG_ACTIVATION_MODEL_UNAVAILABLE",
+            path,
+            "activation was submitted without the variable activation-budget model",
+        ));
+    };
+    if state.accepted_activations_this_turn() >= ceiling {
+        return Err(rejection(
+            "RPG_ACTIVATION_CEILING_REACHED",
+            path,
+            format!("the turn has reached its {ceiling}-activation ceiling"),
+        ));
+    }
+    let entity = state.entity(entity_id).ok_or_else(|| {
+        rejection(
+            "RPG_ACTIVATION_ENTITY_UNKNOWN",
+            path,
+            format!("unknown activation owner {entity_id}"),
+        )
+    })?;
+    for (index, cost) in activation.costs.iter().enumerate() {
+        let remaining = entity.activation_budget(&cost.budget.id).ok_or_else(|| {
+            rejection(
+                "RPG_ACTIVATION_BUDGET_UNKNOWN",
+                format!("{path}.costs[{index}].budget"),
+                format!(
+                    "entity {entity_id} has no activation budget {}",
+                    cost.budget.id
+                ),
+            )
+        })?;
+        if remaining < cost.amount {
+            return Err(rejection(
+                "RPG_ACTIVATION_BUDGET_INSUFFICIENT",
+                format!("{path}.costs[{index}]"),
+                format!(
+                    "entity {entity_id} cannot pay {} {} with {remaining} remaining",
+                    cost.amount, cost.budget.id
+                ),
+            ));
+        }
+    }
+    Ok(())
 }
 
 fn validate_intent(
@@ -463,6 +529,54 @@ struct Execution<'a> {
 }
 
 impl Execution<'_> {
+    fn spend_activation(
+        &mut self,
+        entity_id: &str,
+        activation: &RpgIrActivation,
+        path: &str,
+    ) -> Result<(), RpgResolutionRejection> {
+        activation_rejection(
+            self.rules,
+            self.workspace.state(),
+            entity_id,
+            activation,
+            path,
+        )?;
+        let ceiling = self
+            .rules
+            .accepted_activation_ceiling()
+            .expect("validated activation has a variable-model ceiling");
+        let accepted_activations = self
+            .workspace
+            .activation_budgets_owner()
+            .accept_activation(ceiling)
+            .map_err(|error| self.mutation_rejection(error, path))?;
+        for (index, cost) in activation.costs.iter().enumerate() {
+            let cost_path = format!("{path}.costs[{index}]");
+            let (previous, remaining) = self
+                .workspace
+                .activation_budgets_owner()
+                .spend(entity_id, &cost.budget.id, cost.amount)
+                .map_err(|error| self.mutation_rejection(error, &cost_path))?;
+            self.events.push(RpgDomainEvent::ActivationBudgetSpent {
+                entity_id: entity_id.to_owned(),
+                budget_id: cost.budget.id.clone(),
+                amount: cost.amount,
+                previous,
+                remaining,
+                accepted_activations,
+            });
+        }
+        self.trace.push(RpgTraceStep {
+            path: path.to_owned(),
+            code: "RPG_ACTIVATION_STAGED".to_owned(),
+            detail: format!(
+                "activation {accepted_activations} of {ceiling} accepted for {entity_id}"
+            ),
+        });
+        Ok(())
+    }
+
     fn spend_costs(&mut self) -> Result<(), RpgResolutionRejection> {
         for (index, cost) in self.action.costs.iter().enumerate() {
             let path = format!("$.action.costs[{index}]");
@@ -1868,19 +1982,55 @@ impl Execution<'_> {
                     ));
                 }
                 let target_id = self.target_id(path)?;
+                let request_options = options
+                    .iter()
+                    .map(|option| {
+                        let unavailable = option.activation.as_ref().and_then(|activation| {
+                            activation_rejection(
+                                self.rules,
+                                self.workspace.state(),
+                                &target_id,
+                                activation,
+                                path,
+                            )
+                            .err()
+                            .map(|rejection| RpgReactionUnavailable {
+                                code: rejection.code,
+                                path: rejection.path,
+                                message: rejection.message,
+                            })
+                        });
+                        let activation_costs = option
+                            .activation
+                            .as_ref()
+                            .into_iter()
+                            .flat_map(|activation| activation.costs.iter())
+                            .map(|cost| RpgReactionActivationBudgetCost {
+                                budget_id: cost.budget.id.clone(),
+                                amount: cost.amount,
+                                remaining: self
+                                    .workspace
+                                    .state()
+                                    .entity(&target_id)
+                                    .and_then(|entity| entity.activation_budget(&cost.budget.id))
+                                    .unwrap_or(0),
+                            })
+                            .collect();
+                        RpgReactionOption {
+                            id: option.id.clone(),
+                            label: option.label.clone(),
+                            damage_reduction: option.damage_reduction,
+                            activation_costs,
+                            unavailable,
+                        }
+                    })
+                    .collect();
                 let request = RpgReactionRequest {
                     reaction_id: reaction_id.clone(),
                     actor_id: self.intent.actor_id.clone(),
                     target_id: target_id.clone(),
                     action_id: self.intent.action_id.clone(),
-                    options: options
-                        .iter()
-                        .map(|option| RpgReactionOption {
-                            id: option.id.clone(),
-                            label: option.label.clone(),
-                            damage_reduction: option.damage_reduction,
-                        })
-                        .collect(),
+                    options: request_options,
                     path: path.to_owned(),
                 };
                 let decision = match self.reaction {
@@ -1902,20 +2052,27 @@ impl Execution<'_> {
                         format!("expected reaction {reaction_id}"),
                     ));
                 }
-                let damage_reduction = match &decision.option_id {
-                    Some(option_id) => options
-                        .iter()
-                        .find(|option| option.id == *option_id)
-                        .map(|option| option.damage_reduction)
-                        .ok_or_else(|| {
-                            self.fail(
-                                "RPG_REACTION_OPTION_UNKNOWN",
-                                "$.reaction.optionId",
-                                format!("unknown reaction option {option_id}"),
-                            )
-                        })?,
-                    None => 0,
+                let selected_option = match &decision.option_id {
+                    Some(option_id) => Some(
+                        options
+                            .iter()
+                            .find(|option| option.id == *option_id)
+                            .ok_or_else(|| {
+                                self.fail(
+                                    "RPG_REACTION_OPTION_UNKNOWN",
+                                    "$.reaction.optionId",
+                                    format!("unknown reaction option {option_id}"),
+                                )
+                            })?,
+                    ),
+                    None => None,
                 };
+                if let Some(activation) =
+                    selected_option.and_then(|option| option.activation.as_ref())
+                {
+                    self.spend_activation(&target_id, activation, "$.reaction.option.activation")?;
+                }
+                let damage_reduction = selected_option.map_or(0, |option| option.damage_reduction);
                 self.reaction_consumed = true;
                 self.pending_damage_reduction = damage_reduction;
                 self.events.push(RpgDomainEvent::ReactionOpened {
@@ -2204,6 +2361,18 @@ impl Execution<'_> {
             RpgCapabilityMutationError::InsufficientResource => (
                 "RPG_MUTATION_RESOURCE_INSUFFICIENT",
                 "mutation resource is insufficient",
+            ),
+            RpgCapabilityMutationError::UnknownActivationBudget => (
+                "RPG_MUTATION_ACTIVATION_BUDGET_UNKNOWN",
+                "activation budget is unknown",
+            ),
+            RpgCapabilityMutationError::InsufficientActivationBudget => (
+                "RPG_MUTATION_ACTIVATION_BUDGET_INSUFFICIENT",
+                "activation budget is insufficient",
+            ),
+            RpgCapabilityMutationError::ActivationCeilingExceeded => (
+                "RPG_MUTATION_ACTIVATION_CEILING_EXCEEDED",
+                "activation ceiling is exceeded",
             ),
             RpgCapabilityMutationError::ResourceOutOfBounds => (
                 "RPG_MUTATION_RESOURCE_OUT_OF_BOUNDS",

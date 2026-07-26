@@ -20,8 +20,8 @@ use rpg_ir::{
     PlayBundleFingerprints, PreparedPlayBundle, RpgIrAction, RpgIrActionBody, RpgIrCatalogs,
     RpgIrCheck, RpgIrFormula, RpgIrOperation, RpgIrPackage, RpgIrPredicate, RpgIrProgram,
     RpgIrRequirement, RpgIrRequirementKind, RpgIrResourceCost, RpgIrScalarTestDifficulty,
-    RpgIrSchema, RpgIrTargetSelector, Ruleset, RulesetValueExpression, RulesetValueKind,
-    RulesetValueSource, VersionedRpgRequirement, ACTION_DEFINITION_IDENTITY,
+    RpgIrSchema, RpgIrTargetSelector, Ruleset, RulesetActionEconomyModel, RulesetValueExpression,
+    RulesetValueKind, RulesetValueSource, VersionedRpgRequirement, ACTION_DEFINITION_IDENTITY,
     ACTION_DEFINITION_VERSION, ACTION_PROCEDURE_IDENTITY, ACTION_PROCEDURE_VERSION,
     CHARACTER_CLASS_IDENTITY, CHARACTER_CLASS_VERSION, CHARACTER_FEATURE_IDENTITY,
     CHARACTER_FEATURE_VERSION, COMPILED_PLAY_BUNDLE_IDENTITY, ITEM_IDENTITY, ITEM_VERSION,
@@ -33,8 +33,8 @@ use serde_json::{json, Value};
 
 use crate::compile::{compile_normalized_rpg_ir_with_ruleset, BoundActionRegistration};
 use crate::{
-    capability_registrations, compile_normalized_rpg_ir, operation_registrations, CompiledRpgRules,
-    RpgCompileFailure, RpgDiagnostic, RpgDiagnosticStage,
+    capability_registrations, operation_registrations, CompiledRpgRules, RpgCompileFailure,
+    RpgDiagnostic, RpgDiagnosticStage,
 };
 
 #[derive(Debug, Clone)]
@@ -637,11 +637,6 @@ fn validate_ruleset(prepared: &PreparedPlayBundle, diagnostics: &mut Vec<RpgDiag
             &ruleset.models.reactions,
             "reaction.before-damage-choice",
         ),
-        (
-            "$.ruleset.models.actionEconomy",
-            &ruleset.models.action_economy,
-            "action-economy.one-action-plus-reaction",
-        ),
     ] {
         if binding.id == expected_id && binding.version == 1 {
             continue;
@@ -655,6 +650,23 @@ fn validate_ruleset(prepared: &PreparedPlayBundle, diagnostics: &mut Vec<RpgDiag
                 binding.id, binding.version
             ),
         ));
+    }
+    match &ruleset.models.action_economy {
+        RulesetActionEconomyModel::OneActionPlusReaction { version } if *version == 1 => {}
+        RulesetActionEconomyModel::VariableActivationBudgets {
+            version,
+            accepted_activation_ceiling,
+        } if *version == 1 && (1..=64).contains(accepted_activation_ceiling) => {}
+        model => diagnostics.push(RpgDiagnostic::error(
+            RpgDiagnosticStage::Compatibility,
+            "RULESET_MODEL_UNSUPPORTED",
+            "$.ruleset.models.actionEconomy",
+            format!(
+                "ruleset model {}@{} is not bound with a valid activation ceiling",
+                model.id(),
+                model.version()
+            ),
+        )),
     }
     validate_sorted_requirements(
         &ruleset.provides.operations,
@@ -739,6 +751,52 @@ fn validate_ruleset(prepared: &PreparedPlayBundle, diagnostics: &mut Vec<RpgDiag
             ));
         }
         previous_domain = Some(domain.id.as_str());
+    }
+    if ruleset.provides.activation_budgets.len() > 8 {
+        diagnostics.push(RpgDiagnostic::error(
+            RpgDiagnosticStage::Semantics,
+            "RULESET_ACTIVATION_BUDGET_LIMIT_EXCEEDED",
+            "$.ruleset.provides.activationBudgets",
+            "a ruleset may declare at most 8 activation budgets",
+        ));
+    }
+    let mut previous_budget = None::<&str>;
+    for (index, budget) in ruleset.provides.activation_budgets.iter().enumerate() {
+        let path = format!("$.ruleset.provides.activationBudgets[{index}]");
+        let domain = numeric_domains.get(budget.numeric_domain_id.as_str());
+        if !valid_identifier(&budget.id)
+            || previous_budget.is_some_and(|previous| previous >= budget.id.as_str())
+            || budget.version != 1
+            || budget.label.trim().is_empty()
+            || domain.is_none()
+            || domain.is_some_and(|(minimum, maximum)| {
+                *minimum > 0
+                    || *maximum < 0
+                    || i64::from(budget.initial_amount) < *minimum
+                    || i64::from(budget.initial_amount) > *maximum
+            })
+            || budget.initial_amount < 0
+        {
+            diagnostics.push(RpgDiagnostic::error(
+                RpgDiagnosticStage::Artifact,
+                "RULESET_ACTIVATION_BUDGET_INVALID",
+                &path,
+                "activation budgets must be unique sorted portable version-1 ids, labelled, non-negative, and use a declared domain containing zero and the initial amount",
+            ));
+        }
+        previous_budget = Some(budget.id.as_str());
+    }
+    let variable_model = matches!(
+        &ruleset.models.action_economy,
+        RulesetActionEconomyModel::VariableActivationBudgets { .. }
+    );
+    if variable_model == ruleset.provides.activation_budgets.is_empty() {
+        diagnostics.push(RpgDiagnostic::error(
+            RpgDiagnosticStage::Semantics,
+            "RULESET_ACTIVATION_BUDGET_MODEL_MISMATCH",
+            "$.ruleset.provides.activationBudgets",
+            "only the variable activation-budget model may declare budgets, and it requires at least one",
+        ));
     }
     let mut previous_selector = None::<&str>;
     for (index, selector) in ruleset.provides.calculation_selectors.iter().enumerate() {
@@ -2225,6 +2283,16 @@ fn validate_action_contribution_contracts(
     items: &[CompiledItemDefinition],
     features: &[CompiledCharacterFeature],
 ) -> Result<(), RpgCompileFailure> {
+    let variable_activation_model = matches!(
+        &ruleset.models.action_economy,
+        RulesetActionEconomyModel::VariableActivationBudgets { .. }
+    );
+    let activation_budgets = ruleset
+        .provides
+        .activation_budgets
+        .iter()
+        .map(|budget| (budget.id.as_str(), budget))
+        .collect::<BTreeMap<_, _>>();
     let selectors = ruleset
         .provides
         .calculation_selectors
@@ -2244,6 +2312,23 @@ fn validate_action_contribution_contracts(
         .collect::<BTreeSet<_>>();
     let mut diagnostics = Vec::new();
     for (index, action) in normalized.actions.iter().enumerate() {
+        validate_activation_contract(
+            action.activation.as_ref(),
+            rpg_ir::RpgIrActivationTiming::Action,
+            variable_activation_model,
+            ruleset,
+            &activation_budgets,
+            &format!("$.actions[{index}].activation"),
+            &mut diagnostics,
+        );
+        validate_program_activation_contracts(
+            &action.program,
+            variable_activation_model,
+            ruleset,
+            &activation_budgets,
+            &format!("$.actions[{index}].program"),
+            &mut diagnostics,
+        );
         match &action.check {
             RpgIrCheck::Attack {
                 contribution_selector: Some(selector),
@@ -2399,6 +2484,193 @@ fn validate_action_contribution_contracts(
         Ok(())
     } else {
         Err(RpgCompileFailure { diagnostics })
+    }
+}
+
+fn validate_activation_contract(
+    activation: Option<&rpg_ir::RpgIrActivation>,
+    expected_timing: rpg_ir::RpgIrActivationTiming,
+    variable_activation_model: bool,
+    ruleset: &Ruleset,
+    budgets: &BTreeMap<&str, &rpg_ir::RulesetActivationBudget>,
+    path: &str,
+    diagnostics: &mut Vec<RpgDiagnostic>,
+) {
+    if !variable_activation_model {
+        if activation.is_some() {
+            diagnostics.push(RpgDiagnostic::error(
+                RpgDiagnosticStage::Semantics,
+                "ACTION_ACTIVATION_MODEL_MISMATCH",
+                path,
+                "activation declarations require the variable activation-budget model",
+            ));
+        }
+        return;
+    }
+    let Some(activation) = activation else {
+        diagnostics.push(RpgDiagnostic::error(
+            RpgDiagnosticStage::Semantics,
+            "ACTION_ACTIVATION_REQUIRED",
+            path,
+            "every action and reaction option must declare activation under the variable activation-budget model",
+        ));
+        return;
+    };
+    if activation.timing != expected_timing {
+        diagnostics.push(RpgDiagnostic::error(
+            RpgDiagnosticStage::Semantics,
+            "ACTION_ACTIVATION_TIMING_INVALID",
+            format!("{path}.timing"),
+            "activation timing does not match its action or reaction position",
+        ));
+    }
+    for (index, cost) in activation.costs.iter().enumerate() {
+        let cost_path = format!("{path}.costs[{index}]");
+        let budget = budgets.get(cost.budget.id.as_str()).copied();
+        let expected_budget_timing = match expected_timing {
+            rpg_ir::RpgIrActivationTiming::Action => rpg_ir::RulesetActivationTiming::Action,
+            rpg_ir::RpgIrActivationTiming::Reaction => rpg_ir::RulesetActivationTiming::Reaction,
+        };
+        if cost.budget.ruleset_id != ruleset.identity.id
+            || budget.is_none()
+            || budget.is_some_and(|budget| budget.timing != expected_budget_timing)
+        {
+            diagnostics.push(RpgDiagnostic::error(
+                RpgDiagnosticStage::References,
+                "ACTION_ACTIVATION_BUDGET_INVALID",
+                format!("{cost_path}.budget"),
+                format!(
+                    "activation budget {} must resolve to the matching timing in Ruleset {}",
+                    cost.budget.id, ruleset.identity.id
+                ),
+            ));
+        }
+        if cost.amount < 0 || budget.is_some_and(|budget| cost.amount > budget.initial_amount) {
+            diagnostics.push(RpgDiagnostic::error(
+                RpgDiagnosticStage::Semantics,
+                "ACTION_ACTIVATION_COST_UNREACHABLE",
+                format!("{cost_path}.amount"),
+                "activation cost must be nonnegative and no greater than the budget's initial amount",
+            ));
+        }
+    }
+}
+
+fn validate_program_activation_contracts(
+    program: &RpgIrProgram,
+    variable_activation_model: bool,
+    ruleset: &Ruleset,
+    budgets: &BTreeMap<&str, &rpg_ir::RulesetActivationBudget>,
+    path: &str,
+    diagnostics: &mut Vec<RpgDiagnostic>,
+) {
+    match program {
+        RpgIrProgram::Operation {
+            operation: RpgIrOperation::OpenReaction { options, .. },
+        } => {
+            for (index, option) in options.iter().enumerate() {
+                validate_activation_contract(
+                    option.activation.as_ref(),
+                    rpg_ir::RpgIrActivationTiming::Reaction,
+                    variable_activation_model,
+                    ruleset,
+                    budgets,
+                    &format!("{path}.operation.options[{index}].activation"),
+                    diagnostics,
+                );
+            }
+        }
+        RpgIrProgram::Operation { .. } => {}
+        RpgIrProgram::Sequence { steps } => {
+            for (index, step) in steps.iter().enumerate() {
+                validate_program_activation_contracts(
+                    step,
+                    variable_activation_model,
+                    ruleset,
+                    budgets,
+                    &format!("{path}.steps[{index}]"),
+                    diagnostics,
+                );
+            }
+        }
+        RpgIrProgram::When {
+            then, otherwise, ..
+        } => {
+            validate_program_activation_contracts(
+                then,
+                variable_activation_model,
+                ruleset,
+                budgets,
+                &format!("{path}.then"),
+                diagnostics,
+            );
+            if let Some(otherwise) = otherwise {
+                validate_program_activation_contracts(
+                    otherwise,
+                    variable_activation_model,
+                    ruleset,
+                    budgets,
+                    &format!("{path}.otherwise"),
+                    diagnostics,
+                );
+            }
+        }
+        RpgIrProgram::Repeat { body, .. }
+        | RpgIrProgram::ForEachTarget { body, .. }
+        | RpgIrProgram::Atomic { body } => validate_program_activation_contracts(
+            body,
+            variable_activation_model,
+            ruleset,
+            budgets,
+            &format!("{path}.body"),
+            diagnostics,
+        ),
+        RpgIrProgram::OnCheck {
+            hit,
+            miss,
+            saved,
+            failed,
+            no_roll,
+        } => {
+            for (name, branch) in [
+                ("hit", hit),
+                ("miss", miss),
+                ("saved", saved),
+                ("failed", failed),
+                ("noRoll", no_roll),
+            ] {
+                if let Some(branch) = branch {
+                    validate_program_activation_contracts(
+                        branch,
+                        variable_activation_model,
+                        ruleset,
+                        budgets,
+                        &format!("{path}.{name}"),
+                        diagnostics,
+                    );
+                }
+            }
+        }
+        RpgIrProgram::OnOutcome { branches, default } => {
+            for (id, branch) in branches {
+                validate_program_activation_contracts(
+                    branch,
+                    variable_activation_model,
+                    ruleset,
+                    budgets,
+                    &format!("{path}.branches.{id}"),
+                    diagnostics,
+                );
+            }
+            validate_program_activation_contracts(
+                default,
+                variable_activation_model,
+                ruleset,
+                budgets,
+                &format!("{path}.default"),
+                diagnostics,
+            );
+        }
     }
 }
 
@@ -3918,6 +4190,7 @@ fn normalized_ir_from_materialized(
                                     check: body.check,
                                     roll_scope: body.roll_scope,
                                     costs: body.costs,
+                                    activation: body.activation,
                                     program: body.program,
                                 },
                                 effective_references,
@@ -3961,6 +4234,7 @@ fn normalized_ir_from_materialized(
                                 check: body.check,
                                 roll_scope: body.roll_scope,
                                 costs: body.costs,
+                                activation: body.activation,
                                 program: body.program,
                             },
                             effective_references,
@@ -4714,7 +4988,7 @@ fn validate_action_procedure_callable(
             diagnostics,
         );
         if let Some(body) = expanded {
-            validate_expanded_action_procedure_body(definition, body, path, diagnostics);
+            validate_expanded_action_procedure_body(definition, body, ruleset, path, diagnostics);
         }
     }
 }
@@ -4722,6 +4996,7 @@ fn validate_action_procedure_callable(
 fn validate_expanded_action_procedure_body(
     definition: &MaterializedContentDefinition,
     body: RpgIrActionBody,
+    ruleset: &Ruleset,
     path: &str,
     diagnostics: &mut Vec<RpgDiagnostic>,
 ) {
@@ -4734,8 +5009,36 @@ fn validate_expanded_action_procedure_body(
         check: body.check,
         roll_scope: body.roll_scope,
         costs: body.costs,
+        activation: body.activation,
         program: body.program,
     };
+    let variable_activation_model = matches!(
+        &ruleset.models.action_economy,
+        RulesetActionEconomyModel::VariableActivationBudgets { .. }
+    );
+    let activation_budgets = ruleset
+        .provides
+        .activation_budgets
+        .iter()
+        .map(|budget| (budget.id.as_str(), budget))
+        .collect::<BTreeMap<_, _>>();
+    validate_activation_contract(
+        action.activation.as_ref(),
+        rpg_ir::RpgIrActivationTiming::Action,
+        variable_activation_model,
+        ruleset,
+        &activation_budgets,
+        &format!("{path}.callable.activation"),
+        diagnostics,
+    );
+    validate_program_activation_contracts(
+        &action.program,
+        variable_activation_model,
+        ruleset,
+        &activation_budgets,
+        &format!("{path}.callable.program"),
+        diagnostics,
+    );
     let mut catalogs = DerivedCatalogs::default();
     collect_action_catalogs(&action, &mut catalogs);
     let capabilities = capability_registrations()
@@ -4778,7 +5081,7 @@ fn validate_expanded_action_procedure_body(
         requirements,
         actions: vec![action],
     };
-    let Err(failure) = compile_normalized_rpg_ir(source) else {
+    let Err(failure) = compile_normalized_rpg_ir_with_ruleset(source, Some(ruleset)) else {
         return;
     };
     diagnostics.extend(failure.diagnostics.into_iter().map(|mut diagnostic| {

@@ -9,7 +9,7 @@ use rpg_core::{
     RpgModifierTurnChange, RpgRandomEvidence, RpgReactionDecision, RpgReactionRequest,
     RpgResolutionContext, RpgResolutionReceipt, RpgResolutionRejection, RpgTraceStep,
 };
-use rpg_ir::{CompiledPlayBundleArtifact, RpgIrTargetKind};
+use rpg_ir::{CompiledPlayBundleArtifact, RpgIrTargetKind, RulesetActivationBudgetResetBoundary};
 use serde::{Deserialize, Serialize};
 
 use crate::encounter::{
@@ -382,6 +382,8 @@ impl RpgAuthoritySession {
                 )
             })
             .collect();
+        let activation_budget_definitions =
+            self.rules.activation_budgets().cloned().collect::<Vec<_>>();
         let participants = self
             .state
             .entities()
@@ -413,6 +415,7 @@ impl RpgAuthoritySession {
                     items,
                     equipment,
                     &self.encounter.item_definitions,
+                    &activation_budget_definitions,
                 )
             })
             .collect();
@@ -461,6 +464,8 @@ impl RpgAuthoritySession {
             board: self.encounter.scenario.board.clone(),
             participants,
             turn: self.encounter.turn.clone(),
+            accepted_activations_this_turn: self.state.accepted_activations_this_turn(),
+            accepted_activation_ceiling: self.rules.accepted_activation_ceiling(),
             actions,
             controls: vec![RpgTurnControlView {
                 control: RpgTurnControl::EndTurn,
@@ -561,20 +566,29 @@ impl RpgAuthoritySession {
                 {
                     return RpgCommandOutcome::Rejected(rejection);
                 }
-                let advances_turn = matches!(
-                    encounter_outcome(&staged_state),
-                    RpgEncounterOutcomeView::InProgress
-                );
-                if advances_turn {
-                    append_modifier_turn_events(&self.state, &mut staged_state, &mut receipt);
-                }
+                let advances_turn = !self.rules.uses_variable_activation_budgets()
+                    && matches!(
+                        encounter_outcome(&staged_state),
+                        RpgEncounterOutcomeView::InProgress
+                    );
+                let refreshed = refreshed_modifiers(&receipt.events);
+                let next_turn = advances_turn.then(|| {
+                    append_turn_events(
+                        &self.rules,
+                        &self.encounter,
+                        &self.state,
+                        &mut staged_state,
+                        &mut receipt.events,
+                        refreshed,
+                    )
+                });
                 self.state = staged_state;
                 self.accepted_random_values = self
                     .accepted_random_values
                     .saturating_add(receipt.random_consumed);
                 self.encounter.record(&receipt);
-                if advances_turn {
-                    self.encounter.advance_turn(&self.state);
+                if let Some(next_turn) = next_turn {
+                    self.encounter.set_turn(next_turn);
                 }
                 RpgCommandOutcome::Accepted(receipt)
             }
@@ -695,21 +709,30 @@ impl RpgAuthoritySession {
                 {
                     return RpgCommandOutcome::Rejected(rejection);
                 }
-                let advances_turn = matches!(
-                    encounter_outcome(&staged_state),
-                    RpgEncounterOutcomeView::InProgress
-                );
-                if advances_turn {
-                    append_modifier_turn_events(&self.state, &mut staged_state, &mut receipt);
-                }
+                let advances_turn = !self.rules.uses_variable_activation_budgets()
+                    && matches!(
+                        encounter_outcome(&staged_state),
+                        RpgEncounterOutcomeView::InProgress
+                    );
+                let refreshed = refreshed_modifiers(&receipt.events);
+                let next_turn = advances_turn.then(|| {
+                    append_turn_events(
+                        &self.rules,
+                        &self.encounter,
+                        &self.state,
+                        &mut staged_state,
+                        &mut receipt.events,
+                        refreshed,
+                    )
+                });
                 self.pending = None;
                 self.state = staged_state;
                 self.accepted_random_values = self
                     .accepted_random_values
                     .saturating_add(receipt.random_consumed);
                 self.encounter.record(&receipt);
-                if advances_turn {
-                    self.encounter.advance_turn(&self.state);
+                if let Some(next_turn) = next_turn {
+                    self.encounter.set_turn(next_turn);
                 }
                 RpgCommandOutcome::Accepted(receipt)
             }
@@ -762,7 +785,15 @@ impl RpgAuthoritySession {
         }
 
         let mut staged_state = self.state.clone();
-        let events = modifier_turn_events(&self.state, &mut staged_state, &BTreeSet::new());
+        let mut events = Vec::new();
+        let next_turn = append_turn_events(
+            &self.rules,
+            &self.encounter,
+            &self.state,
+            &mut staged_state,
+            &mut events,
+            BTreeSet::new(),
+        );
         let state_revision = staged_state.advance_revision();
         let receipt = RpgTurnControlReceipt {
             control: command.control,
@@ -772,7 +803,7 @@ impl RpgAuthoritySession {
         };
         self.state = staged_state;
         self.encounter.record_control(&receipt);
-        self.encounter.advance_turn(&self.state);
+        self.encounter.set_turn(next_turn);
         RpgCommandOutcome::ControlAccepted(receipt)
     }
 
@@ -1078,13 +1109,8 @@ fn cell_intent(action_id: &str, actor_id: &str, cell: &crate::RpgCellSetup) -> R
     }
 }
 
-fn append_modifier_turn_events(
-    previous_state: &RpgCapabilityState,
-    staged_state: &mut RpgCapabilityState,
-    receipt: &mut RpgResolutionReceipt,
-) {
-    let refreshed_modifiers = receipt
-        .events
+fn refreshed_modifiers(events: &[rpg_core::RpgDomainEvent]) -> BTreeSet<(String, String)> {
+    events
         .iter()
         .filter_map(|event| match event {
             rpg_core::RpgDomainEvent::ModifierApplied {
@@ -1094,12 +1120,74 @@ fn append_modifier_turn_events(
             } => Some((target_id.clone(), stacking_group.clone())),
             _ => None,
         })
-        .collect::<BTreeSet<_>>();
-    receipt.events.extend(modifier_turn_events(
+        .collect()
+}
+
+fn append_turn_events(
+    rules: &CompiledRpgRules,
+    encounter: &RpgEncounterAuthority,
+    previous_state: &RpgCapabilityState,
+    staged_state: &mut RpgCapabilityState,
+    events: &mut Vec<rpg_core::RpgDomainEvent>,
+    refreshed_modifiers: BTreeSet<(String, String)>,
+) -> crate::RpgTurnState {
+    let next_turn = encounter.next_turn(staged_state);
+    if next_turn.round != encounter.turn.round {
+        events.push(rpg_core::RpgDomainEvent::RoundTransitioned {
+            previous_round: encounter.turn.round,
+            current_round: next_turn.round,
+        });
+    }
+    events.push(rpg_core::RpgDomainEvent::TurnTransitioned {
+        previous_actor_id: encounter.turn.current_actor_id.clone(),
+        current_actor_id: next_turn.current_actor_id.clone(),
+        round: next_turn.round,
+        turn: next_turn.turn,
+    });
+    events.extend(modifier_turn_events(
         previous_state,
         staged_state,
         &refreshed_modifiers,
     ));
+
+    let round_changed = next_turn.round != encounter.turn.round;
+    let entity_ids = staged_state
+        .entities()
+        .map(|entity| entity.id().to_owned())
+        .collect::<Vec<_>>();
+    let mut resets = BTreeSet::new();
+    for budget in rules.activation_budgets() {
+        if budget.reset_boundary == RulesetActivationBudgetResetBoundary::RoundStart
+            && round_changed
+        {
+            for entity_id in &entity_ids {
+                resets.insert((entity_id.clone(), budget.id.clone(), budget.initial_amount));
+            }
+        }
+        if budget.reset_boundary == RulesetActivationBudgetResetBoundary::OwnerTurnStart {
+            resets.insert((
+                next_turn.current_actor_id.clone(),
+                budget.id.clone(),
+                budget.initial_amount,
+            ));
+        }
+    }
+    staged_state
+        .activation_budgets_owner()
+        .reset_activation_count();
+    for (entity_id, budget_id, initial_amount) in resets {
+        let (previous, current) = staged_state
+            .activation_budgets_owner()
+            .reset_budget(&entity_id, &budget_id, initial_amount)
+            .expect("compiled activation budget exists on every participant");
+        events.push(rpg_core::RpgDomainEvent::ActivationBudgetReset {
+            entity_id,
+            budget_id,
+            previous,
+            current,
+        });
+    }
+    next_turn
 }
 
 fn modifier_turn_events(
@@ -1630,10 +1718,18 @@ mod tests {
         );
         assert_eq!(session.turn().current_actor_id, "guardian");
         assert!(matches!(
-            receipt.events.as_slice(),
-            [RpgDomainEvent::PositionChanged { current, .. }]
+            receipt.events.first(),
+            Some(RpgDomainEvent::PositionChanged { current, .. })
                 if *current == GridPosition { x: 2, y: 1 }
         ));
+        assert!(receipt.events.iter().any(|event| matches!(
+            event,
+            RpgDomainEvent::TurnTransitioned {
+                previous_actor_id,
+                current_actor_id,
+                ..
+            } if previous_actor_id == "hero" && current_actor_id == "guardian"
+        )));
         let log = &session.encounter_view().log;
         assert_eq!(log.len(), 1);
         assert_eq!(log[0].action_id, "action.move");

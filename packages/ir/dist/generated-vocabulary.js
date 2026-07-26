@@ -11,6 +11,7 @@ export const RPG_OPERATION_VERSIONS = {
     "operation.openReaction": 1,
 };
 export const RPG_CAPABILITY_VERSIONS = {
+    "capability.activation-budgets": 1,
     "capability.defenses": 1,
     "capability.modifiers": 1,
     "capability.position": 1,

@@ -16,7 +16,7 @@ ruleset:
 | --- | --- | --- |
 | `Ruleset` (`asha.rpg.ruleset@1`) | language compatibility, Rust-bound operation and capability provisions, named stat/defense contracts, numeric domains, scalar calculation selectors, contribution stacking groups | actions, spells, classes, creatures, items, conditions, presentation, setup |
 | `ContentPack` | authored definitions, presentation, dependencies, derivation, mixins, overlays | Rust execution callbacks, board/participants, commands or expected outcomes |
-| `PlayBundle` (`asha.rpg.play-bundle.prepared@3` / `.compiled@3`) | one Ruleset plus an exact compatible Content Pack closure and fingerprints | ambient discovery, executable TypeScript, scenario scripts |
+| `PlayBundle` (`asha.rpg.play-bundle.prepared@5` / `.compiled@5`) | one Ruleset plus an exact compatible Content Pack closure and fingerprints | ambient discovery, executable TypeScript, scenario scripts |
 | `Scenario` (`asha.rpg.scenario@2`) | board, participants, selected definitions, initial values, initiative, and random-source policy for one PlayBundle | definitions, commands, targets, reactions, rolls, expected events/outcomes, Tester configuration |
 
 A Tester is a caller of the same accessible interaction surface as a person;
@@ -38,10 +38,13 @@ provided operation versions, capability versions, named values, and numeric
 domains. Rust also verifies every Ruleset operation/capability provision has a
 registered authority binding. There is no compatibility matrix or registry.
 
-The initial model registry binds d20 roll-over checks, ordered one-action turns,
-scenario-supplied initiative order, before-damage reaction choices, and the
-one-action-plus-reaction economy. A consumer cannot introduce a new executable
-model by naming it in TypeScript.
+The model registry binds d20 roll-over checks, ordered turns,
+scenario-supplied initiative order, before-damage reaction choices, and either
+the legacy one-action-plus-reaction economy or `F2@1` variable activation
+budgets. `F2@1` admits at most eight Ruleset-owned action/reaction budgets,
+owner-turn-start or round-start resets, and an accepted-activation ceiling no
+greater than 64. A consumer cannot introduce a new executable model by naming
+it in TypeScript.
 
 Content dependencies and definition ownership use exact existing package
 resolution. Artifact identity and source/semantic/presentation fingerprints
@@ -168,7 +171,10 @@ operations, capabilities, references, or versions fail closed.
 
 Every rejected command is atomic. A reaction suspends the same transaction and
 revision. Random requests preserve their exact count/sides and target order.
-Accepted turn transitions age modifiers and emit events. Runtime internals,
+Under the variable model actions and reactions pay staged budgets and remain
+on the current turn until explicit end-turn. Zero-cost activations still count
+toward the Ruleset ceiling. Turn transitions age modifiers, reset only matching
+budgets, reset the accepted count, and emit transition/reset events. Runtime internals,
 compiled programs, and capability-store layout are not serialized contracts.
 
 ## Scenario and persistence
@@ -179,12 +185,13 @@ numeric domains, content-owned resource/modifier ids, board, occupancy,
 initiative, capability owners, and random-source binding before mutable state
 exists.
 
-Checkpoint schema version 5 embeds the exact compiled PlayBundle, Scenario and
+Checkpoint schema version 6 embeds the exact compiled PlayBundle, Scenario and
 Scenario fingerprint, portable state, turn/log, accepted random position,
-pending phase, and canonical state hash. Replay entry schema version 6 records
+pending phase, and canonical state hash. Replay entry schema version 7 records
 ordinary submit/reaction/turn-control operations and verifies before/after
-boundaries. Accepted event schema version 4 and encounter-view schema version 6
-carry the contextual contribution ledger and character selection. Replay never reruns
+boundaries. Accepted event schema version 5 and encounter-view schema version 7
+carry the contextual contribution ledger, character selection, activation
+budgets, and accepted activation count. Replay never reruns
 authoring or substitutes a candidate artifact.
 
 ## TypeScript authoring
@@ -243,8 +250,8 @@ rather than retained as aliases.
 The survey-selected neutral expansion is specified in
 [`first-wave-primitive-catalog.md`](first-wave-primitive-catalog.md). That
 catalog is an implementation map. `F0@1`, the contextual contribution ledger,
-and `F1@1`, generic scalar tests and ordered outcomes, are implemented as
-described above. `F2` through `F6` remain non-claims until
+and `F1@1`, generic scalar tests and ordered outcomes, and `F2@1`, variable
+activation budgets, are implemented as described above. `F3` through `F6` remain non-claims until
 their separately reviewed tasks update this canonical design and the
 corresponding code, schemas, tests, events, readbacks, checkpoint, and replay
 contracts.

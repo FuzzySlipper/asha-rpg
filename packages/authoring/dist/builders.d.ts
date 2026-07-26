@@ -1,7 +1,7 @@
-import type { RpgActionId, RpgIrComparison, RpgIrFormula, RpgIrPredicate, RpgIrResourceCost, RpgIrScalarExpression, RpgIrSubject, RpgIrTargetSelector, RpgReactionId, RpgReactionOptionId, RpgStackingGroup } from '@asha-rpg/ir';
+import type { RpgActionId, RpgIrActivation, RpgIrActivationTiming, RpgIrComparison, RpgIrFormula, RpgIrPredicate, RpgIrResourceCost, RpgIrScalarExpression, RpgIrSubject, RpgIrTargetSelector, RpgReactionId, RpgReactionOptionId, RpgStackingGroup } from '@asha-rpg/ir';
 import type { ActionInput, AuthoredAction, AuthoredActionSource, AuthoredPackage, AuthoringDuration, AuthoringProgram, AuthoringStacking, AuthoringTiming, CheckBranchInput, OutcomeBranchInput } from './types.js';
 import type { ContentCatalogReference } from './catalogs.js';
-import type { RulesetCalculationSelectorReference, RulesetScalarTestProfileReference, RulesetValueReference } from './ruleset-builders.js';
+import type { RulesetCalculationSelectorReference, RulesetActivationBudgetReference, RulesetScalarTestProfileReference, RulesetValueReference } from './ruleset-builders.js';
 type AuthoredStatReference = ContentCatalogReference<'stat', string> | RulesetValueReference<'stat', string, string>;
 type AuthoredDefenseReference = ContentCatalogReference<'defense', string> | RulesetValueReference<'defense', string, string>;
 export declare function actionId(value: string): RpgActionId;
@@ -70,6 +70,13 @@ export declare function scalarTest(options: {
     kind: 'scalarTest';
 }>;
 export declare function spend(resource: ContentCatalogReference<'resource', string>, amount: number): RpgIrResourceCost;
+export declare function activation(options: {
+    readonly timing: RpgIrActivationTiming;
+    readonly costs?: readonly {
+        readonly budget: RulesetActivationBudgetReference<string, string>;
+        readonly amount: number;
+    }[];
+}): RpgIrActivation;
 export declare function immediate(): AuthoringTiming;
 export declare function turns(count: number): AuthoringDuration;
 export declare function replace(group: RpgStackingGroup): AuthoringStacking;
@@ -115,6 +122,7 @@ export declare function openReaction(options: {
         readonly id: RpgReactionOptionId;
         readonly label: string;
         readonly damageReduction: number;
+        readonly activation?: RpgIrActivation;
     }[];
     readonly timing?: AuthoringTiming;
 }): AuthoringProgram;

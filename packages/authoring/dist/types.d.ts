@@ -1,4 +1,4 @@
-import type { NormalizedRpgIr, RpgActionId, RpgIrAction, RpgIrCheck, RpgIrFormula, RpgIrOperation, RpgIrPredicate, RpgIrResourceCost, RpgIrRollScope, RpgIrScalarExpression, RpgIrTargetSelector } from '@asha-rpg/ir';
+import type { NormalizedRpgIr, RpgActionId, RpgIrAction, RpgIrActivation, RpgIrCheck, RpgIrFormula, RpgIrOperation, RpgIrPredicate, RpgIrResourceCost, RpgIrRollScope, RpgIrScalarExpression, RpgIrTargetSelector } from '@asha-rpg/ir';
 export interface AuthoringTiming {
     readonly kind: 'immediate';
 }
@@ -51,6 +51,7 @@ export interface AuthoredAction {
     readonly check: RpgIrCheck;
     readonly rollScope: RpgIrRollScope | undefined;
     readonly costs: readonly RpgIrResourceCost[];
+    readonly activation?: RpgIrActivation;
     readonly program: AuthoringProgram;
 }
 export type AuthoredSourceKind = 'actions' | 'archetype' | 'item';
@@ -87,6 +88,7 @@ export interface ActionInputBase {
     readonly tags?: readonly string[];
     readonly targets: RpgIrTargetSelector;
     readonly costs?: readonly RpgIrResourceCost[];
+    readonly activation?: RpgIrActivation;
     readonly program: AuthoringProgram;
 }
 export type ActionInput = ActionInputBase & ({

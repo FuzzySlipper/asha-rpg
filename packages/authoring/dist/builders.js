@@ -126,6 +126,18 @@ export function scalarTest(options) {
 export function spend(resource, amount) {
     return frozenWithCatalogOwnership({ resourceId: catalogDefinitionId(resource), amount }, 'resourceId', resource);
 }
+export function activation(options) {
+    return frozen({
+        timing: options.timing,
+        costs: frozenList((options.costs ?? [])
+            .map((cost) => frozen({
+            budget: cost.budget,
+            amount: cost.amount,
+        }))
+            .sort((left, right) => left.budget.rulesetId.localeCompare(right.budget.rulesetId) ||
+            left.budget.id.localeCompare(right.budget.id))),
+    });
+}
 export function immediate() {
     return frozen({ kind: 'immediate' });
 }
@@ -227,6 +239,7 @@ export function action(input) {
         check: input.check,
         rollScope,
         costs: frozenList(input.costs ?? []),
+        ...(input.activation === undefined ? {} : { activation: input.activation }),
         program: input.program,
     });
 }

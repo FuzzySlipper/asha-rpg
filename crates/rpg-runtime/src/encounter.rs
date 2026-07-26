@@ -9,13 +9,16 @@ use rpg_core::{
     RpgIntentItemBinding, RpgRandomRequest, RpgReactionRequest, RpgResolutionRejection, RpgTeamId,
     MAXIMUM_RPG_MODIFIER_TURNS,
 };
-use rpg_ir::{MaterializedContentDefinitionKind, MaterializedContentVisibility, RulesetValueKind};
+use rpg_ir::{
+    MaterializedContentDefinitionKind, MaterializedContentVisibility, RpgIrActivation,
+    RulesetActivationBudgetResetBoundary, RulesetActivationTiming, RulesetValueKind,
+};
 use serde::{Deserialize, Serialize};
 
 pub const RPG_SCENARIO_SCHEMA_ID: &str = "asha.rpg.scenario";
 pub const RPG_SCENARIO_SCHEMA_VERSION: u32 = 2;
 pub const RPG_ENCOUNTER_VIEW_SCHEMA_ID: &str = "asha.rpg.encounter.view";
-pub const RPG_ENCOUNTER_VIEW_SCHEMA_VERSION: u32 = 6;
+pub const RPG_ENCOUNTER_VIEW_SCHEMA_VERSION: u32 = 7;
 pub const RPG_END_TURN_CONTROL_ID: &str = "control.end-turn";
 
 const MAXIMUM_BOARD_EXTENT: u32 = 1_024;
@@ -268,6 +271,18 @@ pub struct RpgParticipantView {
     pub defenses: Vec<RpgNamedIntegerView>,
     pub resources: Vec<RpgNamedBoundedView>,
     pub modifiers: Vec<RpgModifierView>,
+    pub activation_budgets: Vec<RpgActivationBudgetView>,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase", deny_unknown_fields)]
+pub struct RpgActivationBudgetView {
+    pub id: String,
+    pub label: String,
+    pub timing: RulesetActivationTiming,
+    pub reset_boundary: RulesetActivationBudgetResetBoundary,
+    pub initial_amount: i32,
+    pub remaining: i32,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
@@ -309,6 +324,7 @@ pub struct RpgActionView {
     pub available: bool,
     pub unavailable: Option<RpgResolutionRejection>,
     pub maximum_targets: u32,
+    pub activation: Option<RpgIrActivation>,
     pub options: RpgActionOptionsView,
 }
 
@@ -353,6 +369,8 @@ pub struct RpgEncounterView {
     pub board: RpgBoardSetup,
     pub participants: Vec<RpgParticipantView>,
     pub turn: RpgTurnState,
+    pub accepted_activations_this_turn: u32,
+    pub accepted_activation_ceiling: Option<u32>,
     pub actions: Vec<RpgActionView>,
     pub controls: Vec<RpgTurnControlView>,
     pub pending_reaction: Option<RpgReactionRequest>,
@@ -561,32 +579,38 @@ impl RpgEncounterAuthority {
         &self.turn.current_actor_id
     }
 
-    pub(crate) fn advance_turn(&mut self, state: &RpgCapabilityState) {
-        if self.turn.initiative_order.is_empty() {
-            return;
+    pub(crate) fn next_turn(&self, state: &RpgCapabilityState) -> RpgTurnState {
+        let mut next_turn = self.turn.clone();
+        if next_turn.initiative_order.is_empty() {
+            return next_turn;
         }
         let current = self
             .turn
             .initiative_order
             .iter()
-            .position(|id| id == &self.turn.current_actor_id)
+            .position(|id| id == &next_turn.current_actor_id)
             .unwrap_or(0);
-        for offset in 1..=self.turn.initiative_order.len() {
-            let next = (current + offset) % self.turn.initiative_order.len();
-            let participant_id = &self.turn.initiative_order[next];
+        for offset in 1..=next_turn.initiative_order.len() {
+            let next = (current + offset) % next_turn.initiative_order.len();
+            let participant_id = &next_turn.initiative_order[next];
             let active = state
                 .entity(participant_id)
                 .map(|entity| entity.vitality().current > 0)
                 .unwrap_or(false);
             if active {
                 if next <= current {
-                    self.turn.round = self.turn.round.saturating_add(1);
+                    next_turn.round = next_turn.round.saturating_add(1);
                 }
-                self.turn.turn = self.turn.turn.saturating_add(1);
-                self.turn.current_actor_id = participant_id.clone();
-                return;
+                next_turn.turn = next_turn.turn.saturating_add(1);
+                next_turn.current_actor_id = participant_id.clone();
+                return next_turn;
             }
         }
+        next_turn
+    }
+
+    pub(crate) fn set_turn(&mut self, turn: RpgTurnState) {
+        self.turn = turn;
     }
 
     pub(crate) fn record(&mut self, receipt: &rpg_core::RpgResolutionReceipt) {
@@ -675,6 +699,11 @@ pub(crate) fn build_encounter(
                     )
                     .expect("validated modifier restores"),
             }
+        }
+        for budget in bundle.rules().activation_budgets() {
+            entity
+                .restore_activation_budget(budget.id.clone(), budget.initial_amount)
+                .expect("validated activation budget restores");
         }
         let supplied_values = participant_ruleset_values(participant, bundle, false);
         let derived_values = bundle
@@ -1867,6 +1896,38 @@ pub(crate) fn validate_restored_encounter(
                 "checkpoint class and character-feature selection must match the scenario binding",
             ));
         }
+        let expected_budgets = rules
+            .activation_budgets()
+            .map(|budget| budget.id.as_str())
+            .collect::<BTreeSet<_>>();
+        let actual_budgets = entity
+            .activation_budgets()
+            .map(|(id, _)| id)
+            .collect::<BTreeSet<_>>();
+        let budget_values_valid = rules.activation_budgets().all(|budget| {
+            entity
+                .activation_budget(&budget.id)
+                .is_some_and(|value| value >= 0 && value <= budget.initial_amount)
+        });
+        if expected_budgets != actual_budgets || !budget_values_valid {
+            diagnostics.push(scenario_diagnostic(
+                "RPG_CHECKPOINT_ACTIVATION_BUDGET_INVALID",
+                format!("$.state.entities[{index}].activationBudgets"),
+                "checkpoint activation budgets must exactly match the Ruleset and remain within their reachable range",
+            ));
+        }
+    }
+    let activation_count_valid = rules
+        .accepted_activation_ceiling()
+        .map_or(state.accepted_activations_this_turn() == 0, |ceiling| {
+            state.accepted_activations_this_turn() <= ceiling
+        });
+    if !activation_count_valid {
+        diagnostics.push(scenario_diagnostic(
+            "RPG_CHECKPOINT_ACTIVATION_COUNT_INVALID",
+            "$.state.acceptedActivationsThisTurn",
+            "checkpoint accepted activation count is incompatible with the Ruleset ceiling",
+        ));
     }
     if authority.turn.initiative_order != authority.scenario.turn.initiative_order {
         diagnostics.push(scenario_diagnostic(
@@ -2024,6 +2085,7 @@ pub(crate) fn action_view(
         available: unavailable.is_none() && has_options,
         unavailable,
         maximum_targets: action.targets.maximum_targets,
+        activation: action.activation,
         options,
     }
 }
@@ -2035,6 +2097,7 @@ pub(crate) fn participant_view(
     items: &[RpgItemInstanceSetup],
     equipment: &[RpgEquipmentSlotSetup],
     item_definitions: &BTreeMap<String, rpg_ir::CompiledItemDefinition>,
+    activation_budget_definitions: &[rpg_ir::RulesetActivationBudget],
 ) -> RpgParticipantView {
     RpgParticipantView {
         id: entity.id().to_owned(),
@@ -2100,6 +2163,17 @@ pub(crate) fn participant_view(
                 id: modifier.id().to_owned(),
                 value: modifier.value(),
                 remaining_turns: modifier.remaining_turns(),
+            })
+            .collect(),
+        activation_budgets: activation_budget_definitions
+            .iter()
+            .map(|budget| RpgActivationBudgetView {
+                id: budget.id.clone(),
+                label: budget.label.clone(),
+                timing: budget.timing,
+                reset_boundary: budget.reset_boundary,
+                initial_amount: budget.initial_amount,
+                remaining: entity.activation_budget(&budget.id).unwrap_or(0),
             })
             .collect(),
     }
@@ -2197,6 +2271,7 @@ mod tests {
             ("rolls", json!([])),
             ("expectedEvents", json!([])),
             ("expectedOutcomes", json!([])),
+            ("activationBudgets", json!([])),
             ("tester", json!({})),
         ] {
             let mut source = base.clone();

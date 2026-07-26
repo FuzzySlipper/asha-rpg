@@ -1,4 +1,4 @@
-import type { RpgCapabilityId, RpgIrCheck, RpgIrFormula, RpgIrProgram, RpgIrResourceCost, RpgIrTargetSelector, RpgOperationId } from "@asha-rpg/ir";
+import type { RpgCapabilityId, RpgIrActivation, RpgIrCheck, RpgIrFormula, RpgIrProgram, RpgIrResourceCost, RpgIrTargetSelector, RpgOperationId } from "@asha-rpg/ir";
 import type { AuthoredAction } from "./types.js";
 import type { ContentCatalogCategory, ContentCatalogReference } from "./catalogs.js";
 import type { RulesetValueReference } from "./ruleset-builders.js";
@@ -105,6 +105,17 @@ export interface RulesetScalarTestProfile {
     readonly marginRules: readonly RulesetMarginBandRule[];
     readonly naturalDieRules: readonly RulesetNaturalDieRule[];
 }
+export type RulesetActivationTiming = "action" | "reaction";
+export type RulesetActivationBudgetResetBoundary = "ownerTurnStart" | "roundStart";
+export interface RulesetActivationBudget {
+    readonly id: string;
+    readonly version: 1;
+    readonly label: string;
+    readonly numericDomainId: string;
+    readonly timing: RulesetActivationTiming;
+    readonly resetBoundary: RulesetActivationBudgetResetBoundary;
+    readonly initialAmount: number;
+}
 export interface VersionedRpgRequirement {
     readonly id: string;
     readonly version: number;
@@ -117,13 +128,22 @@ export interface RulesetProvisions {
     readonly calculationSelectors: readonly RulesetCalculationSelectorContract[];
     readonly contributionStackingGroups: readonly RulesetContributionStackingGroupContract[];
     readonly scalarTestProfiles: readonly RulesetScalarTestProfile[];
+    readonly activationBudgets: readonly RulesetActivationBudget[];
 }
+export type RulesetActionEconomyModel = {
+    readonly id: "action-economy.one-action-plus-reaction";
+    readonly version: 1;
+} | {
+    readonly id: "action-economy.variable-activation-budgets";
+    readonly version: 1;
+    readonly acceptedActivationCeiling: number;
+};
 export interface RulesetModels {
     readonly checks: VersionedRpgRequirement;
     readonly turns: VersionedRpgRequirement;
     readonly initiative: VersionedRpgRequirement;
     readonly reactions: VersionedRpgRequirement;
-    readonly actionEconomy: VersionedRpgRequirement;
+    readonly actionEconomy: RulesetActionEconomyModel;
 }
 /** Rust-executed semantic vocabulary. This contract never contains content definitions. */
 export interface Ruleset {
@@ -304,6 +324,7 @@ export interface ActionProcedureTemplate {
     readonly check: ActionProcedureTemplateNode<RpgIrCheck>;
     readonly rollScope: ActionProcedureTemplateNode<import("@asha-rpg/ir").RpgIrRollScope>;
     readonly costs: ActionProcedureTemplateNode<readonly RpgIrResourceCost[]>;
+    readonly activation?: ActionProcedureTemplateNode<RpgIrActivation>;
     readonly program: ActionProcedureTemplateNode<RpgIrProgram>;
 }
 export type ActionProcedureArgument = number | string | boolean | RpgIrFormula | RulesetValueReference<RulesetValueKind, string, string> | ContentCatalogReference<ContentCatalogCategory, string> | RpgIrTargetSelector | RpgIrCheck | readonly RpgIrResourceCost[] | RpgIrProgram;
@@ -778,7 +799,7 @@ export interface MaterializedContentDefinition {
 export interface PreparedPlayBundle {
     readonly schema: {
         readonly identity: "asha.rpg.play-bundle.prepared";
-        readonly major: 4;
+        readonly major: 5;
     };
     readonly playBundleIdentity: PlayBundleIdentity;
     readonly ruleset: Ruleset;

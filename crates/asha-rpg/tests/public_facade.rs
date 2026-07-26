@@ -11,12 +11,13 @@ use asha_rpg::{
     RpgParticipantSetup, RpgRandomRequest, RpgRandomRequestKind, RpgRandomSourceBinding,
     RpgRollTapeEntry, RpgRollTapeSource, RpgScalarContributionLedger, RpgScenario, RpgTeamId,
     RpgTurnControl, RpgTurnControlProposal, RpgTurnInitialization, RpgVersionedIdentity, Ruleset,
-    RulesetCalculationSelectorContract, RulesetContributionStackingGroupContract,
-    RulesetMarginBandRule, RulesetModels, RulesetNaturalDieRule, RulesetNumericDomain,
-    RulesetOutcomeBand, RulesetProvisions, RulesetScalarTestProfile, RulesetSchema,
-    RulesetValueContract, RulesetValueExpression, RulesetValueFormula, RulesetValueFormulaSchema,
-    RulesetValueKind, RulesetValueSource, VersionedRpgRequirement, PLAY_BUNDLE_ARTIFACT_MAJOR,
-    PREPARED_PLAY_BUNDLE_IDENTITY,
+    RulesetActionEconomyModel, RulesetActivationBudget, RulesetActivationBudgetResetBoundary,
+    RulesetActivationTiming, RulesetCalculationSelectorContract,
+    RulesetContributionStackingGroupContract, RulesetMarginBandRule, RulesetModels,
+    RulesetNaturalDieRule, RulesetNumericDomain, RulesetOutcomeBand, RulesetProvisions,
+    RulesetScalarTestProfile, RulesetSchema, RulesetValueContract, RulesetValueExpression,
+    RulesetValueFormula, RulesetValueFormulaSchema, RulesetValueKind, RulesetValueSource,
+    VersionedRpgRequirement, PLAY_BUNDLE_ARTIFACT_MAJOR, PREPARED_PLAY_BUNDLE_IDENTITY,
 };
 use serde_json::json;
 
@@ -93,6 +94,215 @@ fn public_facade_builds_an_artifact_bound_setup_and_executes_a_turn() {
     ));
     assert_eq!(session.turn().current_actor_id, "opponent");
     assert_eq!(session.encounter_view().log.len(), 2);
+}
+
+#[test]
+fn variable_activation_budgets_pay_multiple_actions_enforce_zero_cost_ceiling_and_reset() {
+    let bundle = compile_prepared_play_bundle(activation_budget_prepared()).unwrap();
+    let action_ids = vec![
+        "action.heal-free".to_owned(),
+        "action.heal-one".to_owned(),
+        "action.heal-two".to_owned(),
+    ];
+    let participant_with_actions =
+        |id: &str, label: &str, team_id: RpgTeamId, x: u32, vitality: i32| {
+            let mut participant = participant(id, label, team_id, x, vitality);
+            participant.definition_ids = action_ids.clone();
+            participant
+        };
+    let scenario = RpgScenario {
+        schema: RpgScenario::schema(),
+        play_bundle_id: bundle.artifact().artifact_id.clone(),
+        board: RpgBoardSetup {
+            width: 5,
+            height: 3,
+            cells: Vec::new(),
+        },
+        participants: vec![
+            participant_with_actions("actor", "Actor", RpgTeamId::ally(), 0, 20),
+            participant_with_actions("target", "Target", RpgTeamId::ally(), 1, 1),
+            participant_with_actions("opponent", "Opponent", RpgTeamId::enemy(), 4, 20),
+        ],
+        turn: RpgTurnInitialization {
+            initiative_order: vec![
+                "actor".to_owned(),
+                "target".to_owned(),
+                "opponent".to_owned(),
+            ],
+            current_actor_id: "actor".to_owned(),
+            round: 1,
+            turn: 1,
+        },
+        random_source: RpgRandomSourceBinding {
+            policy_id: "consumer.recorded-evidence".to_owned(),
+            policy_version: 1,
+            source_id: "consumer.roll-tape".to_owned(),
+            source_version: 1,
+        },
+    };
+    let mut session = RpgAuthoritySession::from_scenario(bundle, scenario).unwrap();
+    let submit = |session: &mut RpgAuthoritySession, action_id: &str| {
+        let mut source =
+            RpgRollTapeSource::new(session.scenario().random_source.clone(), Vec::new());
+        session
+            .submit_with_random_source_recorded(
+                RpgActionProposal {
+                    expected_revision: session.state().revision(),
+                    action_id: action_id.to_owned(),
+                    actor_id: "actor".to_owned(),
+                    target_ids: vec!["target".to_owned()],
+                    item_binding: None,
+                },
+                &mut source,
+            )
+            .unwrap()
+            .0
+    };
+
+    assert!(matches!(
+        submit(&mut session, "action.heal-two"),
+        RpgCommandOutcome::Accepted(_)
+    ));
+    assert_eq!(session.turn().current_actor_id, "actor");
+    let view = session.encounter_view();
+    assert_eq!(view.accepted_activations_this_turn, 1);
+    assert_eq!(view.accepted_activation_ceiling, Some(3));
+    assert_eq!(
+        view.participants
+            .iter()
+            .find(|participant| participant.id == "actor")
+            .unwrap()
+            .activation_budgets[0]
+            .remaining,
+        1
+    );
+    assert!(view.actions.iter().any(|action| {
+        action.definition_id == "action.heal-two"
+            && !action.available
+            && action
+                .unavailable
+                .as_ref()
+                .is_some_and(|rejection| rejection.code == "RPG_ACTIVATION_BUDGET_INSUFFICIENT")
+    }));
+
+    assert!(matches!(
+        submit(&mut session, "action.heal-one"),
+        RpgCommandOutcome::Accepted(_)
+    ));
+    assert!(matches!(
+        submit(&mut session, "action.heal-free"),
+        RpgCommandOutcome::Accepted(_)
+    ));
+    assert_eq!(session.state().accepted_activations_this_turn(), 3);
+    let before_rejection = session.state_hash().unwrap();
+    let rejected = submit(&mut session, "action.heal-free");
+    assert!(matches!(
+        rejected,
+        RpgCommandOutcome::Rejected(ref rejection)
+            if rejection.code == "RPG_ACTIVATION_CEILING_REACHED"
+    ));
+    assert_eq!(session.state_hash().unwrap(), before_rejection);
+
+    let (ended, _) = session
+        .control_recorded(RpgTurnControlProposal {
+            expected_revision: 3,
+            actor_id: "actor".to_owned(),
+            control: RpgTurnControl::EndTurn,
+        })
+        .unwrap();
+    let RpgCommandOutcome::ControlAccepted(receipt) = ended else {
+        panic!("end turn must reset the next actor's owner-turn budget");
+    };
+    assert!(receipt.events.iter().any(|event| matches!(
+        event,
+        RpgDomainEvent::ActivationBudgetReset {
+            entity_id,
+            budget_id,
+            ..
+        } if entity_id == "target" && budget_id == "normal"
+    )));
+    assert_eq!(session.state().accepted_activations_this_turn(), 0);
+    assert_eq!(session.turn().current_actor_id, "target");
+}
+
+#[test]
+fn activation_budget_contracts_fail_closed_before_authority_state_exists() {
+    let mut duplicate = activation_budget_prepared();
+    duplicate.materialized_definitions[0].semantic["action"]["activation"]["costs"] = json!([
+        {
+            "budget": {"rulesetId": "consumer.rules", "id": "normal"},
+            "amount": 1
+        },
+        {
+            "budget": {"rulesetId": "consumer.rules", "id": "normal"},
+            "amount": 1
+        }
+    ]);
+    duplicate.materialized_definitions[0].fingerprint =
+        materialized_definition_fingerprint(&duplicate.materialized_definitions[0]).unwrap();
+    let failure = compile_prepared_play_bundle(duplicate).unwrap_err();
+    assert!(failure
+        .diagnostics
+        .iter()
+        .any(|diagnostic| { diagnostic.code == "RPG_IR_ACTIVATION_COSTS_NOT_CANONICAL" }));
+
+    let mut unknown = activation_budget_prepared();
+    unknown.materialized_definitions[1].semantic["action"]["activation"]["costs"][0]["budget"]
+        ["id"] = json!("missing");
+    unknown.materialized_definitions[1].fingerprint =
+        materialized_definition_fingerprint(&unknown.materialized_definitions[1]).unwrap();
+    let failure = compile_prepared_play_bundle(unknown).unwrap_err();
+    assert!(failure
+        .diagnostics
+        .iter()
+        .any(|diagnostic| diagnostic.code == "ACTION_ACTIVATION_BUDGET_INVALID"));
+
+    let mut unreachable = activation_budget_prepared();
+    unreachable.materialized_definitions[1].semantic["action"]["activation"]["costs"][0]
+        ["amount"] = json!(4);
+    unreachable.materialized_definitions[1].fingerprint =
+        materialized_definition_fingerprint(&unreachable.materialized_definitions[1]).unwrap();
+    let failure = compile_prepared_play_bundle(unreachable).unwrap_err();
+    assert!(failure
+        .diagnostics
+        .iter()
+        .any(|diagnostic| { diagnostic.code == "ACTION_ACTIVATION_COST_UNREACHABLE" }));
+
+    let mut negative = activation_budget_prepared();
+    negative.materialized_definitions[1].semantic["action"]["activation"]["costs"][0]["amount"] =
+        json!(-1);
+    negative.materialized_definitions[1].fingerprint =
+        materialized_definition_fingerprint(&negative.materialized_definitions[1]).unwrap();
+    let failure = compile_prepared_play_bundle(negative).unwrap_err();
+    assert!(failure
+        .diagnostics
+        .iter()
+        .any(|diagnostic| diagnostic.code == "ACTION_ACTIVATION_COST_UNREACHABLE"));
+
+    let mut invalid_model = activation_budget_prepared();
+    invalid_model.ruleset.models.action_economy =
+        RulesetActionEconomyModel::VariableActivationBudgets {
+            version: 1,
+            accepted_activation_ceiling: 65,
+        };
+    let failure = compile_prepared_play_bundle(invalid_model).unwrap_err();
+    assert!(failure
+        .diagnostics
+        .iter()
+        .any(|diagnostic| diagnostic.code == "RULESET_MODEL_UNSUPPORTED"));
+
+    let bundle = compile_prepared_play_bundle(activation_budget_prepared()).unwrap();
+    let mut tampered = bundle.artifact().clone();
+    tampered.ruleset.provides.activation_budgets[0].initial_amount = 2;
+    let failure = load_compiled_play_bundle(tampered).unwrap_err();
+    assert!(failure.diagnostics.iter().any(|diagnostic| {
+        matches!(
+            diagnostic.code.as_str(),
+            "PLAY_BUNDLE_ARTIFACT_ID_MISMATCH"
+                | "PLAY_BUNDLE_SEMANTIC_FINGERPRINT_MISMATCH"
+                | "PLAY_BUNDLE_ARTIFACT_FINGERPRINT_MISMATCH"
+        )
+    }));
 }
 
 #[test]
@@ -2650,6 +2860,114 @@ fn item_attack_ledger(
         .unwrap()
 }
 
+fn activation_budget_prepared() -> PreparedPlayBundle {
+    let mut prepared = healing_prepared();
+    prepared.ruleset.models.action_economy = RulesetActionEconomyModel::VariableActivationBudgets {
+        version: 1,
+        accepted_activation_ceiling: 3,
+    };
+    prepared
+        .ruleset
+        .provides
+        .numeric_domains
+        .push(RulesetNumericDomain {
+            id: "activation".to_owned(),
+            minimum: 0,
+            maximum: 3,
+        });
+    prepared.ruleset.provides.activation_budgets = vec![RulesetActivationBudget {
+        id: "normal".to_owned(),
+        version: 1,
+        label: "Normal activations".to_owned(),
+        numeric_domain_id: "activation".to_owned(),
+        timing: RulesetActivationTiming::Action,
+        reset_boundary: RulesetActivationBudgetResetBoundary::OwnerTurnStart,
+        initial_amount: 3,
+    }];
+    let activation_capability = VersionedRpgRequirement {
+        id: "capability.activation-budgets".to_owned(),
+        version: 1,
+    };
+    prepared
+        .ruleset
+        .provides
+        .capabilities
+        .push(activation_capability.clone());
+    prepared
+        .ruleset
+        .provides
+        .capabilities
+        .sort_by(|left, right| left.id.cmp(&right.id));
+    prepared
+        .content_requirements
+        .capabilities
+        .push(activation_capability);
+    prepared
+        .content_requirements
+        .capabilities
+        .sort_by(|left, right| left.id.cmp(&right.id));
+
+    let base = prepared.materialized_definitions.remove(0);
+    let specifications = [
+        ("action.heal-free", "Heal free", 0),
+        ("action.heal-one", "Heal one", 1),
+        ("action.heal-two", "Heal two", 2),
+    ];
+    prepared.materialized_definitions = specifications
+        .iter()
+        .map(|(id, name, amount)| {
+            let mut definition = base.clone();
+            definition.id = (*id).to_owned();
+            definition.provenance.definition_id = (*id).to_owned();
+            definition.provenance.source.module = format!("actions/{id}.ts");
+            definition.provenance.source.declaration = id.replace('.', "_");
+            definition.semantic["action"]["id"] = json!(id);
+            definition.semantic["action"]["name"] = json!(name);
+            definition.semantic["action"]["sourcePath"] =
+                json!(format!("actions/{id}.ts#{}", id.replace('.', "_")));
+            let costs = if *amount == 0 {
+                json!([])
+            } else {
+                json!([{
+                    "budget": {
+                        "rulesetId": "consumer.rules",
+                        "id": "normal"
+                    },
+                    "amount": amount
+                }])
+            };
+            definition.semantic["action"]["activation"] = json!({
+                "timing": "action",
+                "costs": costs
+            });
+            definition.presentation = json!({"label": name});
+            definition.fingerprint = materialized_definition_fingerprint(&definition).unwrap();
+            definition
+        })
+        .collect();
+    prepared.exported_roots = specifications
+        .iter()
+        .map(|(id, _, _)| (*id).to_owned())
+        .collect();
+    prepared.definition_provenance = prepared
+        .materialized_definitions
+        .iter()
+        .map(|definition| definition.provenance.clone())
+        .collect();
+    prepared.relationships = prepared
+        .exported_roots
+        .iter()
+        .enumerate()
+        .map(|(order, target)| ContentRelationshipProvenance {
+            kind: ContentRelationshipKind::Exports,
+            source: "consumer.package@1.0.0".to_owned(),
+            target: target.clone(),
+            order,
+        })
+        .collect();
+    prepared
+}
+
 fn healing_bundle() -> asha_rpg::CompiledPlayBundle {
     compile_prepared_play_bundle(healing_prepared()).unwrap()
 }
@@ -2732,10 +3050,7 @@ fn healing_prepared() -> PreparedPlayBundle {
                     id: "reaction.before-damage-choice".to_owned(),
                     version: 1,
                 },
-                action_economy: VersionedRpgRequirement {
-                    id: "action-economy.one-action-plus-reaction".to_owned(),
-                    version: 1,
-                },
+                action_economy: RulesetActionEconomyModel::OneActionPlusReaction { version: 1 },
             },
             provides: RulesetProvisions {
                 operations: vec![VersionedRpgRequirement {
@@ -2751,6 +3066,7 @@ fn healing_prepared() -> PreparedPlayBundle {
                 calculation_selectors: Vec::new(),
                 contribution_stacking_groups: Vec::new(),
                 scalar_test_profiles: Vec::new(),
+                activation_budgets: Vec::new(),
             },
         },
         content_packs: vec![ResolvedContentPack {

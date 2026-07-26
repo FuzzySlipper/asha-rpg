@@ -62,7 +62,11 @@ and one atomic root. Unavailable semantics fail compilation; they are never
 delegated to consumer callbacks.
 
 Rulesets explicitly bind checks, ordered turns, scenario-supplied initiative,
-reactions, and action economy to Rust-supported model versions. Content Packs
+reactions, and action economy to Rust-supported model versions. The variable
+activation-budget model lets a Ruleset declare bounded action/reaction budgets,
+owner-turn-start or round-start reset boundaries, and a per-turn accepted
+activation ceiling. Rust pays those costs atomically with action/reaction
+consequences and projects remaining amounts and unavailable reasons. Content Packs
 may define inert typed items with tags, traits, allowed equipment slots, and
 bounded integer, identifier, dice, owner-bound catalog-reference, or
 Ruleset-reference attributes. Shared actions may read those attributes through
@@ -101,7 +105,7 @@ It exports distinct `Ruleset`, `ContentPack`, `PlayBundle`, and `Scenario`
 contracts. A Ruleset has no authored gameplay definitions; a Scenario has no
 definitions or gameplay script. It does not evaluate gameplay semantics or discover packages from global
 registries or the filesystem. Rust validates the prepared graph, creates the
-private executable plan, and emits the closed `asha.rpg.play-bundle.compiled@3`
+private executable plan, and emits the closed `asha.rpg.play-bundle.compiled@5`
 artifact with independent source, semantic, and presentation fingerprints.
 Representative consumer code lives in
 `examples/representative-actions.ts`; its normalized artifact is sent through
@@ -113,7 +117,8 @@ authoring compilation. The emitted artifact contains no runtime inheritance or
 plugin graph: only final definitions, exact definition fingerprints, and typed
 source-to-effective-value provenance. Rust independently validates those
 closed records and recompiles gameplay semantics from the materialized graph.
-Runtime activation remains a downstream host responsibility.
+Product hosting and artifact-selection workflows remain downstream
+responsibilities.
 
 The same artifact-bound authority session now owns the supported portable
 checkpoint and replay contract. A checkpoint embeds the exact validated

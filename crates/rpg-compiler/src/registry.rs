@@ -145,6 +145,10 @@ const CAPABILITIES: &[RpgCapabilityRegistration] = &[
         id: RpgCapabilityId::Reactions,
         version: 1,
     },
+    RpgCapabilityRegistration {
+        id: RpgCapabilityId::ActivationBudgets,
+        version: 1,
+    },
 ];
 
 pub fn operation_registrations() -> &'static [RpgOperationRegistration] {

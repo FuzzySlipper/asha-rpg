@@ -72,6 +72,8 @@ pub struct RpgIrAction {
     pub roll_scope: RpgIrRollScope,
     #[serde(default)]
     pub costs: Vec<RpgIrResourceCost>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub activation: Option<RpgIrActivation>,
     pub program: RpgIrProgram,
 }
 
@@ -83,6 +85,8 @@ pub struct RpgIrActionBody {
     pub roll_scope: RpgIrRollScope,
     #[serde(default)]
     pub costs: Vec<RpgIrResourceCost>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub activation: Option<RpgIrActivation>,
     pub program: RpgIrProgram,
 }
 
@@ -126,12 +130,35 @@ pub struct RpgIrResourceCost {
     pub amount: i32,
 }
 
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub enum RpgIrActivationTiming {
+    Action,
+    Reaction,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase", deny_unknown_fields)]
+pub struct RpgIrActivationBudgetCost {
+    pub budget: rpg_core::RpgOwnedRulesetReference,
+    pub amount: i32,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase", deny_unknown_fields)]
+pub struct RpgIrActivation {
+    pub timing: RpgIrActivationTiming,
+    pub costs: Vec<RpgIrActivationBudgetCost>,
+}
+
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase", deny_unknown_fields)]
 pub struct RpgIrReactionOption {
     pub id: String,
     pub label: String,
     pub damage_reduction: u32,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub activation: Option<RpgIrActivation>,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]

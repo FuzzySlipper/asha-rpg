@@ -79,10 +79,26 @@ export interface RpgIrResourceCost {
   readonly amount: number;
 }
 
+export type RpgIrActivationTiming = 'action' | 'reaction';
+
+export interface RpgIrActivationBudgetCost {
+  readonly budget: {
+    readonly rulesetId: string;
+    readonly id: string;
+  };
+  readonly amount: number;
+}
+
+export interface RpgIrActivation {
+  readonly timing: RpgIrActivationTiming;
+  readonly costs: readonly RpgIrActivationBudgetCost[];
+}
+
 export interface RpgIrReactionOption {
   readonly id: RpgReactionOptionId;
   readonly label: string;
   readonly damageReduction: number;
+  readonly activation?: RpgIrActivation;
 }
 
 export type RpgIrCheck =
@@ -235,6 +251,7 @@ export interface RpgIrAction {
   readonly check: RpgIrCheck;
   readonly rollScope: RpgIrRollScope;
   readonly costs: readonly RpgIrResourceCost[];
+  readonly activation?: RpgIrActivation;
   readonly program: RpgIrProgram;
 }
 

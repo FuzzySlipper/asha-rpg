@@ -3,6 +3,7 @@ import { test } from "node:test";
 
 import {
   action,
+  activation,
   actionId,
   add,
   attack,
@@ -38,6 +39,7 @@ import {
   rulesetCalculationSelector,
   rulesetContributionStackingGroup,
   rulesetScalarTestProfile,
+  rulesetActivationBudget,
   rulesetStat,
   rulesetValueId,
   scalarTest,
@@ -135,6 +137,120 @@ test("Ruleset value ownership survives action authoring and rejects a foreign ow
   );
 });
 
+test("Variable activation budgets require exact owner-bound action declarations", () => {
+  const variableRuleset = defineRuleset({
+    ...semanticRuleset,
+    models: {
+      ...semanticRuleset.models,
+      actionEconomy: {
+        id: "action-economy.variable-activation-budgets",
+        version: 1,
+        acceptedActivationCeiling: 3,
+      },
+    },
+    provides: {
+      ...semanticRuleset.provides,
+      operations: [{ id: "operation.heal", version: 1 }],
+      capabilities: [
+        { id: "capability.activation-budgets", version: 1 },
+        { id: "capability.vitality", version: 1 },
+      ],
+      activationBudgets: [
+        {
+          id: "normal",
+          version: 1,
+          label: "Normal activations",
+          numericDomainId: "activation",
+          timing: "action",
+          resetBoundary: "ownerTurnStart",
+          initialAmount: 3,
+        },
+      ],
+      numericDomains: [
+        { id: "activation", minimum: 0, maximum: 3 },
+        ...semanticRuleset.provides.numericDomains,
+      ],
+    },
+  });
+  const normal = rulesetActivationBudget(variableRuleset, "normal");
+  const prepare = (activationDeclaration?: ReturnType<typeof activation>) => {
+    const authoredAction = action({
+      id: actionId("contract.activation-action"),
+      name: "Activation action",
+      sourcePath: "contract/activation-action.ts",
+      targets: hostile({ range: 1 }),
+      check: noRoll(),
+      ...(activationDeclaration === undefined
+        ? {}
+        : { activation: activationDeclaration }),
+      program: onCheck({ noRoll: heal({ amount: constant(1) }) }),
+    });
+    const definition = defineActionDefinition({
+      id: authoredAction.id,
+      visibility: "public",
+      extensionPolicy: "sealed",
+      source: {
+        module: "contract/activation-action.ts",
+        declaration: "action",
+      },
+      action: authoredAction,
+    });
+    const contentPack = defineContentPack({
+      identity: { id: "contract.activation-content", version: "1.0.0" },
+      entry: {
+        module: "contract/activation-action.ts",
+        declaration: "content",
+      },
+      definitions: [definition],
+    });
+    return preparePlayBundle({
+      bundle: composePlayBundle({
+        identity: { id: "contract.activation-bundle", version: "1.0.0" },
+        ruleset: variableRuleset,
+        base: contentPackRequest({
+          id: contentPack.identity.id,
+          version: "1.0.0",
+        }),
+        add: [],
+        overlays: [],
+        configure: {},
+      }),
+      contentPacks: [contentPackSource(contentPack)],
+    });
+  };
+
+  const accepted = prepare(
+    activation({
+      timing: "action",
+      costs: [{ budget: normal, amount: 2 }],
+    }),
+  );
+  assert.equal(
+    accepted.ok,
+    true,
+    accepted.ok ? "expected activation contract" : JSON.stringify(accepted.diagnostics),
+  );
+  if (accepted.ok) {
+    assert.deepEqual(
+      accepted.prepared.ruleset.provides.activationBudgets.map(
+        (budget) => budget.id,
+      ),
+      ["normal"],
+    );
+  }
+
+  const missing = prepare();
+  assert.equal(missing.ok, false);
+  if (!missing.ok) {
+    assert.ok(
+      missing.diagnostics.some(
+        (diagnostic) =>
+          diagnostic.code === "ACTION_ACTIVATION_MODEL_MISMATCH",
+      ),
+    );
+  }
+});
+
 test("Ruleset scalar profiles author canonical ordered outcomes and reject gaps", () => {
   const scalarRuleset = defineRuleset({
     ...semanticRuleset,
@@ -182,7 +298,7 @@ test("Ruleset scalar profiles author canonical ordered outcomes and reject gaps"
     result.ok ? "expected scalar profile" : JSON.stringify(result.diagnostics),
   );
   if (!result.ok) return;
-  assert.equal(result.prepared.schema.major, 4);
+  assert.equal(result.prepared.schema.major, 5);
   assert.deepEqual(
     result.prepared.ruleset.provides.scalarTestProfiles.map(
       (profile) => profile.id,
