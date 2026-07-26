@@ -153,6 +153,30 @@ fn area_targets_are_authority_projected_bound_stale_safe_and_exactly_replayable(
     assert_eq!(diamond.included_participant_ids, ["hostile-b", "hostile-a"]);
     assert!(diamond.filtered_participants.is_empty());
 
+    let mut cloned = session.clone();
+    assert_eq!(cloned.state().revision(), diamond.authority_revision);
+    assert_ne!(cloned.session_binding_id(), diamond.session_binding_id);
+    let cloned_before = cloned.state_hash().unwrap();
+    let cloned_view_before = cloned.encounter_view();
+    let mut no_evidence =
+        RpgRollTapeSource::new(cloned.scenario().random_source.clone(), Vec::new());
+    let stale_clone = cloned
+        .submit_area_with_random_source_recorded(area_proposal(&diamond), &mut no_evidence)
+        .unwrap();
+    assert!(matches!(
+        stale_clone.outcome,
+        RpgCommandOutcome::Rejected(ref rejection)
+            if rejection.code == "RPG_AREA_OPTION_STALE"
+                && rejection.path == "$.proposal.sessionBindingId"
+    ));
+    assert!(stale_clone.replay_entry.is_none());
+    assert_eq!(cloned.state_hash().unwrap(), cloned_before);
+    assert_eq!(
+        stale_clone.encounter.accepted_random_position,
+        cloned_view_before.accepted_random_position
+    );
+    assert_eq!(stale_clone.encounter.log, cloned_view_before.log);
+
     let centered = area_option(&initial_view, "action.area-diamond", "cell-2-1");
     assert!(centered.filtered_participants.iter().any(|participant| {
         participant.participant_id == "ally" && participant.reason == "teamMismatch"

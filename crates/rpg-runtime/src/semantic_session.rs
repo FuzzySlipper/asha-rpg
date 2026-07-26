@@ -134,7 +134,7 @@ pub(crate) struct PreparedAreaCommand {
 
 /// Owner of one compiled artifact's persistent capability state and staged
 /// reaction transaction.
-#[derive(Debug, Clone)]
+#[derive(Debug)]
 pub struct RpgAuthoritySession {
     pub(crate) artifact: Option<CompiledPlayBundleArtifact>,
     pub(crate) rules: CompiledRpgRules,
@@ -146,7 +146,28 @@ pub struct RpgAuthoritySession {
     pub(crate) scenario_fingerprint: rpg_core::StateFingerprint,
 }
 
+impl Clone for RpgAuthoritySession {
+    fn clone(&self) -> Self {
+        let mut clone = self.probe_snapshot();
+        clone.session_binding_id = next_session_binding_id();
+        clone
+    }
+}
+
 impl RpgAuthoritySession {
+    fn probe_snapshot(&self) -> Self {
+        Self {
+            artifact: self.artifact.clone(),
+            rules: self.rules.clone(),
+            state: self.state.clone(),
+            pending: self.pending.clone(),
+            accepted_random_values: self.accepted_random_values,
+            encounter: self.encounter.clone(),
+            session_binding_id: self.session_binding_id.clone(),
+            scenario_fingerprint: self.scenario_fingerprint.clone(),
+        }
+    }
+
     pub fn from_scenario(
         bundle: CompiledPlayBundle,
         scenario: RpgScenario,
@@ -1071,10 +1092,10 @@ impl RpgAuthoritySession {
         source: &mut dyn RpgRandomSource,
         prepared_area: Option<PreparedAreaCommand>,
     ) -> Result<(RpgCommandOutcome, RpgReplayEntry), RpgAutomaticCommandFailure> {
-        let baseline = self.clone();
+        let baseline = self.probe_snapshot();
         let mut random_values = Vec::new();
         for _ in 0..MAXIMUM_AUTOMATIC_RANDOM_REQUESTS {
-            let mut probe = baseline.clone();
+            let mut probe = baseline.probe_snapshot();
             let mut attempted_command = command.clone();
             attempted_command.random_values = random_values.clone();
             let outcome =
@@ -1104,10 +1125,10 @@ impl RpgAuthoritySession {
         source: &mut dyn RpgRandomSource,
     ) -> Result<(RpgCommandOutcome, RpgReplayEntry), RpgAutomaticCommandFailure> {
         self.require_random_source(source)?;
-        let baseline = self.clone();
+        let baseline = self.probe_snapshot();
         let mut additional_random_values = Vec::new();
         for _ in 0..MAXIMUM_AUTOMATIC_RANDOM_REQUESTS {
-            let mut probe = baseline.clone();
+            let mut probe = baseline.probe_snapshot();
             let command = RpgReactionCommand {
                 expected_revision: proposal.expected_revision,
                 reaction_id: proposal.reaction_id.clone(),
