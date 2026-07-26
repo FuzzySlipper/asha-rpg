@@ -2,8 +2,8 @@ use std::fmt;
 
 use rpg_compiler::load_compiled_play_bundle;
 use rpg_core::{
-    ActiveRpgModifier, BoundedValue, GridPosition, RpgCapabilityState, RpgEntityState,
-    RpgResolutionReceipt, StateFingerprint, Team,
+    ActiveRpgEffect, ActiveRpgModifier, BoundedValue, GridPosition, RpgCapabilityState,
+    RpgEntityState, RpgResolutionReceipt, StateFingerprint, Team,
 };
 use rpg_ir::{
     CompiledPlayBundleArtifact, ContentPackDependencyLockEntry, PlayBundleArtifactSchema,
@@ -22,9 +22,9 @@ use crate::{
 
 pub const RPG_CHECKPOINT_SCHEMA_ID: &str = "asha.rpg.session.checkpoint";
 pub const RPG_REPLAY_ENTRY_SCHEMA_ID: &str = "asha.rpg.session.replay-entry";
-pub const RPG_CHECKPOINT_SCHEMA_VERSION: u32 = 7;
-pub const RPG_REPLAY_ENTRY_SCHEMA_VERSION: u32 = 8;
-pub const RPG_EVENT_SCHEMA_VERSION: u32 = 6;
+pub const RPG_CHECKPOINT_SCHEMA_VERSION: u32 = 8;
+pub const RPG_REPLAY_ENTRY_SCHEMA_VERSION: u32 = 9;
+pub const RPG_EVENT_SCHEMA_VERSION: u32 = 7;
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase", deny_unknown_fields)]
@@ -88,6 +88,21 @@ pub struct RpgPortableModifier {
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase", deny_unknown_fields)]
+pub struct RpgPortableEffect {
+    pub instance_id: String,
+    pub definition_id: String,
+    pub definition_version: u32,
+    pub source_entity_id: String,
+    pub stacking_id: String,
+    pub stacking: rpg_core::RpgEffectStackingPolicy,
+    pub rank: i32,
+    pub remaining_count: u32,
+    pub application_revision: u64,
+    pub duration_anchor: rpg_core::RpgEffectDurationAnchor,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase", deny_unknown_fields)]
 pub struct RpgPortableEntityState {
     pub id: String,
     pub team: Team,
@@ -99,6 +114,7 @@ pub struct RpgPortableEntityState {
     pub defenses: Vec<RpgPortableNamedInteger>,
     pub resources: Vec<RpgPortableNamedBoundedValue>,
     pub modifiers: Vec<RpgPortableModifier>,
+    pub effects: Vec<RpgPortableEffect>,
     pub activation_budgets: Vec<RpgPortableNamedInteger>,
 }
 
@@ -805,6 +821,21 @@ fn portable_state(state: &RpgCapabilityState) -> RpgPortableCapabilityState {
                         remaining_turns: modifier.remaining_turns(),
                     })
                     .collect(),
+                effects: entity
+                    .effects()
+                    .map(|effect| RpgPortableEffect {
+                        instance_id: effect.instance_id().to_owned(),
+                        definition_id: effect.definition_id().to_owned(),
+                        definition_version: effect.definition_version(),
+                        source_entity_id: effect.source_entity_id().to_owned(),
+                        stacking_id: effect.stacking_id().to_owned(),
+                        stacking: effect.stacking(),
+                        rank: effect.rank(),
+                        remaining_count: effect.remaining_count(),
+                        application_revision: effect.application_revision(),
+                        duration_anchor: effect.duration_anchor(),
+                    })
+                    .collect(),
                 activation_budgets: entity
                     .activation_budgets()
                     .map(|(id, value)| RpgPortableNamedInteger {
@@ -865,6 +896,31 @@ fn restore_state(
                     .map_err(|error| state_restore_failure(&format!("{path}.modifiers"), error))?,
                 )
                 .map_err(|error| state_restore_failure(&format!("{path}.modifiers"), error))?;
+        }
+        for effect in &source.effects {
+            if effect.application_revision > state.revision {
+                return Err(state_restore_failure(
+                    &format!("{path}.effects"),
+                    rpg_core::RpgStateRestoreError::ValueOutOfBounds,
+                ));
+            }
+            entity
+                .restore_effect(
+                    ActiveRpgEffect::restore(
+                        effect.instance_id.clone(),
+                        effect.definition_id.clone(),
+                        effect.definition_version,
+                        effect.source_entity_id.clone(),
+                        effect.stacking_id.clone(),
+                        effect.stacking,
+                        effect.rank,
+                        effect.remaining_count,
+                        effect.application_revision,
+                        effect.duration_anchor,
+                    )
+                    .map_err(|error| state_restore_failure(&format!("{path}.effects"), error))?,
+                )
+                .map_err(|error| state_restore_failure(&format!("{path}.effects"), error))?;
         }
         for budget in &source.activation_budgets {
             entity

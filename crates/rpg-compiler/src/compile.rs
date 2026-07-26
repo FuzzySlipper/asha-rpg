@@ -5,12 +5,13 @@ use rpg_core::{
     MAXIMUM_RPG_MODIFIER_TURNS,
 };
 use rpg_ir::{
-    CompiledCharacterFeature, CompiledItemDefinition, EquippedItemBindingRequirement,
-    NormalizedRpgIr, RpgIrAction, RpgIrActivation, RpgIrActivationTiming, RpgIrCheck, RpgIrFormula,
-    RpgIrOperation, RpgIrPredicate, RpgIrProgram, RpgIrRequirementKind, RpgIrResourceCost,
-    RpgIrRollScope, RpgIrScalarTestDifficulty, RpgIrSubject, RpgIrTargetKind, RpgIrTargetSelector,
-    RpgIrTeamConstraint, Ruleset, RulesetActivationBudget, RulesetHeterogeneousPoolProfile,
-    RulesetScalarTestProfile, RPG_IR_IDENTITY, RPG_IR_MAJOR,
+    CompiledCharacterFeature, CompiledEffectDefinition, CompiledItemDefinition,
+    EquippedItemBindingRequirement, NormalizedRpgIr, RpgIrAction, RpgIrActivation,
+    RpgIrActivationTiming, RpgIrCheck, RpgIrFormula, RpgIrOperation, RpgIrPredicate, RpgIrProgram,
+    RpgIrRequirementKind, RpgIrResourceCost, RpgIrRollScope, RpgIrScalarTestDifficulty,
+    RpgIrSubject, RpgIrTargetKind, RpgIrTargetSelector, RpgIrTeamConstraint, Ruleset,
+    RulesetActivationBudget, RulesetHeterogeneousPoolProfile, RulesetScalarTestProfile,
+    RPG_IR_IDENTITY, RPG_IR_MAJOR,
 };
 use serde::Serialize;
 
@@ -87,6 +88,7 @@ pub struct CompiledRpgRules {
     bound_actions: BTreeMap<(String, String), CompiledAction>,
     binding_requirements: BTreeMap<String, EquippedItemBindingRequirement>,
     character_features: BTreeMap<String, CompiledCharacterFeature>,
+    effects: BTreeMap<String, CompiledEffectDefinition>,
     items: BTreeMap<String, CompiledItemDefinition>,
     calculation_selectors: BTreeMap<String, CompiledCalculationSelector>,
     contribution_stacking_groups: BTreeMap<String, RpgContributionStackingPolicy>,
@@ -229,6 +231,14 @@ impl CompiledRpgRules {
             .collect();
     }
 
+    pub(crate) fn register_effects(&mut self, effects: &[CompiledEffectDefinition]) {
+        self.effects = effects
+            .iter()
+            .cloned()
+            .map(|effect| (effect.definition_id.clone(), effect))
+            .collect();
+    }
+
     pub(crate) fn register_contribution_contracts(&mut self, ruleset: &Ruleset) {
         let domains = ruleset
             .provides
@@ -306,6 +316,10 @@ impl CompiledRpgRules {
 
     pub(crate) fn item(&self, definition_id: &str) -> Option<&CompiledItemDefinition> {
         self.items.get(definition_id)
+    }
+
+    pub(crate) fn effect(&self, definition_id: &str) -> Option<&CompiledEffectDefinition> {
+        self.effects.get(definition_id)
     }
 
     pub(crate) fn calculation_selector(
@@ -641,6 +655,7 @@ pub(crate) fn compile_normalized_rpg_ir_with_ruleset(
         bound_actions: BTreeMap::new(),
         binding_requirements: BTreeMap::new(),
         character_features: BTreeMap::new(),
+        effects: BTreeMap::new(),
         items: BTreeMap::new(),
         calculation_selectors: BTreeMap::new(),
         contribution_stacking_groups: BTreeMap::new(),
@@ -773,6 +788,10 @@ fn collect_program_random_plan(
             RpgIrOperation::ApplyModifier { value, .. } => {
                 collect_formula_random_plan(value, &format!("{path}.value"), conditions, plan);
             }
+            RpgIrOperation::ApplyEffect { rank, .. } => {
+                collect_formula_random_plan(rank, &format!("{path}.rank"), conditions, plan);
+            }
+            RpgIrOperation::RemoveEffect { .. } => {}
             RpgIrOperation::Move {
                 delta_x, delta_y, ..
             } => {
@@ -1829,6 +1848,26 @@ impl<'a> Validator<'a> {
                     );
                 }
                 self.validate_formula_at(value, &format!("{path}.value"), has_target_binding);
+            }
+            RpgIrOperation::ApplyEffect {
+                effect_definition_id,
+                rank,
+            } => {
+                self.require_target_binding(path, target_bound, action_target_maximum);
+                self.require_identifier(
+                    effect_definition_id,
+                    &format!("{path}.effectDefinitionId"),
+                );
+                self.validate_formula_at(rank, &format!("{path}.rank"), has_target_binding);
+            }
+            RpgIrOperation::RemoveEffect {
+                effect_definition_id,
+            } => {
+                self.require_target_binding(path, target_bound, action_target_maximum);
+                self.require_identifier(
+                    effect_definition_id,
+                    &format!("{path}.effectDefinitionId"),
+                );
             }
             RpgIrOperation::Move {
                 subject,

@@ -9,6 +9,7 @@ import type {
   ContentCharacterClassData,
   ContentCharacterClassDefinition,
   ContentCharacterFeatureDefinition,
+  ContentEffectDefinition,
   ContentInvokedActionDefinition,
   ActionProcedureArgumentsFor,
   ActionProcedureCompositionArgumentsFor,
@@ -292,6 +293,38 @@ export function defineCharacterFeatureDefinition(
       ),
       poolContributions: normalizePoolContributions(
         input.characterFeature.poolContributions ?? [],
+      ),
+    },
+  });
+}
+
+export function defineEffectDefinition(
+  input: Omit<OrdinaryDefinitionInput<ContentEffectDefinition>, 'effect'> & {
+    readonly effect: Omit<
+      ContentEffectDefinition['effect'],
+      'schema' | 'contributions' | 'outcomeBandShifts' | 'poolContributions'
+    > & {
+      readonly contributions?: readonly Omit<ContentScalarContribution, 'schema'>[];
+      readonly outcomeBandShifts?: readonly Omit<ContentOutcomeBandShift, 'schema'>[];
+      readonly poolContributions?: readonly Omit<ContentPoolContribution, 'schema'>[];
+    };
+  },
+): ContentEffectDefinition {
+  return immutable({
+    ...input,
+    kind: 'effect' as const,
+    effect: {
+      ...input.effect,
+      schema: {
+        identity: 'asha.rpg.effect' as const,
+        version: 1 as const,
+      },
+      contributions: normalizeScalarContributions(input.effect.contributions ?? []),
+      outcomeBandShifts: normalizeOutcomeBandShifts(
+        input.effect.outcomeBandShifts ?? [],
+      ),
+      poolContributions: normalizePoolContributions(
+        input.effect.poolContributions ?? [],
       ),
     },
   });

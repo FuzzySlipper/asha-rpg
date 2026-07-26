@@ -81,6 +81,26 @@ const REGISTRATIONS: &[RpgOperationRegistration] = &[
         replay_implications: "Replay verifies the accepted ModifierApplied event and deterministic modifier view.",
     },
     RpgOperationRegistration {
+        id: "operation.applyEffect",
+        version: 1,
+        reads: &[RpgCapabilityId::Effects],
+        mutation_owner: RpgCapabilityId::Effects,
+        validation_behavior: "Resolve one exact compiled effect definition and bounded rank before staging its named instance.",
+        accepted_events: &["EffectApplied", "EffectRefreshed", "EffectRemoved"],
+        trace_behavior: "Record the exact definition, source, target, rank, stacking decision, duration, and instance identity.",
+        replay_implications: "Replay verifies the exact effect lifecycle events and authoritative active-effect state.",
+    },
+    RpgOperationRegistration {
+        id: "operation.removeEffect",
+        version: 1,
+        reads: &[RpgCapabilityId::Effects],
+        mutation_owner: RpgCapabilityId::Effects,
+        validation_behavior: "Resolve one exact compiled effect definition and remove matching target instances canonically.",
+        accepted_events: &["EffectRemoved"],
+        trace_behavior: "Record the exact definition and every removed instance in canonical order.",
+        replay_implications: "Replay verifies explicit removal events and resulting authoritative active-effect state.",
+    },
+    RpgOperationRegistration {
         id: "operation.move",
         version: 1,
         reads: &[RpgCapabilityId::Position],
@@ -147,6 +167,10 @@ const CAPABILITIES: &[RpgCapabilityRegistration] = &[
     },
     RpgCapabilityRegistration {
         id: RpgCapabilityId::ActivationBudgets,
+        version: 1,
+    },
+    RpgCapabilityRegistration {
+        id: RpgCapabilityId::Effects,
         version: 1,
     },
 ];

@@ -142,7 +142,7 @@ inapplicable entry carries the failed typed-fact reason; a suppressed entry
 names the policy and canonical retained sources. The ledger owns no mutable
 state and consumes no randomness.
 
-The same item and feature schemas may separately declare
+The item, feature, and named-effect schemas may separately declare
 `asha.rpg.pool-contribution@1` records for a Ruleset-owned heterogeneous-pool
 profile. Their closed effects add a die count, add an automatic result-axis
 value, or replace one die at a time with an explicit fallback. They reuse the
@@ -178,8 +178,8 @@ profile's primary die is the check's only random evidence.
 Heterogeneous-pool profiles own canonical d2..d100 die types with complete
 face-to-vector tables, result axes, disjoint cancellation pairs, and ordered
 vector-outcome rules with a required default band. Actions provide canonical
-base die counts and automatic axes. Rust gathers applicable item and selected
-feature pool contributions, performs grouped additions and sequential
+base die counts and automatic axes. Rust gathers applicable item,
+selected-feature, and active-effect pool contributions, performs grouped additions and sequential
 replacement-or-fallback units, then freezes the exact die-type/count/sides
 request before reading evidence. Accepted evidence retains every die type,
 ordinal, side count, and face value. Events and trace retain the source ledger,
@@ -194,9 +194,21 @@ Every rejected command is atomic. A reaction suspends the same transaction and
 revision. Random requests preserve their exact count/sides and target order.
 Under the variable model actions and reactions pay staged budgets and remain
 on the current turn until explicit end-turn. Zero-cost activations still count
-toward the Ruleset ceiling. Turn transitions age modifiers, reset only matching
-budgets, reset the accepted count, and emit transition/reset events. Runtime internals,
+toward the Ruleset ceiling. Turn transitions emit round/turn events, age
+matching named effects in canonical anchor/source order, age modifiers, reset
+only matching budgets, reset the accepted count, and emit the complete
+lifecycle evidence. Runtime internals,
 compiled programs, and capability-store layout are not serialized contracts.
+
+Named effect definitions are sealed `asha.rpg.effect@1` content with a bounded
+rank, one portable stacking identity/policy, one positive `1..=1000`
+global-turn, round, source-turn, or target-turn duration, and at most 32 typed
+registered contributions. `applyEffect` and `removeEffect` are the only
+mutation operations. Rust retains exact target/source/definition/instance
+identity, rank, remaining count, anchor, policy, and application revision.
+`independentBySource`, `replace`, and `refresh` are deterministic; an instance
+applied or refreshed in the transaction that advances a matching boundary
+does not age until a later accepted transaction.
 
 ## Scenario and persistence
 
@@ -206,11 +218,11 @@ numeric domains, content-owned resource/modifier ids, board, occupancy,
 initiative, capability owners, and random-source binding before mutable state
 exists.
 
-Checkpoint schema version 7 embeds the exact compiled PlayBundle, Scenario and
+Checkpoint schema version 8 embeds the exact compiled PlayBundle, Scenario and
 Scenario fingerprint, portable state, turn/log, accepted random position,
-pending phase, and canonical state hash. Replay entry schema version 8 records
+pending phase, named effect instances, and canonical state hash. Replay entry schema version 9 records
 ordinary submit/reaction/turn-control operations and verifies before/after
-boundaries. Accepted event schema version 6 and encounter-view schema version 8
+boundaries. Accepted event schema version 7 and encounter-view schema version 9
 carry the contextual contribution ledger, character selection, activation
 budgets, and accepted activation count. Replay never reruns
 authoring or substitutes a candidate artifact.
@@ -272,7 +284,7 @@ The survey-selected neutral expansion is specified in
 [`first-wave-primitive-catalog.md`](first-wave-primitive-catalog.md). That
 catalog is an implementation map. `F0@1`, the contextual contribution ledger,
 `F1@1`, generic scalar tests and ordered outcomes, `F2@1`, variable activation
-budgets, and `F6@1`, heterogeneous pools and vector outcomes, are implemented
-as described above. `F3` through `F5` remain non-claims until their separately
-reviewed tasks update this canonical design and the corresponding code,
+budgets, `F3@1`, named effects with bounded expiry, and `F6@1`, heterogeneous
+pools and vector outcomes, are implemented as described above. `F4` and `F5`
+remain non-claims until their separately reviewed tasks update this canonical design and the corresponding code,
 schemas, tests, events, readbacks, checkpoint, and replay contracts.

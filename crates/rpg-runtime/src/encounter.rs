@@ -18,7 +18,7 @@ use serde::{Deserialize, Serialize};
 pub const RPG_SCENARIO_SCHEMA_ID: &str = "asha.rpg.scenario";
 pub const RPG_SCENARIO_SCHEMA_VERSION: u32 = 2;
 pub const RPG_ENCOUNTER_VIEW_SCHEMA_ID: &str = "asha.rpg.encounter.view";
-pub const RPG_ENCOUNTER_VIEW_SCHEMA_VERSION: u32 = 8;
+pub const RPG_ENCOUNTER_VIEW_SCHEMA_VERSION: u32 = 9;
 pub const RPG_END_TURN_CONTROL_ID: &str = "control.end-turn";
 
 const MAXIMUM_BOARD_EXTENT: u32 = 1_024;
@@ -256,6 +256,25 @@ pub struct RpgModifierView {
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase", deny_unknown_fields)]
+pub struct RpgEffectView {
+    pub instance_id: String,
+    pub definition_id: String,
+    pub definition_version: u32,
+    pub label: String,
+    pub source_entity_id: String,
+    pub stacking_id: String,
+    pub stacking: rpg_core::RpgEffectStackingPolicy,
+    pub rank: i32,
+    pub duration_anchor: rpg_core::RpgEffectDurationAnchor,
+    pub remaining_count: u32,
+    pub application_revision: u64,
+    pub contributions: Vec<rpg_core::RpgScalarContributionDefinition>,
+    pub outcome_band_shifts: Vec<rpg_core::RpgOutcomeBandShiftDefinition>,
+    pub pool_contributions: Vec<rpg_core::RpgPoolContributionDefinition>,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase", deny_unknown_fields)]
 pub struct RpgParticipantView {
     pub id: String,
     pub label: String,
@@ -271,6 +290,7 @@ pub struct RpgParticipantView {
     pub defenses: Vec<RpgNamedIntegerView>,
     pub resources: Vec<RpgNamedBoundedView>,
     pub modifiers: Vec<RpgModifierView>,
+    pub effects: Vec<RpgEffectView>,
     pub activation_budgets: Vec<RpgActivationBudgetView>,
 }
 
@@ -589,6 +609,7 @@ pub(crate) struct RpgEncounterAuthority {
     pub(crate) participant_definitions: BTreeMap<String, Vec<String>>,
     pub(crate) participant_labels: BTreeMap<String, String>,
     pub(crate) item_definitions: BTreeMap<String, rpg_ir::CompiledItemDefinition>,
+    pub(crate) effect_definitions: BTreeMap<String, rpg_ir::CompiledEffectDefinition>,
     pub(crate) log: Vec<RpgEncounterLogEntry>,
 }
 
@@ -763,6 +784,12 @@ pub(crate) fn build_encounter(
             .iter()
             .cloned()
             .map(|item| (item.definition_id.clone(), item))
+            .collect(),
+        effect_definitions: bundle
+            .effects()
+            .iter()
+            .cloned()
+            .map(|effect| (effect.definition_id.clone(), effect))
             .collect(),
         scenario,
         log: Vec::new(),
@@ -1290,6 +1317,7 @@ fn validate_board(
                         | MaterializedContentDefinitionKind::ActionProcedure
                         | MaterializedContentDefinitionKind::CharacterClass
                         | MaterializedContentDefinitionKind::CharacterFeature
+                        | MaterializedContentDefinitionKind::Effect
                         | MaterializedContentDefinitionKind::Item,
                     ) => diagnostics.push(scenario_diagnostic(
                         "RPG_SCENARIO_CELL_DEFINITION_INCOMPATIBLE",
@@ -1499,6 +1527,8 @@ pub(crate) fn validate_derived_state(
 ) -> Vec<RpgScenarioDiagnostic> {
     let mut diagnostics = Vec::new();
     for (entity_index, entity) in state.entities().enumerate() {
+        let mut non_independent_stacks = BTreeSet::new();
+        let mut independent_stacks = BTreeSet::new();
         let mut supplied = BTreeMap::new();
         for (id, value) in entity.stats() {
             if !bundle.value_plan().is_derived(RulesetValueKind::Stat, id) {
@@ -1552,6 +1582,52 @@ pub(crate) fn validate_derived_state(
                         "derived ruleset value {} must be {expected_value}, but checkpoint contains {:?}",
                         key.id, actual_value
                     ),
+                ));
+            }
+        }
+        for (effect_index, effect) in entity.effects().enumerate() {
+            let effect_path = format!("$.state.entities[{entity_index}].effects[{effect_index}]");
+            let definition = bundle
+                .effects()
+                .iter()
+                .find(|definition| definition.definition_id == effect.definition_id());
+            let valid = definition.is_some_and(|definition| {
+                state.entity(effect.source_entity_id()).is_some()
+                    && effect.definition_version() == definition.definition_version
+                    && effect.rank() >= definition.rank_minimum
+                    && effect.rank() <= definition.rank_maximum
+                    && effect.stacking_id() == definition.stacking_id
+                    && effect.stacking() == definition.stacking
+                    && effect.duration_anchor() == definition.duration_anchor
+                    && effect.remaining_count() <= definition.duration_count
+                    && effect.application_revision() <= state.revision()
+            });
+            if !valid {
+                diagnostics.push(scenario_diagnostic(
+                    "RPG_CHECKPOINT_EFFECT_STATE_MISMATCH",
+                    effect_path,
+                    format!(
+                        "active effect {} does not match its compiled definition, source, duration, or revision",
+                        effect.instance_id()
+                    ),
+                ));
+            }
+            let stacking_valid = match effect.stacking() {
+                rpg_core::RpgEffectStackingPolicy::IndependentBySource => independent_stacks
+                    .insert((
+                        effect.stacking_id().to_owned(),
+                        effect.source_entity_id().to_owned(),
+                    )),
+                rpg_core::RpgEffectStackingPolicy::Replace
+                | rpg_core::RpgEffectStackingPolicy::Refresh => {
+                    non_independent_stacks.insert(effect.stacking_id().to_owned())
+                }
+            };
+            if !stacking_valid {
+                diagnostics.push(scenario_diagnostic(
+                    "RPG_CHECKPOINT_EFFECT_STACKING_MISMATCH",
+                    format!("$.state.entities[{entity_index}].effects[{effect_index}]"),
+                    "active effects violate the compiled source-aware stacking invariant",
                 ));
             }
         }
@@ -2108,14 +2184,19 @@ pub(crate) fn action_view(
     }
 }
 
+pub(crate) struct RpgParticipantProjectionCatalogs<'a> {
+    pub item_definitions: &'a BTreeMap<String, rpg_ir::CompiledItemDefinition>,
+    pub effect_definitions: &'a BTreeMap<String, rpg_ir::CompiledEffectDefinition>,
+    pub activation_budget_definitions: &'a [rpg_ir::RulesetActivationBudget],
+}
+
 pub(crate) fn participant_view(
     entity: &RpgEntityState,
     label: String,
     definition_ids: Vec<String>,
     items: &[RpgItemInstanceSetup],
     equipment: &[RpgEquipmentSlotSetup],
-    item_definitions: &BTreeMap<String, rpg_ir::CompiledItemDefinition>,
-    activation_budget_definitions: &[rpg_ir::RulesetActivationBudget],
+    catalogs: RpgParticipantProjectionCatalogs<'_>,
 ) -> RpgParticipantView {
     RpgParticipantView {
         id: entity.id().to_owned(),
@@ -2128,7 +2209,7 @@ pub(crate) fn participant_view(
         items: items
             .iter()
             .map(|item| {
-                let definition = item_definitions.get(&item.definition_id);
+                let definition = catalogs.item_definitions.get(&item.definition_id);
                 RpgItemInstanceView {
                     id: item.id.clone(),
                     definition_id: item.definition_id.clone(),
@@ -2183,7 +2264,38 @@ pub(crate) fn participant_view(
                 remaining_turns: modifier.remaining_turns(),
             })
             .collect(),
-        activation_budgets: activation_budget_definitions
+        effects: entity
+            .effects()
+            .map(|effect| {
+                let definition = catalogs.effect_definitions.get(effect.definition_id());
+                RpgEffectView {
+                    instance_id: effect.instance_id().to_owned(),
+                    definition_id: effect.definition_id().to_owned(),
+                    definition_version: effect.definition_version(),
+                    label: definition
+                        .map(|definition| definition.label.clone())
+                        .unwrap_or_else(|| effect.definition_id().to_owned()),
+                    source_entity_id: effect.source_entity_id().to_owned(),
+                    stacking_id: effect.stacking_id().to_owned(),
+                    stacking: effect.stacking(),
+                    rank: effect.rank(),
+                    duration_anchor: effect.duration_anchor(),
+                    remaining_count: effect.remaining_count(),
+                    application_revision: effect.application_revision(),
+                    contributions: definition
+                        .map(|definition| definition.contributions.clone())
+                        .unwrap_or_default(),
+                    outcome_band_shifts: definition
+                        .map(|definition| definition.outcome_band_shifts.clone())
+                        .unwrap_or_default(),
+                    pool_contributions: definition
+                        .map(|definition| definition.pool_contributions.clone())
+                        .unwrap_or_default(),
+                }
+            })
+            .collect(),
+        activation_budgets: catalogs
+            .activation_budget_definitions
             .iter()
             .map(|budget| RpgActivationBudgetView {
                 id: budget.id.clone(),

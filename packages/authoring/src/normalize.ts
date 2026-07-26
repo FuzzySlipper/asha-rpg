@@ -38,6 +38,8 @@ const OPERATION_IDS: Record<RpgIrOperation['kind'], RpgOperationId> = {
   heal: 'operation.heal',
   changeResource: 'operation.changeResource',
   applyModifier: 'operation.applyModifier',
+  applyEffect: 'operation.applyEffect',
+  removeEffect: 'operation.removeEffect',
   move: 'operation.move',
   moveToCell: 'operation.moveToCell',
   openReaction: 'operation.openReaction',
@@ -849,6 +851,13 @@ function collectOperation(operation: RpgIrOperation, collection: Collection): vo
       collection.modifiers.add(operation.modifierId);
       collection.capabilities.add('capability.modifiers');
       collectFormula(operation.value, collection);
+      return;
+    case 'applyEffect':
+      collection.capabilities.add('capability.effects');
+      collectFormula(operation.rank, collection);
+      return;
+    case 'removeEffect':
+      collection.capabilities.add('capability.effects');
       return;
     case 'move':
       collection.capabilities.add('capability.position');

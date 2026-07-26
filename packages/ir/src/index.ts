@@ -213,6 +213,15 @@ export type RpgIrOperation =
       readonly durationTurns: number;
     }
   | {
+      readonly kind: 'applyEffect';
+      readonly effectDefinitionId: string;
+      readonly rank: RpgIrFormula;
+    }
+  | {
+      readonly kind: 'removeEffect';
+      readonly effectDefinitionId: string;
+    }
+  | {
       readonly kind: 'move';
       readonly subject: RpgIrSubject;
       readonly deltaX: RpgIrFormula;

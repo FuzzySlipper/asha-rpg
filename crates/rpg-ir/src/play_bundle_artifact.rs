@@ -2,15 +2,16 @@ use std::collections::BTreeMap;
 
 pub use rpg_core::RpgRulesetValueKind as RulesetValueKind;
 use rpg_core::{
-    RpgContributionStackingPolicy, RpgNaturalDieEffect, RpgOutcomeBandShiftDefinition,
-    RpgPoolContributionDefinition, RpgScalarContributionDefinition,
+    RpgContributionStackingPolicy, RpgEffectDurationAnchor, RpgEffectStackingPolicy,
+    RpgNaturalDieEffect, RpgOutcomeBandShiftDefinition, RpgPoolContributionDefinition,
+    RpgScalarContributionDefinition,
 };
 use serde::{Deserialize, Serialize};
 use serde_json::Value;
 
 pub const PREPARED_PLAY_BUNDLE_IDENTITY: &str = "asha.rpg.play-bundle.prepared";
 pub const COMPILED_PLAY_BUNDLE_IDENTITY: &str = "asha.rpg.play-bundle.compiled";
-pub const PLAY_BUNDLE_ARTIFACT_MAJOR: u32 = 6;
+pub const PLAY_BUNDLE_ARTIFACT_MAJOR: u32 = 7;
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase", deny_unknown_fields)]
@@ -399,6 +400,7 @@ pub enum MaterializedContentDefinitionKind {
     ActionProcedure,
     CharacterClass,
     CharacterFeature,
+    Effect,
     Item,
     Support,
 }
@@ -408,11 +410,13 @@ pub const ACTION_PROCEDURE_IDENTITY: &str = "asha.rpg.action-procedure";
 pub const ITEM_IDENTITY: &str = "asha.rpg.item";
 pub const CHARACTER_CLASS_IDENTITY: &str = "asha.rpg.character-class";
 pub const CHARACTER_FEATURE_IDENTITY: &str = "asha.rpg.character-feature";
+pub const EFFECT_DEFINITION_IDENTITY: &str = "asha.rpg.effect";
 pub const ACTION_DEFINITION_VERSION: u32 = 1;
 pub const ACTION_PROCEDURE_VERSION: u32 = 1;
 pub const ITEM_VERSION: u32 = 4;
 pub const CHARACTER_CLASS_VERSION: u32 = 1;
 pub const CHARACTER_FEATURE_VERSION: u32 = 4;
+pub const EFFECT_DEFINITION_VERSION: u32 = 1;
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase", deny_unknown_fields)]
@@ -716,6 +720,48 @@ pub struct CompiledCharacterFeature {
     pub definition_id: String,
     pub label: String,
     pub description: Option<String>,
+    pub contributions: Vec<RpgScalarContributionDefinition>,
+    pub outcome_band_shifts: Vec<RpgOutcomeBandShiftDefinition>,
+    pub pool_contributions: Vec<RpgPoolContributionDefinition>,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase", deny_unknown_fields)]
+pub struct EffectDefinitionSchema {
+    pub identity: String,
+    pub version: u32,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase", deny_unknown_fields)]
+pub struct MaterializedEffectDefinitionData {
+    pub schema: EffectDefinitionSchema,
+    pub rank_minimum: i32,
+    pub rank_maximum: i32,
+    pub stacking_id: String,
+    pub stacking: RpgEffectStackingPolicy,
+    pub duration_anchor: RpgEffectDurationAnchor,
+    pub duration_count: u32,
+    pub contributions: Vec<RpgScalarContributionDefinition>,
+    #[serde(default)]
+    pub outcome_band_shifts: Vec<RpgOutcomeBandShiftDefinition>,
+    #[serde(default)]
+    pub pool_contributions: Vec<RpgPoolContributionDefinition>,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase", deny_unknown_fields)]
+pub struct CompiledEffectDefinition {
+    pub definition_id: String,
+    pub definition_version: u32,
+    pub label: String,
+    pub description: Option<String>,
+    pub rank_minimum: i32,
+    pub rank_maximum: i32,
+    pub stacking_id: String,
+    pub stacking: RpgEffectStackingPolicy,
+    pub duration_anchor: RpgEffectDurationAnchor,
+    pub duration_count: u32,
     pub contributions: Vec<RpgScalarContributionDefinition>,
     pub outcome_band_shifts: Vec<RpgOutcomeBandShiftDefinition>,
     pub pool_contributions: Vec<RpgPoolContributionDefinition>,

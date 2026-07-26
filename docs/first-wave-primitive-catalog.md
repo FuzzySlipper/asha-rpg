@@ -5,8 +5,8 @@
 This document is the architecture brief produced by Den task `#6179`. It
 selects the smallest coherent semantic expansion needed for three independently
 authored representative kits. It is a versioned implementation map. `F0@1` and
-`F1@1`, `F2@1`, and `F6@1` are implemented by tasks `#6180`, `#6197`,
-`#6198`, and `#6200`; `F3` through `F5` remain planned and are not support
+`F1@1`, `F2@1`, `F3@1`, and `F6@1` are implemented by tasks `#6180`, `#6197`,
+`#6198`, `#6199`, and `#6200`; `F4` and `F5` remain planned and are not support
 claims. Current support remains exactly what `design.md`,
 `non-claims.md`, and the checked-in code say.
 
@@ -79,7 +79,7 @@ the neutral families `F0` through `F6`.
 | typed contextual contributions and deterministic suppression | `P16`, `PFX-M03`, `PFX-C04`, `FFG-M05` | `F0@1`: implemented by `#6180` |
 | generic scalar tests, ordered outcome bands, critical policy, and band adjustment | `P02`, `P03`, `PFX-O02`, `PFX-D05`, `FFG-E07` outcome subset, `FFG-C10` | `F1`: implemented |
 | variable activation budgets | `P12` economy subset, `PFX-A01` | `F2`: implemented |
-| named effect instances with bounded authority-relative expiry | `P10`, `P11`, `PFX-E07`, `FFG-E07` effect subset | `F3`: requires a new primitive |
+| named effect instances with bounded authority-relative expiry | `P10`, `P11`, `PFX-E07`, `FFG-E07` effect subset | `F3@1`: implemented by `#6199` |
 | typed damage packets and qualified responses | `P06`, `P07`, `PFX-I06`, `P16` damage trace subset | `F4`: needs generalization |
 | bounded area selection and spatial legality | `P05`, `PFX-S08` | `F5`: requires a new primitive |
 | heterogeneous random pools and vector outcomes | `FFG-A01`, `FFG-A02`, `FFG-A03`, `FFG-A04`, `FFG-M05` | `F6@1`: implemented by `#6200` |

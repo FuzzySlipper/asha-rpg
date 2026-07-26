@@ -1,5 +1,6 @@
 import { catalogDefinitionId, retainCatalogOwnership, } from './catalogs.js';
 import { retainRulesetValueOwnership, rulesetValueId, } from './ruleset-builders.js';
+const authoredDefinitionOwnership = Symbol('asha-rpg.authored-definition-ownership');
 export function actionId(value) {
     return checkedIdentifier(value, 'action id');
 }
@@ -185,6 +186,38 @@ export function applyModifier(options) {
         value: options.value,
         durationTurns: options.duration.count,
     }, 'modifierId', options.modifier), options.timing);
+}
+export function applyEffect(options) {
+    const declaration = {
+        kind: 'applyEffect',
+        effectDefinitionId: options.effect.definitionId,
+        rank: options.rank,
+    };
+    retainDefinitionOwnership(declaration, 'effectDefinitionId', options.effect);
+    return operation(frozen(declaration), options.timing);
+}
+export function removeEffect(options) {
+    const declaration = {
+        kind: 'removeEffect',
+        effectDefinitionId: options.effect.definitionId,
+    };
+    retainDefinitionOwnership(declaration, 'effectDefinitionId', options.effect);
+    return operation(frozen(declaration), options.timing);
+}
+function retainDefinitionOwnership(value, field, reference) {
+    Object.defineProperty(value, authoredDefinitionOwnership, {
+        value: frozenList([frozen({ field, reference })]),
+        enumerable: false,
+        configurable: false,
+        writable: false,
+    });
+}
+/** @internal Reads typed definition edges retained by operation builders. */
+export function definitionOwnershipOf(value) {
+    if (!(authoredDefinitionOwnership in value))
+        return [];
+    const ownership = Reflect.get(value, authoredDefinitionOwnership);
+    return Array.isArray(ownership) ? ownership : [];
 }
 export function moveEntity(options) {
     return operation(frozen({

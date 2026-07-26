@@ -762,6 +762,11 @@ export type ContentContributionPredicate =
       readonly kind: "cellCapability";
       readonly subject: "actor" | "target";
       readonly capability: ContentDefinitionReference;
+    }
+  | {
+      readonly kind: "effectActive";
+      readonly subject: "actor" | "target";
+      readonly definition: ContentDefinitionReference;
     };
 
 export interface ContentScalarContribution {
@@ -844,6 +849,31 @@ export interface ContentCharacterFeatureData {
 export interface ContentCharacterFeatureDefinition extends ContentDefinitionBase {
   readonly kind: "characterFeature";
   readonly characterFeature: ContentCharacterFeatureData;
+}
+
+export interface ContentEffectData {
+  readonly schema: {
+    readonly identity: "asha.rpg.effect";
+    readonly version: 1;
+  };
+  readonly rankMinimum: number;
+  readonly rankMaximum: number;
+  readonly stackingId: string;
+  readonly stacking: "independentBySource" | "replace" | "refresh";
+  readonly durationAnchor:
+    | "globalTurnTransition"
+    | "roundTransition"
+    | "sourceTurnStart"
+    | "targetTurnStart";
+  readonly durationCount: number;
+  readonly contributions: readonly ContentScalarContribution[];
+  readonly outcomeBandShifts: readonly ContentOutcomeBandShift[];
+  readonly poolContributions: readonly ContentPoolContribution[];
+}
+
+export interface ContentEffectDefinition extends ContentDefinitionBase {
+  readonly kind: "effect";
+  readonly effect: ContentEffectData;
 }
 
 export interface ContentSupportDefinition extends ContentDefinitionBase {
@@ -931,6 +961,7 @@ export type ContentDefinition =
   | ContentActionProcedureDefinition
   | ContentCharacterClassDefinition
   | ContentCharacterFeatureDefinition
+  | ContentEffectDefinition
   | ContentItemDefinition
   | ContentSupportDefinition
   | ContentTemplateDefinition
@@ -1084,6 +1115,7 @@ export interface ContentMaterializationStage {
     | "actionProcedure"
     | "characterClass"
     | "characterFeature"
+    | "effect"
     | "item"
     | "support";
   readonly extensionPolicy: ContentExtensionPolicy;
@@ -1169,6 +1201,7 @@ export interface MaterializedContentDefinition {
     | "actionProcedure"
     | "characterClass"
     | "characterFeature"
+    | "effect"
     | "item"
     | "support";
   readonly visibility: "exported" | "support";
@@ -1183,7 +1216,7 @@ export interface MaterializedContentDefinition {
 export interface PreparedPlayBundle {
   readonly schema: {
     readonly identity: "asha.rpg.play-bundle.prepared";
-    readonly major: 6;
+    readonly major: 7;
   };
   readonly playBundleIdentity: PlayBundleIdentity;
   readonly ruleset: Ruleset;

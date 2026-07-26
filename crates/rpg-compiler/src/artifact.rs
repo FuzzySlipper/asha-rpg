@@ -7,27 +7,28 @@ use rpg_core::{
 };
 use rpg_ir::{
     ActionProcedureImplementation, ActionProcedureParameter, CompiledCharacterClass,
-    CompiledCharacterFeature, CompiledItemDefinition, CompiledParticipantProfile,
-    CompiledPlayBundleArtifact, ContentDefinitionCommitment, ContentExtensionPolicy,
-    ContentImpactPlane, ContentMaterializationStage, ContentMaterializationValue,
-    ContentMixinParameterCommitment, ContentMixinParameterType, ContentPatch,
-    ContentPatchChangeProvenance, ContentPatchMemberKey, ContentPatchMemberSelector,
+    CompiledCharacterFeature, CompiledEffectDefinition, CompiledItemDefinition,
+    CompiledParticipantProfile, CompiledPlayBundleArtifact, ContentDefinitionCommitment,
+    ContentExtensionPolicy, ContentImpactPlane, ContentMaterializationStage,
+    ContentMaterializationValue, ContentMixinParameterCommitment, ContentMixinParameterType,
+    ContentPatch, ContentPatchChangeProvenance, ContentPatchMemberKey, ContentPatchMemberSelector,
     ContentPatchOperation, ContentPatchPathSegment, ContentPatchPosition, ContentRelationshipKind,
     ItemAttribute, MaterializedActionProcedureSemantic, MaterializedActionSemantic,
     MaterializedCharacterClassData, MaterializedCharacterFeatureData,
     MaterializedContentDefinition, MaterializedContentDefinitionKind,
-    MaterializedContentVisibility, MaterializedItemSemantic, MaterializedParticipantProfileData,
-    NormalizedRpgIr, ParticipantProfileInitialCapability, PlayBundleArtifactSchema,
-    PlayBundleFingerprints, PreparedPlayBundle, RpgIrAction, RpgIrActionBody, RpgIrCatalogs,
-    RpgIrCheck, RpgIrFormula, RpgIrOperation, RpgIrPackage, RpgIrPredicate, RpgIrProgram,
-    RpgIrRequirement, RpgIrRequirementKind, RpgIrResourceCost, RpgIrScalarTestDifficulty,
-    RpgIrSchema, RpgIrTargetSelector, Ruleset, RulesetActionEconomyModel, RulesetValueExpression,
-    RulesetValueKind, RulesetValueSource, VersionedRpgRequirement, ACTION_DEFINITION_IDENTITY,
-    ACTION_DEFINITION_VERSION, ACTION_PROCEDURE_IDENTITY, ACTION_PROCEDURE_VERSION,
-    CHARACTER_CLASS_IDENTITY, CHARACTER_CLASS_VERSION, CHARACTER_FEATURE_IDENTITY,
-    CHARACTER_FEATURE_VERSION, COMPILED_PLAY_BUNDLE_IDENTITY, ITEM_IDENTITY, ITEM_VERSION,
-    PARTICIPANT_PROFILE_IDENTITY, PARTICIPANT_PROFILE_VERSION, PLAY_BUNDLE_ARTIFACT_MAJOR,
-    PREPARED_PLAY_BUNDLE_IDENTITY, RPG_IR_IDENTITY, RPG_IR_MAJOR,
+    MaterializedContentVisibility, MaterializedEffectDefinitionData, MaterializedItemSemantic,
+    MaterializedParticipantProfileData, NormalizedRpgIr, ParticipantProfileInitialCapability,
+    PlayBundleArtifactSchema, PlayBundleFingerprints, PreparedPlayBundle, RpgIrAction,
+    RpgIrActionBody, RpgIrCatalogs, RpgIrCheck, RpgIrFormula, RpgIrOperation, RpgIrPackage,
+    RpgIrPredicate, RpgIrProgram, RpgIrRequirement, RpgIrRequirementKind, RpgIrResourceCost,
+    RpgIrScalarTestDifficulty, RpgIrSchema, RpgIrTargetSelector, Ruleset,
+    RulesetActionEconomyModel, RulesetValueExpression, RulesetValueKind, RulesetValueSource,
+    VersionedRpgRequirement, ACTION_DEFINITION_IDENTITY, ACTION_DEFINITION_VERSION,
+    ACTION_PROCEDURE_IDENTITY, ACTION_PROCEDURE_VERSION, CHARACTER_CLASS_IDENTITY,
+    CHARACTER_CLASS_VERSION, CHARACTER_FEATURE_IDENTITY, CHARACTER_FEATURE_VERSION,
+    COMPILED_PLAY_BUNDLE_IDENTITY, EFFECT_DEFINITION_IDENTITY, EFFECT_DEFINITION_VERSION,
+    ITEM_IDENTITY, ITEM_VERSION, PARTICIPANT_PROFILE_IDENTITY, PARTICIPANT_PROFILE_VERSION,
+    PLAY_BUNDLE_ARTIFACT_MAJOR, PREPARED_PLAY_BUNDLE_IDENTITY, RPG_IR_IDENTITY, RPG_IR_MAJOR,
 };
 use serde::{Deserialize, Serialize};
 use serde_json::{json, Value};
@@ -46,6 +47,7 @@ pub struct CompiledPlayBundle {
     items: Vec<CompiledItemDefinition>,
     character_classes: Vec<CompiledCharacterClass>,
     character_features: Vec<CompiledCharacterFeature>,
+    effects: Vec<CompiledEffectDefinition>,
     participant_profiles: Vec<CompiledParticipantProfile>,
 }
 
@@ -78,6 +80,10 @@ impl CompiledPlayBundle {
         &self.character_features
     }
 
+    pub fn effects(&self) -> &[CompiledEffectDefinition] {
+        &self.effects
+    }
+
     pub fn into_artifact(self) -> CompiledPlayBundleArtifact {
         self.artifact
     }
@@ -88,6 +94,8 @@ pub const RULESET_VALUE_FORMULA_VERSION: u32 = 1;
 const MAX_RULESET_VALUE_FORMULA_DEPTH: usize = 16;
 const MAX_RULESET_VALUE_FORMULA_NODES: usize = 64;
 const MAX_CHARACTER_FEATURE_CONTRIBUTIONS: usize = 32;
+const MAX_EFFECT_DEFINITIONS_PER_PACKAGE: usize = 128;
+const MAX_EFFECT_CONTRIBUTIONS: usize = 32;
 const MAX_CONTRIBUTION_PREDICATE_DEPTH: usize = 16;
 const MAX_CONTRIBUTION_PREDICATE_NODES: usize = 128;
 const MAX_CONTRIBUTION_EXPRESSION_DEPTH: usize = 16;
@@ -201,6 +209,7 @@ pub fn compile_prepared_play_bundle(
 
     let items = compile_items(&prepared)?;
     let character_features = compile_character_features(&prepared)?;
+    let effects = compile_effects(&prepared)?;
     let character_classes = compile_character_classes(&prepared, &character_features)?;
     let (normalized_ir, bound_action_registrations) =
         normalized_ir_from_materialized(&prepared, &items)?;
@@ -209,11 +218,13 @@ pub fn compile_prepared_play_bundle(
         &prepared.ruleset,
         &items,
         &character_features,
+        &effects,
     )?;
     let mut rules = compile_normalized_rpg_ir_with_ruleset(normalized_ir, Some(&prepared.ruleset))?;
     rules.register_bound_actions(bound_action_registrations);
     rules.register_character_features(&character_features);
     rules.register_items(&items);
+    rules.register_effects(&effects);
     rules.register_contribution_contracts(&prepared.ruleset);
     let value_plan = compile_ruleset_value_plan(&prepared.ruleset)?;
     let participant_profiles =
@@ -268,6 +279,7 @@ pub fn compile_prepared_play_bundle(
         items,
         character_classes,
         character_features,
+        effects,
         participant_profiles,
     })
 }
@@ -1776,6 +1788,178 @@ fn compile_character_features(
     }
 }
 
+fn compile_effects(
+    prepared: &PreparedPlayBundle,
+) -> Result<Vec<CompiledEffectDefinition>, RpgCompileFailure> {
+    let mut diagnostics = Vec::new();
+    let mut effects = Vec::new();
+    let mut package_counts = BTreeMap::<&str, usize>::new();
+    let mut stacking_contracts = BTreeMap::new();
+    for (definition_index, definition) in prepared.materialized_definitions.iter().enumerate() {
+        if definition.kind != MaterializedContentDefinitionKind::Effect {
+            continue;
+        }
+        let path = format!("$.materializedDefinitions[{definition_index}]");
+        *package_counts
+            .entry(definition.provenance.package_id.as_str())
+            .or_default() += 1;
+        if definition.extension_policy != ContentExtensionPolicy::Sealed {
+            diagnostics.push(RpgDiagnostic::error(
+                RpgDiagnosticStage::Semantics,
+                "EFFECT_EXTENSION_POLICY_UNSUPPORTED",
+                format!("{path}.extensionPolicy"),
+                "effect definitions are sealed in the current semantic contract",
+            ));
+        }
+        let effect = match serde_json::from_value::<MaterializedEffectDefinitionData>(
+            definition.semantic.clone(),
+        ) {
+            Ok(effect) => effect,
+            Err(error) => {
+                diagnostics.push(RpgDiagnostic::error(
+                    RpgDiagnosticStage::Semantics,
+                    "EFFECT_SEMANTIC_DECODE_FAILED",
+                    format!("{path}.semantic"),
+                    error.to_string(),
+                ));
+                continue;
+            }
+        };
+        if effect.schema.identity != EFFECT_DEFINITION_IDENTITY
+            || effect.schema.version != EFFECT_DEFINITION_VERSION
+        {
+            diagnostics.push(RpgDiagnostic::error(
+                RpgDiagnosticStage::Compatibility,
+                "EFFECT_SCHEMA_UNSUPPORTED",
+                format!("{path}.semantic.schema"),
+                format!("expected {EFFECT_DEFINITION_IDENTITY}@{EFFECT_DEFINITION_VERSION}"),
+            ));
+        }
+        if effect.rank_minimum > effect.rank_maximum {
+            diagnostics.push(RpgDiagnostic::error(
+                RpgDiagnosticStage::Semantics,
+                "EFFECT_RANK_DOMAIN_INVALID",
+                format!("{path}.semantic.rankMinimum"),
+                "effect rank minimum must not exceed its maximum",
+            ));
+        }
+        if !valid_identifier(&effect.stacking_id) {
+            diagnostics.push(RpgDiagnostic::error(
+                RpgDiagnosticStage::Semantics,
+                "EFFECT_STACKING_ID_INVALID",
+                format!("{path}.semantic.stackingId"),
+                "effect stacking identity must be a portable identifier",
+            ));
+        }
+        if let Some(previous) =
+            stacking_contracts.insert(effect.stacking_id.clone(), effect.stacking)
+        {
+            if previous != effect.stacking {
+                diagnostics.push(RpgDiagnostic::error(
+                    RpgDiagnosticStage::Semantics,
+                    "EFFECT_STACKING_POLICY_CONFLICT",
+                    format!("{path}.semantic.stacking"),
+                    format!(
+                        "stacking identity {} must use one policy across the PlayBundle",
+                        effect.stacking_id
+                    ),
+                ));
+            }
+        }
+        if !(1..=rpg_core::MAXIMUM_RPG_EFFECT_DURATION).contains(&effect.duration_count) {
+            diagnostics.push(RpgDiagnostic::error(
+                RpgDiagnosticStage::Semantics,
+                "EFFECT_DURATION_INVALID",
+                format!("{path}.semantic.durationCount"),
+                format!(
+                    "effect duration count must be within 1..={}",
+                    rpg_core::MAXIMUM_RPG_EFFECT_DURATION
+                ),
+            ));
+        }
+        let contribution_count = effect
+            .contributions
+            .len()
+            .saturating_add(effect.outcome_band_shifts.len())
+            .saturating_add(effect.pool_contributions.len());
+        if contribution_count == 0 || contribution_count > MAX_EFFECT_CONTRIBUTIONS {
+            diagnostics.push(RpgDiagnostic::error(
+                RpgDiagnosticStage::Semantics,
+                "EFFECT_CONTRIBUTIONS_INVALID",
+                format!("{path}.semantic"),
+                format!(
+                    "effect definitions require 1..={MAX_EFFECT_CONTRIBUTIONS} total typed contributions"
+                ),
+            ));
+        }
+        validate_scalar_contributions(
+            &effect.contributions,
+            prepared,
+            definition,
+            &format!("{path}.semantic.contributions"),
+            &mut diagnostics,
+        );
+        validate_outcome_band_shifts(
+            &effect.outcome_band_shifts,
+            prepared,
+            definition,
+            &format!("{path}.semantic.outcomeBandShifts"),
+            &mut diagnostics,
+        );
+        validate_pool_contributions(
+            &effect.pool_contributions,
+            prepared,
+            definition,
+            &format!("{path}.semantic.poolContributions"),
+            &mut diagnostics,
+        );
+        let label = required_definition_label(
+            definition,
+            definition_index,
+            "EFFECT_LABEL_REQUIRED",
+            "effect definitions require a presentation label",
+            &mut diagnostics,
+        );
+        effects.push(CompiledEffectDefinition {
+            definition_id: definition.id.clone(),
+            definition_version: effect.schema.version,
+            label: label.unwrap_or_else(|| definition.id.clone()),
+            description: definition
+                .presentation
+                .get("description")
+                .and_then(Value::as_str)
+                .map(str::to_owned),
+            rank_minimum: effect.rank_minimum,
+            rank_maximum: effect.rank_maximum,
+            stacking_id: effect.stacking_id,
+            stacking: effect.stacking,
+            duration_anchor: effect.duration_anchor,
+            duration_count: effect.duration_count,
+            contributions: effect.contributions,
+            outcome_band_shifts: effect.outcome_band_shifts,
+            pool_contributions: effect.pool_contributions,
+        });
+    }
+    for (package_id, count) in package_counts {
+        if count > MAX_EFFECT_DEFINITIONS_PER_PACKAGE {
+            diagnostics.push(RpgDiagnostic::error(
+                RpgDiagnosticStage::Semantics,
+                "EFFECT_DEFINITION_LIMIT_EXCEEDED",
+                "$.materializedDefinitions",
+                format!(
+                    "package {package_id} has {count} effects; maximum is {MAX_EFFECT_DEFINITIONS_PER_PACKAGE}"
+                ),
+            ));
+        }
+    }
+    if diagnostics.is_empty() {
+        effects.sort_by(|left, right| left.definition_id.cmp(&right.definition_id));
+        Ok(effects)
+    } else {
+        Err(RpgCompileFailure { diagnostics })
+    }
+}
+
 fn compile_character_classes(
     prepared: &PreparedPlayBundle,
     compiled_features: &[CompiledCharacterFeature],
@@ -2635,6 +2819,37 @@ fn validate_contribution_predicate(
                 ));
             }
         }
+        RpgContributionPredicate::EffectActive { definition_id, .. } => {
+            let valid = valid_identifier(definition_id)
+                && prepared.materialized_definitions.iter().any(|definition| {
+                    definition.id == *definition_id
+                        && definition.kind == MaterializedContentDefinitionKind::Effect
+                });
+            if !valid {
+                diagnostics.push(RpgDiagnostic::error(
+                    RpgDiagnosticStage::References,
+                    "SCALAR_CONTRIBUTION_EFFECT_DEFINITION_UNKNOWN",
+                    format!("{path}.definitionId"),
+                    format!("predicate references unknown effect definition {definition_id}"),
+                ));
+            }
+            if definition_id != &source_definition.id
+                && source_definition
+                    .references
+                    .binary_search(definition_id)
+                    .is_err()
+            {
+                diagnostics.push(RpgDiagnostic::error(
+                    RpgDiagnosticStage::References,
+                    "SCALAR_CONTRIBUTION_DEFINITION_REFERENCE_UNDECLARED",
+                    format!("{path}.definitionId"),
+                    format!(
+                        "contribution source {} does not declare graph edge {definition_id}",
+                        source_definition.id
+                    ),
+                ));
+            }
+        }
     }
 }
 
@@ -2643,6 +2858,7 @@ fn validate_action_contribution_contracts(
     ruleset: &Ruleset,
     items: &[CompiledItemDefinition],
     features: &[CompiledCharacterFeature],
+    effects: &[CompiledEffectDefinition],
 ) -> Result<(), RpgCompileFailure> {
     let variable_activation_model = matches!(
         &ruleset.models.action_economy,
@@ -2906,6 +3122,13 @@ fn validate_action_contribution_contracts(
                 feature.contributions.as_slice(),
             )
         }))
+        .chain(effects.iter().map(|effect| {
+            (
+                "effects",
+                effect.definition_id.as_str(),
+                effect.contributions.as_slice(),
+            )
+        }))
     {
         for (contribution_index, contribution) in contributions.iter().enumerate() {
             validate_contribution_action_tag_references(
@@ -2934,6 +3157,13 @@ fn validate_action_contribution_contracts(
                 feature.outcome_band_shifts.as_slice(),
             )
         }))
+        .chain(effects.iter().map(|effect| {
+            (
+                "effects",
+                effect.definition_id.as_str(),
+                effect.outcome_band_shifts.as_slice(),
+            )
+        }))
     {
         for (shift_index, shift) in shifts.iter().enumerate() {
             validate_contribution_action_tag_references(
@@ -2960,6 +3190,13 @@ fn validate_action_contribution_contracts(
                 "characterFeatures",
                 feature.definition_id.as_str(),
                 feature.pool_contributions.as_slice(),
+            )
+        }))
+        .chain(effects.iter().map(|effect| {
+            (
+                "effects",
+                effect.definition_id.as_str(),
+                effect.pool_contributions.as_slice(),
             )
         }))
     {
@@ -6345,6 +6582,35 @@ fn resolve_operation_catalogs(
                 diagnostics,
             );
         }
+        RpgIrOperation::ApplyEffect {
+            effect_definition_id,
+            rank,
+        } => {
+            validate_effect_operation_reference(
+                effect_definition_id,
+                action_definition,
+                definitions,
+                &format!("{path}.effectDefinitionId"),
+                diagnostics,
+            );
+            resolve_formula_catalogs(
+                rank,
+                action_definition,
+                definitions,
+                ruleset_catalogs,
+                &format!("{path}.rank"),
+                diagnostics,
+            );
+        }
+        RpgIrOperation::RemoveEffect {
+            effect_definition_id,
+        } => validate_effect_operation_reference(
+            effect_definition_id,
+            action_definition,
+            definitions,
+            &format!("{path}.effectDefinitionId"),
+            diagnostics,
+        ),
         RpgIrOperation::Move {
             delta_x, delta_y, ..
         } => {
@@ -6367,6 +6633,41 @@ fn resolve_operation_catalogs(
         }
         RpgIrOperation::MoveToCell { .. } => {}
         RpgIrOperation::OpenReaction { .. } => {}
+    }
+}
+
+fn validate_effect_operation_reference(
+    definition_id: &str,
+    action_definition: &MaterializedContentDefinition,
+    definitions: &BTreeMap<&str, &MaterializedContentDefinition>,
+    path: &str,
+    diagnostics: &mut Vec<RpgDiagnostic>,
+) {
+    let valid = definitions
+        .get(definition_id)
+        .is_some_and(|definition| definition.kind == MaterializedContentDefinitionKind::Effect);
+    if !valid {
+        diagnostics.push(RpgDiagnostic::error(
+            RpgDiagnosticStage::References,
+            "RPG_IR_EFFECT_DEFINITION_UNKNOWN",
+            path,
+            format!("operation references unknown effect definition {definition_id}"),
+        ));
+    }
+    if action_definition
+        .references
+        .binary_search(&definition_id.to_owned())
+        .is_err()
+    {
+        diagnostics.push(RpgDiagnostic::error(
+            RpgDiagnosticStage::References,
+            "RPG_IR_EFFECT_DEFINITION_REFERENCE_UNDECLARED",
+            path,
+            format!(
+                "action {} does not declare graph edge {definition_id}",
+                action_definition.id
+            ),
+        ));
     }
 }
 
@@ -6671,6 +6972,10 @@ fn collect_operation_catalogs(operation: &RpgIrOperation, catalogs: &mut Derived
             catalogs.modifiers.insert(modifier_id.clone());
             collect_formula_catalogs(value, catalogs);
         }
+        RpgIrOperation::ApplyEffect { rank, .. } => {
+            collect_formula_catalogs(rank, catalogs);
+        }
+        RpgIrOperation::RemoveEffect { .. } => {}
         RpgIrOperation::Move {
             delta_x, delta_y, ..
         } => {

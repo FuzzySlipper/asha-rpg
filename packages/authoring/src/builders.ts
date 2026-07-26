@@ -37,6 +37,16 @@ import {
   retainRulesetValueOwnership,
   rulesetValueId,
 } from './ruleset-builders.js';
+import type { ContentDefinitionReference } from './play-bundle-types.js';
+
+const authoredDefinitionOwnership: unique symbol = Symbol(
+  'asha-rpg.authored-definition-ownership',
+);
+
+export interface AuthoredDefinitionOwnership {
+  readonly field: string;
+  readonly reference: ContentDefinitionReference;
+}
 import type {
   RulesetCalculationSelectorReference,
   RulesetActivationBudgetReference,
@@ -400,6 +410,54 @@ export function applyModifier(options: {
     ),
     options.timing,
   );
+}
+
+export function applyEffect(options: {
+  readonly effect: ContentDefinitionReference;
+  readonly rank: RpgIrFormula;
+  readonly timing?: AuthoringTiming;
+}): AuthoringProgram {
+  const declaration = {
+    kind: 'applyEffect',
+    effectDefinitionId: options.effect.definitionId,
+    rank: options.rank,
+  } as const;
+  retainDefinitionOwnership(declaration, 'effectDefinitionId', options.effect);
+  return operation(frozen(declaration), options.timing);
+}
+
+export function removeEffect(options: {
+  readonly effect: ContentDefinitionReference;
+  readonly timing?: AuthoringTiming;
+}): AuthoringProgram {
+  const declaration = {
+    kind: 'removeEffect',
+    effectDefinitionId: options.effect.definitionId,
+  } as const;
+  retainDefinitionOwnership(declaration, 'effectDefinitionId', options.effect);
+  return operation(frozen(declaration), options.timing);
+}
+
+function retainDefinitionOwnership(
+  value: object,
+  field: string,
+  reference: ContentDefinitionReference,
+): void {
+  Object.defineProperty(value, authoredDefinitionOwnership, {
+    value: frozenList([frozen({ field, reference })]),
+    enumerable: false,
+    configurable: false,
+    writable: false,
+  });
+}
+
+/** @internal Reads typed definition edges retained by operation builders. */
+export function definitionOwnershipOf(
+  value: object,
+): readonly AuthoredDefinitionOwnership[] {
+  if (!(authoredDefinitionOwnership in value)) return [];
+  const ownership = Reflect.get(value, authoredDefinitionOwnership);
+  return Array.isArray(ownership) ? ownership : [];
 }
 
 export function moveEntity(options: {

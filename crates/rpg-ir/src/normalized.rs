@@ -324,6 +324,13 @@ pub enum RpgIrOperation {
         value: RpgIrFormula,
         duration_turns: u32,
     },
+    ApplyEffect {
+        effect_definition_id: String,
+        rank: RpgIrFormula,
+    },
+    RemoveEffect {
+        effect_definition_id: String,
+    },
     Move {
         subject: RpgIrSubject,
         delta_x: RpgIrFormula,
@@ -348,6 +355,8 @@ impl RpgIrOperation {
             Self::Heal { .. } => "operation.heal",
             Self::ChangeResource { .. } => "operation.changeResource",
             Self::ApplyModifier { .. } => "operation.applyModifier",
+            Self::ApplyEffect { .. } => "operation.applyEffect",
+            Self::RemoveEffect { .. } => "operation.removeEffect",
             Self::Move { .. } => "operation.move",
             Self::MoveToCell { .. } => "operation.moveToCell",
             Self::OpenReaction { .. } => "operation.openReaction",

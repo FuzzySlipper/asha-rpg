@@ -43,10 +43,10 @@ surface: a Ruleset, selected Content Packs, the compiled PlayBundle, and its
 Scenario-bound authority session are the single supported path.
 
 The initial operation set is deliberately closed: damage, healing, resource
-change, bounded grid movement, turn-bounded modifier application with explicit
-replace or refresh stacking and authority-owned turn aging/expiry events, and
-a typed before-damage reaction window. Checks support attack, saving throw,
-generic Ruleset-owned scalar tests, and no-roll flows. Scalar profiles declare
+change, bounded grid movement, turn-bounded modifier application, named effect
+application/removal with bounded authority-relative expiry, and a typed
+before-damage reaction window. Checks support attack, saving throw, generic
+Ruleset-owned scalar tests, heterogeneous pools, and no-roll flows. Scalar profiles declare
 one d2..d100 primary die, checked numeric domains, complete margin thresholds,
 ordered outcome bands, disjoint natural rules, and an optional contribution
 selector. Actions provide a base, explicit difficulty or target defense, and
@@ -55,8 +55,7 @@ expressions are deliberately non-random: they may compose constants, named
 stat reads, addition, and halving, but cannot introduce another die. Rust
 applies margin classification, a matching natural rule, and canonical
 contextual item/feature band shifts before executing exactly one branch.
-Contested roll pairs, reroll/keep mechanics, and heterogeneous dice remain
-unsupported. Programs support bounded
+Contested roll pairs and reroll/keep mechanics remain unsupported. Programs support bounded
 sequence, predicate branch, repeat, per-target branch, check/outcome branches,
 and one atomic root. Unavailable semantics fail compilation; they are never
 delegated to consumer callbacks.

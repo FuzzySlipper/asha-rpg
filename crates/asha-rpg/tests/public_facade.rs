@@ -20,9 +20,19 @@ use asha_rpg::{
     RulesetSchema, RulesetValueContract, RulesetValueExpression, RulesetValueFormula,
     RulesetValueFormulaSchema, RulesetValueKind, RulesetValueSource,
     RulesetVectorOutcomeRequirement, RulesetVectorOutcomeRule, VersionedRpgRequirement,
-    PLAY_BUNDLE_ARTIFACT_MAJOR, PREPARED_PLAY_BUNDLE_IDENTITY,
+    EFFECT_DEFINITION_VERSION, PLAY_BUNDLE_ARTIFACT_MAJOR, PREPARED_PLAY_BUNDLE_IDENTITY,
 };
 use serde_json::json;
+
+fn submit_no_random(
+    session: &mut RpgAuthoritySession,
+    proposal: RpgActionProposal,
+) -> (RpgCommandOutcome, asha_rpg::RpgReplayEntry) {
+    let mut source = RpgRollTapeSource::new(session.scenario().random_source.clone(), Vec::new());
+    session
+        .submit_with_random_source_recorded(proposal, &mut source)
+        .unwrap()
+}
 
 #[test]
 fn public_facade_builds_an_artifact_bound_setup_and_executes_a_turn() {
@@ -97,6 +107,611 @@ fn public_facade_builds_an_artifact_bound_setup_and_executes_a_turn() {
     ));
     assert_eq!(session.turn().current_actor_id, "opponent");
     assert_eq!(session.encounter_view().log.len(), 2);
+}
+
+#[test]
+fn named_effects_apply_skip_same_transition_age_expire_restore_and_replay() {
+    let bundle = compile_prepared_play_bundle(effect_prepared()).unwrap();
+    let action_ids = vec!["action.apply-global".to_owned()];
+    let mut scenario = basic_scenario_with_actions(&bundle, action_ids);
+    scenario.turn.initiative_order = vec![
+        "actor".to_owned(),
+        "target".to_owned(),
+        "opponent".to_owned(),
+    ];
+    let mut session = RpgAuthoritySession::from_scenario(bundle, scenario).unwrap();
+    let initial = session.checkpoint().unwrap();
+
+    let (outcome, apply_entry) = submit_no_random(
+        &mut session,
+        RpgActionProposal {
+            expected_revision: 0,
+            action_id: "action.apply-global".to_owned(),
+            actor_id: "actor".to_owned(),
+            target_ids: vec!["target".to_owned()],
+            item_binding: None,
+        },
+    );
+    let RpgCommandOutcome::Accepted(receipt) = outcome else {
+        panic!("effect application should be accepted: {outcome:?}");
+    };
+    let applied_index = receipt
+        .events
+        .iter()
+        .position(|event| matches!(event, RpgDomainEvent::EffectApplied { .. }))
+        .unwrap();
+    let turn_index = receipt
+        .events
+        .iter()
+        .position(|event| matches!(event, RpgDomainEvent::TurnTransitioned { .. }))
+        .unwrap();
+    assert!(applied_index < turn_index);
+    assert!(!receipt
+        .events
+        .iter()
+        .any(|event| matches!(event, RpgDomainEvent::EffectDurationChanged { .. })));
+    let active = session
+        .encounter_view()
+        .participants
+        .iter()
+        .find(|participant| participant.id == "target")
+        .unwrap()
+        .effects
+        .clone();
+    assert_eq!(active.len(), 1);
+    assert_eq!(active[0].definition_version, EFFECT_DEFINITION_VERSION);
+    assert_eq!(active[0].remaining_count, 2);
+    assert_eq!(active[0].application_revision, 1);
+    assert_eq!(active[0].contributions.len(), 1);
+
+    let (outcome, age_entry) = session
+        .control_recorded(RpgTurnControlProposal {
+            expected_revision: 1,
+            actor_id: "target".to_owned(),
+            control: RpgTurnControl::EndTurn,
+        })
+        .unwrap();
+    let RpgCommandOutcome::ControlAccepted(receipt) = outcome else {
+        panic!("effect aging turn should be accepted: {outcome:?}");
+    };
+    assert!(matches!(
+        receipt.events.as_slice(),
+        [
+            RpgDomainEvent::TurnTransitioned { .. },
+            RpgDomainEvent::EffectDurationChanged {
+                previous_count: 2,
+                remaining_count: 1,
+                ..
+            }
+        ]
+    ));
+    let aged_checkpoint = session.checkpoint().unwrap();
+    let restored = RpgAuthoritySession::restore_checkpoint(aged_checkpoint.clone()).unwrap();
+    assert_eq!(restored.state_hash(), session.state_hash());
+
+    let (outcome, expire_entry) = session
+        .control_recorded(RpgTurnControlProposal {
+            expected_revision: 2,
+            actor_id: "opponent".to_owned(),
+            control: RpgTurnControl::EndTurn,
+        })
+        .unwrap();
+    let RpgCommandOutcome::ControlAccepted(receipt) = outcome else {
+        panic!("effect expiry turn should be accepted: {outcome:?}");
+    };
+    assert!(matches!(
+        receipt.events.as_slice(),
+        [
+            RpgDomainEvent::RoundTransitioned { .. },
+            RpgDomainEvent::TurnTransitioned { .. },
+            RpgDomainEvent::EffectExpired { .. }
+        ]
+    ));
+    assert!(session
+        .state()
+        .entity("target")
+        .unwrap()
+        .effects()
+        .next()
+        .is_none());
+    let replayed =
+        RpgAuthoritySession::replay(initial, &[apply_entry, age_entry, expire_entry]).unwrap();
+    assert_eq!(replayed.state_hash(), session.state_hash());
+
+    let mut tampered = aged_checkpoint.clone();
+    tampered
+        .state
+        .entities
+        .iter_mut()
+        .find(|entity| entity.id == "target")
+        .unwrap()
+        .effects[0]
+        .remaining_count = 3;
+    let failure = RpgAuthoritySession::restore_checkpoint(tampered).unwrap_err();
+    assert!(failure
+        .diagnostics
+        .iter()
+        .any(|diagnostic| diagnostic.code == "RPG_CHECKPOINT_EFFECT_STATE_MISMATCH"));
+
+    let mut wrong_version = aged_checkpoint;
+    let effect = &mut wrong_version
+        .state
+        .entities
+        .iter_mut()
+        .find(|entity| entity.id == "target")
+        .unwrap()
+        .effects[0];
+    effect.definition_version = effect.definition_version.saturating_add(1);
+    let failure = RpgAuthoritySession::restore_checkpoint(wrong_version).unwrap_err();
+    assert!(failure
+        .diagnostics
+        .iter()
+        .any(|diagnostic| diagnostic.code == "RPG_CHECKPOINT_EFFECT_STATE_MISMATCH"));
+}
+
+#[test]
+fn named_effect_compilation_and_runtime_enforce_bounded_tenure_rank_and_contributions() {
+    for invalid_count in [0, 1_001] {
+        let mut invalid = effect_prepared();
+        let effect = invalid
+            .materialized_definitions
+            .iter_mut()
+            .find(|definition| definition.id == "effect.global")
+            .unwrap();
+        effect.semantic["durationCount"] = json!(invalid_count);
+        effect.fingerprint = materialized_definition_fingerprint(effect).unwrap();
+        let failure = compile_prepared_play_bundle(invalid).unwrap_err();
+        assert!(failure
+            .diagnostics
+            .iter()
+            .any(|diagnostic| diagnostic.code == "EFFECT_DURATION_INVALID"));
+    }
+
+    let mut excessive = effect_prepared();
+    let effect = excessive
+        .materialized_definitions
+        .iter_mut()
+        .find(|definition| definition.id == "effect.global")
+        .unwrap();
+    let contribution = effect.semantic["contributions"][0].clone();
+    effect.semantic["contributions"] = serde_json::Value::Array(
+        (0..33)
+            .map(|index| {
+                let mut contribution = contribution.clone();
+                contribution["id"] = json!(format!("effect-bonus-{index}"));
+                contribution
+            })
+            .collect(),
+    );
+    effect.fingerprint = materialized_definition_fingerprint(effect).unwrap();
+    let failure = compile_prepared_play_bundle(excessive).unwrap_err();
+    assert!(failure
+        .diagnostics
+        .iter()
+        .any(|diagnostic| diagnostic.code == "EFFECT_CONTRIBUTIONS_INVALID"));
+
+    let mut prepared = effect_prepared();
+    let action = prepared
+        .materialized_definitions
+        .iter_mut()
+        .find(|definition| definition.id == "action.apply-global")
+        .unwrap();
+    action.semantic["action"]["program"]["body"]["noRoll"]["operation"]["rank"] =
+        json!({"kind": "constant", "value": 5});
+    action.fingerprint = materialized_definition_fingerprint(action).unwrap();
+    let bundle = compile_prepared_play_bundle(prepared).unwrap();
+    let scenario = basic_scenario_with_actions(&bundle, vec!["action.apply-global".to_owned()]);
+    let mut session = RpgAuthoritySession::from_scenario(bundle, scenario).unwrap();
+    let before_hash = session.state_hash();
+    let before_turn = session.turn().clone();
+    let (outcome, _) = submit_no_random(
+        &mut session,
+        RpgActionProposal {
+            expected_revision: 0,
+            action_id: "action.apply-global".to_owned(),
+            actor_id: "actor".to_owned(),
+            target_ids: vec!["target".to_owned()],
+            item_binding: None,
+        },
+    );
+    assert!(matches!(
+        outcome,
+        RpgCommandOutcome::Rejected(ref rejection)
+            if rejection.code == "RPG_RUNTIME_EFFECT_RANK_OUT_OF_BOUNDS"
+    ));
+    assert_eq!(session.state_hash(), before_hash);
+    assert_eq!(session.state().revision(), 0);
+    assert_eq!(session.turn(), &before_turn);
+    assert!(session
+        .state()
+        .entity("target")
+        .unwrap()
+        .effects()
+        .next()
+        .is_none());
+}
+
+#[test]
+fn named_effect_stacking_is_source_aware_replaceable_and_refreshable() {
+    let bundle = compile_prepared_play_bundle(effect_prepared()).unwrap();
+    let actions = vec![
+        "action.apply-independent".to_owned(),
+        "action.apply-replace-a".to_owned(),
+        "action.apply-replace-b".to_owned(),
+        "action.apply-refresh".to_owned(),
+        "action.remove-refresh".to_owned(),
+    ];
+    let scenario = basic_scenario_with_actions(&bundle, actions);
+    let mut session = RpgAuthoritySession::from_scenario(bundle, scenario).unwrap();
+
+    submit_no_random(
+        &mut session,
+        RpgActionProposal {
+            expected_revision: 0,
+            action_id: "action.apply-independent".to_owned(),
+            actor_id: "actor".to_owned(),
+            target_ids: vec!["opponent".to_owned()],
+            item_binding: None,
+        },
+    );
+    submit_no_random(
+        &mut session,
+        RpgActionProposal {
+            expected_revision: 1,
+            action_id: "action.apply-independent".to_owned(),
+            actor_id: "target".to_owned(),
+            target_ids: vec!["opponent".to_owned()],
+            item_binding: None,
+        },
+    );
+    let sources = session
+        .state()
+        .entity("opponent")
+        .unwrap()
+        .effects()
+        .map(|effect| effect.source_entity_id())
+        .collect::<Vec<_>>();
+    assert_eq!(sources, vec!["actor", "target"]);
+
+    let (_, replace_entry) = submit_no_random(
+        &mut session,
+        RpgActionProposal {
+            expected_revision: 2,
+            action_id: "action.apply-replace-a".to_owned(),
+            actor_id: "opponent".to_owned(),
+            target_ids: vec!["actor".to_owned()],
+            item_binding: None,
+        },
+    );
+    let (_, replace_b_entry) = submit_no_random(
+        &mut session,
+        RpgActionProposal {
+            expected_revision: 3,
+            action_id: "action.apply-replace-b".to_owned(),
+            actor_id: "actor".to_owned(),
+            target_ids: vec!["actor".to_owned()],
+            item_binding: None,
+        },
+    );
+    assert!(replace_entry.after.revision < replace_b_entry.after.revision);
+    let replacement = session
+        .state()
+        .entity("actor")
+        .unwrap()
+        .effects()
+        .find(|effect| effect.stacking_id() == "replace-stack")
+        .unwrap();
+    assert_eq!(replacement.definition_id(), "effect.replace-b");
+    let RpgCommandOutcome::Accepted(receipt) = &replace_b_entry.outcome else {
+        panic!("replace action should be accepted");
+    };
+    assert!(receipt.events.iter().any(|event| matches!(
+        event,
+        RpgDomainEvent::EffectApplied {
+            replaced_instance_ids,
+            ..
+        } if replaced_instance_ids.len() == 1
+    )));
+
+    let (_, first_refresh) = submit_no_random(
+        &mut session,
+        RpgActionProposal {
+            expected_revision: 4,
+            action_id: "action.apply-refresh".to_owned(),
+            actor_id: "target".to_owned(),
+            target_ids: vec!["actor".to_owned()],
+            item_binding: None,
+        },
+    );
+    let first_id = session
+        .state()
+        .entity("actor")
+        .unwrap()
+        .effects()
+        .find(|effect| effect.stacking_id() == "refresh-stack")
+        .unwrap()
+        .instance_id()
+        .to_owned();
+    let (_, second_refresh) = submit_no_random(
+        &mut session,
+        RpgActionProposal {
+            expected_revision: 5,
+            action_id: "action.apply-refresh".to_owned(),
+            actor_id: "opponent".to_owned(),
+            target_ids: vec!["actor".to_owned()],
+            item_binding: None,
+        },
+    );
+    let refreshed = session
+        .state()
+        .entity("actor")
+        .unwrap()
+        .effects()
+        .find(|effect| effect.stacking_id() == "refresh-stack")
+        .unwrap();
+    assert_eq!(refreshed.instance_id(), first_id);
+    assert_eq!(refreshed.source_entity_id(), "opponent");
+    assert!(matches!(
+        second_refresh.outcome,
+        RpgCommandOutcome::Accepted(ref receipt)
+            if receipt.events.iter().any(|event| matches!(event, RpgDomainEvent::EffectRefreshed { .. }))
+    ));
+    assert!(matches!(
+        first_refresh.outcome,
+        RpgCommandOutcome::Accepted(_)
+    ));
+    let (remove_outcome, _) = submit_no_random(
+        &mut session,
+        RpgActionProposal {
+            expected_revision: 6,
+            action_id: "action.remove-refresh".to_owned(),
+            actor_id: "actor".to_owned(),
+            target_ids: vec!["actor".to_owned()],
+            item_binding: None,
+        },
+    );
+    assert!(matches!(
+        remove_outcome,
+        RpgCommandOutcome::Accepted(ref receipt)
+            if receipt.events.iter().any(|event| matches!(event, RpgDomainEvent::EffectRemoved {
+                reason,
+                ..
+            } if reason == "explicit"))
+    ));
+    assert!(session
+        .state()
+        .entity("actor")
+        .unwrap()
+        .effects()
+        .all(|effect| effect.stacking_id() != "refresh-stack"));
+}
+
+#[test]
+fn named_effect_boundary_anchors_follow_canonical_transition_order() {
+    let bundle = compile_prepared_play_bundle(effect_prepared()).unwrap();
+    let scenario = basic_scenario_with_actions(&bundle, vec!["action.apply-anchors".to_owned()]);
+    let mut session = RpgAuthoritySession::from_scenario(bundle, scenario).unwrap();
+    let (outcome, _) = submit_no_random(
+        &mut session,
+        RpgActionProposal {
+            expected_revision: 0,
+            action_id: "action.apply-anchors".to_owned(),
+            actor_id: "actor".to_owned(),
+            target_ids: vec!["target".to_owned()],
+            item_binding: None,
+        },
+    );
+    let RpgCommandOutcome::Accepted(receipt) = outcome else {
+        panic!("anchor action should be accepted: {outcome:?}");
+    };
+    assert_eq!(
+        receipt
+            .events
+            .iter()
+            .filter(|event| matches!(event, RpgDomainEvent::EffectApplied { .. }))
+            .count(),
+        4
+    );
+    assert!(!receipt.events.iter().any(|event| matches!(
+        event,
+        RpgDomainEvent::EffectDurationChanged { .. } | RpgDomainEvent::EffectExpired { .. }
+    )));
+
+    let (outcome, _) = session
+        .control_recorded(RpgTurnControlProposal {
+            expected_revision: 1,
+            actor_id: "target".to_owned(),
+            control: RpgTurnControl::EndTurn,
+        })
+        .unwrap();
+    let RpgCommandOutcome::ControlAccepted(receipt) = outcome else {
+        panic!("first anchor transition should be accepted: {outcome:?}");
+    };
+    let aged = receipt
+        .events
+        .iter()
+        .filter_map(|event| match event {
+            RpgDomainEvent::EffectDurationChanged { definition_id, .. } => {
+                Some(definition_id.as_str())
+            }
+            _ => None,
+        })
+        .collect::<Vec<_>>();
+    assert_eq!(aged, vec!["effect.global"]);
+
+    let (outcome, _) = session
+        .control_recorded(RpgTurnControlProposal {
+            expected_revision: 2,
+            actor_id: "opponent".to_owned(),
+            control: RpgTurnControl::EndTurn,
+        })
+        .unwrap();
+    let RpgCommandOutcome::ControlAccepted(receipt) = outcome else {
+        panic!("round/source transition should be accepted: {outcome:?}");
+    };
+    assert!(matches!(
+        receipt.events.as_slice(),
+        [
+            RpgDomainEvent::RoundTransitioned { .. },
+            RpgDomainEvent::TurnTransitioned { .. },
+            RpgDomainEvent::EffectExpired { definition_id, .. },
+            RpgDomainEvent::EffectDurationChanged {
+                definition_id: round_id,
+                ..
+            },
+            RpgDomainEvent::EffectDurationChanged {
+                definition_id: source_id,
+                ..
+            }
+        ] if definition_id == "effect.global"
+            && round_id == "effect.round"
+            && source_id == "effect.source"
+    ));
+
+    let (outcome, _) = session
+        .control_recorded(RpgTurnControlProposal {
+            expected_revision: 3,
+            actor_id: "actor".to_owned(),
+            control: RpgTurnControl::EndTurn,
+        })
+        .unwrap();
+    let RpgCommandOutcome::ControlAccepted(receipt) = outcome else {
+        panic!("target transition should be accepted: {outcome:?}");
+    };
+    assert!(receipt.events.iter().any(|event| matches!(
+        event,
+        RpgDomainEvent::EffectDurationChanged { definition_id, .. }
+            if definition_id == "effect.target"
+    )));
+}
+
+#[test]
+fn active_effect_scalar_contribution_disappears_after_exact_expiry() {
+    let bundle = compile_prepared_play_bundle(effect_prepared()).unwrap();
+    let mut scenario = basic_scenario_with_actions(
+        &bundle,
+        vec![
+            "action.apply-global".to_owned(),
+            "action.effect-test".to_owned(),
+        ],
+    );
+    for participant in &mut scenario.participants {
+        participant
+            .capabilities
+            .push(RpgInitialCapability::Defense {
+                id: "guard".to_owned(),
+                value: 10,
+            });
+    }
+    let mut session = RpgAuthoritySession::from_scenario(bundle, scenario).unwrap();
+    submit_no_random(
+        &mut session,
+        RpgActionProposal {
+            expected_revision: 0,
+            action_id: "action.apply-global".to_owned(),
+            actor_id: "actor".to_owned(),
+            target_ids: vec!["actor".to_owned()],
+            item_binding: None,
+        },
+    );
+    let request = RpgRandomRequest {
+        kind: RpgRandomRequestKind::AttackCheck,
+        count: 1,
+        sides: 20,
+        path: "$.action.check.targets[0].roll".to_owned(),
+        heterogeneous_terms: Vec::new(),
+    };
+    let mut source = RpgRollTapeSource::new(
+        session.scenario().random_source.clone(),
+        vec![RpgRollTapeEntry {
+            request: request.clone(),
+            values: vec![9],
+        }],
+    );
+    let (outcome, _) = session
+        .submit_with_random_source_recorded(
+            RpgActionProposal {
+                expected_revision: 1,
+                action_id: "action.effect-test".to_owned(),
+                actor_id: "target".to_owned(),
+                target_ids: vec!["actor".to_owned()],
+                item_binding: None,
+            },
+            &mut source,
+        )
+        .unwrap();
+    let RpgCommandOutcome::Accepted(receipt) = outcome else {
+        panic!("effect-backed scalar check should be accepted: {outcome:?}");
+    };
+    let attack = receipt
+        .events
+        .iter()
+        .find_map(|event| match event {
+            RpgDomainEvent::AttackResolved {
+                hit,
+                contribution_ledger,
+                ..
+            } => Some((hit, contribution_ledger)),
+            _ => None,
+        })
+        .unwrap();
+    assert!(*attack.0);
+    assert!(attack.1.candidates.iter().any(|candidate| {
+        candidate.source_definition_id == "effect.global"
+            && candidate.source_instance_id.as_deref() == Some("effect.global:actor:1:0")
+            && matches!(candidate.disposition, RpgContributionDisposition::Applied)
+    }));
+
+    session
+        .control_recorded(RpgTurnControlProposal {
+            expected_revision: 2,
+            actor_id: "opponent".to_owned(),
+            control: RpgTurnControl::EndTurn,
+        })
+        .unwrap();
+    assert!(session
+        .state()
+        .entity("actor")
+        .unwrap()
+        .effects()
+        .next()
+        .is_none());
+    let mut source = RpgRollTapeSource::new(
+        session.scenario().random_source.clone(),
+        vec![RpgRollTapeEntry {
+            request,
+            values: vec![9],
+        }],
+    );
+    let (outcome, _) = session
+        .submit_with_random_source_recorded(
+            RpgActionProposal {
+                expected_revision: 3,
+                action_id: "action.effect-test".to_owned(),
+                actor_id: "actor".to_owned(),
+                target_ids: vec!["target".to_owned()],
+                item_binding: None,
+            },
+            &mut source,
+        )
+        .unwrap();
+    let RpgCommandOutcome::Accepted(receipt) = outcome else {
+        panic!("post-expiry scalar check should be accepted: {outcome:?}");
+    };
+    let attack = receipt
+        .events
+        .iter()
+        .find_map(|event| match event {
+            RpgDomainEvent::AttackResolved {
+                hit,
+                contribution_ledger,
+                ..
+            } => Some((hit, contribution_ledger)),
+            _ => None,
+        })
+        .unwrap();
+    assert!(!*attack.0);
+    assert!(attack.1.candidates.is_empty());
 }
 
 #[test]
@@ -1526,7 +2141,7 @@ fn heterogeneous_pools_freeze_cascading_replacements_typed_evidence_and_vector_o
 }
 
 #[test]
-fn heterogeneous_pool_reduction_combines_selected_feature_and_exact_bound_item_sources() {
+fn heterogeneous_pool_reduction_combines_feature_item_and_active_effect_sources() {
     let bundle = compile_prepared_play_bundle(item_pool_prepared()).unwrap();
     let mut scenario = item_bound_scenario(&bundle);
     let actor = scenario
@@ -1536,7 +2151,37 @@ fn heterogeneous_pool_reduction_combines_selected_feature_and_exact_bound_item_s
         .unwrap();
     actor.class_definition_id = Some("class.pool-user".to_owned());
     actor.feature_definition_ids = vec!["feature.pool-training".to_owned()];
+    actor
+        .definition_ids
+        .push("action.apply-pool-focus".to_owned());
+    actor.definition_ids.sort();
     let mut session = RpgAuthoritySession::from_scenario(bundle, scenario).unwrap();
+    let initial = session.checkpoint().unwrap();
+    let (apply_outcome, apply_entry) = submit_no_random(
+        &mut session,
+        RpgActionProposal {
+            expected_revision: 0,
+            action_id: "action.apply-pool-focus".to_owned(),
+            actor_id: "actor".to_owned(),
+            target_ids: vec!["actor".to_owned()],
+            item_binding: None,
+        },
+    );
+    assert!(matches!(apply_outcome, RpgCommandOutcome::Accepted(_)));
+    let (_, target_control) = session
+        .control_recorded(RpgTurnControlProposal {
+            expected_revision: 1,
+            actor_id: "target".to_owned(),
+            control: RpgTurnControl::EndTurn,
+        })
+        .unwrap();
+    let (_, opponent_control) = session
+        .control_recorded(RpgTurnControlProposal {
+            expected_revision: 2,
+            actor_id: "opponent".to_owned(),
+            control: RpgTurnControl::EndTurn,
+        })
+        .unwrap();
     let item_binding = session
         .encounter_view()
         .actions
@@ -1547,27 +2192,33 @@ fn heterogeneous_pool_reduction_combines_selected_feature_and_exact_bound_item_s
         .unwrap();
     let request = RpgRandomRequest {
         kind: RpgRandomRequestKind::HeterogeneousPool,
-        count: 2,
+        count: 3,
         sides: 0,
         path: "$.action.check.targets[0].pool".to_owned(),
-        heterogeneous_terms: vec![asha_rpg::RpgHeterogeneousRandomTerm {
-            die_type_id: "boost".to_owned(),
-            count: 2,
-            sides: 4,
-        }],
+        heterogeneous_terms: vec![
+            asha_rpg::RpgHeterogeneousRandomTerm {
+                die_type_id: "boost".to_owned(),
+                count: 2,
+                sides: 4,
+            },
+            asha_rpg::RpgHeterogeneousRandomTerm {
+                die_type_id: "challenge".to_owned(),
+                count: 1,
+                sides: 6,
+            },
+        ],
     };
-    let initial = session.checkpoint().unwrap();
     let mut source = RpgRollTapeSource::new(
         session.scenario().random_source.clone(),
         vec![RpgRollTapeEntry {
             request,
-            values: vec![2, 4],
+            values: vec![2, 4, 1],
         }],
     );
     let (outcome, entry) = session
         .submit_with_random_source_recorded(
             RpgActionProposal {
-                expected_revision: 0,
+                expected_revision: 3,
                 action_id: "action.item-heal".to_owned(),
                 actor_id: "actor".to_owned(),
                 target_ids: vec!["target".to_owned()],
@@ -1604,6 +2255,11 @@ fn heterogeneous_pool_reduction_combines_selected_feature_and_exact_bound_item_s
             ))
             .collect::<Vec<_>>(),
         vec![
+            (
+                "effect.pool-focus",
+                Some("effect.pool-focus:actor:1:0"),
+                "a-effect-challenge",
+            ),
             ("feature.pool-training", None, "a-add-challenge"),
             (
                 "item.greater-healing-kit",
@@ -1619,14 +2275,18 @@ fn heterogeneous_pool_reduction_combines_selected_feature_and_exact_bound_item_s
     );
     assert_eq!(
         ledger.1,
-        &std::collections::BTreeMap::from([("boost".to_owned(), 2)])
+        &std::collections::BTreeMap::from([("boost".to_owned(), 2), ("challenge".to_owned(), 1),])
     );
-    assert_eq!(ledger.2, "success-benefit");
+    assert_eq!(ledger.2, "success");
     assert_eq!(
         session.state().entity("target").unwrap().vitality().current,
         17
     );
-    let replayed = RpgAuthoritySession::replay(initial, &[entry]).unwrap();
+    let replayed = RpgAuthoritySession::replay(
+        initial,
+        &[apply_entry, target_control, opponent_control, entry],
+    )
+    .unwrap();
     assert_eq!(replayed.state_hash(), session.state_hash());
 }
 
@@ -3449,6 +4109,50 @@ fn item_pool_prepared() -> PreparedPlayBundle {
         .content_requirements
         .capabilities
         .sort_by(|left, right| left.id.cmp(&right.id));
+    let effect_capability = VersionedRpgRequirement {
+        id: "capability.effects".to_owned(),
+        version: 1,
+    };
+    prepared
+        .ruleset
+        .provides
+        .capabilities
+        .push(effect_capability.clone());
+    prepared
+        .content_requirements
+        .capabilities
+        .push(effect_capability);
+    prepared
+        .ruleset
+        .provides
+        .capabilities
+        .sort_by(|left, right| left.id.cmp(&right.id));
+    prepared
+        .content_requirements
+        .capabilities
+        .sort_by(|left, right| left.id.cmp(&right.id));
+    let apply_effect_requirement = VersionedRpgRequirement {
+        id: "operation.applyEffect".to_owned(),
+        version: 1,
+    };
+    prepared
+        .ruleset
+        .provides
+        .operations
+        .push(apply_effect_requirement.clone());
+    prepared
+        .content_requirements
+        .operations
+        .push(apply_effect_requirement);
+    prepared
+        .ruleset
+        .provides
+        .operations
+        .sort_by(|left, right| left.id.cmp(&right.id));
+    prepared
+        .content_requirements
+        .operations
+        .sort_by(|left, right| left.id.cmp(&right.id));
     prepared.ruleset.provides.contribution_stacking_groups =
         vec![RulesetContributionStackingGroupContract {
             id: "circumstance".to_owned(),
@@ -3574,12 +4278,76 @@ fn item_pool_prepared() -> PreparedPlayBundle {
         provenance: provenance("class.pool-user", "classes/pool-user.ts"),
         fingerprint: String::new(),
     };
-    prepared.materialized_definitions.extend([class, feature]);
+    let effect = MaterializedContentDefinition {
+        id: "effect.pool-focus".to_owned(),
+        kind: MaterializedContentDefinitionKind::Effect,
+        visibility: MaterializedContentVisibility::Exported,
+        extension_policy: ContentExtensionPolicy::Sealed,
+        semantic: json!({
+            "schema": {"identity": "asha.rpg.effect", "version": 1},
+            "rankMinimum": 1,
+            "rankMaximum": 1,
+            "stackingId": "pool-focus",
+            "stacking": "refresh",
+            "durationAnchor": "roundTransition",
+            "durationCount": 3,
+            "contributions": [],
+            "outcomeBandShifts": [],
+            "poolContributions": [{
+                "schema": {"identity": "asha.rpg.pool-contribution", "version": 1},
+                "id": "a-effect-challenge",
+                "profile": {"rulesetId": "consumer.rules", "id": "narrative-pool"},
+                "stackingGroup": {"rulesetId": "consumer.rules", "id": "circumstance"},
+                "effect": {"kind": "addDice", "dieTypeId": "challenge", "delta": 1},
+                "predicate": {"kind": "always"}
+            }]
+        }),
+        presentation: json!({"label": "Pool Focus"}),
+        references: Vec::new(),
+        provenance: provenance("effect.pool-focus", "effects/pool-focus.ts"),
+        fingerprint: String::new(),
+    };
+    let apply_effect = MaterializedContentDefinition {
+        id: "action.apply-pool-focus".to_owned(),
+        kind: MaterializedContentDefinitionKind::Action,
+        visibility: MaterializedContentVisibility::Exported,
+        extension_policy: ContentExtensionPolicy::Sealed,
+        semantic: json!({
+            "schema": {"identity": "asha.rpg.action-definition", "version": 1},
+            "kind": "inline",
+            "action": {
+                "id": "action.apply-pool-focus",
+                "name": "Apply Pool Focus",
+                "sourcePath": "actions/apply-pool-focus.ts#applyPoolFocus",
+                "targets": {"team": "ally", "maximumRange": 3, "maximumTargets": 1},
+                "check": {"kind": "noRoll"},
+                "rollScope": "none",
+                "costs": [],
+                "program": {"kind": "atomic", "body": {"kind": "onCheck", "noRoll": {
+                    "kind": "operation",
+                    "operation": {
+                        "kind": "applyEffect",
+                        "effectDefinitionId": "effect.pool-focus",
+                        "rank": {"kind": "constant", "value": 1}
+                    }
+                }}}
+            }
+        }),
+        presentation: json!({"label": "Apply Pool Focus"}),
+        references: vec!["effect.pool-focus".to_owned()],
+        provenance: provenance("action.apply-pool-focus", "actions/apply-pool-focus.ts"),
+        fingerprint: String::new(),
+    };
+    prepared
+        .materialized_definitions
+        .extend([apply_effect, class, effect, feature]);
     prepared
         .materialized_definitions
         .sort_by(|left, right| left.id.cmp(&right.id));
     prepared.exported_roots.extend([
         "class.pool-user".to_owned(),
+        "action.apply-pool-focus".to_owned(),
+        "effect.pool-focus".to_owned(),
         "feature.pool-training".to_owned(),
     ]);
     prepared.exported_roots.sort();
@@ -3886,6 +4654,472 @@ fn activation_budget_prepared() -> PreparedPlayBundle {
 
 fn healing_bundle() -> asha_rpg::CompiledPlayBundle {
     compile_prepared_play_bundle(healing_prepared()).unwrap()
+}
+
+fn basic_scenario_with_actions(
+    bundle: &asha_rpg::CompiledPlayBundle,
+    action_ids: Vec<String>,
+) -> RpgScenario {
+    let with_actions = |id: &str, label: &str, team_id: RpgTeamId, x: u32| {
+        let mut participant = participant(id, label, team_id, x, 20);
+        participant.definition_ids = action_ids.clone();
+        participant
+    };
+    RpgScenario {
+        schema: RpgScenario::schema(),
+        play_bundle_id: bundle.artifact().artifact_id.clone(),
+        board: RpgBoardSetup {
+            width: 3,
+            height: 1,
+            cells: Vec::new(),
+        },
+        participants: vec![
+            with_actions("actor", "Actor", RpgTeamId::ally(), 0),
+            with_actions("target", "Target", RpgTeamId::ally(), 1),
+            with_actions("opponent", "Opponent", RpgTeamId::enemy(), 2),
+        ],
+        turn: RpgTurnInitialization {
+            initiative_order: vec![
+                "actor".to_owned(),
+                "target".to_owned(),
+                "opponent".to_owned(),
+            ],
+            current_actor_id: "actor".to_owned(),
+            round: 1,
+            turn: 1,
+        },
+        random_source: RpgRandomSourceBinding {
+            policy_id: "consumer.recorded-evidence".to_owned(),
+            policy_version: 1,
+            source_id: "consumer.roll-tape".to_owned(),
+            source_version: 1,
+        },
+    }
+}
+
+fn effect_prepared() -> PreparedPlayBundle {
+    let mut prepared = healing_prepared();
+    let package_id = "consumer.package";
+    let package_version = "1.0.0";
+    let provenance = |definition_id: &str, module: &str| ContentDefinitionProvenance {
+        definition_id: definition_id.to_owned(),
+        package_id: package_id.to_owned(),
+        package_version: package_version.to_owned(),
+        source: ContentSourceLocation {
+            module: module.to_owned(),
+            declaration: definition_id.replace('.', "_"),
+        },
+    };
+    let effect = |id: &str,
+                  stacking_id: &str,
+                  stacking: &str,
+                  duration_anchor: &str,
+                  duration_count: u32| MaterializedContentDefinition {
+        id: id.to_owned(),
+        kind: MaterializedContentDefinitionKind::Effect,
+        visibility: MaterializedContentVisibility::Exported,
+        extension_policy: ContentExtensionPolicy::Sealed,
+        semantic: json!({
+            "schema": {"identity": "asha.rpg.effect", "version": 1},
+            "rankMinimum": 1,
+            "rankMaximum": 4,
+            "stackingId": stacking_id,
+            "stacking": stacking,
+            "durationAnchor": duration_anchor,
+            "durationCount": duration_count,
+            "contributions": [{
+                "schema": {"identity": "asha.rpg.scalar-contribution", "version": 1},
+                "id": "effect-bonus",
+                "selector": {"rulesetId": "consumer.rules", "id": "effect-test"},
+                "stackingGroup": {"rulesetId": "consumer.rules", "id": "effect-stack"},
+                "value": {"kind": "constant", "value": 1},
+                "predicate": {
+                    "kind": "effectActive",
+                    "subject": "target",
+                    "definitionId": id
+                }
+            }],
+            "outcomeBandShifts": [],
+            "poolContributions": []
+        }),
+        presentation: json!({"label": id}),
+        references: Vec::new(),
+        provenance: provenance(id, "effects/effects.ts"),
+        fingerprint: String::new(),
+    };
+    let action = |id: &str, effect_id: &str| MaterializedContentDefinition {
+        id: id.to_owned(),
+        kind: MaterializedContentDefinitionKind::Action,
+        visibility: MaterializedContentVisibility::Exported,
+        extension_policy: ContentExtensionPolicy::Sealed,
+        semantic: json!({
+            "schema": {"identity": "asha.rpg.action-definition", "version": 1},
+            "kind": "inline",
+            "action": {
+                "id": id,
+                "name": id,
+                "sourcePath": format!("actions/effects.ts#{id}"),
+                "targets": {"team": "any", "maximumRange": 4, "maximumTargets": 1},
+                "check": {"kind": "noRoll"},
+                "rollScope": "none",
+                "costs": [],
+                "program": {
+                    "kind": "atomic",
+                    "body": {
+                        "kind": "onCheck",
+                        "noRoll": {
+                            "kind": "operation",
+                            "operation": {
+                                "kind": "applyEffect",
+                                "effectDefinitionId": effect_id,
+                                "rank": {"kind": "constant", "value": 1}
+                            }
+                        }
+                    }
+                }
+            }
+        }),
+        presentation: json!({"label": id}),
+        references: vec![effect_id.to_owned()],
+        provenance: provenance(id, "actions/effects.ts"),
+        fingerprint: String::new(),
+    };
+    let remove_action = |id: &str, effect_id: &str| MaterializedContentDefinition {
+        id: id.to_owned(),
+        kind: MaterializedContentDefinitionKind::Action,
+        visibility: MaterializedContentVisibility::Exported,
+        extension_policy: ContentExtensionPolicy::Sealed,
+        semantic: json!({
+            "schema": {"identity": "asha.rpg.action-definition", "version": 1},
+            "kind": "inline",
+            "action": {
+                "id": id,
+                "name": id,
+                "sourcePath": format!("actions/effects.ts#{id}"),
+                "targets": {"team": "any", "maximumRange": 4, "maximumTargets": 1},
+                "check": {"kind": "noRoll"},
+                "rollScope": "none",
+                "costs": [],
+                "program": {
+                    "kind": "atomic",
+                    "body": {
+                        "kind": "onCheck",
+                        "noRoll": {
+                            "kind": "operation",
+                            "operation": {
+                                "kind": "removeEffect",
+                                "effectDefinitionId": effect_id
+                            }
+                        }
+                    }
+                }
+            }
+        }),
+        presentation: json!({"label": id}),
+        references: vec![effect_id.to_owned()],
+        provenance: provenance(id, "actions/effects.ts"),
+        fingerprint: String::new(),
+    };
+    let pairs = [
+        (
+            "action.apply-global",
+            "effect.global",
+            "global-stack",
+            "refresh",
+            "globalTurnTransition",
+            2,
+        ),
+        (
+            "action.apply-independent",
+            "effect.independent",
+            "independent-stack",
+            "independentBySource",
+            "roundTransition",
+            3,
+        ),
+        (
+            "action.apply-replace-a",
+            "effect.replace-a",
+            "replace-stack",
+            "replace",
+            "roundTransition",
+            3,
+        ),
+        (
+            "action.apply-replace-b",
+            "effect.replace-b",
+            "replace-stack",
+            "replace",
+            "roundTransition",
+            3,
+        ),
+        (
+            "action.apply-refresh",
+            "effect.refresh",
+            "refresh-stack",
+            "refresh",
+            "roundTransition",
+            3,
+        ),
+    ];
+    let mut definitions = Vec::new();
+    for (action_id, effect_id, stacking_id, stacking, anchor, count) in pairs {
+        definitions.push(action(action_id, effect_id));
+        definitions.push(effect(effect_id, stacking_id, stacking, anchor, count));
+    }
+    definitions.push(remove_action("action.remove-refresh", "effect.refresh"));
+    for (id, stacking_id, anchor) in [
+        ("effect.round", "round-stack", "roundTransition"),
+        ("effect.source", "source-stack", "sourceTurnStart"),
+        ("effect.target", "target-stack", "targetTurnStart"),
+    ] {
+        definitions.push(effect(id, stacking_id, "refresh", anchor, 2));
+    }
+    definitions.push(MaterializedContentDefinition {
+        id: "action.apply-anchors".to_owned(),
+        kind: MaterializedContentDefinitionKind::Action,
+        visibility: MaterializedContentVisibility::Exported,
+        extension_policy: ContentExtensionPolicy::Sealed,
+        semantic: json!({
+            "schema": {"identity": "asha.rpg.action-definition", "version": 1},
+            "kind": "inline",
+            "action": {
+                "id": "action.apply-anchors",
+                "name": "Apply anchors",
+                "sourcePath": "actions/effects.ts#applyAnchors",
+                "targets": {"team": "any", "maximumRange": 4, "maximumTargets": 1},
+                "check": {"kind": "noRoll"},
+                "rollScope": "none",
+                "costs": [],
+                "program": {
+                    "kind": "atomic",
+                    "body": {
+                        "kind": "onCheck",
+                        "noRoll": {
+                            "kind": "sequence",
+                            "steps": [
+                                {"kind": "operation", "operation": {
+                                    "kind": "applyEffect",
+                                    "effectDefinitionId": "effect.global",
+                                    "rank": {"kind": "constant", "value": 1}
+                                }},
+                                {"kind": "operation", "operation": {
+                                    "kind": "applyEffect",
+                                    "effectDefinitionId": "effect.round",
+                                    "rank": {"kind": "constant", "value": 1}
+                                }},
+                                {"kind": "operation", "operation": {
+                                    "kind": "applyEffect",
+                                    "effectDefinitionId": "effect.source",
+                                    "rank": {"kind": "constant", "value": 1}
+                                }},
+                                {"kind": "operation", "operation": {
+                                    "kind": "applyEffect",
+                                    "effectDefinitionId": "effect.target",
+                                    "rank": {"kind": "constant", "value": 1}
+                                }}
+                            ]
+                        }
+                    }
+                }
+            }
+        }),
+        presentation: json!({"label": "Apply anchors"}),
+        references: vec![
+            "effect.global".to_owned(),
+            "effect.round".to_owned(),
+            "effect.source".to_owned(),
+            "effect.target".to_owned(),
+        ],
+        provenance: provenance("action.apply-anchors", "actions/effects.ts"),
+        fingerprint: String::new(),
+    });
+    definitions.push(MaterializedContentDefinition {
+        id: "action.effect-test".to_owned(),
+        kind: MaterializedContentDefinitionKind::Action,
+        visibility: MaterializedContentVisibility::Exported,
+        extension_policy: ContentExtensionPolicy::Sealed,
+        semantic: json!({
+            "schema": {"identity": "asha.rpg.action-definition", "version": 1},
+            "kind": "inline",
+            "action": {
+                "id": "action.effect-test",
+                "name": "Effect test",
+                "sourcePath": "actions/effects.ts#effectTest",
+                "targets": {"team": "any", "maximumRange": 4, "maximumTargets": 1},
+                "check": {
+                    "kind": "attack",
+                    "modifier": {"kind": "constant", "value": 0},
+                    "defenseId": "guard",
+                    "contributionSelector": {
+                        "rulesetId": "consumer.rules",
+                        "id": "effect-test"
+                    }
+                },
+                "rollScope": "perTarget",
+                "costs": [],
+                "program": {
+                    "kind": "atomic",
+                    "body": {
+                        "kind": "onCheck",
+                        "hit": {"kind": "operation", "operation": {
+                            "kind": "heal",
+                            "amount": {"kind": "constant", "value": 0}
+                        }},
+                        "miss": {"kind": "operation", "operation": {
+                            "kind": "heal",
+                            "amount": {"kind": "constant", "value": 0}
+                        }}
+                    }
+                }
+            }
+        }),
+        presentation: json!({"label": "Effect test"}),
+        references: Vec::new(),
+        provenance: provenance("action.effect-test", "actions/effects.ts"),
+        fingerprint: String::new(),
+    });
+    for definition in &mut definitions {
+        definition.fingerprint = materialized_definition_fingerprint(definition).unwrap();
+    }
+    definitions.sort_by(|left, right| left.id.cmp(&right.id));
+    prepared.play_bundle_identity.id = "consumer.effect-bundle".to_owned();
+    prepared
+        .ruleset
+        .provides
+        .operations
+        .push(VersionedRpgRequirement {
+            id: "operation.applyEffect".to_owned(),
+            version: 1,
+        });
+    prepared
+        .ruleset
+        .provides
+        .operations
+        .push(VersionedRpgRequirement {
+            id: "operation.removeEffect".to_owned(),
+            version: 1,
+        });
+    prepared
+        .ruleset
+        .provides
+        .operations
+        .sort_by(|left, right| left.id.cmp(&right.id));
+    prepared
+        .ruleset
+        .provides
+        .capabilities
+        .push(VersionedRpgRequirement {
+            id: "capability.effects".to_owned(),
+            version: 1,
+        });
+    prepared.ruleset.provides.capabilities.extend([
+        VersionedRpgRequirement {
+            id: "capability.defenses".to_owned(),
+            version: 1,
+        },
+        VersionedRpgRequirement {
+            id: "capability.random".to_owned(),
+            version: 1,
+        },
+    ]);
+    prepared
+        .ruleset
+        .provides
+        .capabilities
+        .sort_by(|left, right| left.id.cmp(&right.id));
+    prepared.ruleset.provides.numeric_domains = vec![RulesetNumericDomain {
+        id: "effect-number".to_owned(),
+        minimum: -10,
+        maximum: 10,
+    }];
+    prepared.ruleset.provides.values = vec![RulesetValueContract {
+        kind: RulesetValueKind::Defense,
+        id: "guard".to_owned(),
+        label: "Guard".to_owned(),
+        numeric_domain_id: "effect-number".to_owned(),
+        source: RulesetValueSource::Input,
+    }];
+    prepared.ruleset.provides.calculation_selectors = vec![RulesetCalculationSelectorContract {
+        id: "effect-test".to_owned(),
+        version: 1,
+        label: "Effect test".to_owned(),
+        numeric_domain_id: "effect-number".to_owned(),
+    }];
+    prepared.ruleset.provides.contribution_stacking_groups =
+        vec![RulesetContributionStackingGroupContract {
+            id: "effect-stack".to_owned(),
+            version: 1,
+            label: "Effect stack".to_owned(),
+            policy: RpgContributionStackingPolicy::Sum,
+        }];
+    prepared
+        .content_requirements
+        .operations
+        .push(VersionedRpgRequirement {
+            id: "operation.applyEffect".to_owned(),
+            version: 1,
+        });
+    prepared
+        .content_requirements
+        .operations
+        .push(VersionedRpgRequirement {
+            id: "operation.removeEffect".to_owned(),
+            version: 1,
+        });
+    prepared
+        .content_requirements
+        .operations
+        .sort_by(|left, right| left.id.cmp(&right.id));
+    prepared
+        .content_requirements
+        .capabilities
+        .push(VersionedRpgRequirement {
+            id: "capability.effects".to_owned(),
+            version: 1,
+        });
+    prepared.content_requirements.capabilities.extend([
+        VersionedRpgRequirement {
+            id: "capability.defenses".to_owned(),
+            version: 1,
+        },
+        VersionedRpgRequirement {
+            id: "capability.random".to_owned(),
+            version: 1,
+        },
+    ]);
+    prepared
+        .content_requirements
+        .capabilities
+        .sort_by(|left, right| left.id.cmp(&right.id));
+    prepared.content_requirements.numeric_domains = vec!["effect-number".to_owned()];
+    prepared.content_requirements.values = vec![ContentValueRequirement {
+        kind: RulesetValueKind::Defense,
+        id: "guard".to_owned(),
+    }];
+    prepared.materialized_definitions = definitions;
+    prepared.exported_roots = prepared
+        .materialized_definitions
+        .iter()
+        .map(|definition| definition.id.clone())
+        .collect();
+    prepared.definition_provenance = prepared
+        .materialized_definitions
+        .iter()
+        .map(|definition| definition.provenance.clone())
+        .collect();
+    prepared.relationships = prepared
+        .exported_roots
+        .iter()
+        .enumerate()
+        .map(|(order, target)| ContentRelationshipProvenance {
+            kind: ContentRelationshipKind::Exports,
+            source: format!("{package_id}@{package_version}"),
+            target: target.clone(),
+            order,
+        })
+        .collect();
+    prepared
 }
 
 fn healing_prepared() -> PreparedPlayBundle {

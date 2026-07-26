@@ -1,26 +1,27 @@
 use std::collections::{BTreeMap, BTreeSet};
 
 use rpg_core::{
-    DeterministicRandomStream, GridPosition, RpgCapabilityId, RpgCapabilityMutationError,
-    RpgCapabilityState, RpgCapabilityWorkspace, RpgContributionComparison,
-    RpgContributionDisposition, RpgContributionPredicate, RpgContributionStackingPolicy,
-    RpgContributionSubject, RpgContributionTeamRelation, RpgContributionValueExpression,
-    RpgDomainEvent, RpgHeterogeneousRandomTerm, RpgHeterogeneousRandomValue, RpgIntent,
-    RpgModifierStackingPolicy, RpgNaturalDieEffect, RpgNaturalDieResolution,
-    RpgOutcomeBandShiftDecision, RpgOutcomeBandShiftDefinition, RpgOutcomeBandShiftDisposition,
-    RpgOutcomeBandShiftLedger, RpgPoolCancellationResult, RpgPoolContributionDecision,
-    RpgPoolContributionDefinition, RpgPoolContributionEffect, RpgPoolContributionLedger,
-    RpgPoolReplacementUnit, RpgRandomEvidence, RpgRandomRequest, RpgRandomRequestKind,
-    RpgReactionActivationBudgetCost, RpgReactionDecision, RpgReactionOption, RpgReactionRequest,
-    RpgReactionUnavailable, RpgResolutionContext, RpgResolutionReceipt, RpgResolutionRejection,
-    RpgRulesetValueKind, RpgScalarContributionDecision, RpgScalarContributionDefinition,
-    RpgScalarContributionLedger, RpgTraceStep,
+    ActiveRpgEffect, DeterministicRandomStream, GridPosition, RpgCapabilityId,
+    RpgCapabilityMutationError, RpgCapabilityState, RpgCapabilityWorkspace,
+    RpgContributionComparison, RpgContributionDisposition, RpgContributionPredicate,
+    RpgContributionStackingPolicy, RpgContributionSubject, RpgContributionTeamRelation,
+    RpgContributionValueExpression, RpgDomainEvent, RpgEffectMutation, RpgHeterogeneousRandomTerm,
+    RpgHeterogeneousRandomValue, RpgIntent, RpgModifierStackingPolicy, RpgNaturalDieEffect,
+    RpgNaturalDieResolution, RpgOutcomeBandShiftDecision, RpgOutcomeBandShiftDefinition,
+    RpgOutcomeBandShiftDisposition, RpgOutcomeBandShiftLedger, RpgPoolCancellationResult,
+    RpgPoolContributionDecision, RpgPoolContributionDefinition, RpgPoolContributionEffect,
+    RpgPoolContributionLedger, RpgPoolReplacementUnit, RpgRandomEvidence, RpgRandomRequest,
+    RpgRandomRequestKind, RpgReactionActivationBudgetCost, RpgReactionDecision, RpgReactionOption,
+    RpgReactionRequest, RpgReactionUnavailable, RpgResolutionContext, RpgResolutionReceipt,
+    RpgResolutionRejection, RpgRulesetValueKind, RpgScalarContributionDecision,
+    RpgScalarContributionDefinition, RpgScalarContributionLedger, RpgTraceStep,
 };
 use rpg_ir::{
-    CompiledCharacterFeature, CompiledItemDefinition, RpgIrActivation, RpgIrCheck, RpgIrComparison,
-    RpgIrFormula, RpgIrOperation, RpgIrPredicate, RpgIrRollScope, RpgIrScalarTestDifficulty,
-    RpgIrSubject, RpgIrTargetKind, RpgIrTeamConstraint, RulesetHeterogeneousPoolProfile,
-    RulesetMarginBandRule, RulesetNaturalDieRule, RulesetOutcomeBand,
+    CompiledCharacterFeature, CompiledEffectDefinition, CompiledItemDefinition, RpgIrActivation,
+    RpgIrCheck, RpgIrComparison, RpgIrFormula, RpgIrOperation, RpgIrPredicate, RpgIrRollScope,
+    RpgIrScalarTestDifficulty, RpgIrSubject, RpgIrTargetKind, RpgIrTeamConstraint,
+    RulesetHeterogeneousPoolProfile, RulesetMarginBandRule, RulesetNaturalDieRule,
+    RulesetOutcomeBand,
 };
 
 use crate::compile::{CompiledAction, CompiledOperation, CompiledProgram};
@@ -132,6 +133,7 @@ impl CompiledRpgRules {
             reaction,
             reaction_consumed: false,
             pending_damage_reduction: 0,
+            next_effect_ordinal: 0,
             character_features,
             bound_item,
             context,
@@ -527,12 +529,74 @@ struct Execution<'a> {
     reaction: Option<&'a RpgReactionDecision>,
     reaction_consumed: bool,
     pending_damage_reduction: u32,
+    next_effect_ordinal: u32,
     character_features: Vec<&'a CompiledCharacterFeature>,
     bound_item: Option<&'a CompiledItemDefinition>,
     context: &'a RpgResolutionContext,
 }
 
 impl Execution<'_> {
+    fn active_effect_sources(
+        &self,
+        target_id: &str,
+        path: &str,
+    ) -> Result<Vec<(ActiveRpgEffect, CompiledEffectDefinition)>, RpgResolutionRejection> {
+        let mut entity_ids = vec![self.intent.actor_id.as_str(), target_id];
+        entity_ids.sort_unstable();
+        entity_ids.dedup();
+        let mut sources = Vec::new();
+        for entity_id in entity_ids {
+            let entity = self.workspace.state().entity(entity_id).ok_or_else(|| {
+                self.fail(
+                    "RPG_RUNTIME_EFFECT_OWNER_UNKNOWN",
+                    path,
+                    format!("effect owner {entity_id} is unavailable"),
+                )
+            })?;
+            for effect in entity.effects() {
+                let definition = self.rules.effect(effect.definition_id()).ok_or_else(|| {
+                    self.fail(
+                        "RPG_RUNTIME_EFFECT_DEFINITION_UNKNOWN",
+                        path,
+                        format!(
+                            "active effect {} references unavailable definition {}",
+                            effect.instance_id(),
+                            effect.definition_id()
+                        ),
+                    )
+                })?;
+                if effect.definition_version() != definition.definition_version {
+                    return Err(self.fail(
+                        "RPG_RUNTIME_EFFECT_DEFINITION_VERSION_MISMATCH",
+                        path,
+                        format!(
+                            "active effect {} references {}@{}, but the compiled definition is {}@{}",
+                            effect.instance_id(),
+                            effect.definition_id(),
+                            effect.definition_version(),
+                            definition.definition_id,
+                            definition.definition_version
+                        ),
+                    ));
+                }
+                sources.push((effect.clone(), definition.clone()));
+            }
+        }
+        sources.sort_by(|left, right| {
+            (
+                left.0.definition_id(),
+                left.0.source_entity_id(),
+                left.0.instance_id(),
+            )
+                .cmp(&(
+                    right.0.definition_id(),
+                    right.0.source_entity_id(),
+                    right.0.instance_id(),
+                ))
+        });
+        Ok(sources)
+    }
+
     fn spend_activation(
         &mut self,
         entity_id: &str,
@@ -952,6 +1016,18 @@ impl Execution<'_> {
                         source_instance_id: Some(binding.item_instance_id.clone()),
                         source_label: item.label.clone(),
                         definition: contribution.clone(),
+                    });
+                }
+            }
+        }
+        for (effect, definition) in self.active_effect_sources(target_id, path)? {
+            for contribution in definition.pool_contributions {
+                if contribution.profile.id == profile.id {
+                    pending.push(PendingPoolContribution {
+                        source_definition_id: definition.definition_id.clone(),
+                        source_instance_id: Some(effect.instance_id().to_owned()),
+                        source_label: definition.label.clone(),
+                        definition: contribution,
                     });
                 }
             }
@@ -1614,6 +1690,18 @@ impl Execution<'_> {
                 }
             }
         }
+        for (effect, definition) in self.active_effect_sources(target_id, path)? {
+            for shift in definition.outcome_band_shifts {
+                if shift.profile.id == profile_id {
+                    pending.push(PendingOutcomeBandShift {
+                        source_definition_id: definition.definition_id.clone(),
+                        source_instance_id: Some(effect.instance_id().to_owned()),
+                        source_label: definition.label.clone(),
+                        definition: shift,
+                    });
+                }
+            }
+        }
         pending.sort_by(|left, right| left.canonical_key().cmp(&right.canonical_key()));
         if pending.len() > 256 {
             return Err(self.fail(
@@ -1751,6 +1839,18 @@ impl Execution<'_> {
                         source_instance_id: Some(binding.item_instance_id.clone()),
                         source_label: item.label.clone(),
                         definition: contribution.clone(),
+                    });
+                }
+            }
+        }
+        for (effect, definition) in self.active_effect_sources(target_id, path)? {
+            for contribution in definition.contributions {
+                if contribution.selector.id == selector_id {
+                    pending.push(PendingContribution {
+                        source_definition_id: definition.definition_id.clone(),
+                        source_instance_id: Some(effect.instance_id().to_owned()),
+                        source_label: definition.label.clone(),
+                        definition: contribution,
                     });
                 }
             }
@@ -2121,6 +2221,19 @@ impl Execution<'_> {
                     )
                 }))
             }
+            RpgContributionPredicate::EffectActive {
+                subject,
+                definition_id,
+            } => {
+                let entity = self.contribution_entity(*subject, target_id, path)?;
+                let applies = entity.has_effect_definition(definition_id);
+                Ok((!applies).then(|| {
+                    format!(
+                        "effectActive.{}.required.{definition_id}",
+                        contribution_subject_name(*subject)
+                    )
+                }))
+            }
         }
     }
 
@@ -2390,6 +2503,9 @@ impl Execution<'_> {
             }
             RpgIrOperation::ChangeResource { .. } => RpgCapabilityId::Resources,
             RpgIrOperation::ApplyModifier { .. } => RpgCapabilityId::Modifiers,
+            RpgIrOperation::ApplyEffect { .. } | RpgIrOperation::RemoveEffect { .. } => {
+                RpgCapabilityId::Effects
+            }
             RpgIrOperation::Move { .. } | RpgIrOperation::MoveToCell { .. } => {
                 RpgCapabilityId::Position
             }
@@ -2502,6 +2618,155 @@ impl Execution<'_> {
                     value,
                     remaining_turns: *duration_turns,
                 });
+            }
+            RpgIrOperation::ApplyEffect {
+                effect_definition_id,
+                rank,
+            } => {
+                let target_id = self.target_id(path)?;
+                let rank = self.eval_formula(rank, &format!("{path}.rank"))?;
+                let definition = self
+                    .rules
+                    .effect(effect_definition_id)
+                    .cloned()
+                    .ok_or_else(|| {
+                        self.fail(
+                            "RPG_RUNTIME_EFFECT_DEFINITION_UNKNOWN",
+                            &format!("{path}.effectDefinitionId"),
+                            format!("effect definition {effect_definition_id} is unavailable"),
+                        )
+                    })?;
+                if rank < definition.rank_minimum || rank > definition.rank_maximum {
+                    return Err(self.fail(
+                        "RPG_RUNTIME_EFFECT_RANK_OUT_OF_BOUNDS",
+                        &format!("{path}.rank"),
+                        format!(
+                            "effect rank {rank} must be within {}..={}",
+                            definition.rank_minimum, definition.rank_maximum
+                        ),
+                    ));
+                }
+                let application_revision = self.workspace.state().revision().saturating_add(1);
+                let ordinal = self.next_effect_ordinal;
+                self.next_effect_ordinal = self.next_effect_ordinal.saturating_add(1);
+                let instance_id = format!(
+                    "{}:{}:{}:{}",
+                    effect_definition_id, self.intent.actor_id, application_revision, ordinal
+                );
+                let mutation = self
+                    .workspace
+                    .effects_owner()
+                    .apply(
+                        &target_id,
+                        &self.intent.actor_id,
+                        &instance_id,
+                        &definition.definition_id,
+                        definition.definition_version,
+                        &definition.stacking_id,
+                        definition.stacking,
+                        rank,
+                        definition.duration_count,
+                        application_revision,
+                        definition.duration_anchor,
+                    )
+                    .map_err(|error| self.mutation_rejection(error, path))?;
+                match mutation {
+                    RpgEffectMutation::Applied {
+                        effect,
+                        replaced_effects,
+                    } => {
+                        let replaced_instance_ids = replaced_effects
+                            .iter()
+                            .map(|replaced| replaced.instance_id().to_owned())
+                            .collect();
+                        for replaced in replaced_effects {
+                            self.events.push(RpgDomainEvent::EffectRemoved {
+                                source_id: self.intent.actor_id.clone(),
+                                target_id: target_id.clone(),
+                                instance_id: replaced.instance_id().to_owned(),
+                                definition_id: replaced.definition_id().to_owned(),
+                                definition_version: replaced.definition_version(),
+                                reason: "replaced".to_owned(),
+                            });
+                        }
+                        self.events.push(RpgDomainEvent::EffectApplied {
+                            source_id: self.intent.actor_id.clone(),
+                            target_id,
+                            instance_id: effect.instance_id().to_owned(),
+                            definition_id: effect.definition_id().to_owned(),
+                            definition_version: effect.definition_version(),
+                            stacking_id: effect.stacking_id().to_owned(),
+                            stacking: effect.stacking(),
+                            rank: effect.rank(),
+                            duration_anchor: effect.duration_anchor(),
+                            remaining_count: effect.remaining_count(),
+                            application_revision: effect.application_revision(),
+                            replaced_instance_ids,
+                        });
+                    }
+                    RpgEffectMutation::Refreshed {
+                        previous,
+                        current,
+                        removed_effects,
+                    } => {
+                        let removed_instance_ids = removed_effects
+                            .iter()
+                            .map(|removed| removed.instance_id().to_owned())
+                            .collect();
+                        for removed in removed_effects {
+                            self.events.push(RpgDomainEvent::EffectRemoved {
+                                source_id: self.intent.actor_id.clone(),
+                                target_id: target_id.clone(),
+                                instance_id: removed.instance_id().to_owned(),
+                                definition_id: removed.definition_id().to_owned(),
+                                definition_version: removed.definition_version(),
+                                reason: "refreshCollapsed".to_owned(),
+                            });
+                        }
+                        self.events.push(RpgDomainEvent::EffectRefreshed {
+                            source_id: self.intent.actor_id.clone(),
+                            target_id,
+                            instance_id: current.instance_id().to_owned(),
+                            definition_id: current.definition_id().to_owned(),
+                            definition_version: current.definition_version(),
+                            stacking_id: current.stacking_id().to_owned(),
+                            stacking: current.stacking(),
+                            rank: current.rank(),
+                            duration_anchor: current.duration_anchor(),
+                            previous_count: previous.remaining_count(),
+                            remaining_count: current.remaining_count(),
+                            application_revision: current.application_revision(),
+                            removed_instance_ids,
+                        });
+                    }
+                }
+            }
+            RpgIrOperation::RemoveEffect {
+                effect_definition_id,
+            } => {
+                if self.rules.effect(effect_definition_id).is_none() {
+                    return Err(self.fail(
+                        "RPG_RUNTIME_EFFECT_DEFINITION_UNKNOWN",
+                        &format!("{path}.effectDefinitionId"),
+                        format!("effect definition {effect_definition_id} is unavailable"),
+                    ));
+                }
+                let target_id = self.target_id(path)?;
+                let removed = self
+                    .workspace
+                    .effects_owner()
+                    .remove_definition(&target_id, effect_definition_id)
+                    .map_err(|error| self.mutation_rejection(error, path))?;
+                for effect in removed {
+                    self.events.push(RpgDomainEvent::EffectRemoved {
+                        source_id: self.intent.actor_id.clone(),
+                        target_id: target_id.clone(),
+                        instance_id: effect.instance_id().to_owned(),
+                        definition_id: effect.definition_id().to_owned(),
+                        definition_version: effect.definition_version(),
+                        reason: "explicit".to_owned(),
+                    });
+                }
             }
             RpgIrOperation::Move {
                 subject,
@@ -2999,6 +3264,14 @@ impl Execution<'_> {
             RpgCapabilityMutationError::ModifierTenureInvalid => (
                 "RPG_MUTATION_MODIFIER_TENURE_INVALID",
                 "modifier tenure is outside the supported turn bounds",
+            ),
+            RpgCapabilityMutationError::EffectTenureInvalid => (
+                "RPG_MUTATION_EFFECT_TENURE_INVALID",
+                "effect tenure is outside the supported boundary bounds",
+            ),
+            RpgCapabilityMutationError::TooManyActiveEffects => (
+                "RPG_MUTATION_EFFECT_LIMIT_EXCEEDED",
+                "target has the maximum number of active effect instances",
             ),
             RpgCapabilityMutationError::MovementDistanceInvalid => (
                 "RPG_MUTATION_MOVEMENT_DISTANCE_INVALID",

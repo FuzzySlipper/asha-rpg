@@ -1,6 +1,11 @@
 import type { RpgActionId, RpgIrActivation, RpgIrActivationTiming, RpgIrComparison, RpgIrFormula, RpgIrPoolAxisValue, RpgIrPoolDieTerm, RpgIrPredicate, RpgIrResourceCost, RpgIrScalarExpression, RpgIrSubject, RpgIrTargetSelector, RpgReactionId, RpgReactionOptionId, RpgStackingGroup } from '@asha-rpg/ir';
 import type { ActionInput, AuthoredAction, AuthoredActionSource, AuthoredPackage, AuthoringDuration, AuthoringProgram, AuthoringStacking, AuthoringTiming, CheckBranchInput, OutcomeBranchInput } from './types.js';
 import type { ContentCatalogReference } from './catalogs.js';
+import type { ContentDefinitionReference } from './play-bundle-types.js';
+export interface AuthoredDefinitionOwnership {
+    readonly field: string;
+    readonly reference: ContentDefinitionReference;
+}
 import type { RulesetCalculationSelectorReference, RulesetActivationBudgetReference, RulesetHeterogeneousPoolProfileReference, RulesetScalarTestProfileReference, RulesetValueReference } from './ruleset-builders.js';
 type AuthoredStatReference = ContentCatalogReference<'stat', string> | RulesetValueReference<'stat', string, string>;
 type AuthoredDefenseReference = ContentCatalogReference<'defense', string> | RulesetValueReference<'defense', string, string>;
@@ -110,6 +115,17 @@ export declare function applyModifier(options: {
     readonly stacking: AuthoringStacking;
     readonly timing?: AuthoringTiming;
 }): AuthoringProgram;
+export declare function applyEffect(options: {
+    readonly effect: ContentDefinitionReference;
+    readonly rank: RpgIrFormula;
+    readonly timing?: AuthoringTiming;
+}): AuthoringProgram;
+export declare function removeEffect(options: {
+    readonly effect: ContentDefinitionReference;
+    readonly timing?: AuthoringTiming;
+}): AuthoringProgram;
+/** @internal Reads typed definition edges retained by operation builders. */
+export declare function definitionOwnershipOf(value: object): readonly AuthoredDefinitionOwnership[];
 export declare function moveEntity(options: {
     readonly subject: RpgIrSubject;
     readonly deltaX: RpgIrFormula;

@@ -16,9 +16,9 @@ use crate::encounter::{
     action_view, build_encounter, encounter_outcome, living_intent_rejection, movement_paths,
     participant_view, random_failure, runtime_board_rejection, RpgActionOptionsView,
     RpgActionProposal, RpgEncounterAuthority, RpgEncounterOutcomeView, RpgEncounterView,
-    RpgRandomSource, RpgRandomSourceFailure, RpgReactionProposal, RpgScenario, RpgScenarioFailure,
-    RpgSchemaIdentity, RpgTurnControl, RpgTurnControlProposal, RpgTurnControlView,
-    RPG_ENCOUNTER_VIEW_SCHEMA_ID, RPG_ENCOUNTER_VIEW_SCHEMA_VERSION,
+    RpgParticipantProjectionCatalogs, RpgRandomSource, RpgRandomSourceFailure, RpgReactionProposal,
+    RpgScenario, RpgScenarioFailure, RpgSchemaIdentity, RpgTurnControl, RpgTurnControlProposal,
+    RpgTurnControlView, RPG_ENCOUNTER_VIEW_SCHEMA_ID, RPG_ENCOUNTER_VIEW_SCHEMA_VERSION,
 };
 use crate::{RpgReplayEntry, RpgReplayFailure};
 
@@ -414,8 +414,11 @@ impl RpgAuthoritySession {
                         .unwrap_or_default(),
                     items,
                     equipment,
-                    &self.encounter.item_definitions,
-                    &activation_budget_definitions,
+                    RpgParticipantProjectionCatalogs {
+                        item_definitions: &self.encounter.item_definitions,
+                        effect_definitions: &self.encounter.effect_definitions,
+                        activation_budget_definitions: &activation_budget_definitions,
+                    },
                 )
             })
             .collect();
@@ -580,6 +583,7 @@ impl RpgAuthoritySession {
                         &mut staged_state,
                         &mut receipt.events,
                         refreshed,
+                        receipt.state_revision,
                     )
                 });
                 self.state = staged_state;
@@ -723,6 +727,7 @@ impl RpgAuthoritySession {
                         &mut staged_state,
                         &mut receipt.events,
                         refreshed,
+                        receipt.state_revision,
                     )
                 });
                 self.pending = None;
@@ -793,6 +798,7 @@ impl RpgAuthoritySession {
             &mut staged_state,
             &mut events,
             BTreeSet::new(),
+            self.state.revision().saturating_add(1),
         );
         let state_revision = staged_state.advance_revision();
         let receipt = RpgTurnControlReceipt {
@@ -1090,6 +1096,7 @@ impl RpgAuthoritySession {
                     .map(|id| (id.clone(), id.clone()))
                     .collect(),
                 item_definitions: std::collections::BTreeMap::new(),
+                effect_definitions: std::collections::BTreeMap::new(),
                 log: Vec::new(),
             },
         }
@@ -1130,6 +1137,7 @@ fn append_turn_events(
     staged_state: &mut RpgCapabilityState,
     events: &mut Vec<rpg_core::RpgDomainEvent>,
     refreshed_modifiers: BTreeSet<(String, String)>,
+    transition_revision: u64,
 ) -> crate::RpgTurnState {
     let next_turn = encounter.next_turn(staged_state);
     if next_turn.round != encounter.turn.round {
@@ -1144,6 +1152,13 @@ fn append_turn_events(
         round: next_turn.round,
         turn: next_turn.turn,
     });
+    events.extend(effect_boundary_events(
+        staged_state,
+        transition_revision,
+        &encounter.turn.current_actor_id,
+        &next_turn.current_actor_id,
+        next_turn.round != encounter.turn.round,
+    ));
     events.extend(modifier_turn_events(
         previous_state,
         staged_state,
@@ -1188,6 +1203,51 @@ fn append_turn_events(
         });
     }
     next_turn
+}
+
+fn effect_boundary_events(
+    staged_state: &mut RpgCapabilityState,
+    transition_revision: u64,
+    previous_actor_id: &str,
+    current_actor_id: &str,
+    round_transitioned: bool,
+) -> Vec<rpg_core::RpgDomainEvent> {
+    staged_state
+        .effects_owner()
+        .advance_boundaries(
+            transition_revision,
+            previous_actor_id,
+            current_actor_id,
+            round_transitioned,
+        )
+        .into_iter()
+        .map(|change| match change {
+            rpg_core::RpgEffectBoundaryChange::Aged {
+                target_entity_id,
+                effect,
+                previous_count,
+            } => rpg_core::RpgDomainEvent::EffectDurationChanged {
+                target_id: target_entity_id,
+                instance_id: effect.instance_id().to_owned(),
+                definition_id: effect.definition_id().to_owned(),
+                definition_version: effect.definition_version(),
+                duration_anchor: effect.duration_anchor(),
+                previous_count,
+                remaining_count: effect.remaining_count(),
+            },
+            rpg_core::RpgEffectBoundaryChange::Expired {
+                target_entity_id,
+                effect,
+            } => rpg_core::RpgDomainEvent::EffectExpired {
+                target_id: target_entity_id,
+                instance_id: effect.instance_id().to_owned(),
+                definition_id: effect.definition_id().to_owned(),
+                definition_version: effect.definition_version(),
+                source_id: effect.source_entity_id().to_owned(),
+                duration_anchor: effect.duration_anchor(),
+            },
+        })
+        .collect()
 }
 
 fn modifier_turn_events(

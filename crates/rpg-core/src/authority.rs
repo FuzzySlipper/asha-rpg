@@ -5,6 +5,8 @@ use serde::{Deserialize, Serialize};
 use crate::{BoundedValue, GridPosition, Team};
 
 pub const MAXIMUM_RPG_MODIFIER_TURNS: u32 = 1_000;
+pub const MAXIMUM_RPG_EFFECT_DURATION: u32 = 1_000;
+pub const MAXIMUM_ACTIVE_RPG_EFFECTS: usize = 64;
 
 /// Closed identities for the private capability workspaces owned by RPG authority.
 ///
@@ -22,6 +24,7 @@ pub enum RpgCapabilityId {
     Random,
     Reactions,
     ActivationBudgets,
+    Effects,
 }
 
 impl RpgCapabilityId {
@@ -36,6 +39,7 @@ impl RpgCapabilityId {
             Self::Random => "capability.random",
             Self::Reactions => "capability.reactions",
             Self::ActivationBudgets => "capability.activation-budgets",
+            Self::Effects => "capability.effects",
         }
     }
 }
@@ -53,6 +57,7 @@ pub struct RpgEntityState {
     resources: BTreeMap<String, BoundedValue>,
     modifiers: BTreeMap<String, ActiveRpgModifier>,
     activation_budgets: BTreeMap<String, i32>,
+    effects: BTreeMap<String, ActiveRpgEffect>,
 }
 
 impl RpgEntityState {
@@ -72,6 +77,7 @@ impl RpgEntityState {
             resources: BTreeMap::new(),
             modifiers: BTreeMap::new(),
             activation_budgets: BTreeMap::new(),
+            effects: BTreeMap::new(),
         }
     }
 
@@ -121,6 +127,7 @@ impl RpgEntityState {
             resources: BTreeMap::new(),
             modifiers: BTreeMap::new(),
             activation_budgets: BTreeMap::new(),
+            effects: BTreeMap::new(),
         })
     }
 
@@ -205,6 +212,20 @@ impl RpgEntityState {
         Ok(())
     }
 
+    pub fn restore_effect(&mut self, effect: ActiveRpgEffect) -> Result<(), RpgStateRestoreError> {
+        if self.effects.len() >= MAXIMUM_ACTIVE_RPG_EFFECTS {
+            return Err(RpgStateRestoreError::ValueOutOfBounds);
+        }
+        if self
+            .effects
+            .insert(effect.instance_id.clone(), effect)
+            .is_some()
+        {
+            return Err(RpgStateRestoreError::DuplicateIdentity);
+        }
+        Ok(())
+    }
+
     pub fn restore_character_selection(
         &mut self,
         class_definition_id: Option<String>,
@@ -284,6 +305,16 @@ impl RpgEntityState {
         self.activation_budgets.get(id).copied()
     }
 
+    pub fn effect(&self, instance_id: &str) -> Option<&ActiveRpgEffect> {
+        self.effects.get(instance_id)
+    }
+
+    pub fn has_effect_definition(&self, definition_id: &str) -> bool {
+        self.effects
+            .values()
+            .any(|effect| effect.definition_id == definition_id)
+    }
+
     pub fn stats(&self) -> impl Iterator<Item = (&str, i32)> {
         self.stats.iter().map(|(id, value)| (id.as_str(), *value))
     }
@@ -310,6 +341,127 @@ impl RpgEntityState {
         self.activation_budgets
             .iter()
             .map(|(id, value)| (id.as_str(), *value))
+    }
+
+    pub fn effects(&self) -> impl Iterator<Item = &ActiveRpgEffect> {
+        self.effects.values()
+    }
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub enum RpgEffectDurationAnchor {
+    GlobalTurnTransition,
+    RoundTransition,
+    SourceTurnStart,
+    TargetTurnStart,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub enum RpgEffectStackingPolicy {
+    IndependentBySource,
+    Replace,
+    Refresh,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct ActiveRpgEffect {
+    instance_id: String,
+    definition_id: String,
+    definition_version: u32,
+    source_entity_id: String,
+    stacking_id: String,
+    stacking: RpgEffectStackingPolicy,
+    rank: i32,
+    remaining_count: u32,
+    application_revision: u64,
+    duration_anchor: RpgEffectDurationAnchor,
+}
+
+impl ActiveRpgEffect {
+    #[allow(clippy::too_many_arguments)]
+    pub fn restore(
+        instance_id: impl Into<String>,
+        definition_id: impl Into<String>,
+        definition_version: u32,
+        source_entity_id: impl Into<String>,
+        stacking_id: impl Into<String>,
+        stacking: RpgEffectStackingPolicy,
+        rank: i32,
+        remaining_count: u32,
+        application_revision: u64,
+        duration_anchor: RpgEffectDurationAnchor,
+    ) -> Result<Self, RpgStateRestoreError> {
+        let instance_id = instance_id.into();
+        let definition_id = definition_id.into();
+        let source_entity_id = source_entity_id.into();
+        let stacking_id = stacking_id.into();
+        if instance_id.is_empty()
+            || definition_id.is_empty()
+            || source_entity_id.is_empty()
+            || stacking_id.is_empty()
+            || definition_version == 0
+        {
+            return Err(RpgStateRestoreError::EmptyIdentity);
+        }
+        if !(1..=MAXIMUM_RPG_EFFECT_DURATION).contains(&remaining_count)
+            || application_revision == 0
+        {
+            return Err(RpgStateRestoreError::ValueOutOfBounds);
+        }
+        Ok(Self {
+            instance_id,
+            definition_id,
+            definition_version,
+            source_entity_id,
+            stacking_id,
+            stacking,
+            rank,
+            remaining_count,
+            application_revision,
+            duration_anchor,
+        })
+    }
+
+    pub fn instance_id(&self) -> &str {
+        &self.instance_id
+    }
+
+    pub fn definition_id(&self) -> &str {
+        &self.definition_id
+    }
+
+    pub fn source_entity_id(&self) -> &str {
+        &self.source_entity_id
+    }
+
+    pub fn definition_version(&self) -> u32 {
+        self.definition_version
+    }
+
+    pub fn stacking_id(&self) -> &str {
+        &self.stacking_id
+    }
+
+    pub fn stacking(&self) -> RpgEffectStackingPolicy {
+        self.stacking
+    }
+
+    pub fn rank(&self) -> i32 {
+        self.rank
+    }
+
+    pub fn remaining_count(&self) -> u32 {
+        self.remaining_count
+    }
+
+    pub fn application_revision(&self) -> u64 {
+        self.application_revision
+    }
+
+    pub fn duration_anchor(&self) -> RpgEffectDurationAnchor {
+        self.duration_anchor
     }
 }
 
@@ -439,6 +591,10 @@ impl RpgCapabilityState {
         RpgActivationBudgetsOwner { state: self }
     }
 
+    pub fn effects_owner(&mut self) -> RpgEffectsOwner<'_> {
+        RpgEffectsOwner { state: self }
+    }
+
     pub fn advance_revision(&mut self) -> u64 {
         self.revision = self.revision.saturating_add(1);
         self.revision
@@ -522,6 +678,10 @@ impl RpgCapabilityWorkspace {
 
     pub fn activation_budgets_owner(&mut self) -> RpgActivationBudgetsOwner<'_> {
         self.state.activation_budgets_owner()
+    }
+
+    pub fn effects_owner(&mut self) -> RpgEffectsOwner<'_> {
+        self.state.effects_owner()
     }
 
     pub fn random_owner(&mut self) -> RpgRandomOwner<'_> {
@@ -751,6 +911,210 @@ pub struct RpgPositionOwner<'a> {
     state: &'a mut RpgCapabilityState,
 }
 
+pub struct RpgEffectsOwner<'a> {
+    state: &'a mut RpgCapabilityState,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum RpgEffectMutation {
+    Applied {
+        effect: ActiveRpgEffect,
+        replaced_effects: Vec<ActiveRpgEffect>,
+    },
+    Refreshed {
+        previous: ActiveRpgEffect,
+        current: ActiveRpgEffect,
+        removed_effects: Vec<ActiveRpgEffect>,
+    },
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum RpgEffectBoundaryChange {
+    Aged {
+        target_entity_id: String,
+        effect: ActiveRpgEffect,
+        previous_count: u32,
+    },
+    Expired {
+        target_entity_id: String,
+        effect: ActiveRpgEffect,
+    },
+}
+
+impl RpgEffectsOwner<'_> {
+    #[allow(clippy::too_many_arguments)]
+    pub fn apply(
+        &mut self,
+        target_entity_id: &str,
+        source_entity_id: &str,
+        instance_id: &str,
+        definition_id: &str,
+        definition_version: u32,
+        stacking_id: &str,
+        stacking: RpgEffectStackingPolicy,
+        rank: i32,
+        remaining_count: u32,
+        application_revision: u64,
+        duration_anchor: RpgEffectDurationAnchor,
+    ) -> Result<RpgEffectMutation, RpgCapabilityMutationError> {
+        if !(1..=MAXIMUM_RPG_EFFECT_DURATION).contains(&remaining_count)
+            || application_revision == 0
+        {
+            return Err(RpgCapabilityMutationError::EffectTenureInvalid);
+        }
+        if self.state.entity(source_entity_id).is_none() {
+            return Err(RpgCapabilityMutationError::UnknownEntity);
+        }
+        let target = self.state.entity_mut_for_owner(target_entity_id)?;
+        let matching = target
+            .effects
+            .values()
+            .filter(|effect| {
+                effect.stacking_id == stacking_id
+                    && (stacking != RpgEffectStackingPolicy::IndependentBySource
+                        || effect.source_entity_id == source_entity_id)
+            })
+            .map(|effect| effect.instance_id.clone())
+            .collect::<Vec<_>>();
+        let retained_id = matching.first().cloned();
+        let actual_instance_id = match stacking {
+            RpgEffectStackingPolicy::IndependentBySource | RpgEffectStackingPolicy::Refresh => {
+                retained_id.as_deref().unwrap_or(instance_id)
+            }
+            RpgEffectStackingPolicy::Replace => instance_id,
+        };
+        let current = ActiveRpgEffect::restore(
+            actual_instance_id,
+            definition_id,
+            definition_version,
+            source_entity_id,
+            stacking_id,
+            stacking,
+            rank,
+            remaining_count,
+            application_revision,
+            duration_anchor,
+        )
+        .map_err(|_| RpgCapabilityMutationError::EffectTenureInvalid)?;
+        let previous = retained_id
+            .as_deref()
+            .and_then(|id| target.effects.get(id))
+            .cloned();
+        let mut removed_effects = Vec::new();
+        for id in matching {
+            let removed = target
+                .effects
+                .remove(&id)
+                .expect("matching effect remains present");
+            if stacking == RpgEffectStackingPolicy::Replace
+                || Some(id.as_str()) != retained_id.as_deref()
+            {
+                removed_effects.push(removed);
+            }
+        }
+        if previous.is_none() && target.effects.len() >= MAXIMUM_ACTIVE_RPG_EFFECTS {
+            return Err(RpgCapabilityMutationError::TooManyActiveEffects);
+        }
+        target
+            .effects
+            .insert(current.instance_id.clone(), current.clone());
+        Ok(match (stacking, previous) {
+            (RpgEffectStackingPolicy::Replace, _) => RpgEffectMutation::Applied {
+                effect: current,
+                replaced_effects: removed_effects,
+            },
+            (_, Some(previous)) => RpgEffectMutation::Refreshed {
+                previous,
+                current,
+                removed_effects,
+            },
+            (_, None) => RpgEffectMutation::Applied {
+                effect: current,
+                replaced_effects: removed_effects,
+            },
+        })
+    }
+
+    pub fn remove_definition(
+        &mut self,
+        target_entity_id: &str,
+        definition_id: &str,
+    ) -> Result<Vec<ActiveRpgEffect>, RpgCapabilityMutationError> {
+        let target = self.state.entity_mut_for_owner(target_entity_id)?;
+        let ids = target
+            .effects
+            .values()
+            .filter(|effect| effect.definition_id == definition_id)
+            .map(|effect| effect.instance_id.clone())
+            .collect::<Vec<_>>();
+        Ok(ids
+            .into_iter()
+            .filter_map(|id| target.effects.remove(&id))
+            .collect())
+    }
+
+    pub fn advance_boundaries(
+        &mut self,
+        transition_revision: u64,
+        previous_actor_id: &str,
+        current_actor_id: &str,
+        round_transitioned: bool,
+    ) -> Vec<RpgEffectBoundaryChange> {
+        let mut candidates = self
+            .state
+            .entities()
+            .flat_map(|target| {
+                target.effects().filter_map(move |effect| {
+                    let matches = match effect.duration_anchor {
+                        RpgEffectDurationAnchor::GlobalTurnTransition => {
+                            previous_actor_id != current_actor_id || round_transitioned
+                        }
+                        RpgEffectDurationAnchor::RoundTransition => round_transitioned,
+                        RpgEffectDurationAnchor::SourceTurnStart => {
+                            effect.source_entity_id == current_actor_id
+                        }
+                        RpgEffectDurationAnchor::TargetTurnStart => target.id == current_actor_id,
+                    };
+                    (matches && effect.application_revision != transition_revision).then(|| {
+                        (
+                            effect.duration_anchor,
+                            target.id.clone(),
+                            effect.definition_id.clone(),
+                            effect.source_entity_id.clone(),
+                            effect.instance_id.clone(),
+                        )
+                    })
+                })
+            })
+            .collect::<Vec<_>>();
+        candidates.sort();
+        let mut changes = Vec::new();
+        for (_, target_id, _, _, instance_id) in candidates {
+            let Some(target) = self.state.entities.get_mut(&target_id) else {
+                continue;
+            };
+            let Some(effect) = target.effects.get_mut(&instance_id) else {
+                continue;
+            };
+            if effect.remaining_count > 1 {
+                let previous_count = effect.remaining_count;
+                effect.remaining_count -= 1;
+                changes.push(RpgEffectBoundaryChange::Aged {
+                    target_entity_id: target_id,
+                    effect: effect.clone(),
+                    previous_count,
+                });
+            } else if let Some(effect) = target.effects.remove(&instance_id) {
+                changes.push(RpgEffectBoundaryChange::Expired {
+                    target_entity_id: target_id,
+                    effect,
+                });
+            }
+        }
+        changes
+    }
+}
+
 pub struct RpgActivationBudgetsOwner<'a> {
     state: &'a mut RpgCapabilityState,
 }
@@ -838,6 +1202,8 @@ pub enum RpgCapabilityMutationError {
     ActivationCeilingExceeded,
     ResourceOutOfBounds,
     ModifierTenureInvalid,
+    EffectTenureInvalid,
+    TooManyActiveEffects,
     MovementDistanceInvalid,
     PositionOutOfBounds,
 }
@@ -1097,6 +1463,10 @@ pub enum RpgContributionPredicate {
     CellCapability {
         subject: RpgContributionSubject,
         capability_id: String,
+    },
+    EffectActive {
+        subject: RpgContributionSubject,
+        definition_id: String,
     },
 }
 
@@ -1483,6 +1853,60 @@ pub enum RpgDomainEvent {
         target_id: String,
         modifier_id: String,
         stacking_group: String,
+    },
+    EffectApplied {
+        source_id: String,
+        target_id: String,
+        instance_id: String,
+        definition_id: String,
+        definition_version: u32,
+        stacking_id: String,
+        stacking: RpgEffectStackingPolicy,
+        rank: i32,
+        duration_anchor: RpgEffectDurationAnchor,
+        remaining_count: u32,
+        application_revision: u64,
+        replaced_instance_ids: Vec<String>,
+    },
+    EffectRefreshed {
+        source_id: String,
+        target_id: String,
+        instance_id: String,
+        definition_id: String,
+        definition_version: u32,
+        stacking_id: String,
+        stacking: RpgEffectStackingPolicy,
+        rank: i32,
+        duration_anchor: RpgEffectDurationAnchor,
+        previous_count: u32,
+        remaining_count: u32,
+        application_revision: u64,
+        removed_instance_ids: Vec<String>,
+    },
+    EffectRemoved {
+        source_id: String,
+        target_id: String,
+        instance_id: String,
+        definition_id: String,
+        definition_version: u32,
+        reason: String,
+    },
+    EffectDurationChanged {
+        target_id: String,
+        instance_id: String,
+        definition_id: String,
+        definition_version: u32,
+        duration_anchor: RpgEffectDurationAnchor,
+        previous_count: u32,
+        remaining_count: u32,
+    },
+    EffectExpired {
+        target_id: String,
+        instance_id: String,
+        definition_id: String,
+        definition_version: u32,
+        source_id: String,
+        duration_anchor: RpgEffectDurationAnchor,
     },
     PositionChanged {
         source_id: String,

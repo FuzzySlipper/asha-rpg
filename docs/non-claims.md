@@ -12,8 +12,8 @@ Asha RPG is not:
 - a home for every consumer's named content catalog.
 
 The initial semantic profile does not yet claim contested checks,
-source-specific critical damage rules, area selectors, conditions, temporary vitality,
-permanent or scheduler-relative durations, persistent-modifier stacking policies,
+source-specific critical damage rules, area selectors, general conditions, temporary vitality,
+permanent, wall-clock, concentration, or scheduler-relative durations, persistent-modifier stacking policies,
 or reaction-window authoring. Unknown requirements for those meanings fail
 closed. Portable checkpoint and replay are part of the existing authority
 session; a separate replay engine, event-applier, or state path is not an
@@ -48,8 +48,10 @@ transformations,
 probability previews, or calculation owners beyond the currently bound attack
 modifier and scalar-test profiles. The separate heterogeneous-pool contract
 supports only its named die-count, automatic-axis, and sequential
-replace-or-fallback effects. `F3` through `F5` in the first-wave catalog remain
-implementation non-claims.
+replace-or-fallback effects. Named `F3@1` effects are limited to bounded rank,
+one authority-relative duration anchor, source-aware/replace/refresh stacking,
+typed registered contributions, and explicit apply/remove operations. `F4` and
+`F5` in the first-wave catalog remain implementation non-claims.
 
 The implemented variable activation-budget model is deliberately turn-relative:
 Rulesets may declare action and reaction budgets with owner-turn-start or

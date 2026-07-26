@@ -525,6 +525,10 @@ export type ContentContributionPredicate = {
     readonly kind: "cellCapability";
     readonly subject: "actor" | "target";
     readonly capability: ContentDefinitionReference;
+} | {
+    readonly kind: "effectActive";
+    readonly subject: "actor" | "target";
+    readonly definition: ContentDefinitionReference;
 };
 export interface ContentScalarContribution {
     readonly schema: {
@@ -597,6 +601,25 @@ export interface ContentCharacterFeatureDefinition extends ContentDefinitionBase
     readonly kind: "characterFeature";
     readonly characterFeature: ContentCharacterFeatureData;
 }
+export interface ContentEffectData {
+    readonly schema: {
+        readonly identity: "asha.rpg.effect";
+        readonly version: 1;
+    };
+    readonly rankMinimum: number;
+    readonly rankMaximum: number;
+    readonly stackingId: string;
+    readonly stacking: "independentBySource" | "replace" | "refresh";
+    readonly durationAnchor: "globalTurnTransition" | "roundTransition" | "sourceTurnStart" | "targetTurnStart";
+    readonly durationCount: number;
+    readonly contributions: readonly ContentScalarContribution[];
+    readonly outcomeBandShifts: readonly ContentOutcomeBandShift[];
+    readonly poolContributions: readonly ContentPoolContribution[];
+}
+export interface ContentEffectDefinition extends ContentDefinitionBase {
+    readonly kind: "effect";
+    readonly effect: ContentEffectData;
+}
 export interface ContentSupportDefinition extends ContentDefinitionBase {
     readonly kind: "support";
     readonly semantic: {
@@ -667,7 +690,7 @@ export interface ContentMixinDefinition extends ContentDefinitionBase {
     readonly parameters: readonly ContentMixinParameter[];
     readonly patch: ContentPatch;
 }
-export type ContentDefinition = ContentConcreteActionDefinition | ContentActionProcedureDefinition | ContentCharacterClassDefinition | ContentCharacterFeatureDefinition | ContentItemDefinition | ContentSupportDefinition | ContentTemplateDefinition | ContentDerivedDefinition | ContentMixinDefinition;
+export type ContentDefinition = ContentConcreteActionDefinition | ContentActionProcedureDefinition | ContentCharacterClassDefinition | ContentCharacterFeatureDefinition | ContentEffectDefinition | ContentItemDefinition | ContentSupportDefinition | ContentTemplateDefinition | ContentDerivedDefinition | ContentMixinDefinition;
 export interface ContentPolicyBinding {
     readonly id: string;
     readonly policyId: string;
@@ -788,7 +811,7 @@ export interface ContentPatchChangeProvenance {
 }
 export interface ContentMaterializationStage {
     readonly id: string;
-    readonly kind: "action" | "actionProcedure" | "characterClass" | "characterFeature" | "item" | "support";
+    readonly kind: "action" | "actionProcedure" | "characterClass" | "characterFeature" | "effect" | "item" | "support";
     readonly extensionPolicy: ContentExtensionPolicy;
     readonly value: {
         readonly semantic: unknown;
@@ -860,7 +883,7 @@ export interface ContentOverlayProvenance {
 }
 export interface MaterializedContentDefinition {
     readonly id: string;
-    readonly kind: "action" | "actionProcedure" | "characterClass" | "characterFeature" | "item" | "support";
+    readonly kind: "action" | "actionProcedure" | "characterClass" | "characterFeature" | "effect" | "item" | "support";
     readonly visibility: "exported" | "support";
     readonly extensionPolicy: ContentExtensionPolicy;
     readonly semantic: unknown;
@@ -872,7 +895,7 @@ export interface MaterializedContentDefinition {
 export interface PreparedPlayBundle {
     readonly schema: {
         readonly identity: "asha.rpg.play-bundle.prepared";
-        readonly major: 6;
+        readonly major: 7;
     };
     readonly playBundleIdentity: PlayBundleIdentity;
     readonly ruleset: Ruleset;

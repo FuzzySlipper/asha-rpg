@@ -113,6 +113,22 @@ export function defineCharacterFeatureDefinition(input) {
         },
     });
 }
+export function defineEffectDefinition(input) {
+    return immutable({
+        ...input,
+        kind: 'effect',
+        effect: {
+            ...input.effect,
+            schema: {
+                identity: 'asha.rpg.effect',
+                version: 1,
+            },
+            contributions: normalizeScalarContributions(input.effect.contributions ?? []),
+            outcomeBandShifts: normalizeOutcomeBandShifts(input.effect.outcomeBandShifts ?? []),
+            poolContributions: normalizePoolContributions(input.effect.poolContributions ?? []),
+        },
+    });
+}
 function normalizeOutcomeBandShifts(shifts) {
     return shifts
         .map((shift) => ({

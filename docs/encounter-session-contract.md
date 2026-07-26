@@ -8,13 +8,13 @@ consumer compiles or loads a `CompiledPlayBundle` and calls
 creating mutable authority state.
 
 The schema is `asha.rpg.scenario@2`. `playBundleId` must exactly match the
-compiled artifact. Checkpoint schema `asha.rpg.session.checkpoint@7` stores the
+compiled artifact. Checkpoint schema `asha.rpg.session.checkpoint@8` stores the
 Scenario and its `fnv1a64.rpg-scenario.v1` fingerprint. Replay entry schema
-version 8 binds before/after boundaries to that Scenario, source binding, turn,
-revision, and state hash. Accepted event schema version 6 carries the
+version 9 binds before/after boundaries to that Scenario, source binding, turn,
+revision, and state hash. Accepted event schema version 7 carries the
 contextual contribution ledger and activation transitions, and encounter-view
-schema version 8 exposes that event history plus explicit class/feature
-selection and activation-budget readback.
+schema version 9 exposes that event history plus explicit class/feature
+selection, active named effects, and activation-budget readback.
 
 ## Setup-only data
 
@@ -60,12 +60,20 @@ consequences, several actions may occur in one turn, zero-cost activations
 still count toward the ceiling, and only explicit end-turn advances
 initiative. Owner-turn-start and round-start budgets reset only at their exact
 boundary.
+Named effects are created and removed only by typed artifact operations. Their
+positive `1..=1000` duration uses exactly one global-turn, round, source-turn,
+or target-turn anchor. A transition emits action/control lifecycle events,
+round/turn events, canonical effect aging/expiry, modifier aging, and budget
+resets in that order. Effects applied or refreshed in the same transaction
+skip every boundary in that transaction. Checkpoint state retains definition,
+instance, source, rank, stacking, anchor, remaining count, and application
+revision exactly.
 A pending reaction blocks other commands until resolved. Rejections preserve
 state, log, turn, reaction, and accepted-random position.
 
 Attack and generic scalar-test resolution report an authoritative scalar
 contribution ledger as structured event data. It includes the base value, final
-checked value, and every item or selected-feature candidate in canonical
+checked value, and every item, selected-feature, or active-effect candidate in canonical
 source-definition and contribution-id order. Generic scalar events additionally
 retain difficulty, total, margin, base band, matching natural rule, contextual
 band-shift ledger, and final band before a separate event records the selected

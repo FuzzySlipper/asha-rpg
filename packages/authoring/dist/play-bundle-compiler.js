@@ -1,6 +1,6 @@
 import { RPG_CAPABILITY_VERSIONS, RPG_OPERATION_VERSIONS, } from '@asha-rpg/ir';
 import { canonicalJson, immutable, stableFingerprint } from './canonical.js';
-import { defineActions, definePackage } from './builders.js';
+import { defineActions, definePackage, definitionOwnershipOf, } from './builders.js';
 import { catalogOwnershipOf } from './catalogs.js';
 import { rulesetValueOwnershipOf } from './ruleset-builders.js';
 import { normalizeAction, normalizePackage } from './normalize.js';
@@ -62,6 +62,7 @@ export function preparePlayBundle(options) {
     validateActionProcedureGraph(graph.materialized, graph.resolvedReferences, options.bundle.ruleset, diagnostics);
     validateItemDefinitions(graph.materialized, graph.resolvedReferences, options.bundle.ruleset, diagnostics);
     validateCharacterDefinitions(graph.materialized, graph.resolvedReferences, options.bundle.ruleset, diagnostics);
+    validateEffectDefinitions(graph.materialized, graph.resolvedReferences, options.bundle.ruleset, diagnostics);
     validateParticipantProfiles(graph.materialized, graph.resolvedReferences, options.bundle.ruleset, diagnostics);
     if (diagnostics.length > 0)
         return failed(diagnostics);
@@ -100,7 +101,7 @@ export function preparePlayBundle(options) {
         })),
     ].sort(compareRelationship);
     const prepared = immutable({
-        schema: { identity: 'asha.rpg.play-bundle.prepared', major: 6 },
+        schema: { identity: 'asha.rpg.play-bundle.prepared', major: 7 },
         playBundleIdentity: options.bundle.identity,
         ruleset: options.bundle.ruleset,
         contentPacks: [...context.selected.values()]
@@ -820,6 +821,7 @@ function materializeSelectedDefinitions(context, bundle, overlayPackages) {
             record.definition.kind === 'actionProcedure' ||
             record.definition.kind === 'characterClass' ||
             record.definition.kind === 'characterFeature' ||
+            record.definition.kind === 'effect' ||
             record.definition.kind === 'item' ||
             record.definition.kind === 'support') {
             if ((derivationsByDefinition.get(key)?.length ?? 0) > 0) {
@@ -961,6 +963,7 @@ function materializeSelectedDefinitions(context, bundle, overlayPackages) {
                 record.definition.kind === 'actionProcedure' ||
                 record.definition.kind === 'characterClass' ||
                 record.definition.kind === 'characterFeature' ||
+                record.definition.kind === 'effect' ||
                 record.definition.kind === 'item' ||
                 record.definition.kind === 'support' ||
                 record.definition.kind === 'derived') {
@@ -1148,6 +1151,12 @@ function definitionValue(record) {
     if (record.definition.kind === 'characterFeature') {
         return {
             semantic: record.definition.characterFeature,
+            presentation: record.definition.presentation ?? null,
+        };
+    }
+    if (record.definition.kind === 'effect') {
+        return {
+            semantic: materializedEffectData(record.definition.effect),
             presentation: record.definition.presentation ?? null,
         };
     }
@@ -1480,6 +1489,7 @@ function definitionMaterializationStage(record, ruleset) {
         record.definition.kind !== 'actionProcedure' &&
         record.definition.kind !== 'characterClass' &&
         record.definition.kind !== 'characterFeature' &&
+        record.definition.kind !== 'effect' &&
         record.definition.kind !== 'item' &&
         record.definition.kind !== 'support') {
         throw new Error(`definition ${record.definition.id} is not concrete`);
@@ -1578,10 +1588,15 @@ export function contentDefinitionMaterializationFingerprint(definition) {
                                 semantic: materializedCharacterFeatureData(definition.characterFeature),
                                 presentation: definition.presentation ?? null,
                             }
-                            : {
-                                semantic: definition.semantic,
-                                presentation: definition.presentation ?? null,
-                            },
+                            : definition.kind === 'effect'
+                                ? {
+                                    semantic: materializedEffectData(definition.effect),
+                                    presentation: definition.presentation ?? null,
+                                }
+                                : {
+                                    semantic: definition.semantic,
+                                    presentation: definition.presentation ?? null,
+                                },
         references: authoredDefinitionReferenceIds(definition),
     });
 }
@@ -1629,6 +1644,14 @@ function materializedCharacterFeatureData(feature) {
         poolContributions: materializedPoolContributions(feature.poolContributions),
     };
 }
+function materializedEffectData(effect) {
+    return {
+        ...effect,
+        contributions: materializedScalarContributions(effect.contributions),
+        outcomeBandShifts: materializedOutcomeBandShifts(effect.outcomeBandShifts),
+        poolContributions: materializedPoolContributions(effect.poolContributions),
+    };
+}
 function materializedOutcomeBandShifts(shifts) {
     return shifts.map((shift) => ({
         ...shift,
@@ -1667,6 +1690,13 @@ function materializedContributionPredicate(predicate) {
             kind: predicate.kind,
             subject: predicate.subject,
             capabilityId: predicate.capability.definitionId,
+        };
+    }
+    if (predicate.kind === 'effectActive') {
+        return {
+            kind: predicate.kind,
+            subject: predicate.subject,
+            definitionId: predicate.definition.definitionId,
         };
     }
     if (predicate.kind === 'not') {
@@ -1735,6 +1765,12 @@ function normalizedDefinitionValue(record) {
             presentation: record.definition.presentation ?? null,
         };
     }
+    if (record.definition.kind === 'effect') {
+        return {
+            semantic: materializedEffectData(record.definition.effect),
+            presentation: record.definition.presentation ?? null,
+        };
+    }
     if (record.definition.kind === 'support') {
         return {
             semantic: record.definition.semantic,
@@ -1753,6 +1789,7 @@ function materializationReferenceIds(record, ruleset) {
     return [
         ...new Set([
             ...(record.definition.lowLevelReferences ?? []).map((reference) => reference.definitionId),
+            ...authoredOperationDefinitionReferences(record.definition).map((reference) => reference.definitionId),
             ...authoredReferences,
             ...authoredContributionDefinitionReferences(record.definition)
                 .filter((reference) => reference.importAs !== undefined ||
@@ -1782,6 +1819,7 @@ function authoredDefinitionReferenceIds(definition) {
         ...new Set([
             ...(definition.lowLevelReferences ?? []).map((reference) => reference.definitionId),
             ...procedureReferences,
+            ...authoredOperationDefinitionReferences(definition).map((reference) => reference.definitionId),
             ...authoredContributionDefinitionReferences(definition)
                 .filter((reference) => reference.importAs !== undefined ||
                 reference.definitionId !== definition.id)
@@ -1795,17 +1833,23 @@ function authoredContributionDefinitionReferences(definition) {
         ? definition.item.contributions
         : definition.kind === 'characterFeature'
             ? definition.characterFeature.contributions
-            : [];
+            : definition.kind === 'effect'
+                ? definition.effect.contributions
+                : [];
     const shifts = definition.kind === 'item'
         ? definition.item.outcomeBandShifts
         : definition.kind === 'characterFeature'
             ? definition.characterFeature.outcomeBandShifts
-            : [];
+            : definition.kind === 'effect'
+                ? definition.effect.outcomeBandShifts
+                : [];
     const poolContributions = definition.kind === 'item'
         ? definition.item.poolContributions
         : definition.kind === 'characterFeature'
             ? definition.characterFeature.poolContributions
-            : [];
+            : definition.kind === 'effect'
+                ? definition.effect.poolContributions
+                : [];
     const references = [];
     for (const contribution of contributions) {
         collectContributionPredicateDefinitionReferences(contribution.predicate, references);
@@ -1818,6 +1862,26 @@ function authoredContributionDefinitionReferences(definition) {
     }
     return references;
 }
+function authoredOperationDefinitionReferences(definition) {
+    if (!isInlineActionDefinition(definition))
+        return [];
+    const references = new Map();
+    const visit = (value) => {
+        if (Array.isArray(value)) {
+            value.forEach(visit);
+            return;
+        }
+        if (!isRecord(value))
+            return;
+        for (const ownership of definitionOwnershipOf(value)) {
+            const reference = ownership.reference;
+            references.set(`${reference.importAs ?? ''}#${reference.definitionId}`, reference);
+        }
+        Object.values(value).forEach(visit);
+    };
+    visit(definition.action);
+    return [...references.values()].sort((left, right) => `${left.importAs ?? ''}#${left.definitionId}`.localeCompare(`${right.importAs ?? ''}#${right.definitionId}`));
+}
 function collectContributionPredicateDefinitionReferences(predicate, references) {
     if (predicate.kind === 'boundItemDefinition') {
         references.push(predicate.definition);
@@ -1825,6 +1889,10 @@ function collectContributionPredicateDefinitionReferences(predicate, references)
     }
     if (predicate.kind === 'cellCapability') {
         references.push(predicate.capability);
+        return;
+    }
+    if (predicate.kind === 'effectActive') {
+        references.push(predicate.definition);
         return;
     }
     if (predicate.kind === 'not') {
@@ -1920,7 +1988,7 @@ function definitionReferences(record, diagnostics, ruleset) {
         record.definition.implementation.kind === 'invocation') {
         references.push(record.definition.implementation.invocation.procedure);
     }
-    references.push(...authoredContributionDefinitionReferences(record.definition).filter((reference) => reference.importAs !== undefined ||
+    references.push(...authoredOperationDefinitionReferences(record.definition), ...authoredContributionDefinitionReferences(record.definition).filter((reference) => reference.importAs !== undefined ||
         reference.definitionId !== record.definition.id));
     const inheritedLocalIds = new Set((record.inheritedReferenceIds ?? []).map(localDefinitionId));
     for (const catalogReference of authoredCatalogReferences(record.definition)) {
@@ -3016,6 +3084,63 @@ function validateCharacterDefinitions(materialized, resolvedReferences, ruleset,
         validateContributionDefinitionTargets(record, data.outcomeBandShifts, `${path}.outcomeBandShifts`, resolvedReferences, recordsByGlobalId, diagnostics);
     }
 }
+function validateEffectDefinitions(records, resolvedReferences, ruleset, diagnostics) {
+    const recordsByGlobalId = new Map(records.map((record) => [globalDefinitionId(record), record]));
+    const packageCounts = new Map();
+    const stackingPolicies = new Map();
+    for (const record of records) {
+        if (record.definition.kind !== 'effect')
+            continue;
+        const packageId = record.package.source.manifest.identity.id;
+        packageCounts.set(packageId, (packageCounts.get(packageId) ?? 0) + 1);
+        const path = `$.packages[${record.package.key}].definitions.${record.definition.id}.effect`;
+        const data = record.definition.effect;
+        if (record.definition.extensionPolicy !== 'sealed') {
+            diagnostics.push(diagnostic('compatibility', 'EFFECT_EXTENSION_POLICY_UNSUPPORTED', `$.packages[${record.package.key}].definitions.${record.definition.id}.extensionPolicy`, 'effect definitions are sealed in the current semantic contract', profileDiagnosticContext(record)));
+        }
+        if (data.schema.identity !== 'asha.rpg.effect' ||
+            data.schema.version !== 1) {
+            diagnostics.push(diagnostic('compatibility', 'EFFECT_SCHEMA_UNSUPPORTED', `${path}.schema`, 'effect definitions require asha.rpg.effect@1', profileDiagnosticContext(record)));
+        }
+        if (!Number.isSafeInteger(data.rankMinimum) ||
+            !Number.isSafeInteger(data.rankMaximum) ||
+            data.rankMinimum > data.rankMaximum) {
+            diagnostics.push(diagnostic('source', 'EFFECT_RANK_DOMAIN_INVALID', `${path}.rankMinimum`, 'effect rank minimum and maximum must be ordered safe integers', profileDiagnosticContext(record)));
+        }
+        if (!validPortableIdentifier(data.stackingId)) {
+            diagnostics.push(diagnostic('source', 'EFFECT_STACKING_ID_INVALID', `${path}.stackingId`, 'effect stacking identity must be a portable identifier', profileDiagnosticContext(record)));
+        }
+        const previousPolicy = stackingPolicies.get(data.stackingId);
+        if (previousPolicy !== undefined && previousPolicy !== data.stacking) {
+            diagnostics.push(diagnostic('source', 'EFFECT_STACKING_POLICY_CONFLICT', `${path}.stacking`, `stacking identity ${data.stackingId} must use one policy across the PlayBundle`, profileDiagnosticContext(record)));
+        }
+        stackingPolicies.set(data.stackingId, data.stacking);
+        if (!Number.isSafeInteger(data.durationCount) || data.durationCount < 1 || data.durationCount > 1_000) {
+            diagnostics.push(diagnostic('source', 'EFFECT_DURATION_INVALID', `${path}.durationCount`, 'effect duration count must be an integer within 1..=1000', profileDiagnosticContext(record)));
+        }
+        const contributionCount = data.contributions.length +
+            data.outcomeBandShifts.length +
+            data.poolContributions.length;
+        if (contributionCount < 1 || contributionCount > 32) {
+            diagnostics.push(diagnostic('source', 'EFFECT_CONTRIBUTIONS_INVALID', path, 'effect definitions require 1..=32 total typed contributions', profileDiagnosticContext(record)));
+        }
+        validateScalarContributions(data.contributions, `${path}.contributions`, record, ruleset, diagnostics);
+        validateOutcomeBandShifts(data.outcomeBandShifts, `${path}.outcomeBandShifts`, record, ruleset, diagnostics);
+        validatePoolContributions(data.poolContributions, `${path}.poolContributions`, record, ruleset, diagnostics);
+        for (const [contributions, contributionPath] of [
+            [data.contributions, `${path}.contributions`],
+            [data.outcomeBandShifts, `${path}.outcomeBandShifts`],
+            [data.poolContributions, `${path}.poolContributions`],
+        ]) {
+            validateContributionDefinitionTargets(record, contributions, contributionPath, resolvedReferences, recordsByGlobalId, diagnostics);
+        }
+    }
+    for (const [packageId, count] of packageCounts) {
+        if (count > 128) {
+            diagnostics.push(diagnostic('source', 'EFFECT_DEFINITION_LIMIT_EXCEEDED', '$.materializedDefinitions', `package ${packageId} has ${count} effects; maximum is 128`, {}));
+        }
+    }
+}
 function validateOutcomeBandShifts(shifts, path, record, ruleset, diagnostics) {
     let previousId;
     for (const [index, shift] of shifts.entries()) {
@@ -3141,6 +3266,16 @@ function validateContributionDefinitionTargets(record, contributions, path, reso
             }
             return;
         }
+        if (predicate.kind === 'effectActive') {
+            const target = predicate.definition.importAs === undefined &&
+                predicate.definition.definitionId === record.definition.id
+                ? record
+                : resolvedDefinitionReference(record, predicate.definition, resolvedReferences, recordsByGlobalId);
+            if (target?.definition.kind !== 'effect') {
+                diagnostics.push(diagnostic('graph', 'SCALAR_CONTRIBUTION_EFFECT_DEFINITION_INVALID', `${predicatePath}.definition`, 'effect-active predicates must reference an effect in the closed definition graph', profileDiagnosticContext(record)));
+            }
+            return;
+        }
         if (predicate.kind === 'not') {
             visit(predicate.predicate, `${predicatePath}.predicate`);
             return;
@@ -3215,6 +3350,11 @@ function validateContributionPredicate(condition, depth, nodes, path, record, ru
     if (condition.kind === 'cellCapability' &&
         contributionSubjectIsValid(condition.subject) &&
         validPortableIdentifier(condition.capability.definitionId)) {
+        return;
+    }
+    if (condition.kind === 'effectActive' &&
+        contributionSubjectIsValid(condition.subject) &&
+        validPortableIdentifier(condition.definition.definitionId)) {
         return;
     }
     if (condition.kind === 'not') {
@@ -3770,6 +3910,7 @@ function materializeDefinitions(records, references, exportedRoots, actions) {
         record.definition.kind === 'actionProcedure' ||
         record.definition.kind === 'characterClass' ||
         record.definition.kind === 'characterFeature' ||
+        record.definition.kind === 'effect' ||
         record.definition.kind === 'item' ||
         record.definition.kind === 'support')
         .map((record) => {
@@ -3796,9 +3937,11 @@ function materializeDefinitions(records, references, exportedRoots, actions) {
                     ? materializedCharacterClassData(definition)
                     : definition.kind === 'characterFeature'
                         ? materializedCharacterFeatureData(definition.characterFeature)
-                        : definition.kind === 'item'
-                            ? materializedItemData(definition.item)
-                            : materializedSupportSemantic(definition);
+                        : definition.kind === 'effect'
+                            ? materializedEffectData(definition.effect)
+                            : definition.kind === 'item'
+                                ? materializedItemData(definition.item)
+                                : materializedSupportSemantic(definition);
         if (semantic === undefined)
             throw new Error(`materialization missing ${definition.id}`);
         const materialized = {

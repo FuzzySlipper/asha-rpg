@@ -3,6 +3,7 @@ import { test } from "node:test";
 
 import {
   action,
+  applyEffect,
   activation,
   actionId,
   add,
@@ -13,6 +14,7 @@ import {
   contentPackSource,
   defineCharacterClassDefinition,
   defineCharacterFeatureDefinition,
+  defineEffectDefinition,
   defineContentPack,
   defineParticipantProfileData,
   defineParticipantProfileDefinition,
@@ -45,6 +47,8 @@ import {
   rulesetStat,
   rulesetValueId,
   scalarTest,
+  sequence,
+  removeEffect,
   dice,
 } from "@asha-rpg/authoring";
 
@@ -300,7 +304,7 @@ test("Ruleset scalar profiles author canonical ordered outcomes and reject gaps"
     result.ok ? "expected scalar profile" : JSON.stringify(result.diagnostics),
   );
   if (!result.ok) return;
-  assert.equal(result.prepared.schema.major, 6);
+  assert.equal(result.prepared.schema.major, 7);
   assert.deepEqual(
     result.prepared.ruleset.provides.scalarTestProfiles.map(
       (profile) => profile.id,
@@ -1091,6 +1095,138 @@ test("Content Packs carry typed class, feature, and participant setup definition
       (diagnostic) => diagnostic.code === "RULESET_VALUE_REFERENCE_OWNER_MISMATCH",
     ));
   }
+});
+
+test("named effects materialize closed typed lifecycle definitions and operations", () => {
+  const ruleset = defineRuleset({
+    ...semanticRuleset,
+    provides: {
+      ...semanticRuleset.provides,
+      operations: [
+        { id: "operation.applyEffect", version: 1 },
+        { id: "operation.removeEffect", version: 1 },
+      ],
+      capabilities: [{ id: "capability.effects", version: 1 }],
+      calculationSelectors: [
+        {
+          id: "effect-total",
+          version: 1,
+          label: "Effect total",
+          numericDomainId: "score",
+        },
+      ],
+      contributionStackingGroups: [
+        {
+          id: "effect-stack",
+          version: 1,
+          label: "Effect stack",
+          policy: "sum",
+        },
+      ],
+    },
+  });
+  const selector = rulesetCalculationSelector(ruleset, "effect-total");
+  const stackingGroup = rulesetContributionStackingGroup(
+    ruleset,
+    "effect-stack",
+  );
+  const effect = defineEffectDefinition({
+    id: "effect.focused",
+    visibility: "public",
+    extensionPolicy: "sealed",
+    source: { module: "contract/effects.ts", declaration: "focused" },
+    presentation: { label: "Focused" },
+    effect: {
+      rankMinimum: 1,
+      rankMaximum: 4,
+      stackingId: "focus",
+      stacking: "refresh",
+      durationAnchor: "sourceTurnStart",
+      durationCount: 2,
+      contributions: [
+        {
+          id: "focused-bonus",
+          selector,
+          stackingGroup,
+          value: { kind: "constant", value: 1 },
+          predicate: {
+            kind: "effectActive",
+            subject: "actor",
+            definition: { definitionId: "effect.focused" },
+          },
+        },
+      ],
+    },
+  });
+  const authored = action({
+    id: actionId("action.focus"),
+    name: "Focus",
+    sourcePath: "contract/effects.ts#focus",
+    targets: hostile({ range: 1 }),
+    check: noRoll(),
+    program: onCheck({
+      noRoll: sequence(
+        applyEffect({
+          effect: { definitionId: effect.id },
+          rank: constant(2),
+        }),
+        removeEffect({ effect: { definitionId: effect.id } }),
+      ),
+    }),
+  });
+  const actionDefinition = defineActionDefinition({
+    id: authored.id,
+    visibility: "public",
+    extensionPolicy: "sealed",
+    source: { module: "contract/effects.ts", declaration: "focus" },
+    action: authored,
+  });
+  const content = defineContentPack({
+    identity: { id: "contract.effects", version: "1.0.0" },
+    entry: { module: "contract/effects.ts", declaration: "content" },
+    requirements: {
+      operations: [
+        { id: "operation.applyEffect", version: 1 },
+        { id: "operation.removeEffect", version: 1 },
+      ],
+      capabilities: [{ id: "capability.effects", version: 1 }],
+      numericDomains: ["score"],
+    },
+    definitions: [actionDefinition, effect],
+    exports: [actionDefinition.id, effect.id],
+  });
+  const result = preparePlayBundle({
+    bundle: composePlayBundle({
+      identity: { id: "contract.effects", version: "1.0.0" },
+      ruleset,
+      base: contentPackRequest({ id: content.identity.id, version: "1.0.0" }),
+      add: [],
+      overlays: [],
+      configure: {},
+    }),
+    contentPacks: [contentPackSource(content)],
+  });
+  assert.equal(
+    result.ok,
+    true,
+    result.ok ? "expected effect bundle" : JSON.stringify(result.diagnostics),
+  );
+  if (!result.ok) return;
+  const materialized = result.prepared.materializedDefinitions.find(
+    (definition) => definition.id === effect.id,
+  );
+  assert.equal(materialized?.kind, "effect");
+  assert.deepEqual(materialized?.references, []);
+  assert.deepEqual(
+    (materialized?.semantic as {
+      contributions: { predicate: unknown }[];
+    }).contributions[0]?.predicate,
+    {
+      kind: "effectActive",
+      subject: "actor",
+      definitionId: effect.id,
+    },
+  );
 });
 
 test("Scenario builder emits setup-only immutable data", () => {
