@@ -4304,7 +4304,7 @@ function materializeDefinitions(records, references, exportedRoots, actions) {
             extensionPolicy: definition.extensionPolicy,
             semantic,
             presentation: definition.presentation ?? null,
-            references: (references.get(globalDefinitionId(record)) ?? []).map(localDefinitionId),
+            references: materializedReferenceIds(references.get(globalDefinitionId(record)) ?? []),
             provenance: provenance(record),
         };
         return {
@@ -4328,6 +4328,9 @@ function globalDefinitionId(record) {
 function localDefinitionId(globalId) {
     const separator = globalId.lastIndexOf('#');
     return separator < 0 ? globalId : globalId.slice(separator + 1);
+}
+function materializedReferenceIds(resolvedReferences) {
+    return [...new Set(resolvedReferences.map(localDefinitionId))].sort();
 }
 function requireIdentifier(value, path, diagnostics) {
     if (!/^[a-z][a-z0-9]*(?:[._-][a-z0-9]+)*$/.test(value)) {

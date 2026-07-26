@@ -8533,7 +8533,7 @@ fn condition_prepared() -> PreparedPlayBundle {
     apply.id = "action.apply-save-pair".to_owned();
     apply.provenance = source(&apply.id);
     apply.presentation = json!({"label": "Apply save pair"});
-    apply.references = vec![condition.id.clone(), auxiliary.id.clone()];
+    apply.references = vec![auxiliary.id.clone(), condition.id.clone()];
     apply.semantic["action"]["id"] = json!(apply.id);
     apply.semantic["action"]["name"] = json!("Apply save pair");
     apply.semantic["action"]["sourcePath"] = json!("conditions/save-ends.ts#applySavePair");

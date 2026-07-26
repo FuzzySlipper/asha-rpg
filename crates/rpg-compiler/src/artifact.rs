@@ -5710,7 +5710,17 @@ fn validate_definitions(prepared: &PreparedPlayBundle, diagnostics: &mut Vec<Rpg
         }
     }
     for (index, definition) in prepared.materialized_definitions.iter().enumerate() {
+        let mut previous_reference = None::<&str>;
         for reference in &definition.references {
+            if previous_reference.is_some_and(|previous| previous >= reference.as_str()) {
+                diagnostics.push(RpgDiagnostic::error(
+                    RpgDiagnosticStage::Artifact,
+                    "CONTENT_PACK_ARTIFACT_REFERENCES_NOT_CANONICAL",
+                    format!("$.materializedDefinitions[{index}].references"),
+                    "materialized references must be unique identity-sorted definition IDs",
+                ));
+            }
+            previous_reference = Some(reference);
             if !definitions.contains_key(reference.as_str()) {
                 diagnostics.push(RpgDiagnostic::error(
                     RpgDiagnosticStage::References,

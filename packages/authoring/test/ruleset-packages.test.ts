@@ -12,18 +12,26 @@ import {
   constant,
   damage,
   defineActionDefinition,
+  defineCharacterClassDefinition,
+  defineCharacterFeatureDefinition,
   defineContentCatalog,
   defineContentPack,
+  defineItemDefinition,
+  defineParticipantProfileData,
+  defineParticipantProfileDefinition,
   defineSupportDefinition,
   defineTemplateDefinition,
   definitionReference,
   hostile,
+  ally,
+  heal,
   noRoll,
   onCheck,
   preparePlayBundle,
   contentPackDependency,
   contentPackRequest,
   contentPackSource,
+  participantProfileVitality,
   withLowLevelDefinitionReferences,
 } from '@asha-rpg/authoring';
 import { lowLevelCatalogReference } from '@asha-rpg/authoring/low-level';
@@ -76,6 +84,257 @@ test('explicit package bundle is immutable, closed, and load-order independent',
   );
   assert.ok(
     first.prepared.relationships.some((entry) => entry.kind === 'contributes'),
+  );
+});
+
+test('mixed local and dependency references flatten to canonical Rust graph edges', () => {
+  const mixedCatalogs = defineContentCatalog({
+    packageId: 'mixed.foundation',
+    sourceModule: 'mixed/foundation/catalogs.ts',
+    entries: {
+      pressure: {
+        definitionId: 'damage.pressure',
+        category: 'damageType',
+        id: 'pressure',
+        label: 'Pressure',
+      },
+    },
+  });
+  const importedFeature = defineCharacterFeatureDefinition({
+    id: 'talent.a-imported',
+    visibility: 'public',
+    extensionPolicy: 'sealed',
+    source: {
+      module: 'mixed/foundation/features.ts',
+      declaration: 'importedFeature',
+    },
+    presentation: { label: 'Imported feature' },
+    characterFeature: {
+      damageResponses: [{
+        id: 'imported-pressure-response',
+        damageType: mixedCatalogs.references.pressure,
+        requiredTags: [],
+        bypassTags: [],
+        effect: { kind: 'flat', value: -1 },
+      }],
+    },
+  });
+  const importedAction = defineActionDefinition({
+    id: 'action.a-imported',
+    visibility: 'public',
+    extensionPolicy: 'sealed',
+    source: {
+      module: 'mixed/foundation/actions.ts',
+      declaration: 'importedAction',
+    },
+    action: action({
+      id: actionId('action.a-imported'),
+      name: 'Imported action',
+      sourcePath: 'mixed/foundation/actions.ts#importedAction',
+      tags: [],
+      targets: ally({ range: 0 }),
+      check: noRoll(),
+      program: onCheck({
+        noRoll: heal({ amount: constant(0) }),
+      }),
+    }),
+  });
+  const importedItem = defineItemDefinition({
+    id: 'item.a-imported',
+    visibility: 'public',
+    extensionPolicy: 'sealed',
+    source: {
+      module: 'mixed/foundation/items.ts',
+      declaration: 'importedItem',
+    },
+    presentation: { label: 'Imported item' },
+    item: {
+      tags: ['fixture'],
+      traits: [],
+      allowedSlots: ['hand.main'],
+      attributes: [],
+    },
+  });
+  const foundation = defineContentPack({
+    identity: { id: 'mixed.foundation', version: '1.0.0' },
+    entry: {
+      module: 'mixed/foundation/content-pack.ts',
+      declaration: 'foundation',
+    },
+    definitions: [
+      ...mixedCatalogs.definitions,
+      importedAction,
+      importedFeature,
+      importedItem,
+    ],
+  });
+  const localFeature = defineCharacterFeatureDefinition({
+    id: 'talent.z-local',
+    visibility: 'public',
+    extensionPolicy: 'sealed',
+    source: {
+      module: 'mixed/content/features.ts',
+      declaration: 'localFeature',
+    },
+    presentation: { label: 'Local feature' },
+    characterFeature: {
+      damageResponses: [{
+        id: 'local-pressure-response',
+        damageType: mixedCatalogs.references.pressure,
+        requiredTags: [],
+        bypassTags: [],
+        effect: { kind: 'flat', value: -1 },
+      }],
+    },
+  });
+  const localClass = defineCharacterClassDefinition({
+    id: 'class.local',
+    visibility: 'public',
+    extensionPolicy: 'sealed',
+    source: {
+      module: 'mixed/content/classes.ts',
+      declaration: 'localClass',
+    },
+    presentation: { label: 'Local class' },
+    characterClass: {
+      featureDefinitions: [
+        definitionReference({
+          definitionId: importedFeature.id,
+          importAs: 'foundation',
+        }),
+        definitionReference({ definitionId: localFeature.id }),
+      ],
+    },
+  });
+  const profileData = defineParticipantProfileData({
+    role: 'player',
+    classDefinition: definitionReference({
+      definitionId: localClass.id,
+    }),
+    featureDefinitions: [
+      definitionReference({
+        definitionId: importedFeature.id,
+        importAs: 'foundation',
+      }),
+      definitionReference({ definitionId: localFeature.id }),
+    ],
+    definitionReferences: [
+      definitionReference({
+        definitionId: importedAction.id,
+        importAs: 'foundation',
+      }),
+    ],
+    items: [{
+      id: 'imported-item',
+      definition: definitionReference({
+        definitionId: importedItem.id,
+        importAs: 'foundation',
+      }),
+    }],
+    equipment: [{
+      slotId: 'hand.main',
+      itemInstanceId: 'imported-item',
+    }],
+    capabilities: [
+      participantProfileVitality({ current: 5, max: 5 }),
+    ],
+  });
+  const profile = defineParticipantProfileDefinition({
+    id: 'profile.local',
+    profileId: 'local',
+    profile: profileData,
+    visibility: 'public',
+    extensionPolicy: 'sealed',
+    source: {
+      module: 'mixed/content/profiles.ts',
+      declaration: 'profile',
+    },
+    presentation: { label: 'Local profile' },
+  });
+  const content = defineContentPack({
+    identity: { id: 'mixed.content', version: '1.0.0' },
+    entry: {
+      module: 'mixed/content/content-pack.ts',
+      declaration: 'content',
+    },
+    dependencies: [
+      contentPackDependency({
+        id: foundation.identity.id,
+        version: foundation.identity.version,
+        importAs: 'foundation',
+      }),
+    ],
+    definitions: [localClass, localFeature, profile],
+  });
+  const result = preparePlayBundle({
+    bundle: composePlayBundle({
+      identity: { id: 'mixed.play', version: '1.0.0' },
+      ruleset: contractTestRuleset,
+      base: contentPackRequest({
+        id: foundation.identity.id,
+        version: foundation.identity.version,
+      }),
+      add: [contentPackRequest({
+        id: content.identity.id,
+        version: content.identity.version,
+      })],
+      overlays: [],
+      configure: {},
+    }),
+    contentPacks: [
+      contentPackSource(content),
+      contentPackSource(foundation),
+    ],
+  });
+  assert.equal(result.ok, true, JSON.stringify(result));
+  if (!result.ok) return;
+  const classDefinition = result.prepared.materializedDefinitions.find(
+    (definition) => definition.id === localClass.id,
+  );
+  const profileDefinition = result.prepared.materializedDefinitions.find(
+    (definition) => definition.id === profile.id,
+  );
+  assert.deepEqual(classDefinition?.references, [
+    'talent.a-imported',
+    'talent.z-local',
+  ]);
+  assert.deepEqual(profileDefinition?.references, [
+    'action.a-imported',
+    'class.local',
+    'item.a-imported',
+    'talent.a-imported',
+    'talent.z-local',
+  ]);
+
+  const artifact = compilePrepared(result.prepared);
+  const unsorted = structuredClone(artifact);
+  const unsortedClass = unsorted.materializedDefinitions.find(
+    (definition) => definition.id === localClass.id,
+  );
+  assert.ok(unsortedClass);
+  unsortedClass.references.reverse();
+  const unsortedValidation = validateArtifact(unsorted);
+  assert.notEqual(unsortedValidation.status, 0);
+  assert.match(
+    unsortedValidation.stderr,
+    /CONTENT_PACK_ARTIFACT_REFERENCES_NOT_CANONICAL/,
+  );
+
+  const duplicate = structuredClone(artifact);
+  const duplicateProfile = duplicate.materializedDefinitions.find(
+    (definition) => definition.id === profile.id,
+  );
+  assert.ok(duplicateProfile);
+  duplicateProfile.references.splice(
+    1,
+    0,
+    duplicateProfile.references[0]!,
+  );
+  const duplicateValidation = validateArtifact(duplicate);
+  assert.notEqual(duplicateValidation.status, 0);
+  assert.match(
+    duplicateValidation.stderr,
+    /CONTENT_PACK_ARTIFACT_REFERENCES_NOT_CANONICAL/,
   );
 });
 
@@ -783,6 +1042,7 @@ interface CompiledArtifact {
   };
   readonly materializedDefinitions: {
     readonly id: string;
+    references: string[];
     semantic: unknown;
   }[];
   readonly fingerprints: {
