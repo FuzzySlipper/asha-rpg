@@ -26,6 +26,7 @@ fn main() {
 
     let bundle = compile_prepared_play_bundle_json(&prepared_source)
         .expect("compile the exact TypeScript-authored prepared bundle");
+    prove_fixed_spatial_source_lifecycle(bundle.clone());
     prove_movement_allowance_forced_choices_and_reactions(bundle.clone());
     prove_line_of_effect_projection_staleness_and_atomicity(bundle.clone());
     prove_condition_lanes_tenure_restrictions_and_replay(bundle.clone());
@@ -835,6 +836,451 @@ fn prove_prepared_input_rejects_tampering(prepared_source: &[u8]) {
             .expect("fingerprint tampered tenure"),
     );
     assert_compile_rejects(&tampered_tenure, "EFFECT_SEMANTIC_DECODE_FAILED");
+
+    let mut invalid_spatial_shape: Value =
+        serde_json::from_slice(prepared_source).expect("decode prepared witness JSON");
+    let spatial_source = invalid_spatial_shape["materializedDefinitions"]
+        .as_array_mut()
+        .expect("definitions")
+        .iter_mut()
+        .find(|definition| definition["id"] == "spatial-source.fixed-hazard")
+        .expect("spatial-source definition");
+    spatial_source["semantic"]["shape"]["radius"] = Value::Number(9_u64.into());
+    let typed_spatial_source: MaterializedContentDefinition =
+        serde_json::from_value(spatial_source.clone()).expect("decode spatial source");
+    spatial_source["fingerprint"] = Value::String(
+        materialized_definition_fingerprint(&typed_spatial_source)
+            .expect("fingerprint spatial-source shape tamper"),
+    );
+    assert_compile_rejects(
+        &invalid_spatial_shape,
+        "SPATIAL_SOURCE_SHAPE_INVALID",
+    );
+
+    let mut duplicate_spatial_trigger: Value =
+        serde_json::from_slice(prepared_source).expect("decode prepared witness JSON");
+    let spatial_source = duplicate_spatial_trigger["materializedDefinitions"]
+        .as_array_mut()
+        .expect("definitions")
+        .iter_mut()
+        .find(|definition| definition["id"] == "spatial-source.fixed-hazard")
+        .expect("spatial-source definition");
+    let duplicate = spatial_source["semantic"]["triggers"][0].clone();
+    spatial_source["semantic"]["triggers"]
+        .as_array_mut()
+        .expect("spatial-source triggers")
+        .insert(1, duplicate);
+    let typed_spatial_source: MaterializedContentDefinition =
+        serde_json::from_value(spatial_source.clone()).expect("decode spatial source");
+    spatial_source["fingerprint"] = Value::String(
+        materialized_definition_fingerprint(&typed_spatial_source)
+            .expect("fingerprint duplicate spatial-source trigger"),
+    );
+    assert_compile_rejects(
+        &duplicate_spatial_trigger,
+        "SPATIAL_SOURCE_TRIGGERS_NOT_CANONICAL",
+    );
+
+    let mut random_spatial_trigger: Value =
+        serde_json::from_slice(prepared_source).expect("decode prepared witness JSON");
+    let procedure = random_spatial_trigger["materializedDefinitions"]
+        .as_array_mut()
+        .expect("definitions")
+        .iter_mut()
+        .find(|definition| definition["id"] == "procedure.hazard-pulse")
+        .expect("spatial trigger procedure");
+    procedure["semantic"]["implementation"]["template"]["program"]["body"]["noRoll"]
+        ["operation"]["parts"][0]["amount"] =
+        serde_json::json!({"kind": "dice", "count": 1, "sides": 6, "bonus": 0});
+    let typed_procedure: MaterializedContentDefinition =
+        serde_json::from_value(procedure.clone()).expect("decode trigger procedure");
+    procedure["fingerprint"] = Value::String(
+        materialized_definition_fingerprint(&typed_procedure)
+            .expect("fingerprint random spatial trigger"),
+    );
+    assert_compile_rejects(
+        &random_spatial_trigger,
+        "SPATIAL_SOURCE_TRIGGER_SEMANTICS_UNSUPPORTED",
+    );
+
+    let mut foreign_catalog_reference: Value =
+        serde_json::from_slice(prepared_source).expect("decode prepared witness JSON");
+    let procedure = foreign_catalog_reference["materializedDefinitions"]
+        .as_array_mut()
+        .expect("definitions")
+        .iter_mut()
+        .find(|definition| definition["id"] == "procedure.hazard-pulse")
+        .expect("spatial trigger procedure");
+    procedure["semantic"]["implementation"]["template"]["program"]["body"]["noRoll"]
+        ["operation"]["parts"][0]["damageType"]["packageId"] =
+        Value::String("foreign.content".to_owned());
+    let typed_procedure: MaterializedContentDefinition =
+        serde_json::from_value(procedure.clone()).expect("decode trigger procedure");
+    procedure["fingerprint"] = Value::String(
+        materialized_definition_fingerprint(&typed_procedure)
+            .expect("fingerprint foreign trigger catalog reference"),
+    );
+    assert_compile_rejects(
+        &foreign_catalog_reference,
+        "ACTION_PROCEDURE_CATALOG_REFERENCE_OWNER_MISMATCH",
+    );
+}
+
+fn prove_fixed_spatial_source_lifecycle(bundle: asha_rpg::CompiledPlayBundle) {
+    let mut setup = scenario(&bundle, 5);
+    setup
+        .participants
+        .iter_mut()
+        .find(|participant| participant.id == SECOND_TARGET_ID)
+        .expect("second spatial target")
+        .position = GridPosition { x: 4, y: 0 };
+    for participant in &mut setup.participants {
+        for definition_id in ["action.create-fixed-hazard", "action.shift"] {
+            if !participant
+                .definition_ids
+                .iter()
+                .any(|candidate| candidate == definition_id)
+            {
+                participant.definition_ids.push(definition_id.to_owned());
+            }
+        }
+        participant.definition_ids.sort();
+    }
+    let mut session =
+        RpgAuthoritySession::from_scenario(bundle.clone(), setup.clone()).expect("spatial setup");
+    let initial = session.checkpoint().expect("spatial initial checkpoint");
+    let mut replay_entries = Vec::new();
+
+    let mut no_random = ScriptedSource::new(&session, []);
+    let (created, created_entry) = session
+        .submit_with_random_source_recorded(
+            RpgActionProposal {
+                expected_revision: 0,
+                action_id: "action.create-fixed-hazard".to_owned(),
+                actor_id: ACTOR_ID.to_owned(),
+                target_ids: vec![ACTOR_ID.to_owned()],
+                item_binding: None,
+            },
+            &mut no_random,
+        )
+        .expect("create fixed spatial source");
+    let created = accepted(created);
+    assert!(created.events.iter().any(|event| matches!(
+        event,
+        RpgDomainEvent::SpatialSourceCreated {
+            owner_id,
+            source_id,
+            instance_id,
+            definition_id,
+            included_cell_ids,
+            remaining_count: 3,
+            application_revision: 1,
+            ..
+        } if owner_id == ACTOR_ID
+            && source_id == ACTOR_ID
+            && instance_id == "fixed-hazard"
+            && definition_id == "spatial-source.fixed-hazard"
+            && included_cell_ids
+                == &[
+                    "cell-0-1",
+                    "cell-1-0",
+                    "cell-1-1",
+                    "cell-1-2",
+                    "cell-2-1",
+                ]
+    )));
+    assert!(!created.events.iter().any(|event| matches!(
+        event,
+        RpgDomainEvent::SpatialSourceTriggerEvaluated {
+            disposition: asha_rpg::RpgSpatialSourceTriggerDisposition::Applied,
+            ..
+        }
+    )));
+    replay_entries.push(created_entry);
+    let created_view = session.encounter_view();
+    assert_eq!(created_view.spatial_sources.len(), 1);
+    assert_eq!(
+        created_view.spatial_sources[0].trigger_boundaries,
+        [
+            asha_rpg::RpgSpatialSourceBoundary::Enter,
+            asha_rpg::RpgSpatialSourceBoundary::StartTurn,
+            asha_rpg::RpgSpatialSourceBoundary::EndTurn,
+            asha_rpg::RpgSpatialSourceBoundary::Exit,
+        ]
+    );
+    assert!(created_view.spatial_sources[0].trigger_evidence.is_empty());
+    let restored_created =
+        RpgAuthoritySession::restore_checkpoint(session.checkpoint().expect("spatial checkpoint"))
+            .expect("restore active spatial source");
+    assert_eq!(
+        restored_created.state_hash().expect("restored spatial hash"),
+        session.state_hash().expect("active spatial hash")
+    );
+
+    let stale_before = session.checkpoint().expect("pre-stale spatial checkpoint");
+    let mut no_random = ScriptedSource::new(&session, []);
+    let (stale, _stale_entry) = session
+        .submit_with_random_source_recorded(
+            RpgActionProposal {
+                expected_revision: 0,
+                action_id: "action.create-fixed-hazard".to_owned(),
+                actor_id: ACTOR_ID.to_owned(),
+                target_ids: vec![ACTOR_ID.to_owned()],
+                item_binding: None,
+            },
+            &mut no_random,
+        )
+        .expect("stale spatial creation is an authority outcome");
+    assert!(matches!(
+        stale,
+        RpgCommandOutcome::Rejected(ref rejection)
+            if rejection.code == "RPG_SESSION_REVISION_MISMATCH"
+    ));
+    assert_eq!(
+        session.checkpoint().expect("post-stale spatial checkpoint"),
+        stale_before
+    );
+
+    let (actor_ended, actor_end_entry) = session
+        .control_recorded(RpgTurnControlProposal {
+            expected_revision: 1,
+            actor_id: ACTOR_ID.to_owned(),
+            control: RpgTurnControl::EndTurn,
+        })
+        .expect("advance into fixed source");
+    let RpgCommandOutcome::ControlAccepted(actor_ended) = actor_ended else {
+        panic!("actor turn should advance");
+    };
+    assert!(actor_ended.events.iter().any(|event| matches!(
+        event,
+        RpgDomainEvent::SpatialSourceTriggerEvaluated {
+            boundary: asha_rpg::RpgSpatialSourceBoundary::StartTurn,
+            participant_id,
+            disposition: asha_rpg::RpgSpatialSourceTriggerDisposition::Applied,
+            ..
+        } if participant_id == FIRST_TARGET_ID
+    )));
+    assert!(actor_ended.events.iter().any(|event| matches!(
+        event,
+        RpgDomainEvent::SpatialSourceTriggerEvaluated {
+            boundary: asha_rpg::RpgSpatialSourceBoundary::EndTurn,
+            participant_id,
+            disposition: asha_rpg::RpgSpatialSourceTriggerDisposition::Inapplicable { reason },
+            ..
+        } if participant_id == ACTOR_ID && reason == "targetFilter"
+    )));
+    assert_eq!(vitality(&session.encounter_view(), FIRST_TARGET_ID), 29);
+    replay_entries.push(actor_end_entry);
+
+    let mut no_random = ScriptedSource::new(&session, []);
+    let (exited, exited_entry) = session
+        .submit_with_random_source_recorded(
+            RpgActionProposal {
+                expected_revision: 2,
+                action_id: "action.shift".to_owned(),
+                actor_id: FIRST_TARGET_ID.to_owned(),
+                target_ids: vec!["cell-3-1".to_owned()],
+                item_binding: None,
+            },
+            &mut no_random,
+        )
+        .expect("leave fixed source");
+    let exited = accepted(exited);
+    assert!(exited.events.iter().any(|event| matches!(
+        event,
+        RpgDomainEvent::SpatialSourceTriggerEvaluated {
+            boundary: asha_rpg::RpgSpatialSourceBoundary::Exit,
+            participant_id,
+            cell_id,
+            disposition: asha_rpg::RpgSpatialSourceTriggerDisposition::Applied,
+            ..
+        } if participant_id == FIRST_TARGET_ID && cell_id == "cell-2-1"
+    )));
+    assert_eq!(vitality(&session.encounter_view(), FIRST_TARGET_ID), 28);
+    replay_entries.push(exited_entry);
+
+    let (first_ended, first_end_entry) = session
+        .control_recorded(RpgTurnControlProposal {
+            expected_revision: 3,
+            actor_id: FIRST_TARGET_ID.to_owned(),
+            control: RpgTurnControl::EndTurn,
+        })
+        .expect("advance to second target");
+    assert!(matches!(
+        first_ended,
+        RpgCommandOutcome::ControlAccepted(_)
+    ));
+    replay_entries.push(first_end_entry);
+
+    let mut no_random = ScriptedSource::new(&session, []);
+    let (entered, entered_entry) = session
+        .submit_with_random_source_recorded(
+            RpgActionProposal {
+                expected_revision: 4,
+                action_id: "action.shift".to_owned(),
+                actor_id: SECOND_TARGET_ID.to_owned(),
+                target_ids: vec!["cell-2-1".to_owned()],
+                item_binding: None,
+            },
+            &mut no_random,
+        )
+        .expect("enter fixed source through intermediary cells");
+    let entered = accepted(entered);
+    assert!(entered.events.iter().any(|event| matches!(
+        event,
+        RpgDomainEvent::MovementTransition {
+            route_cell_ids,
+            ..
+        } if route_cell_ids.last().is_some_and(|cell_id| cell_id == "cell-2-1")
+    )));
+    assert!(entered.events.iter().any(|event| matches!(
+        event,
+        RpgDomainEvent::SpatialSourceTriggerEvaluated {
+            boundary: asha_rpg::RpgSpatialSourceBoundary::Enter,
+            participant_id,
+            cell_id,
+            disposition: asha_rpg::RpgSpatialSourceTriggerDisposition::Applied,
+            ..
+        } if participant_id == SECOND_TARGET_ID && cell_id == "cell-2-1"
+    )));
+    assert_eq!(vitality(&session.encounter_view(), SECOND_TARGET_ID), 29);
+    replay_entries.push(entered_entry);
+
+    let (second_ended, second_end_entry) = session
+        .control_recorded(RpgTurnControlProposal {
+            expected_revision: 5,
+            actor_id: SECOND_TARGET_ID.to_owned(),
+            control: RpgTurnControl::EndTurn,
+        })
+        .expect("expire fixed source");
+    let RpgCommandOutcome::ControlAccepted(second_ended) = second_ended else {
+        panic!("second target turn should advance");
+    };
+    assert!(second_ended.events.iter().any(|event| matches!(
+        event,
+        RpgDomainEvent::SpatialSourceTriggerEvaluated {
+            boundary: asha_rpg::RpgSpatialSourceBoundary::EndTurn,
+            participant_id,
+            disposition: asha_rpg::RpgSpatialSourceTriggerDisposition::Applied,
+            ..
+        } if participant_id == SECOND_TARGET_ID
+    )));
+    assert!(second_ended.events.iter().any(|event| matches!(
+        event,
+        RpgDomainEvent::SpatialSourceExpired {
+            instance_id,
+            ..
+        } if instance_id == "fixed-hazard"
+    )));
+    assert_eq!(vitality(&session.encounter_view(), SECOND_TARGET_ID), 28);
+    assert!(session.encounter_view().spatial_sources.is_empty());
+    replay_entries.push(second_end_entry);
+
+    let replayed =
+        RpgAuthoritySession::replay(initial, &replay_entries).expect("spatial-source replay");
+    assert_eq!(replayed.state(), session.state());
+    assert_eq!(
+        replayed.state_hash().expect("spatial replay hash"),
+        session.state_hash().expect("spatial authority hash")
+    );
+
+    let mut overlap = RpgAuthoritySession::from_scenario(bundle.clone(), setup.clone())
+        .expect("overlap spatial setup");
+    let mut no_random = ScriptedSource::new(&overlap, []);
+    let (first_created, _) = overlap
+        .submit_with_random_source_recorded(
+            RpgActionProposal {
+                expected_revision: 0,
+                action_id: "action.create-fixed-hazard".to_owned(),
+                actor_id: ACTOR_ID.to_owned(),
+                target_ids: vec![ACTOR_ID.to_owned()],
+                item_binding: None,
+            },
+            &mut no_random,
+        )
+        .expect("first overlapping source");
+    accepted(first_created);
+    let (advanced, _) = overlap
+        .control_recorded(RpgTurnControlProposal {
+            expected_revision: 1,
+            actor_id: ACTOR_ID.to_owned(),
+            control: RpgTurnControl::EndTurn,
+        })
+        .expect("advance overlap source");
+    assert!(matches!(advanced, RpgCommandOutcome::ControlAccepted(_)));
+    let mut no_random = ScriptedSource::new(&overlap, []);
+    let (second_created, _) = overlap
+        .submit_with_random_source_recorded(
+            RpgActionProposal {
+                expected_revision: 2,
+                action_id: "action.create-fixed-hazard".to_owned(),
+                actor_id: FIRST_TARGET_ID.to_owned(),
+                target_ids: vec![FIRST_TARGET_ID.to_owned()],
+                item_binding: None,
+            },
+            &mut no_random,
+        )
+        .expect("second overlapping source");
+    accepted(second_created);
+    let overlap_view = overlap.encounter_view();
+    assert_eq!(overlap_view.spatial_sources.len(), 2);
+    assert_eq!(
+        overlap_view
+            .spatial_sources
+            .iter()
+            .map(|source| (
+                source.instance_id.as_str(),
+                source.source_entity_id.as_str()
+            ))
+            .collect::<Vec<_>>(),
+        [
+            ("fixed-hazard", FIRST_TARGET_ID),
+            ("fixed-hazard", ACTOR_ID)
+        ]
+    );
+
+    let mut application_revision =
+        RpgAuthoritySession::from_scenario(bundle, setup).expect("application-revision setup");
+    let initial = application_revision
+        .checkpoint()
+        .expect("application-revision initial");
+    let target_vitality =
+        vitality(&application_revision.encounter_view(), FIRST_TARGET_ID);
+    let mut no_random = ScriptedSource::new(&application_revision, []);
+    let (created_and_moved, replay_entry) = application_revision
+        .submit_with_random_source_recorded(
+            RpgActionProposal {
+                expected_revision: 0,
+                action_id: "action.create-and-leave-hazard".to_owned(),
+                actor_id: ACTOR_ID.to_owned(),
+                target_ids: vec![FIRST_TARGET_ID.to_owned()],
+                item_binding: None,
+            },
+            &mut no_random,
+        )
+        .expect("create and leave source atomically");
+    let created_and_moved = accepted(created_and_moved);
+    assert!(created_and_moved.events.iter().any(|event| matches!(
+        event,
+        RpgDomainEvent::SpatialSourceTriggerEvaluated {
+            boundary: asha_rpg::RpgSpatialSourceBoundary::Exit,
+            participant_id,
+            disposition: asha_rpg::RpgSpatialSourceTriggerDisposition::Suppressed { reason },
+            ..
+        } if participant_id == FIRST_TARGET_ID && reason == "applicationRevision"
+    )));
+    assert_eq!(
+        vitality(&application_revision.encounter_view(), FIRST_TARGET_ID),
+        target_vitality
+    );
+    let replayed = RpgAuthoritySession::replay(initial, &[replay_entry])
+        .expect("application-revision suppression replay");
+    assert_eq!(
+        replayed.state_hash().expect("suppression replay hash"),
+        application_revision
+            .state_hash()
+            .expect("suppression authority hash")
+    );
 }
 
 fn prove_line_of_effect_projection_staleness_and_atomicity(
@@ -1623,6 +2069,8 @@ fn actor(focus: i32) -> RpgParticipantSetup {
     actor.definition_ids = vec![
         "action.burst".to_owned(),
         "action.core-attack".to_owned(),
+        "action.create-and-leave-hazard".to_owned(),
+        "action.create-fixed-hazard".to_owned(),
         "action.expose".to_owned(),
         "action.push".to_owned(),
         "action.rally".to_owned(),

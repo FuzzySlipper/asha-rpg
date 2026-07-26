@@ -47,7 +47,13 @@ change, weighted route-cost grid movement, cardinal push, bounded slide choice,
 turn-bounded modifier application, named effect
 application/removal with fixed or target-turn-end save-ends tenure, closed
 action/movement condition restrictions, and typed before-damage and
-voluntary-leave-adjacency reaction windows. Checks support attack, saving throw, generic
+voluntary-leave-adjacency reaction windows. Versioned spatial-source
+definitions add fixed Manhattan diamonds with typed target filters,
+source-aware stacking, fixed authority-relative tenure, and closed
+deterministic enter/start-turn/end-turn/exit procedures. Rust materializes
+cells, orders and executes triggers, records evidence, and owns checkpoint and
+replay state; TypeScript only declares the definition and references its
+procedures. Checks support attack, saving throw, generic
 Ruleset-owned scalar tests, heterogeneous pools, and no-roll flows. Scalar profiles declare
 one d2..d100 primary die, checked numeric domains, complete margin thresholds,
 ordered outcome bands, disjoint natural rules, and an optional contribution

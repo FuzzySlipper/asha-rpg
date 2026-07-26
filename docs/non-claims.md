@@ -30,10 +30,16 @@ budget. Slide exposes a bounded authority-owned pending route choice; push
 stops before the first unavailable cell. Forced movement never provokes. One
 closed feature registration may respond when voluntary movement leaves
 adjacency, using captured reach, line of effect, optional item binding, and an
-exclusive bounded reaction budget in the same staged transaction. Diagonal
-travel, participant footprints, pull, teleport, flying, per-step effects,
-conditional/repeated/random-composed movement, general trigger callbacks,
-ready/delay, and general cell-target semantics remain non-claims. The
+exclusive bounded reaction budget in the same staged transaction. A separate
+version-1 spatial-source contract materializes fixed Manhattan diamonds over
+authored cells and dispatches closed deterministic participant procedures at
+enter, start-turn, end-turn, and exit boundaries. Rust owns source identity,
+stacking, tenure, trigger ordering and bookkeeping, mutation, events,
+checkpoint, and replay. Diagonal travel, participant footprints, pull,
+teleport, flying, conditional/repeated/random-composed movement, general
+trigger callbacks, ready/delay, and general cell-target semantics remain
+non-claims. Moving zones, source collisions, summons, arbitrary polygons,
+recursive spatial triggers, and a general scheduler are also non-claims. The
 legacy fixed-delta `move` operation remains available only to Rulesets that do
 not opt into a route-cost movement allowance; such artifacts retain their
 older bounded-position semantics and are not part of the authored-board route
@@ -44,7 +50,7 @@ and actor-origin orthogonal lines over authored square-grid cells. Selectors
 may require the version-1 Rust square-grid supercover line-of-effect policy
 over typed Scenario obstruction facts. This is not line of sight: cones,
 arbitrary polygons, elevation, cover, concealment, vision contests, hex
-geometry, footprints, persistent auras, arbitrary topology, and
+geometry, footprints, arbitrary topology, and
 client-computed sight remain non-claims.
 
 Typed item instances and initial equipment are authority-owned setup facts.

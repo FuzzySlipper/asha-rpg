@@ -11,6 +11,7 @@ import {
   constant,
   contentPackRequest,
   contentPackSource,
+  createSpatialSource,
   defineActionDefinition,
   defineActionInvocationDefinition,
   defineActionProcedureDefinition,
@@ -21,6 +22,7 @@ import {
   defineEffectDefinition,
   defineItemDefinition,
   defineRuleset,
+  defineSpatialSourceDefinition,
   diamondArea,
   dice,
   equippedItemAttribute,
@@ -280,6 +282,129 @@ const attackProfile = rulesetScalarTestProfile(ruleset, 'attack');
 const standardBudget = rulesetActivationBudget(ruleset, 'standard');
 const bonusBudget = rulesetActivationBudget(ruleset, 'bonus');
 const reactionBudget = rulesetActivationBudget(ruleset, 'reaction');
+
+const hazardPulseProcedure = defineActionProcedureDefinition({
+  id: 'procedure.hazard-pulse',
+  ownerPackageId: packageId,
+  visibility: 'public',
+  extensionPolicy: 'sealed',
+  source: { module: sourceModule, declaration: 'hazardPulseProcedure' },
+  presentation: { label: 'Hazard pulse procedure' },
+  parameters: [] as const,
+  implementation: {
+    kind: 'inline',
+    template: {
+      targets: hostile({ range: 8 }),
+      check: noRoll(),
+      rollScope: 'none',
+      costs: [],
+      program: {
+        kind: 'atomic',
+        body: {
+          kind: 'onCheck',
+          noRoll: {
+            kind: 'operation',
+            operation: {
+              kind: 'damage',
+              parts: [
+                {
+                  id: 'damage',
+                  amount: constant(1),
+                  damageType: catalogs.references.impact,
+                  tags: ['spatial-source'],
+                },
+              ],
+            },
+          },
+        },
+      },
+    },
+  },
+});
+
+const fixedHazardSource = defineSpatialSourceDefinition({
+  id: 'spatial-source.fixed-hazard',
+  visibility: 'public',
+  extensionPolicy: 'sealed',
+  source: { module: sourceModule, declaration: 'fixedHazardSource' },
+  presentation: {
+    label: 'Fixed hazard',
+    description: 'A bounded fixed diamond with closed deterministic triggers.',
+  },
+  spatialSource: {
+    shape: { kind: 'diamond', radius: 1 },
+    targetFilter: 'hostiles',
+    stackingId: 'fixed-hazard',
+    stacking: 'independentBySource',
+    tenure: {
+      kind: 'fixed',
+      anchor: 'globalTurnTransition',
+      count: 3,
+    },
+    triggers: [
+      { boundary: 'enter', procedure: hazardPulseProcedure },
+      { boundary: 'startTurn', procedure: hazardPulseProcedure },
+      { boundary: 'endTurn', procedure: hazardPulseProcedure },
+      { boundary: 'exit', procedure: hazardPulseProcedure },
+    ],
+  },
+});
+
+const createHazardAction = action({
+  id: actionId('action.create-fixed-hazard'),
+  name: 'Create fixed hazard',
+  sourcePath: `${sourceModule}#createHazardAction`,
+  targets: ally({ range: 0 }),
+  check: noRoll(),
+  activation: activation({
+    timing: 'action',
+    costs: [{ budget: bonusBudget, amount: 1 }],
+  }),
+  program: onCheck({
+    noRoll: createSpatialSource({
+      spatialSource: { definitionId: fixedHazardSource.id },
+      instanceId: 'fixed-hazard',
+      owner: 'actor',
+      source: 'actor',
+    }),
+  }),
+});
+const createHazardDefinition = defineActionDefinition({
+  id: createHazardAction.id,
+  visibility: 'public',
+  extensionPolicy: 'sealed',
+  source: { module: sourceModule, declaration: 'createHazardAction' },
+  presentation: { label: createHazardAction.name },
+  action: createHazardAction,
+});
+
+const createAndLeaveHazardAction = action({
+  id: actionId('action.create-and-leave-hazard'),
+  name: 'Create and leave fixed hazard',
+  sourcePath: `${sourceModule}#createAndLeaveHazardAction`,
+  targets: hostile({ range: 1 }),
+  check: noRoll(),
+  activation: activation({ timing: 'action', costs: [] }),
+  program: onCheck({
+    noRoll: sequence(
+      createSpatialSource({
+        spatialSource: { definitionId: fixedHazardSource.id },
+        instanceId: 'fixed-hazard',
+        owner: 'actor',
+        source: 'actor',
+      }),
+      pushEntity({ subject: 'target', distance: 2 }),
+    ),
+  }),
+});
+const createAndLeaveHazardDefinition = defineActionDefinition({
+  id: createAndLeaveHazardAction.id,
+  visibility: 'public',
+  extensionPolicy: 'sealed',
+  source: { module: sourceModule, declaration: 'createAndLeaveHazardAction' },
+  presentation: { label: createAndLeaveHazardAction.name },
+  action: createAndLeaveHazardAction,
+});
 
 const exposedTarget = defineEffectDefinition({
   id: 'effect.exposed',
@@ -942,6 +1067,7 @@ const contentPack = defineContentPack({
   requirements: {
     operations: [
       { id: 'operation.applyEffect', version: 1 },
+      { id: 'operation.createSpatialSource', version: 1 },
       { id: 'operation.damage', version: 2 },
       { id: 'operation.heal', version: 1 },
       { id: 'operation.moveToCell', version: 1 },
@@ -955,6 +1081,7 @@ const contentPack = defineContentPack({
       { id: 'capability.position', version: 1 },
       { id: 'capability.random', version: 1 },
       { id: 'capability.resources', version: 1 },
+      { id: 'capability.spatial-sources', version: 1 },
       { id: 'capability.stats', version: 1 },
       { id: 'capability.vitality', version: 1 },
     ],
@@ -964,6 +1091,10 @@ const contentPack = defineContentPack({
     ...catalogs.definitions,
     coreAttackProcedure,
     coreAttack,
+    hazardPulseProcedure,
+    createAndLeaveHazardDefinition,
+    createHazardDefinition,
+    fixedHazardSource,
     applyConditionDefinition,
     burstDefinition,
     conditionProbeDefinition,
@@ -986,6 +1117,9 @@ const contentPack = defineContentPack({
   exports: [
     ...catalogs.definitions.map((definition) => definition.id),
     coreAttack.id,
+    createAndLeaveHazardDefinition.id,
+    createHazardDefinition.id,
+    fixedHazardSource.id,
     applyConditionDefinition.id,
     burstDefinition.id,
     conditionProbeDefinition.id,

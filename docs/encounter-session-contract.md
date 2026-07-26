@@ -158,6 +158,16 @@ generic reasons and blocker cell ids. Complete bound submissions are
 revalidated before randomness and stale, blocked, or tampered choices leave
 state, hash, revision, random position, log, positions, and vitality unchanged.
 
+A `spatialSource` definition binds one fixed Manhattan diamond, an
+all/allies/hostiles filter, source-aware stacking, fixed tenure, and a
+canonical map of enter/start-turn/end-turn/exit procedures. Creation names the
+owner and source through typed operation subjects; Rust derives the origin and
+canonical authored-cell set. Route intermediaries and turn transitions produce
+canonically ordered trigger candidates. The authority records applied,
+inapplicable, and suppressed evidence and uses the application revision plus
+per-transition keys to prevent same-transaction loops. Creation, trigger
+mutation, aging, expiry, checkpoint, and replay are one Rust-owned state path.
+
 ## Random evidence
 
 Interactive calls use a bound `RpgRandomSource`. Rust requests the exact draw,
@@ -174,9 +184,10 @@ randomness, or reapplies events.
 
 The initial board authority does not claim diagonal movement or hex topology,
 jumping/flying/pull/teleport movement, general opportunity-attack or trigger
-authoring, per-step effects,
+authoring,
 cones, arbitrary polygons, elevation, cover, concealment, vision contests,
-arbitrary-topology or client-computed sight, persistent auras, campaign
+arbitrary-topology or client-computed sight, moving zones, source collisions,
+summons, recursive spatial triggers, a general scheduler, campaign
 persistence, scripted runners, AI control, Tester configuration, class levels
 or prerequisites, calculation owners beyond attack and scalar-test profiles,
 a general condition language, or Rulebench product protocols.

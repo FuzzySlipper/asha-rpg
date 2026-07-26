@@ -19,6 +19,8 @@ The TypeScript source is
   contributions using canonical typed and untyped stacking groups;
 - fixed and target-turn-end save-ends effect tenure, actor/target effect
   contribution lanes, and closed action/movement condition restrictions;
+- one fixed-diamond spatial-source definition whose closed deterministic
+  procedure is bound independently to enter, start-turn, end-turn, and exit;
 - cost-once multiple targeting, per-target scalar results, hit/miss/critical
   branches, and a bounded critical follow-on expressed as an ordinary sequence;
 - a no-roll effect action and an unopposed healing action.
@@ -47,7 +49,11 @@ The independent Git consumer is
 8. proves canonical multiple save-ends failure and success, fixed expiry,
    restriction removal, stale option identity, duplicate active-effect
    rejection, and condition/tenure artifact tamper rejection; and
-9. replays the accepted sequences to the same state, hash, random position,
+9. creates, overlaps, restores, ages, and expires fixed spatial sources,
+   proves canonical boundary evidence over intermediary movement cells,
+   verifies application-revision suppression, and rejects shape, trigger, and
+   random-procedure tampering; and
+10. replays the accepted sequences to the same state, hash, random position,
    and log.
 
 The witness also protects the portable JSON spelling of
@@ -71,6 +77,9 @@ and one registered voluntary-leave-adjacency response through the same
 TypeScript-authored/public-Rust consumer boundary. It does not claim a full
 condition catalog, domination or control transfer, stealth/hearing,
 concentration, permanent or rest-based tenure, or arbitrary condition
-language. Pull, teleport, diagonal/hex/flying movement, general trigger
-callbacks, ready/delay, and persistent spatial sources remain owned by other
-#6251 implementation children or explicit non-claims.
+language. The spatial witness is limited to fixed Manhattan diamonds, four
+closed boundaries, deterministic procedures, typed target filters, bounded
+tenure, and source-aware stacking. Pull, teleport, diagonal/hex/flying
+movement, moving zones, source collisions, summons, arbitrary polygons,
+recursive triggers, general callbacks, and ready/delay remain explicit
+non-claims.
