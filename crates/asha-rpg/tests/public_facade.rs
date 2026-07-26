@@ -10,16 +10,16 @@ use asha_rpg::{
     RpgContributionStackingPolicy, RpgDamageResponseDisposition, RpgDamageResponsePhase,
     RpgDomainEvent, RpgInitialCapability, RpgNaturalDieEffect, RpgOutcomeBandShiftDisposition,
     RpgParticipantSetup, RpgRandomRequest, RpgRandomRequestKind, RpgRandomSourceBinding,
-    RpgRollTapeEntry, RpgRollTapeSource, RpgScalarContributionLedger, RpgScenario, RpgTeamId,
-    RpgTurnControl, RpgTurnControlProposal, RpgTurnInitialization, RpgVersionedIdentity, Ruleset,
-    RulesetActionEconomyModel, RulesetActivationBudget, RulesetActivationBudgetResetBoundary,
-    RulesetActivationTiming, RulesetCalculationSelectorContract,
-    RulesetContributionStackingGroupContract, RulesetHeterogeneousPoolProfile,
-    RulesetMarginBandRule, RulesetModels, RulesetNaturalDieRule, RulesetNumericDomain,
-    RulesetOutcomeBand, RulesetPoolAxisValue, RulesetPoolCancellation, RulesetPoolDieType,
-    RulesetPoolFace, RulesetPoolResultAxis, RulesetProvisions, RulesetScalarTestProfile,
-    RulesetSchema, RulesetValueContract, RulesetValueExpression, RulesetValueFormula,
-    RulesetValueFormulaSchema, RulesetValueKind, RulesetValueSource,
+    RpgReactionProposal, RpgRollTapeEntry, RpgRollTapeSource, RpgScalarContributionLedger,
+    RpgScenario, RpgTeamId, RpgTurnControl, RpgTurnControlProposal, RpgTurnInitialization,
+    RpgVersionedIdentity, Ruleset, RulesetActionEconomyModel, RulesetActivationBudget,
+    RulesetActivationBudgetResetBoundary, RulesetActivationTiming,
+    RulesetCalculationSelectorContract, RulesetContributionStackingGroupContract,
+    RulesetHeterogeneousPoolProfile, RulesetMarginBandRule, RulesetModels, RulesetNaturalDieRule,
+    RulesetNumericDomain, RulesetOutcomeBand, RulesetPoolAxisValue, RulesetPoolCancellation,
+    RulesetPoolDieType, RulesetPoolFace, RulesetPoolResultAxis, RulesetProvisions,
+    RulesetScalarTestProfile, RulesetSchema, RulesetValueContract, RulesetValueExpression,
+    RulesetValueFormula, RulesetValueFormulaSchema, RulesetValueKind, RulesetValueSource,
     RulesetVectorOutcomeRequirement, RulesetVectorOutcomeRule, VersionedRpgRequirement,
     EFFECT_DEFINITION_VERSION, PLAY_BUNDLE_ARTIFACT_MAJOR, PREPARED_PLAY_BUNDLE_IDENTITY,
 };
@@ -3441,6 +3441,335 @@ fn typed_damage_packets_reduce_definition_and_effect_responses_with_exact_replay
 }
 
 #[test]
+fn reaction_damage_response_identity_is_validated_over_the_final_candidate_set() {
+    let bundle = compile_prepared_play_bundle(damage_packet_prepared()).unwrap();
+    let scenario = damage_packet_scenario(&bundle);
+    let mut session = RpgAuthoritySession::from_scenario(bundle, scenario).unwrap();
+    let initial = session.checkpoint().unwrap();
+    let (pending, submit_entry) = submit_no_random(
+        &mut session,
+        RpgActionProposal {
+            expected_revision: 0,
+            action_id: "action.damage-reaction".to_owned(),
+            actor_id: "actor".to_owned(),
+            target_ids: vec!["target".to_owned()],
+            item_binding: None,
+        },
+    );
+    assert!(matches!(pending, RpgCommandOutcome::AwaitingReaction(_)));
+    let mut source = RpgRollTapeSource::new(session.scenario().random_source.clone(), Vec::new());
+    let (outcome, reaction_entry) = session
+        .react_with_random_source_recorded(
+            RpgReactionProposal {
+                expected_revision: 0,
+                reaction_id: "reaction.ward".to_owned(),
+                option_id: Some("ward".to_owned()),
+            },
+            &mut source,
+        )
+        .unwrap();
+    let RpgCommandOutcome::Accepted(receipt) = outcome else {
+        panic!("ordinary reaction reduction should be accepted: {outcome:?}");
+    };
+    let part = receipt
+        .events
+        .iter()
+        .find_map(|event| match event {
+            RpgDomainEvent::DamagePacketApplied { parts, .. } => parts.first(),
+            _ => None,
+        })
+        .expect("reaction damage packet event");
+    assert_eq!(
+        (part.original_amount, part.flat_sum, part.final_amount),
+        (5, -3, 2)
+    );
+    assert!(part.response_candidates.iter().any(|candidate| {
+        candidate.source_definition_id == "authority.reaction"
+            && candidate.source_instance_id.is_none()
+            && candidate.response_id == "pending-damage-reduction"
+            && candidate.disposition == RpgDamageResponseDisposition::Applied
+    }));
+    let replayed = RpgAuthoritySession::replay(initial, &[submit_entry, reaction_entry]).unwrap();
+    assert_eq!(
+        replayed.state_hash().unwrap(),
+        session.state_hash().unwrap()
+    );
+    assert_eq!(replayed.encounter_view().log, session.encounter_view().log);
+
+    let mut collision = damage_packet_prepared();
+    let provenance = ContentDefinitionProvenance {
+        definition_id: "authority.reaction".to_owned(),
+        package_id: "consumer.package".to_owned(),
+        package_version: "1.0.0".to_owned(),
+        source: ContentSourceLocation {
+            module: "features/reaction-collision.ts".to_owned(),
+            declaration: "authority_reaction".to_owned(),
+        },
+    };
+    let mut colliding_feature = MaterializedContentDefinition {
+        id: "authority.reaction".to_owned(),
+        kind: MaterializedContentDefinitionKind::CharacterFeature,
+        visibility: MaterializedContentVisibility::Exported,
+        extension_policy: ContentExtensionPolicy::Sealed,
+        semantic: json!({
+            "schema": {"identity": "asha.rpg.character-feature", "version": 4},
+            "contributions": [],
+            "outcomeBandShifts": [],
+            "poolContributions": [],
+            "damageResponses": [{
+                "schema": {"identity": "asha.rpg.damage-response", "version": 1},
+                "id": "pending-damage-reduction",
+                "damageTypeId": "damage.fire",
+                "requiredTags": [],
+                "bypassTags": [],
+                "effect": {"kind": "flat", "value": -1}
+            }]
+        }),
+        presentation: json!({"label": "Reaction collision"}),
+        references: vec!["damage.fire".to_owned()],
+        provenance,
+        fingerprint: String::new(),
+    };
+    colliding_feature.fingerprint =
+        materialized_definition_fingerprint(&colliding_feature).unwrap();
+    collision.materialized_definitions.push(colliding_feature);
+    let class = collision
+        .materialized_definitions
+        .iter_mut()
+        .find(|definition| definition.id == "class.damage-defender")
+        .unwrap();
+    class.semantic["featureDefinitionIds"] = json!(["authority.reaction", "feature.damage-ward"]);
+    class.references = vec![
+        "authority.reaction".to_owned(),
+        "feature.damage-ward".to_owned(),
+    ];
+    class.fingerprint = materialized_definition_fingerprint(class).unwrap();
+    collision
+        .materialized_definitions
+        .sort_by(|left, right| left.id.cmp(&right.id));
+    collision
+        .exported_roots
+        .push("authority.reaction".to_owned());
+    collision.exported_roots.sort();
+    collision.definition_provenance = collision
+        .materialized_definitions
+        .iter()
+        .map(|definition| definition.provenance.clone())
+        .collect();
+    collision.relationships = collision
+        .exported_roots
+        .iter()
+        .enumerate()
+        .map(|(order, target)| ContentRelationshipProvenance {
+            kind: ContentRelationshipKind::Exports,
+            source: "consumer.package@1.0.0".to_owned(),
+            target: target.clone(),
+            order,
+        })
+        .collect();
+    let collision_bundle = compile_prepared_play_bundle(collision).unwrap();
+    let mut collision_scenario = damage_packet_scenario(&collision_bundle);
+    collision_scenario.participants[1]
+        .feature_definition_ids
+        .push("authority.reaction".to_owned());
+    collision_scenario.participants[1]
+        .feature_definition_ids
+        .sort();
+    let mut collision_session =
+        RpgAuthoritySession::from_scenario(collision_bundle, collision_scenario).unwrap();
+    let (pending, _) = submit_no_random(
+        &mut collision_session,
+        RpgActionProposal {
+            expected_revision: 0,
+            action_id: "action.damage-reaction".to_owned(),
+            actor_id: "actor".to_owned(),
+            target_ids: vec!["target".to_owned()],
+            item_binding: None,
+        },
+    );
+    assert!(matches!(pending, RpgCommandOutcome::AwaitingReaction(_)));
+    let before_checkpoint = collision_session.checkpoint().unwrap();
+    let before_hash = collision_session.state_hash().unwrap();
+    let before_revision = collision_session.state().revision();
+    let before_random = collision_session.accepted_random_values();
+    let before_log = collision_session.encounter_view().log;
+    let before_vitality = collision_session
+        .state()
+        .entity("target")
+        .unwrap()
+        .vitality()
+        .current;
+    let mut source = RpgRollTapeSource::new(
+        collision_session.scenario().random_source.clone(),
+        Vec::new(),
+    );
+    let (outcome, _) = collision_session
+        .react_with_random_source_recorded(
+            RpgReactionProposal {
+                expected_revision: 0,
+                reaction_id: "reaction.ward".to_owned(),
+                option_id: Some("ward".to_owned()),
+            },
+            &mut source,
+        )
+        .unwrap();
+    assert!(matches!(
+        outcome,
+        RpgCommandOutcome::Rejected(ref rejection)
+            if rejection.code == "RPG_RUNTIME_DAMAGE_RESPONSE_IDENTITY_DUPLICATE"
+    ));
+    assert_eq!(
+        serde_json::to_value(collision_session.checkpoint().unwrap()).unwrap(),
+        serde_json::to_value(before_checkpoint).unwrap()
+    );
+    assert_eq!(collision_session.state_hash().unwrap(), before_hash);
+    assert_eq!(collision_session.state().revision(), before_revision);
+    assert_eq!(collision_session.accepted_random_values(), before_random);
+    assert_eq!(collision_session.encounter_view().log, before_log);
+    assert_eq!(
+        collision_session
+            .state()
+            .entity("target")
+            .unwrap()
+            .vitality()
+            .current,
+        before_vitality
+    );
+    assert!(collision_session.pending_reaction().is_some());
+}
+
+#[test]
+fn reaction_damage_response_identity_keeps_active_effect_instances_distinct() {
+    let mut prepared = damage_packet_prepared();
+    let effect = prepared
+        .materialized_definitions
+        .iter_mut()
+        .find(|definition| definition.id == "effect.damage-focus")
+        .unwrap();
+    effect.id = "authority.reaction".to_owned();
+    effect.provenance.definition_id = effect.id.clone();
+    effect.provenance.source.declaration = "authority_reaction".to_owned();
+    effect.semantic["damageResponses"] = json!([{
+        "schema": {"identity": "asha.rpg.damage-response", "version": 1},
+        "id": "pending-damage-reduction",
+        "damageTypeId": "damage.fire",
+        "requiredTags": [],
+        "bypassTags": [],
+        "effect": {"kind": "flat", "value": -1}
+    }]);
+    effect.fingerprint = materialized_definition_fingerprint(effect).unwrap();
+    let apply = prepared
+        .materialized_definitions
+        .iter_mut()
+        .find(|definition| definition.id == "action.apply-damage-focus")
+        .unwrap();
+    apply.semantic["action"]["program"]["body"]["noRoll"]["operation"]["effectDefinitionId"] =
+        json!("authority.reaction");
+    apply.references = vec!["authority.reaction".to_owned()];
+    apply.fingerprint = materialized_definition_fingerprint(apply).unwrap();
+    prepared
+        .materialized_definitions
+        .sort_by(|left, right| left.id.cmp(&right.id));
+    let exported_effect = prepared
+        .exported_roots
+        .iter_mut()
+        .find(|definition_id| definition_id.as_str() == "effect.damage-focus")
+        .unwrap();
+    *exported_effect = "authority.reaction".to_owned();
+    prepared.exported_roots.sort();
+    prepared.definition_provenance = prepared
+        .materialized_definitions
+        .iter()
+        .map(|definition| definition.provenance.clone())
+        .collect();
+    prepared.relationships = prepared
+        .exported_roots
+        .iter()
+        .enumerate()
+        .map(|(order, target)| ContentRelationshipProvenance {
+            kind: ContentRelationshipKind::Exports,
+            source: "consumer.package@1.0.0".to_owned(),
+            target: target.clone(),
+            order,
+        })
+        .collect();
+    let bundle = compile_prepared_play_bundle(prepared).unwrap();
+    let scenario = damage_packet_scenario(&bundle);
+    let mut session = RpgAuthoritySession::from_scenario(bundle, scenario).unwrap();
+    let (apply, _) = submit_no_random(
+        &mut session,
+        RpgActionProposal {
+            expected_revision: 0,
+            action_id: "action.apply-damage-focus".to_owned(),
+            actor_id: "actor".to_owned(),
+            target_ids: vec!["target".to_owned()],
+            item_binding: None,
+        },
+    );
+    assert!(matches!(apply, RpgCommandOutcome::Accepted(_)));
+    let (control, _) = session
+        .control_recorded(RpgTurnControlProposal {
+            expected_revision: 1,
+            actor_id: "target".to_owned(),
+            control: RpgTurnControl::EndTurn,
+        })
+        .unwrap();
+    assert!(matches!(control, RpgCommandOutcome::ControlAccepted(_)));
+    let (pending, _) = submit_no_random(
+        &mut session,
+        RpgActionProposal {
+            expected_revision: 2,
+            action_id: "action.damage-reaction".to_owned(),
+            actor_id: "actor".to_owned(),
+            target_ids: vec!["target".to_owned()],
+            item_binding: None,
+        },
+    );
+    assert!(matches!(pending, RpgCommandOutcome::AwaitingReaction(_)));
+    let mut source = RpgRollTapeSource::new(session.scenario().random_source.clone(), Vec::new());
+    let (outcome, _) = session
+        .react_with_random_source_recorded(
+            RpgReactionProposal {
+                expected_revision: 2,
+                reaction_id: "reaction.ward".to_owned(),
+                option_id: Some("ward".to_owned()),
+            },
+            &mut source,
+        )
+        .unwrap();
+    let RpgCommandOutcome::Accepted(receipt) = outcome else {
+        panic!("effect-instance and authority reaction identities should coexist: {outcome:?}");
+    };
+    let part = receipt
+        .events
+        .iter()
+        .find_map(|event| match event {
+            RpgDomainEvent::DamagePacketApplied { parts, .. } => parts.first(),
+            _ => None,
+        })
+        .expect("reaction damage packet event");
+    assert_eq!(
+        (part.original_amount, part.flat_sum, part.final_amount),
+        (5, -4, 1)
+    );
+    let adjacent = part
+        .response_candidates
+        .iter()
+        .filter(|candidate| {
+            candidate.source_definition_id == "authority.reaction"
+                && candidate.response_id == "pending-damage-reduction"
+        })
+        .collect::<Vec<_>>();
+    assert_eq!(adjacent.len(), 2);
+    assert!(adjacent
+        .iter()
+        .any(|candidate| candidate.source_instance_id.is_none()));
+    assert!(adjacent
+        .iter()
+        .any(|candidate| candidate.source_instance_id.is_some()));
+}
+
+#[test]
 fn typed_damage_packet_randomness_is_exact_per_part_and_atomic() {
     let bundle = compile_prepared_play_bundle(damage_packet_prepared()).unwrap();
     let action = bundle
@@ -3881,6 +4210,7 @@ fn damage_packet_scenario(bundle: &asha_rpg::CompiledPlayBundle) -> RpgScenario 
         "action.damage-bypass".to_owned(),
         "action.damage-normal".to_owned(),
         "action.damage-random".to_owned(),
+        "action.damage-reaction".to_owned(),
     ];
     RpgScenario {
         schema: RpgScenario::schema(),
@@ -6754,6 +7084,54 @@ fn damage_packet_prepared() -> PreparedPlayBundle {
         provenance: provenance(id, "actions/damage.ts"),
         fingerprint: String::new(),
     };
+    let reaction_damage_action = MaterializedContentDefinition {
+        id: "action.damage-reaction".to_owned(),
+        kind: MaterializedContentDefinitionKind::Action,
+        visibility: MaterializedContentVisibility::Exported,
+        extension_policy: ContentExtensionPolicy::Sealed,
+        semantic: json!({
+            "schema": {"identity": "asha.rpg.action-definition", "version": 1},
+            "kind": "inline",
+            "action": {
+                "id": "action.damage-reaction",
+                "name": "Reaction damage packet",
+                "sourcePath": "actions/damage.ts#reaction",
+                "tags": ["damage"],
+                "targets": {"team": "hostile", "maximumRange": 3, "maximumTargets": 1},
+                "check": {"kind": "noRoll"},
+                "rollScope": "none",
+                "costs": [],
+                "program": {"kind": "atomic", "body": {"kind": "sequence", "steps": [
+                    {
+                        "kind": "operation",
+                        "operation": {
+                            "kind": "openReaction",
+                            "reactionId": "reaction.ward",
+                            "options": [
+                                {"id": "ward", "label": "Raise ward", "damageReduction": 3}
+                            ]
+                        }
+                    },
+                    {
+                        "kind": "operation",
+                        "operation": {
+                            "kind": "damage",
+                            "parts": [{
+                                "id": "damage",
+                                "amount": {"kind": "constant", "value": 5},
+                                "damageType": "damage.fire",
+                                "tags": []
+                            }]
+                        }
+                    }
+                ]}}
+            }
+        }),
+        presentation: json!({"label": "Reaction damage packet"}),
+        references: vec!["damage.fire".to_owned()],
+        provenance: provenance("action.damage-reaction", "actions/damage.ts"),
+        fingerprint: String::new(),
+    };
     let random_damage_action = MaterializedContentDefinition {
         id: "action.damage-random".to_owned(),
         kind: MaterializedContentDefinitionKind::Action,
@@ -6944,6 +7322,7 @@ fn damage_packet_prepared() -> PreparedPlayBundle {
         apply_effect,
         damage_action("action.damage-bypass", true),
         damage_action("action.damage-normal", false),
+        reaction_damage_action,
         random_damage_action,
         class,
         damage_type("cold"),
@@ -6960,6 +7339,7 @@ fn damage_packet_prepared() -> PreparedPlayBundle {
         "action.damage-bypass".to_owned(),
         "action.damage-normal".to_owned(),
         "action.damage-random".to_owned(),
+        "action.damage-reaction".to_owned(),
         "class.damage-defender".to_owned(),
         "effect.damage-focus".to_owned(),
         "feature.damage-ward".to_owned(),
@@ -6974,6 +7354,10 @@ fn damage_packet_prepared() -> PreparedPlayBundle {
             id: "operation.damage".to_owned(),
             version: 2,
         },
+        VersionedRpgRequirement {
+            id: "operation.openReaction".to_owned(),
+            version: 1,
+        },
     ];
     prepared.ruleset.provides.capabilities = vec![
         VersionedRpgRequirement {
@@ -6982,6 +7366,10 @@ fn damage_packet_prepared() -> PreparedPlayBundle {
         },
         VersionedRpgRequirement {
             id: "capability.random".to_owned(),
+            version: 1,
+        },
+        VersionedRpgRequirement {
+            id: "capability.reactions".to_owned(),
             version: 1,
         },
         VersionedRpgRequirement {
