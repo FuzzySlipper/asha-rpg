@@ -1849,13 +1849,13 @@ mod tests {
 
     fn reaction_ruleset() -> CompiledRpgRules {
         let source = br#"{
-          "schema":{"identity":"asha.rpg.ir","major":1},
+          "schema":{"identity":"asha.rpg.ir","major":2},
           "package":{"id":"session.test","version":"1.0.0"},
           "catalogs":{"resources":["focus"],"capabilities":[
             "capability.random","capability.reactions","capability.resources","capability.vitality"
           ]},
           "requirements":[
-            {"kind":"operation","id":"operation.damage","version":1},
+            {"kind":"operation","id":"operation.damage","version":2},
             {"kind":"operation","id":"operation.openReaction","version":1},
             {"kind":"capability","id":"capability.random","version":1},
             {"kind":"capability","id":"capability.reactions","version":1},
@@ -1871,7 +1871,9 @@ mod tests {
               {"kind":"operation","operation":{"kind":"openReaction","reactionId":"reaction.ward","options":[
                 {"id":"ward","label":"Raise ward","damageReduction":3}
               ]}},
-              {"kind":"operation","operation":{"kind":"damage","amount":{"kind":"dice","count":5,"sides":4,"bonus":0},"damageType":"force"}}
+              {"kind":"operation","operation":{"kind":"damage","parts":[
+                {"id":"damage","amount":{"kind":"dice","count":5,"sides":4,"bonus":0},"damageType":"force","tags":[]}
+              ]}}
             ]}}
           }]
         }"#;
@@ -1880,7 +1882,7 @@ mod tests {
 
     fn movement_ruleset() -> CompiledRpgRules {
         let source = br#"{
-          "schema":{"identity":"asha.rpg.ir","major":1},
+          "schema":{"identity":"asha.rpg.ir","major":2},
           "package":{"id":"movement.test","version":"1.0.0"},
           "catalogs":{"capabilities":["capability.position","capability.vitality"]},
           "requirements":[
@@ -2267,10 +2269,13 @@ mod tests {
             panic!("valid reaction must resume and commit: {accepted:?}");
         };
         assert_eq!(receipt.random_consumed, 5);
-        assert!(receipt
-            .events
-            .iter()
-            .any(|event| matches!(event, RpgDomainEvent::DamageApplied { amount: 7, .. })));
+        assert!(receipt.events.iter().any(|event| matches!(
+            event,
+            RpgDomainEvent::DamagePacketApplied {
+                bounded_vitality_delta: 7,
+                ..
+            }
+        )));
         assert_eq!(session.state().revision(), 1);
         assert_eq!(
             session

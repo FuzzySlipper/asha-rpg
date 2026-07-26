@@ -1,6 +1,6 @@
 import type { ContentCatalogReference } from './catalogs.js';
 import type { RulesetValueReference } from './ruleset-builders.js';
-import type { ContentActionDefinition, ContentActionProcedureDefinition, ContentCharacterClassData, ContentCharacterClassDefinition, ContentCharacterFeatureDefinition, ContentEffectDefinition, ContentInvokedActionDefinition, ActionProcedureArgumentsFor, ActionProcedureCompositionArgumentsFor, ActionProcedureParameter, ActionProcedureParameterReference, ActionProcedureParameterType, ContentItemAttribute, ContentItemData, ContentItemDefinition, EquippedItemAttributeReference, EquippedItemBindingRequirement, PlayBundleManifest, ContentDefinition, ContentDefinitionReference, ContentParticipantProfileData, ContentParticipantProfileCapability, ContentDerivedDefinition, ContentPackDependency, ContentPackIdentity, ContentMixinApplication, ContentMixinDefinition, ContentPackManifest, ContentPatch, ContentPackRequest, ContentPackSource, ContentPolicyBinding, ContentReservedRelationship, ContentOutcomeBandShift, ContentPoolContribution, ContentScalarContribution, ContentSupportDefinition, ContentTemplateDefinition, ScenarioBoundedValue } from './play-bundle-types.js';
+import type { ContentActionDefinition, ContentActionProcedureDefinition, ContentCharacterClassData, ContentCharacterClassDefinition, ContentCharacterFeatureDefinition, ContentEffectDefinition, ContentInvokedActionDefinition, ActionProcedureArgumentsFor, ActionProcedureCompositionArgumentsFor, ActionProcedureParameter, ActionProcedureParameterReference, ActionProcedureParameterType, ContentItemAttribute, ContentItemData, ContentItemDefinition, EquippedItemAttributeReference, EquippedItemBindingRequirement, PlayBundleManifest, ContentDefinition, ContentDefinitionReference, ContentParticipantProfileData, ContentParticipantProfileCapability, ContentDerivedDefinition, ContentDamageResponse, ContentPackDependency, ContentPackIdentity, ContentMixinApplication, ContentMixinDefinition, ContentPackManifest, ContentPatch, ContentPackRequest, ContentPackSource, ContentPolicyBinding, ContentReservedRelationship, ContentOutcomeBandShift, ContentPoolContribution, ContentScalarContribution, ContentSupportDefinition, ContentTemplateDefinition, ScenarioBoundedValue } from './play-bundle-types.js';
 type OrdinaryDefinitionInput<Definition extends ContentDefinition> = Omit<Definition, 'kind' | 'lowLevelReferences'> & {
     readonly kind?: Definition['kind'];
 };
@@ -55,13 +55,15 @@ export declare function defineCharacterFeatureDefinition(input: Omit<OrdinaryDef
         readonly contributions?: readonly Omit<ContentScalarContribution, 'schema'>[];
         readonly outcomeBandShifts?: readonly Omit<ContentOutcomeBandShift, 'schema'>[];
         readonly poolContributions?: readonly Omit<ContentPoolContribution, 'schema'>[];
+        readonly damageResponses?: readonly Omit<ContentDamageResponse, 'schema'>[];
     };
 }): ContentCharacterFeatureDefinition;
 export declare function defineEffectDefinition(input: Omit<OrdinaryDefinitionInput<ContentEffectDefinition>, 'effect'> & {
-    readonly effect: Omit<ContentEffectDefinition['effect'], 'schema' | 'contributions' | 'outcomeBandShifts' | 'poolContributions'> & {
+    readonly effect: Omit<ContentEffectDefinition['effect'], 'schema' | 'contributions' | 'outcomeBandShifts' | 'poolContributions' | 'damageResponses'> & {
         readonly contributions?: readonly Omit<ContentScalarContribution, 'schema'>[];
         readonly outcomeBandShifts?: readonly Omit<ContentOutcomeBandShift, 'schema'>[];
         readonly poolContributions?: readonly Omit<ContentPoolContribution, 'schema'>[];
+        readonly damageResponses?: readonly Omit<ContentDamageResponse, 'schema'>[];
     };
 }): ContentEffectDefinition;
 export declare function defineCharacterClassDefinition(input: Omit<OrdinaryDefinitionInput<ContentCharacterClassDefinition>, 'characterClass'> & {

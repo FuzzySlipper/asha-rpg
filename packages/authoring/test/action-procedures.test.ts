@@ -122,9 +122,13 @@ const basicAttackProcedure = defineActionProcedureDefinition({
             kind: 'operation',
             operation: {
               kind: 'damage',
-              amount: actionProcedureParameterReference(damageParameter),
-              damageType:
-                actionProcedureParameterReference(damageTypeParameter),
+              parts: [{
+                id: 'damage',
+                amount: actionProcedureParameterReference(damageParameter),
+                damageType:
+                  actionProcedureParameterReference(damageTypeParameter),
+                tags: [],
+              }],
             },
           },
         },
@@ -332,7 +336,7 @@ test('inert item definitions materialize distinct Rust action variants without w
       }),
     ],
     requirements: {
-      operations: [{ id: 'operation.damage', version: 1 }],
+      operations: [{ id: 'operation.damage', version: 2 }],
       capabilities: [
         { id: 'capability.defenses', version: 1 },
         { id: 'capability.random', version: 1 },
@@ -379,7 +383,7 @@ test('inert item definitions materialize distinct Rust action variants without w
           kind: 'formulaDice',
           count: 2,
           sides: 6,
-          path: '$.action.program.body.hit.amount',
+          path: '$.action.program.body.hit.parts[0].amount',
         },
       },
       {
@@ -388,7 +392,7 @@ test('inert item definitions materialize distinct Rust action variants without w
           kind: 'formulaDice',
           count: 1,
           sides: 8,
-          path: '$.action.program.body.hit.amount',
+          path: '$.action.program.body.hit.parts[0].amount',
         },
       },
     ],
@@ -680,9 +684,13 @@ test('uninvoked exported procedures are fully validated by TypeScript and Rust',
               kind: 'operation',
               operation: {
                 kind: 'damage',
-                amount: { kind: 'constant', value: 1 },
-                damageType:
-                  actionProcedureParameterReference(damageTypeParameter),
+                parts: [{
+                  id: 'damage',
+                  amount: { kind: 'constant', value: 1 },
+                  damageType:
+                    actionProcedureParameterReference(damageTypeParameter),
+                  tags: [],
+                }],
               },
             },
           },
@@ -937,8 +945,12 @@ test('uninvoked procedures reject interacting bounded domains that exceed semant
       kind: 'operation',
       operation: {
         kind: 'damage',
-        amount: { kind: 'constant', value: 1 },
-        damageType: actionProcedureParameterReference(damageTypeParameter),
+        parts: [{
+          id: 'damage',
+          amount: { kind: 'constant', value: 1 },
+          damageType: actionProcedureParameterReference(damageTypeParameter),
+          tags: [],
+        }],
       },
     },
   );
@@ -1301,7 +1313,7 @@ function prepareUninvokedProcedure(
       ? [...damageCatalog.definitions, procedureDefinition]
       : [...damageCatalog.definitions, basicAttackProcedure];
   const requirements = {
-    operations: [{ id: 'operation.damage' as const, version: 1 }],
+    operations: [{ id: 'operation.damage' as const, version: 2 }],
     capabilities: [
       ...(ruleset.models.actionEconomy.id ===
       'action-economy.variable-activation-budgets'
@@ -1391,7 +1403,7 @@ function procedureSourcesForActions(
       }),
     ],
     requirements: {
-      operations: [{ id: 'operation.damage', version: 1 }],
+      operations: [{ id: 'operation.damage', version: 2 }],
       capabilities: [
         { id: 'capability.defenses', version: 1 },
         { id: 'capability.random', version: 1 },

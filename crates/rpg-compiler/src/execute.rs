@@ -5,16 +5,19 @@ use rpg_core::{
     RpgCapabilityMutationError, RpgCapabilityState, RpgCapabilityWorkspace,
     RpgContributionComparison, RpgContributionDisposition, RpgContributionPredicate,
     RpgContributionStackingPolicy, RpgContributionSubject, RpgContributionTeamRelation,
-    RpgContributionValueExpression, RpgDomainEvent, RpgEffectMutation, RpgHeterogeneousRandomTerm,
-    RpgHeterogeneousRandomValue, RpgIntent, RpgModifierStackingPolicy, RpgNaturalDieEffect,
-    RpgNaturalDieResolution, RpgOutcomeBandShiftDecision, RpgOutcomeBandShiftDefinition,
-    RpgOutcomeBandShiftDisposition, RpgOutcomeBandShiftLedger, RpgPoolCancellationResult,
-    RpgPoolContributionDecision, RpgPoolContributionDefinition, RpgPoolContributionEffect,
-    RpgPoolContributionLedger, RpgPoolReplacementUnit, RpgRandomEvidence, RpgRandomRequest,
-    RpgRandomRequestKind, RpgReactionActivationBudgetCost, RpgReactionDecision, RpgReactionOption,
-    RpgReactionRequest, RpgReactionUnavailable, RpgResolutionContext, RpgResolutionReceipt,
-    RpgResolutionRejection, RpgRulesetValueKind, RpgScalarContributionDecision,
-    RpgScalarContributionDefinition, RpgScalarContributionLedger, RpgTraceStep,
+    RpgContributionValueExpression, RpgDamagePartResolution, RpgDamageResponseDecision,
+    RpgDamageResponseDefinition, RpgDamageResponseDisposition, RpgDamageResponseEffect,
+    RpgDamageResponsePhase, RpgDamageResponseSchema, RpgDamageScaleStep, RpgDomainEvent,
+    RpgEffectMutation, RpgHeterogeneousRandomTerm, RpgHeterogeneousRandomValue, RpgIntent,
+    RpgModifierStackingPolicy, RpgNaturalDieEffect, RpgNaturalDieResolution,
+    RpgOutcomeBandShiftDecision, RpgOutcomeBandShiftDefinition, RpgOutcomeBandShiftDisposition,
+    RpgOutcomeBandShiftLedger, RpgPoolCancellationResult, RpgPoolContributionDecision,
+    RpgPoolContributionDefinition, RpgPoolContributionEffect, RpgPoolContributionLedger,
+    RpgPoolReplacementUnit, RpgRandomEvidence, RpgRandomRequest, RpgRandomRequestKind,
+    RpgReactionActivationBudgetCost, RpgReactionDecision, RpgReactionOption, RpgReactionRequest,
+    RpgReactionUnavailable, RpgResolutionContext, RpgResolutionReceipt, RpgResolutionRejection,
+    RpgRulesetValueKind, RpgScalarContributionDecision, RpgScalarContributionDefinition,
+    RpgScalarContributionLedger, RpgTraceStep, MAXIMUM_RPG_DAMAGE_RESPONSES,
 };
 use rpg_ir::{
     CompiledCharacterFeature, CompiledEffectDefinition, CompiledItemDefinition, RpgIrActivation,
@@ -624,6 +627,62 @@ struct Execution<'a> {
 }
 
 impl Execution<'_> {
+    fn target_active_effect_sources(
+        &self,
+        target_id: &str,
+        path: &str,
+    ) -> Result<Vec<(ActiveRpgEffect, CompiledEffectDefinition)>, RpgResolutionRejection> {
+        let entity = self.workspace.state().entity(target_id).ok_or_else(|| {
+            self.fail(
+                "RPG_RUNTIME_EFFECT_OWNER_UNKNOWN",
+                path,
+                format!("effect owner {target_id} is unavailable"),
+            )
+        })?;
+        let mut sources = Vec::new();
+        for effect in entity.effects() {
+            let definition = self.rules.effect(effect.definition_id()).ok_or_else(|| {
+                self.fail(
+                    "RPG_RUNTIME_EFFECT_DEFINITION_UNKNOWN",
+                    path,
+                    format!(
+                        "active effect {} references unavailable definition {}",
+                        effect.instance_id(),
+                        effect.definition_id()
+                    ),
+                )
+            })?;
+            if effect.definition_version() != definition.definition_version {
+                return Err(self.fail(
+                    "RPG_RUNTIME_EFFECT_DEFINITION_VERSION_MISMATCH",
+                    path,
+                    format!(
+                        "active effect {} references {}@{}, but the compiled definition is {}@{}",
+                        effect.instance_id(),
+                        effect.definition_id(),
+                        effect.definition_version(),
+                        definition.definition_id,
+                        definition.definition_version
+                    ),
+                ));
+            }
+            sources.push((effect.clone(), definition.clone()));
+        }
+        sources.sort_by(|left, right| {
+            (
+                left.0.definition_id(),
+                left.0.source_entity_id(),
+                left.0.instance_id(),
+            )
+                .cmp(&(
+                    right.0.definition_id(),
+                    right.0.source_entity_id(),
+                    right.0.instance_id(),
+                ))
+        });
+        Ok(sources)
+    }
+
     fn active_effect_sources(
         &self,
         target_id: &str,
@@ -2580,6 +2639,321 @@ impl Execution<'_> {
         }
     }
 
+    fn damage_response_sources(
+        &self,
+        target_id: &str,
+        path: &str,
+    ) -> Result<Vec<PendingDamageResponse>, RpgResolutionRejection> {
+        let target = self.workspace.state().entity(target_id).ok_or_else(|| {
+            self.fail(
+                "RPG_RUNTIME_DAMAGE_TARGET_UNKNOWN",
+                path,
+                format!("damage target {target_id} is unavailable"),
+            )
+        })?;
+        let mut pending = Vec::new();
+        for feature_id in target.character_feature_ids() {
+            let feature = self.rules.character_feature(feature_id).ok_or_else(|| {
+                self.fail(
+                    "RPG_RUNTIME_DAMAGE_RESPONSE_DEFINITION_UNKNOWN",
+                    path,
+                    format!(
+                        "target feature {feature_id} is unavailable in the compiled PlayBundle"
+                    ),
+                )
+            })?;
+            for response in &feature.damage_responses {
+                pending.push(PendingDamageResponse {
+                    source_definition_id: feature.definition_id.clone(),
+                    source_instance_id: None,
+                    definition: response.clone(),
+                });
+            }
+        }
+        for (effect, definition) in self.target_active_effect_sources(target_id, path)? {
+            for response in definition.damage_responses {
+                pending.push(PendingDamageResponse {
+                    source_definition_id: definition.definition_id.clone(),
+                    source_instance_id: Some(effect.instance_id().to_owned()),
+                    definition: response,
+                });
+            }
+        }
+        if pending.len() > MAXIMUM_RPG_DAMAGE_RESPONSES {
+            return Err(self.fail(
+                "RPG_RUNTIME_DAMAGE_RESPONSE_LIMIT_EXCEEDED",
+                path,
+                format!(
+                    "one participant may contribute at most {MAXIMUM_RPG_DAMAGE_RESPONSES} damage responses"
+                ),
+            ));
+        }
+        pending.sort_by(|left, right| left.canonical_key().cmp(&right.canonical_key()));
+        let mut identities = BTreeSet::new();
+        for candidate in &pending {
+            if !identities.insert(candidate.runtime_identity()) {
+                return Err(self.fail(
+                    "RPG_RUNTIME_DAMAGE_RESPONSE_IDENTITY_DUPLICATE",
+                    path,
+                    format!(
+                        "duplicate damage response runtime identity {}",
+                        candidate.display_key()
+                    ),
+                ));
+            }
+        }
+        Ok(pending)
+    }
+
+    fn resolve_damage_packet(
+        &mut self,
+        parts: &[rpg_ir::RpgIrDamagePart],
+        path: &str,
+    ) -> Result<(), RpgResolutionRejection> {
+        let target_id = self.target_id(path)?;
+        let base_responses =
+            self.damage_response_sources(&target_id, &format!("{path}.responseCandidates"))?;
+        let mut resolutions = Vec::with_capacity(parts.len());
+        let mut original_packet_sum = 0_i64;
+        let mut adjusted_packet_sum = 0_i64;
+        for (index, part) in parts.iter().enumerate() {
+            let part_path = format!("{path}.parts[{index}]");
+            let original_amount =
+                self.eval_nonnegative_formula(&part.amount, &format!("{part_path}.amount"))?;
+            original_packet_sum = original_packet_sum
+                .checked_add(i64::from(original_amount))
+                .ok_or_else(|| {
+                    self.fail(
+                        "RPG_RUNTIME_DAMAGE_PACKET_OVERFLOW",
+                        path,
+                        "original damage packet sum overflowed",
+                    )
+                })?;
+
+            let mut responses = base_responses.clone();
+            if index == 0 && self.pending_damage_reduction > 0 {
+                let value = i32::try_from(self.pending_damage_reduction)
+                    .unwrap_or(i32::MAX)
+                    .saturating_neg();
+                responses.push(PendingDamageResponse {
+                    source_definition_id: "authority.reaction".to_owned(),
+                    source_instance_id: None,
+                    definition: RpgDamageResponseDefinition {
+                        schema: RpgDamageResponseSchema {
+                            identity: "asha.rpg.damage-response".to_owned(),
+                            version: 1,
+                        },
+                        id: "pending-damage-reduction".to_owned(),
+                        damage_type_id: part.damage_type.clone(),
+                        required_tags: Vec::new(),
+                        bypass_tags: Vec::new(),
+                        effect: RpgDamageResponseEffect::Flat { value },
+                    },
+                });
+                responses.sort_by(|left, right| left.canonical_key().cmp(&right.canonical_key()));
+            }
+
+            let eligible = responses
+                .iter()
+                .map(|candidate| {
+                    if candidate.definition.damage_type_id != part.damage_type {
+                        return DamageResponseEligibility::Inapplicable(
+                            "damageTypeMismatch".to_owned(),
+                        );
+                    }
+                    if let Some(tag) = candidate
+                        .definition
+                        .required_tags
+                        .iter()
+                        .find(|tag| part.tags.binary_search(tag).is_err())
+                    {
+                        return DamageResponseEligibility::Inapplicable(format!(
+                            "requiredTagMissing:{tag}"
+                        ));
+                    }
+                    if let Some(tag) = candidate
+                        .definition
+                        .bypass_tags
+                        .iter()
+                        .find(|tag| part.tags.binary_search(tag).is_ok())
+                    {
+                        return DamageResponseEligibility::Bypassed(tag.clone());
+                    }
+                    DamageResponseEligibility::Eligible
+                })
+                .collect::<Vec<_>>();
+            let immunity_applies = responses.iter().zip(&eligible).any(|(candidate, status)| {
+                matches!(candidate.definition.effect, RpgDamageResponseEffect::Immune)
+                    && matches!(status, DamageResponseEligibility::Eligible)
+            });
+
+            let mut decisions = Vec::with_capacity(responses.len());
+            let mut flat_sum = 0_i64;
+            for (candidate, status) in responses.iter().zip(&eligible) {
+                let disposition = match status {
+                    DamageResponseEligibility::Inapplicable(reason) => {
+                        RpgDamageResponseDisposition::Inapplicable {
+                            reason: reason.clone(),
+                        }
+                    }
+                    DamageResponseEligibility::Bypassed(tag) => {
+                        RpgDamageResponseDisposition::Suppressed {
+                            reason: format!("bypassed:{tag}"),
+                        }
+                    }
+                    DamageResponseEligibility::Eligible
+                        if immunity_applies
+                            && !matches!(
+                                candidate.definition.effect,
+                                RpgDamageResponseEffect::Immune
+                            ) =>
+                    {
+                        RpgDamageResponseDisposition::Suppressed {
+                            reason: "immunity".to_owned(),
+                        }
+                    }
+                    DamageResponseEligibility::Eligible => {
+                        if let RpgDamageResponseEffect::Flat { value } = candidate.definition.effect
+                        {
+                            flat_sum = flat_sum.checked_add(i64::from(value)).ok_or_else(|| {
+                                self.fail(
+                                    "RPG_RUNTIME_DAMAGE_FLAT_OVERFLOW",
+                                    &part_path,
+                                    "eligible flat damage responses overflowed",
+                                )
+                            })?;
+                        }
+                        RpgDamageResponseDisposition::Applied
+                    }
+                };
+                decisions.push(candidate.decision(disposition));
+            }
+
+            let (after_flat_before_clamp, after_flat, scale_steps, final_amount) =
+                if immunity_applies {
+                    (0, 0, Vec::new(), 0)
+                } else {
+                    let before_clamp = i64::from(original_amount)
+                        .checked_add(flat_sum)
+                        .ok_or_else(|| {
+                            self.fail(
+                                "RPG_RUNTIME_DAMAGE_FLAT_OVERFLOW",
+                                &part_path,
+                                "damage amount plus aggregate flat response overflowed",
+                            )
+                        })?;
+                    let after_flat = before_clamp.max(0);
+                    let mut current = after_flat;
+                    let mut scale_steps = Vec::new();
+                    for (candidate, status) in responses.iter().zip(&eligible) {
+                        let RpgDamageResponseEffect::Scale {
+                            numerator,
+                            denominator,
+                        } = candidate.definition.effect
+                        else {
+                            continue;
+                        };
+                        if !matches!(status, DamageResponseEligibility::Eligible) {
+                            continue;
+                        }
+                        let multiplied =
+                            current.checked_mul(i64::from(numerator)).ok_or_else(|| {
+                                self.fail(
+                                    "RPG_RUNTIME_DAMAGE_SCALE_OVERFLOW",
+                                    &part_path,
+                                    format!(
+                                        "damage scale {} overflowed checked multiplication",
+                                        candidate.display_key()
+                                    ),
+                                )
+                            })?;
+                        let after_floor = multiplied / i64::from(denominator);
+                        scale_steps.push(RpgDamageScaleStep {
+                            source_definition_id: candidate.source_definition_id.clone(),
+                            source_instance_id: candidate.source_instance_id.clone(),
+                            response_id: candidate.definition.id.clone(),
+                            numerator,
+                            denominator,
+                            before: current,
+                            multiplied,
+                            after_floor,
+                        });
+                        current = after_floor;
+                    }
+                    (before_clamp, after_flat, scale_steps, current)
+                };
+            adjusted_packet_sum =
+                adjusted_packet_sum
+                    .checked_add(final_amount)
+                    .ok_or_else(|| {
+                        self.fail(
+                            "RPG_RUNTIME_DAMAGE_PACKET_OVERFLOW",
+                            path,
+                            "adjusted damage packet sum overflowed",
+                        )
+                    })?;
+            resolutions.push(RpgDamagePartResolution {
+                part_id: part.id.clone(),
+                target_id: target_id.clone(),
+                damage_type_id: part.damage_type.clone(),
+                tags: part.tags.clone(),
+                random_evidence_path: format!("{part_path}.amount"),
+                original_amount,
+                response_candidates: decisions,
+                flat_sum,
+                after_flat_before_clamp,
+                after_flat,
+                scale_steps,
+                final_amount,
+            });
+        }
+
+        let bounded_vitality_delta =
+            i32::try_from(adjusted_packet_sum.clamp(0, i64::from(i32::MAX)))
+                .expect("clamped damage fits the vitality mutation domain");
+        let before_vitality = self
+            .workspace
+            .state()
+            .entity(&target_id)
+            .ok_or_else(|| {
+                self.fail(
+                    "RPG_RUNTIME_DAMAGE_TARGET_UNKNOWN",
+                    path,
+                    format!("damage target {target_id} is unavailable"),
+                )
+            })?
+            .vitality()
+            .current;
+        let after_vitality = self
+            .workspace
+            .vitality_owner()
+            .apply_damage(&target_id, bounded_vitality_delta)
+            .map_err(|error| self.mutation_rejection(error, path))?;
+        let actual_vitality_delta = before_vitality
+            .checked_sub(after_vitality)
+            .expect("damage owner never increases vitality");
+        self.pending_damage_reduction = 0;
+        self.events.push(RpgDomainEvent::DamagePacketApplied {
+            source_id: self.intent.actor_id.clone(),
+            target_id: target_id.clone(),
+            parts: resolutions,
+            original_packet_sum,
+            adjusted_packet_sum,
+            bounded_vitality_delta,
+            actual_vitality_delta,
+            before_vitality,
+            after_vitality,
+        });
+        self.trace.push(RpgTraceStep {
+            path: path.to_owned(),
+            code: "RPG_DAMAGE_PACKET_RESOLVED".to_owned(),
+            detail: format!(
+                "{original_packet_sum} original, {adjusted_packet_sum} adjusted, {actual_vitality_delta} applied to {target_id}"
+            ),
+        });
+        Ok(())
+    }
+
     fn execute_operation(
         &mut self,
         operation: &CompiledOperation,
@@ -2616,29 +2990,7 @@ impl Execution<'_> {
             ));
         }
         match &operation.declaration {
-            RpgIrOperation::Damage {
-                amount,
-                damage_type,
-            } => {
-                let target_id = self.target_id(path)?;
-                let requested_amount =
-                    self.eval_nonnegative_formula(amount, &format!("{path}.amount"))?;
-                let reduction = i32::try_from(self.pending_damage_reduction).unwrap_or(i32::MAX);
-                let amount = requested_amount.saturating_sub(reduction).max(0);
-                self.pending_damage_reduction = 0;
-                let remaining_vitality = self
-                    .workspace
-                    .vitality_owner()
-                    .apply_damage(&target_id, amount)
-                    .map_err(|error| self.mutation_rejection(error, path))?;
-                self.events.push(RpgDomainEvent::DamageApplied {
-                    source_id: self.intent.actor_id.clone(),
-                    target_id,
-                    amount,
-                    damage_type: damage_type.clone(),
-                    remaining_vitality,
-                });
-            }
+            RpgIrOperation::Damage { parts } => self.resolve_damage_packet(parts, path)?,
             RpgIrOperation::Heal { amount } => {
                 let target_id = self.target_id(path)?;
                 let amount = self.eval_nonnegative_formula(amount, &format!("{path}.amount"))?;
@@ -3545,6 +3897,61 @@ impl PendingOutcomeBandShift {
             self.definition.id
         )
     }
+}
+
+#[derive(Debug, Clone)]
+struct PendingDamageResponse {
+    source_definition_id: String,
+    source_instance_id: Option<String>,
+    definition: RpgDamageResponseDefinition,
+}
+
+impl PendingDamageResponse {
+    fn canonical_key(&self) -> (RpgDamageResponsePhase, &str, &str, &str) {
+        (
+            self.definition.effect.phase(),
+            self.source_definition_id.as_str(),
+            self.source_instance_id.as_deref().unwrap_or(""),
+            self.definition.id.as_str(),
+        )
+    }
+
+    fn runtime_identity(&self) -> (String, String, String) {
+        (
+            self.source_definition_id.clone(),
+            self.source_instance_id.clone().unwrap_or_default(),
+            self.definition.id.clone(),
+        )
+    }
+
+    fn display_key(&self) -> String {
+        format!(
+            "{}#{}:{}",
+            self.source_definition_id,
+            self.source_instance_id.as_deref().unwrap_or("-"),
+            self.definition.id
+        )
+    }
+
+    fn decision(&self, disposition: RpgDamageResponseDisposition) -> RpgDamageResponseDecision {
+        RpgDamageResponseDecision {
+            source_definition_id: self.source_definition_id.clone(),
+            source_instance_id: self.source_instance_id.clone(),
+            response_id: self.definition.id.clone(),
+            phase: self.definition.effect.phase(),
+            damage_type_id: self.definition.damage_type_id.clone(),
+            required_tags: self.definition.required_tags.clone(),
+            bypass_tags: self.definition.bypass_tags.clone(),
+            effect: self.definition.effect.clone(),
+            disposition,
+        }
+    }
+}
+
+enum DamageResponseEligibility {
+    Eligible,
+    Inapplicable(String),
+    Bypassed(String),
 }
 
 #[derive(Debug, Clone)]

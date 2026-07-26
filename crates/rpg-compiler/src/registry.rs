@@ -42,13 +42,13 @@ pub struct RpgCapabilityRegistration {
 const REGISTRATIONS: &[RpgOperationRegistration] = &[
     RpgOperationRegistration {
         id: "operation.damage",
-        version: 1,
+        version: 2,
         reads: &[RpgCapabilityId::Vitality],
         mutation_owner: RpgCapabilityId::Vitality,
-        validation_behavior: "Evaluate a bounded amount and require the vitality owner to accept the target transition.",
-        accepted_events: &["DamageApplied"],
-        trace_behavior: "Record the operation path, evaluated amount, and committed vitality transition.",
-        replay_implications: "Replay consumes the same formula randomness and verifies the accepted DamageApplied event.",
+        validation_behavior: "Evaluate a bounded typed packet, canonically reduce target definition and effect responses, and require the vitality owner to accept one target transition.",
+        accepted_events: &["DamagePacketApplied"],
+        trace_behavior: "Record exact per-part response decisions, flat aggregation, scale floors, packet bounds, and the committed vitality transition.",
+        replay_implications: "Replay consumes each part's exact formula randomness and verifies the structured DamagePacketApplied event.",
     },
     RpgOperationRegistration {
         id: "operation.heal",
@@ -233,7 +233,7 @@ mod tests {
             reads: &[RpgCapabilityId::Vitality],
             mutation_owner: RpgCapabilityId::Resources,
             validation_behavior: "test registration",
-            accepted_events: &["DamageApplied"],
+            accepted_events: &["DamagePacketApplied"],
             trace_behavior: "test registration",
             replay_implications: "test registration",
         };

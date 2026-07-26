@@ -1,9 +1,11 @@
 use std::collections::{BTreeMap, BTreeSet};
 
 use rpg_core::{
-    RpgContributionPredicate, RpgContributionValueExpression, RpgNaturalDieEffect,
-    RpgOutcomeBandShiftDefinition, RpgPoolContributionDefinition, RpgPoolContributionEffect,
-    RpgRulesetValueKind, RpgScalarContributionDefinition,
+    RpgContributionPredicate, RpgContributionValueExpression, RpgDamageResponseDefinition,
+    RpgDamageResponseEffect, RpgNaturalDieEffect, RpgOutcomeBandShiftDefinition,
+    RpgPoolContributionDefinition, RpgPoolContributionEffect, RpgRulesetValueKind,
+    RpgScalarContributionDefinition, MAXIMUM_RPG_DAMAGE_RESPONSES,
+    MAXIMUM_RPG_DAMAGE_SCALE_COMPONENT, MAXIMUM_RPG_DAMAGE_TAGS,
 };
 use rpg_ir::{
     ActionProcedureImplementation, ActionProcedureParameter, CompiledCharacterClass,
@@ -106,6 +108,8 @@ const OUTCOME_BAND_SHIFT_IDENTITY: &str = "asha.rpg.outcome-band-shift";
 const OUTCOME_BAND_SHIFT_VERSION: u32 = 1;
 const POOL_CONTRIBUTION_IDENTITY: &str = "asha.rpg.pool-contribution";
 const POOL_CONTRIBUTION_VERSION: u32 = 1;
+const DAMAGE_RESPONSE_IDENTITY: &str = "asha.rpg.damage-response";
+const DAMAGE_RESPONSE_VERSION: u32 = 1;
 
 #[derive(Debug, Clone, PartialEq, Eq, PartialOrd, Ord)]
 pub struct RulesetValueKey {
@@ -1685,6 +1689,12 @@ fn compile_character_features(
 ) -> Result<Vec<CompiledCharacterFeature>, RpgCompileFailure> {
     let mut diagnostics = Vec::new();
     let mut features = Vec::new();
+    let definitions = prepared
+        .materialized_definitions
+        .iter()
+        .map(|definition| (definition.id.as_str(), definition))
+        .collect::<BTreeMap<_, _>>();
+    let ruleset_catalogs = ruleset_catalogs(&prepared.ruleset);
     for (definition_index, definition) in prepared.materialized_definitions.iter().enumerate() {
         if definition.kind != MaterializedContentDefinitionKind::CharacterFeature {
             continue;
@@ -1698,7 +1708,7 @@ fn compile_character_features(
                 "character features are sealed in the current semantic contract",
             ));
         }
-        let feature = match serde_json::from_value::<MaterializedCharacterFeatureData>(
+        let mut feature = match serde_json::from_value::<MaterializedCharacterFeatureData>(
             definition.semantic.clone(),
         ) {
             Ok(feature) => feature,
@@ -1725,9 +1735,11 @@ fn compile_character_features(
         if feature.contributions.len() > MAX_CHARACTER_FEATURE_CONTRIBUTIONS
             || feature.outcome_band_shifts.len() > MAX_CHARACTER_FEATURE_CONTRIBUTIONS
             || feature.pool_contributions.len() > MAX_CHARACTER_FEATURE_CONTRIBUTIONS
+            || feature.damage_responses.len() > MAXIMUM_RPG_DAMAGE_RESPONSES
             || feature.contributions.len()
                 + feature.outcome_band_shifts.len()
                 + feature.pool_contributions.len()
+                + feature.damage_responses.len()
                 == 0
         {
             diagnostics.push(RpgDiagnostic::error(
@@ -1735,7 +1747,7 @@ fn compile_character_features(
                 "CHARACTER_FEATURE_CONTRIBUTIONS_INVALID",
                 format!("{path}.semantic"),
                 format!(
-                    "character features require at least one and at most {MAX_CHARACTER_FEATURE_CONTRIBUTIONS} entries in each typed contribution family"
+                    "character features require at least one typed entry, at most {MAX_CHARACTER_FEATURE_CONTRIBUTIONS} roll contributions in each family, and at most {MAXIMUM_RPG_DAMAGE_RESPONSES} damage responses"
                 ),
             ));
         }
@@ -1760,6 +1772,19 @@ fn compile_character_features(
             &format!("{path}.semantic.poolContributions"),
             &mut diagnostics,
         );
+        resolve_damage_response_catalogs(
+            &mut feature.damage_responses,
+            definition,
+            &definitions,
+            &ruleset_catalogs,
+            &format!("{path}.semantic.damageResponses"),
+            &mut diagnostics,
+        );
+        validate_damage_responses(
+            &feature.damage_responses,
+            &format!("{path}.semantic.damageResponses"),
+            &mut diagnostics,
+        );
         let label = required_definition_label(
             definition,
             definition_index,
@@ -1778,6 +1803,7 @@ fn compile_character_features(
             contributions: feature.contributions,
             outcome_band_shifts: feature.outcome_band_shifts,
             pool_contributions: feature.pool_contributions,
+            damage_responses: feature.damage_responses,
         });
     }
     if diagnostics.is_empty() {
@@ -1788,6 +1814,124 @@ fn compile_character_features(
     }
 }
 
+fn resolve_damage_response_catalogs(
+    responses: &mut [RpgDamageResponseDefinition],
+    source_definition: &MaterializedContentDefinition,
+    definitions: &BTreeMap<&str, &MaterializedContentDefinition>,
+    ruleset_catalogs: &RulesetCatalogs,
+    path: &str,
+    diagnostics: &mut Vec<RpgDiagnostic>,
+) {
+    for (index, response) in responses.iter_mut().enumerate() {
+        resolve_catalog_reference(
+            &mut response.damage_type_id,
+            CatalogReferenceKind::DAMAGE_TYPE,
+            source_definition,
+            definitions,
+            ruleset_catalogs,
+            &format!("{path}[{index}].damageTypeId"),
+            diagnostics,
+        );
+    }
+}
+
+fn validate_damage_responses(
+    responses: &[RpgDamageResponseDefinition],
+    path: &str,
+    diagnostics: &mut Vec<RpgDiagnostic>,
+) {
+    if responses.len() > MAXIMUM_RPG_DAMAGE_RESPONSES {
+        diagnostics.push(RpgDiagnostic::error(
+            RpgDiagnosticStage::Semantics,
+            "DAMAGE_RESPONSE_SOURCE_LIMIT_EXCEEDED",
+            path,
+            format!(
+                "one definition may declare at most {MAXIMUM_RPG_DAMAGE_RESPONSES} damage responses"
+            ),
+        ));
+    }
+    let mut previous_id = None::<&str>;
+    for (index, response) in responses.iter().enumerate() {
+        let response_path = format!("{path}[{index}]");
+        if response.schema.identity != DAMAGE_RESPONSE_IDENTITY
+            || response.schema.version != DAMAGE_RESPONSE_VERSION
+        {
+            diagnostics.push(RpgDiagnostic::error(
+                RpgDiagnosticStage::Compatibility,
+                "DAMAGE_RESPONSE_SCHEMA_UNSUPPORTED",
+                format!("{response_path}.schema"),
+                format!("expected {DAMAGE_RESPONSE_IDENTITY}@{DAMAGE_RESPONSE_VERSION}"),
+            ));
+        }
+        if !valid_identifier(&response.id)
+            || previous_id.is_some_and(|previous| previous >= response.id.as_str())
+        {
+            diagnostics.push(RpgDiagnostic::error(
+                RpgDiagnosticStage::Artifact,
+                "DAMAGE_RESPONSES_NOT_CANONICAL",
+                format!("{response_path}.id"),
+                "damage response identities must be unique sorted portable identifiers",
+            ));
+        }
+        previous_id = Some(&response.id);
+        if !valid_identifier(&response.damage_type_id) {
+            diagnostics.push(RpgDiagnostic::error(
+                RpgDiagnosticStage::References,
+                "DAMAGE_RESPONSE_TYPE_INVALID",
+                format!("{response_path}.damageTypeId"),
+                "damage response type must resolve to a portable Content Pack damage type",
+            ));
+        }
+        for (field, tags) in [
+            ("requiredTags", &response.required_tags),
+            ("bypassTags", &response.bypass_tags),
+        ] {
+            if tags.len() > MAXIMUM_RPG_DAMAGE_TAGS {
+                diagnostics.push(RpgDiagnostic::error(
+                    RpgDiagnosticStage::Semantics,
+                    "DAMAGE_RESPONSE_TAG_LIMIT_EXCEEDED",
+                    format!("{response_path}.{field}"),
+                    format!(
+                        "one damage response may declare at most {MAXIMUM_RPG_DAMAGE_TAGS} {field}"
+                    ),
+                ));
+            }
+            let mut previous_tag = None::<&str>;
+            for (tag_index, tag) in tags.iter().enumerate() {
+                if !valid_identifier(tag)
+                    || previous_tag.is_some_and(|previous| previous >= tag.as_str())
+                {
+                    diagnostics.push(RpgDiagnostic::error(
+                        RpgDiagnosticStage::Artifact,
+                        "DAMAGE_RESPONSE_TAGS_NOT_CANONICAL",
+                        format!("{response_path}.{field}[{tag_index}]"),
+                        "damage response tags must be unique sorted portable identifiers",
+                    ));
+                }
+                previous_tag = Some(tag);
+            }
+        }
+        if let RpgDamageResponseEffect::Scale {
+            numerator,
+            denominator,
+        } = response.effect
+        {
+            if !(1..=MAXIMUM_RPG_DAMAGE_SCALE_COMPONENT).contains(&numerator)
+                || !(1..=MAXIMUM_RPG_DAMAGE_SCALE_COMPONENT).contains(&denominator)
+            {
+                diagnostics.push(RpgDiagnostic::error(
+                    RpgDiagnosticStage::Semantics,
+                    "DAMAGE_RESPONSE_SCALE_INVALID",
+                    format!("{response_path}.effect"),
+                    format!(
+                        "scale numerator and denominator must be within 1..={MAXIMUM_RPG_DAMAGE_SCALE_COMPONENT}"
+                    ),
+                ));
+            }
+        }
+    }
+}
+
 fn compile_effects(
     prepared: &PreparedPlayBundle,
 ) -> Result<Vec<CompiledEffectDefinition>, RpgCompileFailure> {
@@ -1795,6 +1939,12 @@ fn compile_effects(
     let mut effects = Vec::new();
     let mut package_counts = BTreeMap::<&str, usize>::new();
     let mut stacking_contracts = BTreeMap::new();
+    let definitions = prepared
+        .materialized_definitions
+        .iter()
+        .map(|definition| (definition.id.as_str(), definition))
+        .collect::<BTreeMap<_, _>>();
+    let ruleset_catalogs = ruleset_catalogs(&prepared.ruleset);
     for (definition_index, definition) in prepared.materialized_definitions.iter().enumerate() {
         if definition.kind != MaterializedContentDefinitionKind::Effect {
             continue;
@@ -1811,7 +1961,7 @@ fn compile_effects(
                 "effect definitions are sealed in the current semantic contract",
             ));
         }
-        let effect = match serde_json::from_value::<MaterializedEffectDefinitionData>(
+        let mut effect = match serde_json::from_value::<MaterializedEffectDefinitionData>(
             definition.semantic.clone(),
         ) {
             Ok(effect) => effect,
@@ -1882,13 +2032,16 @@ fn compile_effects(
             .len()
             .saturating_add(effect.outcome_band_shifts.len())
             .saturating_add(effect.pool_contributions.len());
-        if contribution_count == 0 || contribution_count > MAX_EFFECT_CONTRIBUTIONS {
+        if (contribution_count == 0 && effect.damage_responses.is_empty())
+            || contribution_count > MAX_EFFECT_CONTRIBUTIONS
+            || effect.damage_responses.len() > MAXIMUM_RPG_DAMAGE_RESPONSES
+        {
             diagnostics.push(RpgDiagnostic::error(
                 RpgDiagnosticStage::Semantics,
                 "EFFECT_CONTRIBUTIONS_INVALID",
                 format!("{path}.semantic"),
                 format!(
-                    "effect definitions require 1..={MAX_EFFECT_CONTRIBUTIONS} total typed contributions"
+                    "effect definitions require at least one typed entry, at most {MAX_EFFECT_CONTRIBUTIONS} roll contributions, and at most {MAXIMUM_RPG_DAMAGE_RESPONSES} damage responses"
                 ),
             ));
         }
@@ -1911,6 +2064,19 @@ fn compile_effects(
             prepared,
             definition,
             &format!("{path}.semantic.poolContributions"),
+            &mut diagnostics,
+        );
+        resolve_damage_response_catalogs(
+            &mut effect.damage_responses,
+            definition,
+            &definitions,
+            &ruleset_catalogs,
+            &format!("{path}.semantic.damageResponses"),
+            &mut diagnostics,
+        );
+        validate_damage_responses(
+            &effect.damage_responses,
+            &format!("{path}.semantic.damageResponses"),
             &mut diagnostics,
         );
         let label = required_definition_label(
@@ -1938,6 +2104,7 @@ fn compile_effects(
             contributions: effect.contributions,
             outcome_band_shifts: effect.outcome_band_shifts,
             pool_contributions: effect.pool_contributions,
+            damage_responses: effect.damage_responses,
         });
     }
     for (package_id, count) in package_counts {
@@ -2906,6 +3073,12 @@ fn validate_action_contribution_contracts(
             &format!("$.actions[{index}].program"),
             &mut diagnostics,
         );
+        validate_damage_packet_contracts(
+            &action.program,
+            ruleset,
+            &format!("$.actions[{index}].program"),
+            &mut diagnostics,
+        );
         match &action.check {
             RpgIrCheck::Attack {
                 contribution_selector: Some(selector),
@@ -3215,6 +3388,233 @@ fn validate_action_contribution_contracts(
         Ok(())
     } else {
         Err(RpgCompileFailure { diagnostics })
+    }
+}
+
+fn validate_damage_packet_contracts(
+    program: &RpgIrProgram,
+    ruleset: &Ruleset,
+    path: &str,
+    diagnostics: &mut Vec<RpgDiagnostic>,
+) {
+    match program {
+        RpgIrProgram::Operation {
+            operation: RpgIrOperation::Damage { parts },
+        } => {
+            let mut maximum_packet = 0_i64;
+            for (index, part) in parts.iter().enumerate() {
+                let amount_path = format!("{path}.operation.parts[{index}].amount");
+                let Some((minimum, maximum)) =
+                    damage_formula_bounds(&part.amount, ruleset, &amount_path, diagnostics)
+                else {
+                    continue;
+                };
+                if minimum < 0 {
+                    diagnostics.push(RpgDiagnostic::error(
+                        RpgDiagnosticStage::Semantics,
+                        "RPG_DAMAGE_AMOUNT_POSSIBLY_NEGATIVE",
+                        &amount_path,
+                        format!(
+                            "damage part {} has possible amount range {minimum}..={maximum}",
+                            part.id
+                        ),
+                    ));
+                }
+                if maximum > i64::from(i32::MAX) {
+                    diagnostics.push(RpgDiagnostic::error(
+                        RpgDiagnosticStage::Semantics,
+                        "RPG_DAMAGE_AMOUNT_OUT_OF_RANGE",
+                        &amount_path,
+                        format!(
+                            "damage part {} maximum {maximum} exceeds the signed authority amount domain",
+                            part.id
+                        ),
+                    ));
+                }
+                match maximum_packet.checked_add(maximum) {
+                    Some(next) => maximum_packet = next,
+                    None => diagnostics.push(RpgDiagnostic::error(
+                        RpgDiagnosticStage::Semantics,
+                        "RPG_DAMAGE_PACKET_POSSIBLE_OVERFLOW",
+                        path,
+                        "damage packet maximum overflows the checked aggregate domain",
+                    )),
+                }
+            }
+        }
+        RpgIrProgram::Operation { .. } => {}
+        RpgIrProgram::Sequence { steps } => {
+            for (index, step) in steps.iter().enumerate() {
+                validate_damage_packet_contracts(
+                    step,
+                    ruleset,
+                    &format!("{path}.steps[{index}]"),
+                    diagnostics,
+                );
+            }
+        }
+        RpgIrProgram::When {
+            then, otherwise, ..
+        } => {
+            validate_damage_packet_contracts(then, ruleset, &format!("{path}.then"), diagnostics);
+            if let Some(otherwise) = otherwise {
+                validate_damage_packet_contracts(
+                    otherwise,
+                    ruleset,
+                    &format!("{path}.otherwise"),
+                    diagnostics,
+                );
+            }
+        }
+        RpgIrProgram::Repeat { body, .. }
+        | RpgIrProgram::ForEachTarget { body, .. }
+        | RpgIrProgram::Atomic { body } => {
+            validate_damage_packet_contracts(body, ruleset, &format!("{path}.body"), diagnostics)
+        }
+        RpgIrProgram::OnCheck {
+            hit,
+            miss,
+            saved,
+            failed,
+            no_roll,
+        } => {
+            for (branch, branch_name) in [
+                (hit, "hit"),
+                (miss, "miss"),
+                (saved, "saved"),
+                (failed, "failed"),
+                (no_roll, "noRoll"),
+            ] {
+                if let Some(branch) = branch {
+                    validate_damage_packet_contracts(
+                        branch,
+                        ruleset,
+                        &format!("{path}.{branch_name}"),
+                        diagnostics,
+                    );
+                }
+            }
+        }
+        RpgIrProgram::OnOutcome { branches, default } => {
+            for (branch_id, branch) in branches {
+                validate_damage_packet_contracts(
+                    branch,
+                    ruleset,
+                    &format!("{path}.branches.{branch_id}"),
+                    diagnostics,
+                );
+            }
+            validate_damage_packet_contracts(
+                default,
+                ruleset,
+                &format!("{path}.default"),
+                diagnostics,
+            );
+        }
+    }
+}
+
+fn damage_formula_bounds(
+    formula: &RpgIrFormula,
+    ruleset: &Ruleset,
+    path: &str,
+    diagnostics: &mut Vec<RpgDiagnostic>,
+) -> Option<(i64, i64)> {
+    match formula {
+        RpgIrFormula::Constant { value } => {
+            let value = i64::from(*value);
+            Some((value, value))
+        }
+        RpgIrFormula::ReadStat { stat_id, .. } => {
+            let contract = ruleset
+                .provides
+                .values
+                .iter()
+                .find(|value| value.kind == RulesetValueKind::Stat && value.id == *stat_id);
+            let domain = contract.and_then(|contract| {
+                ruleset
+                    .provides
+                    .numeric_domains
+                    .iter()
+                    .find(|domain| domain.id == contract.numeric_domain_id)
+            });
+            match domain {
+                Some(domain) => Some((domain.minimum, domain.maximum)),
+                None => {
+                    diagnostics.push(RpgDiagnostic::error(
+                        RpgDiagnosticStage::Semantics,
+                        "RPG_DAMAGE_FORMULA_DOMAIN_UNKNOWN",
+                        path,
+                        format!("damage stat {stat_id} requires a bounded Ruleset value contract"),
+                    ));
+                    None
+                }
+            }
+        }
+        RpgIrFormula::Add { terms } => {
+            let mut minimum = 0_i64;
+            let mut maximum = 0_i64;
+            for (index, term) in terms.iter().enumerate() {
+                let (term_minimum, term_maximum) = damage_formula_bounds(
+                    term,
+                    ruleset,
+                    &format!("{path}.terms[{index}]"),
+                    diagnostics,
+                )?;
+                minimum = match minimum.checked_add(term_minimum) {
+                    Some(value) => value,
+                    None => {
+                        diagnostics.push(RpgDiagnostic::error(
+                            RpgDiagnosticStage::Semantics,
+                            "RPG_DAMAGE_FORMULA_POSSIBLE_OVERFLOW",
+                            path,
+                            "damage formula possible minimum overflows",
+                        ));
+                        return None;
+                    }
+                };
+                maximum = match maximum.checked_add(term_maximum) {
+                    Some(value) => value,
+                    None => {
+                        diagnostics.push(RpgDiagnostic::error(
+                            RpgDiagnosticStage::Semantics,
+                            "RPG_DAMAGE_FORMULA_POSSIBLE_OVERFLOW",
+                            path,
+                            "damage formula possible maximum overflows",
+                        ));
+                        return None;
+                    }
+                };
+            }
+            Some((minimum, maximum))
+        }
+        RpgIrFormula::Dice {
+            count,
+            sides,
+            bonus,
+        } => {
+            let minimum = i64::from(*bonus).checked_add(i64::from(*count));
+            let maximum = i64::from(*count)
+                .checked_mul(i64::from(*sides))
+                .and_then(|value| value.checked_add(i64::from(*bonus)));
+            match (minimum, maximum) {
+                (Some(minimum), Some(maximum)) => Some((minimum, maximum)),
+                _ => {
+                    diagnostics.push(RpgDiagnostic::error(
+                        RpgDiagnosticStage::Semantics,
+                        "RPG_DAMAGE_FORMULA_POSSIBLE_OVERFLOW",
+                        path,
+                        "damage dice formula range overflows",
+                    ));
+                    None
+                }
+            }
+        }
+        RpgIrFormula::Half { value } => {
+            let (minimum, maximum) =
+                damage_formula_bounds(value, ruleset, &format!("{path}.value"), diagnostics)?;
+            Some((minimum / 2, maximum / 2))
+        }
     }
 }
 
@@ -4702,6 +5102,25 @@ impl RulesetCatalogs {
     }
 }
 
+fn ruleset_catalogs(ruleset: &Ruleset) -> RulesetCatalogs {
+    RulesetCatalogs {
+        stats: ruleset
+            .provides
+            .values
+            .iter()
+            .filter(|value| value.kind == RulesetValueKind::Stat)
+            .map(|value| value.id.clone())
+            .collect(),
+        defenses: ruleset
+            .provides
+            .values
+            .iter()
+            .filter(|value| value.kind == RulesetValueKind::Defense)
+            .map(|value| value.id.clone())
+            .collect(),
+    }
+}
+
 #[derive(Deserialize)]
 #[serde(rename_all = "camelCase", deny_unknown_fields)]
 struct CatalogDefinitionSemantic {
@@ -4749,24 +5168,7 @@ fn normalized_ir_from_materialized(
         .collect::<BTreeMap<_, _>>();
     let mut diagnostics = Vec::new();
     let mut catalogs = DerivedCatalogs::default();
-    let ruleset_catalogs = RulesetCatalogs {
-        stats: prepared
-            .ruleset
-            .provides
-            .values
-            .iter()
-            .filter(|value| value.kind == RulesetValueKind::Stat)
-            .map(|value| value.id.clone())
-            .collect(),
-        defenses: prepared
-            .ruleset
-            .provides
-            .values
-            .iter()
-            .filter(|value| value.kind == RulesetValueKind::Defense)
-            .map(|value| value.id.clone())
-            .collect(),
-    };
+    let ruleset_catalogs = ruleset_catalogs(&prepared.ruleset);
     let mut actions = Vec::new();
     let mut bound_action_registrations = Vec::new();
 
@@ -6510,27 +6912,27 @@ fn resolve_operation_catalogs(
     diagnostics: &mut Vec<RpgDiagnostic>,
 ) {
     match operation {
-        RpgIrOperation::Damage {
-            amount,
-            damage_type,
-        } => {
-            resolve_catalog_reference(
-                damage_type,
-                CatalogReferenceKind::DAMAGE_TYPE,
-                action_definition,
-                definitions,
-                ruleset_catalogs,
-                &format!("{path}.damageType"),
-                diagnostics,
-            );
-            resolve_formula_catalogs(
-                amount,
-                action_definition,
-                definitions,
-                ruleset_catalogs,
-                &format!("{path}.amount"),
-                diagnostics,
-            );
+        RpgIrOperation::Damage { parts } => {
+            for (index, part) in parts.iter_mut().enumerate() {
+                let part_path = format!("{path}.parts[{index}]");
+                resolve_catalog_reference(
+                    &mut part.damage_type,
+                    CatalogReferenceKind::DAMAGE_TYPE,
+                    action_definition,
+                    definitions,
+                    ruleset_catalogs,
+                    &format!("{part_path}.damageType"),
+                    diagnostics,
+                );
+                resolve_formula_catalogs(
+                    &mut part.amount,
+                    action_definition,
+                    definitions,
+                    ruleset_catalogs,
+                    &format!("{part_path}.amount"),
+                    diagnostics,
+                );
+            }
         }
         RpgIrOperation::Heal { amount } => resolve_formula_catalogs(
             amount,
@@ -6957,7 +7359,12 @@ fn collect_program_catalogs(program: &RpgIrProgram, catalogs: &mut DerivedCatalo
 
 fn collect_operation_catalogs(operation: &RpgIrOperation, catalogs: &mut DerivedCatalogs) {
     match operation {
-        RpgIrOperation::Damage { amount, .. } | RpgIrOperation::Heal { amount } => {
+        RpgIrOperation::Damage { parts } => {
+            for part in parts {
+                collect_formula_catalogs(&part.amount, catalogs);
+            }
+        }
+        RpgIrOperation::Heal { amount } => {
             collect_formula_catalogs(amount, catalogs);
         }
         RpgIrOperation::ChangeResource {

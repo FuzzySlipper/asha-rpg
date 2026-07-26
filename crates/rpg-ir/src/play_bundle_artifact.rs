@@ -2,16 +2,16 @@ use std::collections::BTreeMap;
 
 pub use rpg_core::RpgRulesetValueKind as RulesetValueKind;
 use rpg_core::{
-    RpgContributionStackingPolicy, RpgEffectDurationAnchor, RpgEffectStackingPolicy,
-    RpgNaturalDieEffect, RpgOutcomeBandShiftDefinition, RpgPoolContributionDefinition,
-    RpgScalarContributionDefinition,
+    RpgContributionStackingPolicy, RpgDamageResponseDefinition, RpgEffectDurationAnchor,
+    RpgEffectStackingPolicy, RpgNaturalDieEffect, RpgOutcomeBandShiftDefinition,
+    RpgPoolContributionDefinition, RpgScalarContributionDefinition,
 };
 use serde::{Deserialize, Serialize};
 use serde_json::Value;
 
 pub const PREPARED_PLAY_BUNDLE_IDENTITY: &str = "asha.rpg.play-bundle.prepared";
 pub const COMPILED_PLAY_BUNDLE_IDENTITY: &str = "asha.rpg.play-bundle.compiled";
-pub const PLAY_BUNDLE_ARTIFACT_MAJOR: u32 = 8;
+pub const PLAY_BUNDLE_ARTIFACT_MAJOR: u32 = 9;
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase", deny_unknown_fields)]
@@ -703,6 +703,8 @@ pub struct MaterializedCharacterFeatureData {
     pub outcome_band_shifts: Vec<RpgOutcomeBandShiftDefinition>,
     #[serde(default)]
     pub pool_contributions: Vec<RpgPoolContributionDefinition>,
+    #[serde(default)]
+    pub damage_responses: Vec<RpgDamageResponseDefinition>,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
@@ -723,6 +725,7 @@ pub struct CompiledCharacterFeature {
     pub contributions: Vec<RpgScalarContributionDefinition>,
     pub outcome_band_shifts: Vec<RpgOutcomeBandShiftDefinition>,
     pub pool_contributions: Vec<RpgPoolContributionDefinition>,
+    pub damage_responses: Vec<RpgDamageResponseDefinition>,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
@@ -747,6 +750,8 @@ pub struct MaterializedEffectDefinitionData {
     pub outcome_band_shifts: Vec<RpgOutcomeBandShiftDefinition>,
     #[serde(default)]
     pub pool_contributions: Vec<RpgPoolContributionDefinition>,
+    #[serde(default)]
+    pub damage_responses: Vec<RpgDamageResponseDefinition>,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
@@ -765,6 +770,7 @@ pub struct CompiledEffectDefinition {
     pub contributions: Vec<RpgScalarContributionDefinition>,
     pub outcome_band_shifts: Vec<RpgOutcomeBandShiftDefinition>,
     pub pool_contributions: Vec<RpgPoolContributionDefinition>,
+    pub damage_responses: Vec<RpgDamageResponseDefinition>,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]

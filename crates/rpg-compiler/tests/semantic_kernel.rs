@@ -59,7 +59,10 @@ fn attack_resolution_is_deterministic_and_owner_mutated() {
     ));
     assert!(matches!(
         first.events[2],
-        RpgDomainEvent::DamageApplied { amount: 8, .. }
+        RpgDomainEvent::DamagePacketApplied {
+            bounded_vitality_delta: 8,
+            ..
+        }
     ));
     assert!(matches!(
         first.events[3],
@@ -198,7 +201,7 @@ fn compiler_rejects_non_atomic_programs_and_incompatible_requirements() {
         .any(|diagnostic| diagnostic.code == "RPG_IR_ATOMIC_ROOT_REQUIRED"));
 
     let incompatible = single_target_source().replacen(
-        "\"id\":\"operation.damage\",\"version\":1",
+        "\"id\":\"operation.damage\",\"version\":2",
         "\"id\":\"operation.damage\",\"version\":99",
         1,
     );
@@ -262,7 +265,7 @@ fn dice_requests_preserve_declared_shape_without_a_probe_limit() {
             kind: RpgRandomRequestKind::FormulaDice,
             count: 2,
             sides: 6,
-            path: "$.action.program.body.selected.steps[0].amount".to_owned(),
+            path: "$.action.program.body.selected.steps[0].parts[0].amount".to_owned(),
             heterogeneous_terms: Vec::new(),
         }))
     );
@@ -283,7 +286,7 @@ fn dice_requests_preserve_declared_shape_without_a_probe_limit() {
             kind: RpgRandomRequestKind::FormulaDice,
             count: 5,
             sides: 4,
-            path: "$.action.program.body.selected.steps[0].amount".to_owned(),
+            path: "$.action.program.body.selected.steps[0].parts[0].amount".to_owned(),
             heterogeneous_terms: Vec::new(),
         }))
     );
@@ -304,16 +307,24 @@ fn catalog_random_plan_keeps_mutually_exclusive_branches_explicit() {
             "kind": "operation",
             "operation": {
                 "kind": "damage",
-                "amount": {"kind": "dice", "count": 2, "sides": 6, "bonus": 0},
-                "damageType": "force"
+                "parts": [{
+                    "id": "damage",
+                    "amount": {"kind": "dice", "count": 2, "sides": 6, "bonus": 0},
+                    "damageType": "force",
+                    "tags": []
+                }]
             }
         },
         "otherwise": {
             "kind": "operation",
             "operation": {
                 "kind": "damage",
-                "amount": {"kind": "dice", "count": 1, "sides": 6, "bonus": 0},
-                "damageType": "force"
+                "parts": [{
+                    "id": "damage",
+                    "amount": {"kind": "dice", "count": 1, "sides": 6, "bonus": 0},
+                    "damageType": "force",
+                    "tags": []
+                }]
             }
         }
     });
@@ -432,7 +443,7 @@ fn multi_target_state() -> RpgCapabilityState {
 
 fn single_target_source() -> String {
     r#"{
-      "schema":{"identity":"asha.rpg.ir","major":1},
+      "schema":{"identity":"asha.rpg.ir","major":2},
       "package":{"id":"consumer.package","version":"1.0.0"},
       "catalogs":{
         "stats":["power"],"defenses":["guard"],"resources":["focus"],
@@ -440,7 +451,7 @@ fn single_target_source() -> String {
         "capabilities":["capability.vitality","capability.stats","capability.defenses","capability.resources","capability.modifiers","capability.random"]
       },
       "requirements":[
-        {"kind":"operation","id":"operation.damage","version":1},
+        {"kind":"operation","id":"operation.damage","version":2},
         {"kind":"operation","id":"operation.applyModifier","version":1},
         {"kind":"capability","id":"capability.vitality","version":1},
         {"kind":"capability","id":"capability.stats","version":1},
@@ -455,7 +466,9 @@ fn single_target_source() -> String {
         "check":{"kind":"attack","modifier":{"kind":"readStat","subject":"actor","statId":"power"},"defenseId":"guard"},
         "rollScope":"perTarget","costs":[{"resourceId":"focus","amount":1}],
         "program":{"kind":"atomic","body":{"kind":"onCheck","hit":{"kind":"sequence","steps":[
-          {"kind":"operation","operation":{"kind":"damage","amount":{"kind":"dice","count":2,"sides":6,"bonus":1},"damageType":"force"}},
+          {"kind":"operation","operation":{"kind":"damage","parts":[
+            {"id":"damage","amount":{"kind":"dice","count":2,"sides":6,"bonus":1},"damageType":"force","tags":[]}
+          ]}},
           {"kind":"when","predicate":{"kind":"compare","left":{"kind":"readStat","subject":"actor","statId":"power"},"comparison":"greaterThanOrEqual","right":{"kind":"constant","value":4}},"then":
             {"kind":"operation","operation":{"kind":"applyModifier","modifierId":"impeded","stackingGroup":"movement-control","stacking":"refresh","value":{"kind":"constant","value":-2},"durationTurns":2}}
           }
@@ -467,14 +480,14 @@ fn single_target_source() -> String {
 
 fn multi_target_source() -> String {
     r#"{
-      "schema":{"identity":"asha.rpg.ir","major":1},
+      "schema":{"identity":"asha.rpg.ir","major":2},
       "package":{"id":"consumer.package","version":"1.0.0"},
       "catalogs":{
         "defenses":["resolve"],"resources":["charge"],
         "capabilities":["capability.vitality","capability.defenses","capability.resources","capability.random"]
       },
       "requirements":[
-        {"kind":"operation","id":"operation.damage","version":1},
+        {"kind":"operation","id":"operation.damage","version":2},
         {"kind":"operation","id":"operation.changeResource","version":1},
         {"kind":"capability","id":"capability.vitality","version":1},
         {"kind":"capability","id":"capability.defenses","version":1},
@@ -488,8 +501,12 @@ fn multi_target_source() -> String {
         "rollScope":"perTarget","costs":[],
         "program":{"kind":"atomic","body":{"kind":"forEachTarget","maximum":2,"body":{"kind":"sequence","steps":[
           {"kind":"onCheck",
-            "saved":{"kind":"operation","operation":{"kind":"damage","amount":{"kind":"half","value":{"kind":"constant","value":5}},"damageType":"force"}},
-            "failed":{"kind":"operation","operation":{"kind":"damage","amount":{"kind":"constant","value":5},"damageType":"force"}}
+            "saved":{"kind":"operation","operation":{"kind":"damage","parts":[
+              {"id":"damage","amount":{"kind":"half","value":{"kind":"constant","value":5}},"damageType":"force","tags":[]}
+            ]}},
+            "failed":{"kind":"operation","operation":{"kind":"damage","parts":[
+              {"id":"damage","amount":{"kind":"constant","value":5},"damageType":"force","tags":[]}
+            ]}}
           },
           {"kind":"operation","operation":{"kind":"changeResource","subject":"actor","resourceId":"charge","delta":{"kind":"constant","value":-1}}}
         ]}}}
@@ -500,7 +517,7 @@ fn multi_target_source() -> String {
 
 fn non_atomic_source() -> String {
     r#"{
-      "schema":{"identity":"asha.rpg.ir","major":1},
+      "schema":{"identity":"asha.rpg.ir","major":2},
       "package":{"id":"consumer.package","version":"1.0.0"},
       "catalogs":{"capabilities":["capability.vitality"]},
       "requirements":[
@@ -519,7 +536,7 @@ fn non_atomic_source() -> String {
 
 fn movement_source() -> String {
     r#"{
-      "schema":{"identity":"asha.rpg.ir","major":1},
+      "schema":{"identity":"asha.rpg.ir","major":2},
       "package":{"id":"consumer.package","version":"1.0.0"},
       "catalogs":{"capabilities":["capability.position"]},
       "requirements":[
@@ -540,7 +557,7 @@ fn movement_source() -> String {
 
 fn invalid_cell_target_source() -> String {
     r#"{
-      "schema":{"identity":"asha.rpg.ir","major":1},
+      "schema":{"identity":"asha.rpg.ir","major":2},
       "package":{"id":"consumer.package","version":"1.0.0"},
       "catalogs":{"capabilities":["capability.position","capability.vitality"]},
       "requirements":[
@@ -573,7 +590,7 @@ fn invalid_cell_target_source() -> String {
 
 fn invalid_cell_program_source() -> String {
     r#"{
-      "schema":{"identity":"asha.rpg.ir","major":1},
+      "schema":{"identity":"asha.rpg.ir","major":2},
       "package":{"id":"consumer.package","version":"1.0.0"},
       "catalogs":{"capabilities":["capability.position","capability.random","capability.vitality"]},
       "requirements":[

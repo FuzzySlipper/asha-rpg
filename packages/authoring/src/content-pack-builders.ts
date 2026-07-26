@@ -27,6 +27,7 @@ import type {
   ContentParticipantProfileData,
   ContentParticipantProfileCapability,
   ContentDerivedDefinition,
+  ContentDamageResponse,
   ContentPackDependency,
   ContentPackIdentity,
   ContentMixinApplication,
@@ -274,6 +275,7 @@ export function defineCharacterFeatureDefinition(
       readonly contributions?: readonly Omit<ContentScalarContribution, 'schema'>[];
       readonly outcomeBandShifts?: readonly Omit<ContentOutcomeBandShift, 'schema'>[];
       readonly poolContributions?: readonly Omit<ContentPoolContribution, 'schema'>[];
+      readonly damageResponses?: readonly Omit<ContentDamageResponse, 'schema'>[];
     };
   },
 ): ContentCharacterFeatureDefinition {
@@ -294,6 +296,9 @@ export function defineCharacterFeatureDefinition(
       poolContributions: normalizePoolContributions(
         input.characterFeature.poolContributions ?? [],
       ),
+      damageResponses: normalizeDamageResponses(
+        input.characterFeature.damageResponses ?? [],
+      ),
     },
   });
 }
@@ -303,10 +308,12 @@ export function defineEffectDefinition(
     readonly effect: Omit<
       ContentEffectDefinition['effect'],
       'schema' | 'contributions' | 'outcomeBandShifts' | 'poolContributions'
+        | 'damageResponses'
     > & {
       readonly contributions?: readonly Omit<ContentScalarContribution, 'schema'>[];
       readonly outcomeBandShifts?: readonly Omit<ContentOutcomeBandShift, 'schema'>[];
       readonly poolContributions?: readonly Omit<ContentPoolContribution, 'schema'>[];
+      readonly damageResponses?: readonly Omit<ContentDamageResponse, 'schema'>[];
     };
   },
 ): ContentEffectDefinition {
@@ -326,6 +333,9 @@ export function defineEffectDefinition(
       poolContributions: normalizePoolContributions(
         input.effect.poolContributions ?? [],
       ),
+      damageResponses: normalizeDamageResponses(
+        input.effect.damageResponses ?? [],
+      ),
     },
   });
 }
@@ -341,6 +351,28 @@ function normalizeOutcomeBandShifts(
         version: 1 as const,
       },
     }))
+    .sort((left, right) => left.id.localeCompare(right.id));
+}
+
+function normalizeDamageResponses(
+  responses: readonly Omit<ContentDamageResponse, 'schema'>[],
+): readonly ContentDamageResponse[] {
+  return responses
+    .map((response) => {
+      const normalized = {
+        ...response,
+        schema: {
+          identity: 'asha.rpg.damage-response' as const,
+          version: 1 as const,
+        },
+        requiredTags: [...response.requiredTags].sort(),
+        bypassTags: [...response.bypassTags].sort(),
+      };
+      retainCatalogOwnership(normalized, [
+        { field: 'damageType', reference: response.damageType },
+      ]);
+      return normalized;
+    })
     .sort((left, right) => left.id.localeCompare(right.id));
 }
 

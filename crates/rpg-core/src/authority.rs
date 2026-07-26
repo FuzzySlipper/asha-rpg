@@ -7,6 +7,10 @@ use crate::{BoundedValue, GridPosition, Team};
 pub const MAXIMUM_RPG_MODIFIER_TURNS: u32 = 1_000;
 pub const MAXIMUM_RPG_EFFECT_DURATION: u32 = 1_000;
 pub const MAXIMUM_ACTIVE_RPG_EFFECTS: usize = 64;
+pub const MAXIMUM_RPG_DAMAGE_PARTS: usize = 16;
+pub const MAXIMUM_RPG_DAMAGE_RESPONSES: usize = 64;
+pub const MAXIMUM_RPG_DAMAGE_TAGS: usize = 16;
+pub const MAXIMUM_RPG_DAMAGE_SCALE_COMPONENT: u32 = 1_000;
 
 /// Closed identities for the private capability workspaces owned by RPG authority.
 ///
@@ -1673,6 +1677,109 @@ pub struct RpgPoolContributionLedger {
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase", deny_unknown_fields)]
+pub struct RpgDamageResponseSchema {
+    pub identity: String,
+    pub version: u32,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(
+    tag = "kind",
+    rename_all = "camelCase",
+    rename_all_fields = "camelCase",
+    deny_unknown_fields
+)]
+pub enum RpgDamageResponseEffect {
+    Immune,
+    Flat { value: i32 },
+    Scale { numerator: u32, denominator: u32 },
+}
+
+impl RpgDamageResponseEffect {
+    pub fn phase(&self) -> RpgDamageResponsePhase {
+        match self {
+            Self::Immune => RpgDamageResponsePhase::Immune,
+            Self::Flat { .. } => RpgDamageResponsePhase::Flat,
+            Self::Scale { .. } => RpgDamageResponsePhase::Scale,
+        }
+    }
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase", deny_unknown_fields)]
+pub struct RpgDamageResponseDefinition {
+    pub schema: RpgDamageResponseSchema,
+    pub id: String,
+    pub damage_type_id: String,
+    pub required_tags: Vec<String>,
+    pub bypass_tags: Vec<String>,
+    pub effect: RpgDamageResponseEffect,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub enum RpgDamageResponsePhase {
+    Immune,
+    Flat,
+    Scale,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(tag = "status", rename_all = "camelCase", deny_unknown_fields)]
+pub enum RpgDamageResponseDisposition {
+    Applied,
+    Inapplicable { reason: String },
+    Suppressed { reason: String },
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase", deny_unknown_fields)]
+pub struct RpgDamageResponseDecision {
+    pub source_definition_id: String,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub source_instance_id: Option<String>,
+    pub response_id: String,
+    pub phase: RpgDamageResponsePhase,
+    pub damage_type_id: String,
+    pub required_tags: Vec<String>,
+    pub bypass_tags: Vec<String>,
+    pub effect: RpgDamageResponseEffect,
+    pub disposition: RpgDamageResponseDisposition,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase", deny_unknown_fields)]
+pub struct RpgDamageScaleStep {
+    pub source_definition_id: String,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub source_instance_id: Option<String>,
+    pub response_id: String,
+    pub numerator: u32,
+    pub denominator: u32,
+    pub before: i64,
+    pub multiplied: i64,
+    pub after_floor: i64,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase", deny_unknown_fields)]
+pub struct RpgDamagePartResolution {
+    pub part_id: String,
+    pub target_id: String,
+    pub damage_type_id: String,
+    pub tags: Vec<String>,
+    pub random_evidence_path: String,
+    pub original_amount: i32,
+    pub response_candidates: Vec<RpgDamageResponseDecision>,
+    pub flat_sum: i64,
+    pub after_flat_before_clamp: i64,
+    pub after_flat: i64,
+    pub scale_steps: Vec<RpgDamageScaleStep>,
+    pub final_amount: i64,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase", deny_unknown_fields)]
 pub struct RpgPoolCancellationResult {
     pub cancellation_id: String,
     pub positive_axis_id: String,
@@ -1862,12 +1969,16 @@ pub enum RpgDomainEvent {
         included_participant_ids: Vec<String>,
         filtered_participants: Vec<RpgAreaFilteredParticipant>,
     },
-    DamageApplied {
+    DamagePacketApplied {
         source_id: String,
         target_id: String,
-        amount: i32,
-        damage_type: String,
-        remaining_vitality: i32,
+        parts: Vec<RpgDamagePartResolution>,
+        original_packet_sum: i64,
+        adjusted_packet_sum: i64,
+        bounded_vitality_delta: i32,
+        actual_vitality_delta: i32,
+        before_vitality: i32,
+        after_vitality: i32,
     },
     HealingApplied {
         source_id: String,

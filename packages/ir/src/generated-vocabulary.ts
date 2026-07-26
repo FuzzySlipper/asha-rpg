@@ -1,12 +1,12 @@
 // Generated from the Rust semantic registry. Do not edit by hand.
 export const RPG_IR_IDENTITY = "asha.rpg.ir" as const;
-export const RPG_IR_MAJOR = 1 as const;
+export const RPG_IR_MAJOR = 2 as const;
 
 export const RPG_OPERATION_VERSIONS = {
   "operation.applyEffect": 1,
   "operation.applyModifier": 1,
   "operation.changeResource": 1,
-  "operation.damage": 1,
+  "operation.damage": 2,
   "operation.heal": 1,
   "operation.move": 1,
   "operation.moveToCell": 1,

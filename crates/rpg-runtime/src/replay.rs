@@ -22,9 +22,9 @@ use crate::{
 
 pub const RPG_CHECKPOINT_SCHEMA_ID: &str = "asha.rpg.session.checkpoint";
 pub const RPG_REPLAY_ENTRY_SCHEMA_ID: &str = "asha.rpg.session.replay-entry";
-pub const RPG_CHECKPOINT_SCHEMA_VERSION: u32 = 9;
-pub const RPG_REPLAY_ENTRY_SCHEMA_VERSION: u32 = 10;
-pub const RPG_EVENT_SCHEMA_VERSION: u32 = 8;
+pub const RPG_CHECKPOINT_SCHEMA_VERSION: u32 = 10;
+pub const RPG_REPLAY_ENTRY_SCHEMA_VERSION: u32 = 11;
+pub const RPG_EVENT_SCHEMA_VERSION: u32 = 9;
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase", deny_unknown_fields)]
@@ -1452,10 +1452,13 @@ mod tests {
                 .collect::<Vec<_>>(),
             vec![12, 2, 2]
         );
-        assert!(receipt
-            .events
-            .iter()
-            .any(|event| matches!(event, RpgDomainEvent::DamageApplied { amount: 1, .. })));
+        assert!(receipt.events.iter().any(|event| matches!(
+            event,
+            RpgDomainEvent::DamagePacketApplied {
+                bounded_vitality_delta: 1,
+                ..
+            }
+        )));
         assert_eq!(reaction_entry.after.revision, 1);
         assert_eq!(reaction_entry.after.phase, RpgReplayPhase::Ready);
     }
@@ -2554,8 +2557,12 @@ mod tests {
                             {"id": "ward", "label": "Raise ward", "damageReduction": 3}
                         ]}},
                         {"kind": "onCheck",
-                          "hit": {"kind": "operation", "operation": {"kind": "damage", "amount": {"kind": "dice", "count": 2, "sides": 6, "bonus": 0}, "damageType": "catalog.damage.force"}},
-                          "miss": {"kind": "operation", "operation": {"kind": "damage", "amount": {"kind": "dice", "count": 1, "sides": 4, "bonus": 0}, "damageType": "catalog.damage.force"}}
+                          "hit": {"kind": "operation", "operation": {"kind": "damage", "parts": [
+                              {"id": "damage", "amount": {"kind": "dice", "count": 2, "sides": 6, "bonus": 0}, "damageType": "catalog.damage.force", "tags": []}
+                          ]}},
+                          "miss": {"kind": "operation", "operation": {"kind": "damage", "parts": [
+                              {"id": "damage", "amount": {"kind": "dice", "count": 1, "sides": 4, "bonus": 0}, "damageType": "catalog.damage.force", "tags": []}
+                          ]}}
                         }
                     ]}}
                 }
@@ -2676,7 +2683,7 @@ mod tests {
         let operations = vec![
             VersionedRpgRequirement {
                 id: "operation.damage".to_owned(),
-                version: 1,
+                version: 2,
             },
             VersionedRpgRequirement {
                 id: "operation.moveToCell".to_owned(),

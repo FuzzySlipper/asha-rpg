@@ -16,7 +16,7 @@ ruleset:
 | --- | --- | --- |
 | `Ruleset` (`asha.rpg.ruleset@1`) | language compatibility, Rust-bound operation and capability provisions, named stat/defense contracts, numeric domains, scalar calculation selectors, contribution stacking groups, scalar-test profiles, heterogeneous-pool profiles | actions, spells, classes, creatures, items, conditions, presentation, setup |
 | `ContentPack` | authored definitions, presentation, dependencies, derivation, mixins, overlays | Rust execution callbacks, board/participants, commands or expected outcomes |
-| `PlayBundle` (`asha.rpg.play-bundle.prepared@8` / `.compiled@8`) | one Ruleset plus an exact compatible Content Pack closure and fingerprints | ambient discovery, executable TypeScript, scenario scripts |
+| `PlayBundle` (`asha.rpg.play-bundle.prepared@9` / `.compiled@9`) | one Ruleset plus an exact compatible Content Pack closure and fingerprints | ambient discovery, executable TypeScript, scenario scripts |
 | `Scenario` (`asha.rpg.scenario@2`) | board, participants, selected definitions, initial values, initiative, and random-source policy for one PlayBundle | definitions, commands, targets, reactions, rolls, expected events/outcomes, Tester configuration |
 
 A Tester is a caller of the same accessible interaction surface as a person;
@@ -163,6 +163,12 @@ scripts, and selectors for damage, healing, or defenses remain separate work.
 The initial closed operation vocabulary supports damage, healing, resource
 change, fixed-delta and selected-cell grid movement, turn-bounded modifiers,
 and a typed reaction window.
+Damage is one bounded packet of canonically ordered typed parts. Selected
+features and active named effects contribute exact-version immunity,
+signed-flat, and rational-scale responses. Rust filters and orders candidates
+by phase and runtime identity, applies one flat clamp and per-scale floor,
+mutates vitality once, and retains every original/final part and response
+decision in the accepted event.
 Checks support attack, saving throw, generic Ruleset-owned scalar tests,
 Ruleset-owned heterogeneous pools, and no-roll flows. Scalar profiles own one
 d2..d100 primary die, a checked numeric
@@ -218,14 +224,14 @@ numeric domains, content-owned resource/modifier ids, board, occupancy,
 initiative, capability owners, and random-source binding before mutable state
 exists.
 
-Checkpoint schema version 9 embeds the exact compiled PlayBundle, Scenario and
+Checkpoint schema version 10 embeds the exact compiled PlayBundle, Scenario and
 Scenario fingerprint, portable state, turn/log, accepted random position,
-pending phase, named effect instances, and canonical state hash. Replay entry schema version 10 records
+pending phase, named effect instances, and canonical state hash. Replay entry schema version 11 records
 ordinary submit/reaction/turn-control operations and verifies before/after
-boundaries. Accepted event schema version 8 and encounter-view schema version 10
+boundaries. Accepted event schema version 9 and encounter-view schema version 11
 carry the contextual contribution ledger, character selection, activation
-budgets, accepted activation count, and exact authority-derived area
-selections. Replay never reruns
+budgets, accepted activation count, exact authority-derived area selections,
+and structured typed-damage packet evidence. Replay never reruns
 authoring or substitutes a candidate artifact.
 
 ## TypeScript authoring
@@ -285,9 +291,8 @@ The survey-selected neutral expansion is specified in
 [`first-wave-primitive-catalog.md`](first-wave-primitive-catalog.md). That
 catalog is an implementation map. `F0@1`, the contextual contribution ledger,
 `F1@1`, generic scalar tests and ordered outcomes, `F2@1`, variable activation
-budgets, `F3@1`, named effects with bounded expiry, and `F6@1`, heterogeneous
-pools and vector outcomes, are implemented as described above. `F5@1`, bounded
-area selection and spatial legality, is also implemented through the
-session-bound authority path. `F4` remains a non-claim until its separately
-reviewed task updates this canonical design and the corresponding code,
-schemas, tests, events, readbacks, checkpoint, and replay contracts.
+budgets, `F3@1`, named effects with bounded expiry, `F4@1`, typed damage
+packets and qualified responses, and `F6@1`, heterogeneous pools and vector
+outcomes, are implemented as described above. `F5@1`, bounded area selection
+and spatial legality, is also implemented through the session-bound authority
+path.

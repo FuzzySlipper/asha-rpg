@@ -800,6 +800,63 @@ function validateOperation(
   diagnostics: AuthoringDiagnostic[],
   sourcePath: string,
 ): void {
+  if (operation.kind === 'damage') {
+    if (operation.parts.length < 1 || operation.parts.length > 16) {
+      diagnostics.push(
+        diagnostic(
+          'normalization.damagePartsInvalid',
+          `${path}.operation.parts`,
+          'damage packets require between 1 and 16 parts',
+          sourcePath,
+        ),
+      );
+    }
+    let previousId: string | undefined;
+    for (const [index, part] of operation.parts.entries()) {
+      const partPath = `${path}.operation.parts[${index}]`;
+      if (
+        !/^[A-Za-z0-9][A-Za-z0-9._:-]*$/.test(part.id) ||
+        (previousId !== undefined && previousId >= part.id)
+      ) {
+        diagnostics.push(
+          diagnostic(
+            'normalization.damagePartsNotCanonical',
+            `${partPath}.id`,
+            'damage part identities must be unique sorted portable identifiers',
+            sourcePath,
+          ),
+        );
+      }
+      previousId = part.id;
+      let previousTag: string | undefined;
+      for (const [tagIndex, tag] of part.tags.entries()) {
+        if (
+          !/^[A-Za-z0-9][A-Za-z0-9._:-]*$/.test(tag) ||
+          (previousTag !== undefined && previousTag >= tag)
+        ) {
+          diagnostics.push(
+            diagnostic(
+              'normalization.damageTagsNotCanonical',
+              `${partPath}.tags[${tagIndex}]`,
+              'damage tags must be unique sorted portable identifiers',
+              sourcePath,
+            ),
+          );
+        }
+        previousTag = tag;
+      }
+      if (part.tags.length > 16) {
+        diagnostics.push(
+          diagnostic(
+            'normalization.damageTagsInvalid',
+            `${partPath}.tags`,
+            'one damage part may declare at most 16 tags',
+            sourcePath,
+          ),
+        );
+      }
+    }
+  }
   if (operation.kind === 'applyModifier' && !integerInRange(operation.durationTurns, 1, 1_000)) {
     diagnostics.push(
       diagnostic(
@@ -938,7 +995,7 @@ function collectOperation(operation: RpgIrOperation, collection: Collection): vo
   switch (operation.kind) {
     case 'damage':
       collection.capabilities.add('capability.vitality');
-      collectFormula(operation.amount, collection);
+      for (const part of operation.parts) collectFormula(part.amount, collection);
       return;
     case 'heal':
       collection.capabilities.add('capability.vitality');
