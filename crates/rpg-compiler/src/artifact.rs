@@ -6583,9 +6583,22 @@ fn validate_expanded_action_procedure_body(
         .iter()
         .map(|budget| (budget.id.as_str(), budget))
         .collect::<BTreeMap<_, _>>();
+    // A retained procedure is not itself an executable action. Its activation
+    // timing becomes authoritative only after an invocation materializes an
+    // action, where the closed response registry validates whether reaction
+    // timing is reachable. At the callable boundary, validate the procedure's
+    // declared timing against the matching Ruleset budget domain without
+    // incorrectly treating every retained procedure as a directly submitted
+    // action.
+    let callable_timing = action
+        .activation
+        .as_ref()
+        .map_or(rpg_ir::RpgIrActivationTiming::Action, |activation| {
+            activation.timing
+        });
     validate_activation_contract(
         action.activation.as_ref(),
-        rpg_ir::RpgIrActivationTiming::Action,
+        callable_timing,
         variable_activation_model,
         ruleset,
         &activation_budgets,
