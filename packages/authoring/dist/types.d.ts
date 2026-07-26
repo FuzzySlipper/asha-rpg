@@ -1,4 +1,4 @@
-import type { NormalizedRpgIr, RpgActionId, RpgIrAction, RpgIrCheck, RpgIrFormula, RpgIrOperation, RpgIrPredicate, RpgIrResourceCost, RpgIrRollScope, RpgIrTargetSelector } from '@asha-rpg/ir';
+import type { NormalizedRpgIr, RpgActionId, RpgIrAction, RpgIrCheck, RpgIrFormula, RpgIrOperation, RpgIrPredicate, RpgIrResourceCost, RpgIrRollScope, RpgIrScalarExpression, RpgIrTargetSelector } from '@asha-rpg/ir';
 export interface AuthoringTiming {
     readonly kind: 'immediate';
 }
@@ -106,5 +106,5 @@ export type CheckBranchInput = Omit<Extract<AuthoringProgram, {
 export type OutcomeBranchInput = Omit<Extract<AuthoringProgram, {
     readonly kind: 'onOutcome';
 }>, 'kind'>;
-export type { NormalizedRpgIr, RpgIrAction, RpgIrFormula, RpgIrPredicate };
+export type { NormalizedRpgIr, RpgIrAction, RpgIrFormula, RpgIrPredicate, RpgIrScalarExpression, };
 //# sourceMappingURL=types.d.ts.map

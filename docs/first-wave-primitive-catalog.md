@@ -292,12 +292,14 @@ cannot alter the recorded roll total.
 ### Authoring and normalized representation
 
 Ruleset authoring adds scalar-test profiles with stable ids, one primary die
-whose sides are `2..=100`, base formula, difficulty source, ordered bands,
-margin thresholds, natural-die rules, and named `F0` selectors. Actions add a
-generic scalar-test check and an outcome-branch map. Existing attack/save
-builders may be re-expressed through supplied profiles during the schema
-migration, while no-roll remains an evidence-free program path; Rust sees one
-authoritative check model.
+whose sides are `2..=100`, a non-random base expression, difficulty source,
+ordered bands, margin thresholds, natural-die rules, and named `F0` selectors.
+The base and explicit-difficulty expression subset contains constants, named
+stat reads, addition, and halving; direct or nested formula dice are invalid.
+Actions add a generic scalar-test check and an outcome-branch map. Existing
+attack/save builders may be re-expressed through supplied profiles during the
+schema migration, while no-roll remains an evidence-free program path; Rust
+sees one authoritative check model.
 
 Classification rules are data for a closed Rust evaluator, not an expression
 language. A profile has at most 16 bands, 32 margin thresholds, and 8 disjoint
@@ -308,9 +310,10 @@ typed default; unreachable or duplicate bands fail compilation.
 
 Rust verifies the profile owner, numeric domains, exactly one primary die,
 complete/disjoint margin coverage, disjoint natural values, bounded shifts,
-band closure, selector compatibility, and complete branch references. Generic
-tests support actor statistic versus explicit difficulty or target named
-defense. Contested actor-versus-actor roll pairs remain deferred.
+band closure, selector compatibility, non-random scalar expressions, and
+complete branch references. Generic tests support actor statistic versus
+explicit difficulty or target named defense. Contested actor-versus-actor roll
+pairs remain deferred.
 
 At runtime Rust gathers `F0` contributions, requests the exact scalar evidence,
 computes base/difficulty/total/margin with checked arithmetic, selects the base

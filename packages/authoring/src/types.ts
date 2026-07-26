@@ -8,6 +8,7 @@ import type {
   RpgIrPredicate,
   RpgIrResourceCost,
   RpgIrRollScope,
+  RpgIrScalarExpression,
   RpgIrTargetSelector,
 } from '@asha-rpg/ir';
 
@@ -136,4 +137,10 @@ export type OutcomeBranchInput = Omit<
   'kind'
 >;
 
-export type { NormalizedRpgIr, RpgIrAction, RpgIrFormula, RpgIrPredicate };
+export type {
+  NormalizedRpgIr,
+  RpgIrAction,
+  RpgIrFormula,
+  RpgIrPredicate,
+  RpgIrScalarExpression,
+};

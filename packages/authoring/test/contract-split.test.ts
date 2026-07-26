@@ -4,6 +4,7 @@ import { test } from "node:test";
 import {
   action,
   actionId,
+  add,
   attack,
   constant,
   composePlayBundle,
@@ -15,15 +16,19 @@ import {
   defineParticipantProfileData,
   defineParticipantProfileDefinition,
   defineActionDefinition,
+  defineActions,
+  definePackage,
   defineRuleset,
   defineScenario,
   defineScenarioTemplate,
   defineSupportDefinition,
   instantiateScenarioTemplate,
   heal,
+  half,
   hostile,
   onCheck,
   noRoll,
+  normalizePackage,
   participantProfileVitality,
   participantProfileStat,
   onOutcome,
@@ -36,6 +41,7 @@ import {
   rulesetStat,
   rulesetValueId,
   scalarTest,
+  dice,
 } from "@asha-rpg/authoring";
 
 const semanticRuleset = defineRuleset({
@@ -191,6 +197,79 @@ test("Ruleset scalar profiles author canonical ordered outcomes and reject gaps"
       .action?.check?.kind,
     "scalarTest",
   );
+
+  const validScalarCheck = scalarTest({
+    profile: rulesetScalarTestProfile(scalarRuleset, "graded"),
+    base: readStat("actor", rulesetStat(scalarRuleset, "strength")),
+    difficulty: {
+      kind: "targetDefense",
+      defense: rulesetDefense(scalarRuleset, "armor-class"),
+    },
+  });
+  if (false) {
+    scalarTest({
+      profile: rulesetScalarTestProfile(scalarRuleset, "graded"),
+      // @ts-expect-error scalar-test base expressions cannot contain dice
+      base: dice({ count: 1, sides: 6 }),
+      difficulty: {
+        kind: "targetDefense",
+        defense: rulesetDefense(scalarRuleset, "armor-class"),
+      },
+    });
+    scalarTest({
+      profile: rulesetScalarTestProfile(scalarRuleset, "graded"),
+      base: constant(1),
+      difficulty: {
+        kind: "explicit",
+        // @ts-expect-error nested dice remain outside scalar-test expressions
+        value: add(constant(10), half(dice({ count: 1, sides: 4 }))),
+      },
+    });
+  }
+  const invalidChecks = [
+    {
+      ...validScalarCheck,
+      base: dice({ count: 1, sides: 6 }),
+    },
+    {
+      ...validScalarCheck,
+      difficulty: {
+        kind: "explicit",
+        value: add(constant(10), half(dice({ count: 1, sides: 4 }))),
+      },
+    },
+  ] as unknown as readonly ReturnType<typeof scalarTest>[];
+  for (const invalidCheck of invalidChecks) {
+    const invalidAction = scalarRulesetAction(scalarRuleset, invalidCheck);
+    const normalized = normalizePackage(
+      definePackage({
+        id: "contract.invalid-scalar",
+        version: "1.0.0",
+        sources: [defineActions("invalid-scalar", [invalidAction])],
+      }),
+    );
+    assert.equal(normalized.ok, false);
+    if (!normalized.ok) {
+      assert.ok(
+        normalized.diagnostics.some(
+          (diagnostic) =>
+            diagnostic.code ===
+            "normalization.scalarTestRandomFormulaInvalid",
+        ),
+      );
+    }
+    const prepared = prepareScalarRulesetAction(scalarRuleset, invalidCheck);
+    assert.equal(prepared.ok, false);
+    if (!prepared.ok) {
+      assert.ok(
+        prepared.diagnostics.some(
+          (diagnostic) =>
+            diagnostic.code ===
+            "normalization.scalarTestRandomFormulaInvalid",
+        ),
+      );
+    }
+  }
 
   const scalarProfile = scalarRuleset.provides.scalarTestProfiles[0];
   if (scalarProfile === undefined) {
@@ -782,20 +861,23 @@ function prepareRulesetAction(
   });
 }
 
-function prepareScalarRulesetAction(ruleset: typeof semanticRuleset) {
-  const authoredAction = action({
+function scalarRulesetAction(
+  ruleset: typeof semanticRuleset,
+  check = scalarTest({
+    profile: rulesetScalarTestProfile(ruleset, "graded"),
+    base: readStat("actor", rulesetStat(ruleset, "strength")),
+    difficulty: {
+      kind: "targetDefense" as const,
+      defense: rulesetDefense(ruleset, "armor-class"),
+    },
+  }),
+) {
+  return action({
     id: actionId("contract.scalar-action"),
     name: "Scalar action",
     sourcePath: "contract/scalar-action.ts",
     targets: hostile({ range: 1 }),
-    check: scalarTest({
-      profile: rulesetScalarTestProfile(ruleset, "graded"),
-      base: readStat("actor", rulesetStat(ruleset, "strength")),
-      difficulty: {
-        kind: "targetDefense",
-        defense: rulesetDefense(ruleset, "armor-class"),
-      },
-    }),
+    check,
     rollScope: "perTarget",
     program: onOutcome({
       branches: {
@@ -804,6 +886,13 @@ function prepareScalarRulesetAction(ruleset: typeof semanticRuleset) {
       default: heal({ amount: constant(1) }),
     }),
   });
+}
+
+function prepareScalarRulesetAction(
+  ruleset: typeof semanticRuleset,
+  check?: ReturnType<typeof scalarTest>,
+) {
+  const authoredAction = scalarRulesetAction(ruleset, check);
   const definition = defineActionDefinition({
     id: authoredAction.id,
     visibility: "public",

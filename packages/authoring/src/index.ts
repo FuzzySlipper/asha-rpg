@@ -22,6 +22,7 @@ export type {
   RpgDefenseId,
   RpgModifierId,
   RpgResourceId,
+  RpgIrScalarExpression,
   RpgStackingGroup,
   RpgStatId,
 } from '@asha-rpg/ir';

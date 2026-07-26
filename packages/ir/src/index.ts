@@ -107,13 +107,26 @@ export type RpgIrCheck =
         readonly rulesetId: string;
         readonly id: string;
       };
-      readonly base: RpgIrFormula;
+      readonly base: RpgIrScalarExpression;
       readonly difficulty: RpgIrScalarTestDifficulty;
     };
 
 export type RpgIrScalarTestDifficulty =
-  | { readonly kind: 'explicit'; readonly value: RpgIrFormula }
+  | { readonly kind: 'explicit'; readonly value: RpgIrScalarExpression }
   | { readonly kind: 'targetDefense'; readonly defenseId: RpgDefenseId };
+
+export type RpgIrScalarExpression =
+  | { readonly kind: 'constant'; readonly value: number }
+  | {
+      readonly kind: 'readStat';
+      readonly subject: RpgIrSubject;
+      readonly statId: RpgStatId;
+    }
+  | {
+      readonly kind: 'add';
+      readonly terms: readonly RpgIrScalarExpression[];
+    }
+  | { readonly kind: 'half'; readonly value: RpgIrScalarExpression };
 
 export type RpgIrFormula =
   | { readonly kind: 'constant'; readonly value: number }

@@ -159,6 +159,9 @@ and an optional scalar contribution selector. Item/feature schema version 3 may
 also declare typed contextual band shifts. Rust resolves margin, natural rule,
 then each canonical contextual shift with per-step end clamping and emits the
 complete ledger before selecting one known band branch or its required default.
+The scalar base and explicit difficulty use the non-random subset of the
+formula AST (constants, named stat reads, addition, and halving), so the
+profile's primary die is the check's only random evidence.
 Programs support one atomic root containing bounded sequence, predicate branch,
 repeat, per-target, check-outcome, and scalar-outcome branches. Unknown
 operations, capabilities, references, or versions fail closed.

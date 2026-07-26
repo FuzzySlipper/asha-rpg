@@ -1235,10 +1235,13 @@ impl<'a> Validator<'a> {
                     );
                 }
                 self.require_capability("capability.random", &format!("{path}.check"));
-                self.validate_formula(base, &format!("{path}.check.base"));
+                self.validate_scalar_expression(base, &format!("{path}.check.base"));
                 match difficulty {
                     RpgIrScalarTestDifficulty::Explicit { value } => {
-                        self.validate_formula(value, &format!("{path}.check.difficulty.value"));
+                        self.validate_scalar_expression(
+                            value,
+                            &format!("{path}.check.difficulty.value"),
+                        );
                     }
                     RpgIrScalarTestDifficulty::TargetDefense { defense_id } => {
                         self.require_reference(
@@ -1758,12 +1761,33 @@ impl<'a> Validator<'a> {
     }
 
     fn validate_formula(&mut self, formula: &RpgIrFormula, path: &str) {
-        self.validate_formula_at(formula, path, true);
+        self.validate_formula_with_policy(formula, path, true, true);
     }
 
     fn validate_formula_at(&mut self, formula: &RpgIrFormula, path: &str, target_bound: bool) {
+        self.validate_formula_with_policy(formula, path, target_bound, true);
+    }
+
+    fn validate_scalar_expression(&mut self, formula: &RpgIrFormula, path: &str) {
+        self.validate_formula_with_policy(formula, path, true, false);
+    }
+
+    fn validate_formula_with_policy(
+        &mut self,
+        formula: &RpgIrFormula,
+        path: &str,
+        target_bound: bool,
+        allow_random: bool,
+    ) {
         let mut node_count = 0;
-        self.validate_formula_node(formula, path, target_bound, 1, &mut node_count);
+        self.validate_formula_node(
+            formula,
+            path,
+            target_bound,
+            allow_random,
+            1,
+            &mut node_count,
+        );
     }
 
     fn validate_formula_node(
@@ -1771,6 +1795,7 @@ impl<'a> Validator<'a> {
         formula: &RpgIrFormula,
         path: &str,
         target_bound: bool,
+        allow_random: bool,
         depth: usize,
         node_count: &mut usize,
     ) {
@@ -1812,12 +1837,21 @@ impl<'a> Validator<'a> {
                         term,
                         &format!("{path}.terms[{index}]"),
                         target_bound,
+                        allow_random,
                         depth + 1,
                         node_count,
                     );
                 }
             }
             RpgIrFormula::Dice { count, sides, .. } => {
+                if !allow_random {
+                    self.error(
+                        RpgDiagnosticStage::Semantics,
+                        "RPG_IR_SCALAR_TEST_RANDOM_FORMULA_INVALID",
+                        path,
+                        "scalar-test base and explicit difficulty expressions cannot contain dice",
+                    );
+                }
                 if *count == 0 || *count > MAX_DICE_COUNT || *sides < 2 || *sides > MAX_DICE_SIDES {
                     self.error(
                         RpgDiagnosticStage::Semantics,
@@ -1826,13 +1860,16 @@ impl<'a> Validator<'a> {
                         "dice count or side count is outside the supported bounds",
                     );
                 }
-                self.require_capability("capability.random", path);
+                if allow_random {
+                    self.require_capability("capability.random", path);
+                }
             }
             RpgIrFormula::Half { value } => {
                 self.validate_formula_node(
                     value,
                     &format!("{path}.value"),
                     target_bound,
+                    allow_random,
                     depth + 1,
                     node_count,
                 );

@@ -50,10 +50,13 @@ generic Ruleset-owned scalar tests, and no-roll flows. Scalar profiles declare
 one d2..d100 primary die, checked numeric domains, complete margin thresholds,
 ordered outcome bands, disjoint natural rules, and an optional contribution
 selector. Actions provide a base, explicit difficulty or target defense, and
-one closed outcome/default branch map. Rust applies margin classification, a
-matching natural rule, and canonical contextual item/feature band shifts
-before executing exactly one branch. Contested roll pairs, reroll/keep
-mechanics, and heterogeneous dice remain unsupported. Programs support bounded
+one closed outcome/default branch map. Scalar base and explicit-difficulty
+expressions are deliberately non-random: they may compose constants, named
+stat reads, addition, and halving, but cannot introduce another die. Rust
+applies margin classification, a matching natural rule, and canonical
+contextual item/feature band shifts before executing exactly one branch.
+Contested roll pairs, reroll/keep mechanics, and heterogeneous dice remain
+unsupported. Programs support bounded
 sequence, predicate branch, repeat, per-target branch, check/outcome branches,
 and one atomic root. Unavailable semantics fail compilation; they are never
 delegated to consumer callbacks.

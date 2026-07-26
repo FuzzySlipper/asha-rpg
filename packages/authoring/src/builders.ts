@@ -4,6 +4,7 @@ import type {
   RpgIrFormula,
   RpgIrPredicate,
   RpgIrResourceCost,
+  RpgIrScalarExpression,
   RpgIrSubject,
   RpgIrTargetSelector,
   RpgReactionId,
@@ -111,14 +112,14 @@ export function ally(options: {
       });
 }
 
-export function constant(value: number): RpgIrFormula {
+export function constant(value: number): RpgIrScalarExpression {
   return frozen({ kind: 'constant', value });
 }
 
 export function readStat(
   subject: RpgIrSubject,
   id: AuthoredStatReference,
-): RpgIrFormula {
+): RpgIrScalarExpression {
   return frozenWithCatalogOwnership(
     { kind: 'readStat' as const, subject, statId: authoredValueId(id) },
     'statId',
@@ -126,6 +127,10 @@ export function readStat(
   );
 }
 
+export function add(
+  ...terms: readonly RpgIrScalarExpression[]
+): RpgIrScalarExpression;
+export function add(...terms: readonly RpgIrFormula[]): RpgIrFormula;
 export function add(...terms: readonly RpgIrFormula[]): RpgIrFormula {
   return frozen({ kind: 'add', terms: frozenList(terms) });
 }
@@ -143,6 +148,8 @@ export function dice(options: {
   });
 }
 
+export function half(value: RpgIrScalarExpression): RpgIrScalarExpression;
+export function half(value: RpgIrFormula): RpgIrFormula;
 export function half(value: RpgIrFormula): RpgIrFormula {
   return frozen({ kind: 'half', value });
 }
@@ -211,11 +218,11 @@ export function savingThrow(options: {
 
 export function scalarTest(options: {
   readonly profile: RulesetScalarTestProfileReference<string, string>;
-  readonly base: RpgIrFormula;
+  readonly base: RpgIrScalarExpression;
   readonly difficulty:
     | {
         readonly kind: 'explicit';
-        readonly value: RpgIrFormula;
+        readonly value: RpgIrScalarExpression;
       }
     | {
         readonly kind: 'targetDefense';

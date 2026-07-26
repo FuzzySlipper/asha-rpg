@@ -230,6 +230,22 @@ function validateAction(
       ),
     );
   }
+  if (action.check.kind === 'scalarTest') {
+    validateScalarExpression(
+      action.check.base,
+      `${path}.check.base`,
+      diagnostics,
+      action.sourcePath,
+    );
+    if (action.check.difficulty.kind === 'explicit') {
+      validateScalarExpression(
+        action.check.difficulty.value,
+        `${path}.check.difficulty.value`,
+        diagnostics,
+        action.sourcePath,
+      );
+    }
+  }
   if (!integerInRange(action.targets.maximumTargets, 1, 32)) {
     diagnostics.push(
       diagnostic(
@@ -309,6 +325,46 @@ function validateAction(
     diagnostics,
     action.sourcePath,
   );
+}
+
+function validateScalarExpression(
+  formula: RpgIrFormula,
+  path: string,
+  diagnostics: AuthoringDiagnostic[],
+  sourcePath: string,
+): void {
+  switch (formula.kind) {
+    case 'constant':
+    case 'readStat':
+      return;
+    case 'add':
+      for (const [index, term] of formula.terms.entries()) {
+        validateScalarExpression(
+          term,
+          `${path}.terms[${index}]`,
+          diagnostics,
+          sourcePath,
+        );
+      }
+      return;
+    case 'half':
+      validateScalarExpression(
+        formula.value,
+        `${path}.value`,
+        diagnostics,
+        sourcePath,
+      );
+      return;
+    case 'dice':
+      diagnostics.push(
+        diagnostic(
+          'normalization.scalarTestRandomFormulaInvalid',
+          path,
+          'scalar-test base and explicit difficulty expressions cannot contain dice',
+          sourcePath,
+        ),
+      );
+  }
 }
 
 function isSelectedDestinationMovementProgram(

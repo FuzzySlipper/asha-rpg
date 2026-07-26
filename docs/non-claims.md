@@ -47,3 +47,7 @@ mutable toggles, user-authored predicates, pool/category transformations,
 probability previews, or calculation owners beyond the currently bound attack
 modifier and scalar-test profiles. `F2` through `F6` in the first-wave catalog
 remain implementation non-claims.
+
+Scalar-test base and explicit-difficulty expressions cannot request formula
+dice. The profile's one primary die is their complete random surface;
+additional or heterogeneous dice belong to the deferred pool contract.

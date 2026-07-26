@@ -631,6 +631,11 @@ fn scalar_test_profiles_resolve_ordered_outcomes_naturals_context_and_replay() {
             path: "$.action.check".to_owned(),
         }
     );
+    assert_eq!(
+        action.random_plan.len(),
+        1,
+        "scalar-test checks advertise only their exact primary die"
+    );
 
     let scenario = conditional_feature_scenario(&bundle);
     for (entries, expected_code) in [
@@ -726,6 +731,16 @@ fn scalar_test_profiles_resolve_ordered_outcomes_naturals_context_and_replay() {
     let RpgCommandOutcome::Accepted(receipt) = outcome else {
         panic!("scalar test should be accepted: {outcome:?}");
     };
+    assert_eq!(
+        session.accepted_random_values(),
+        1,
+        "accepted scalar tests consume exactly the profile primary die"
+    );
+    assert_eq!(receipt.random_evidence.len(), 1);
+    assert_eq!(
+        receipt.random_evidence[0].request.kind,
+        RpgRandomRequestKind::ScalarTest
+    );
     let scalar = receipt
         .events
         .iter()
@@ -867,6 +882,62 @@ fn scalar_test_profiles_resolve_ordered_outcomes_naturals_context_and_replay() {
         ),
         "success"
     );
+
+    for (location, replacement) in [
+        (
+            "base",
+            json!({"kind": "dice", "count": 1, "sides": 6, "bonus": 0}),
+        ),
+        (
+            "difficulty",
+            json!({
+                "kind": "explicit",
+                "value": {
+                    "kind": "add",
+                    "terms": [
+                        {"kind": "constant", "value": 10},
+                        {
+                            "kind": "half",
+                            "value": {
+                                "kind": "dice",
+                                "count": 1,
+                                "sides": 4,
+                                "bonus": 0
+                            }
+                        }
+                    ]
+                }
+            }),
+        ),
+    ] {
+        let mut invalid = prepared.clone();
+        let action = invalid
+            .materialized_definitions
+            .iter_mut()
+            .find(|definition| definition.id == "action.strike")
+            .unwrap();
+        action.semantic["action"]["check"][location] = replacement.clone();
+        action.fingerprint = materialized_definition_fingerprint(action).unwrap();
+        let failure = compile_prepared_play_bundle(invalid).unwrap_err();
+        assert!(failure
+            .diagnostics
+            .iter()
+            .any(|diagnostic| { diagnostic.code == "RPG_IR_SCALAR_TEST_RANDOM_FORMULA_INVALID" }));
+
+        let mut tampered = bundle.artifact().clone();
+        let action = tampered
+            .materialized_definitions
+            .iter_mut()
+            .find(|definition| definition.id == "action.strike")
+            .unwrap();
+        action.semantic["action"]["check"][location] = replacement;
+        action.fingerprint = materialized_definition_fingerprint(action).unwrap();
+        let failure = load_compiled_play_bundle(tampered).unwrap_err();
+        assert!(failure
+            .diagnostics
+            .iter()
+            .any(|diagnostic| { diagnostic.code == "RPG_IR_SCALAR_TEST_RANDOM_FORMULA_INVALID" }));
+    }
 
     let mut malformed = prepared.clone();
     malformed.ruleset.provides.scalar_test_profiles[0].margin_rules[1].minimum = Some(1);

@@ -145,6 +145,12 @@ function validateAction(action, path, diagnostics) {
         action.rollScope !== 'perTarget') {
         diagnostics.push(diagnostic('normalization.rollScopeInvalid', `${path}.rollScope`, 'rolled checks require shared or per-target scope', action.sourcePath));
     }
+    if (action.check.kind === 'scalarTest') {
+        validateScalarExpression(action.check.base, `${path}.check.base`, diagnostics, action.sourcePath);
+        if (action.check.difficulty.kind === 'explicit') {
+            validateScalarExpression(action.check.difficulty.value, `${path}.check.difficulty.value`, diagnostics, action.sourcePath);
+        }
+    }
     if (!integerInRange(action.targets.maximumTargets, 1, 32)) {
         diagnostics.push(diagnostic('normalization.targetBoundInvalid', `${path}.targets.maximumTargets`, 'target maximum must be an integer between 1 and 32', action.sourcePath));
     }
@@ -169,6 +175,23 @@ function validateAction(action, path, diagnostics) {
         }
     }
     validateProgram(action.program, `${path}.program`, 1, action.check.kind, diagnostics, action.sourcePath);
+}
+function validateScalarExpression(formula, path, diagnostics, sourcePath) {
+    switch (formula.kind) {
+        case 'constant':
+        case 'readStat':
+            return;
+        case 'add':
+            for (const [index, term] of formula.terms.entries()) {
+                validateScalarExpression(term, `${path}.terms[${index}]`, diagnostics, sourcePath);
+            }
+            return;
+        case 'half':
+            validateScalarExpression(formula.value, `${path}.value`, diagnostics, sourcePath);
+            return;
+        case 'dice':
+            diagnostics.push(diagnostic('normalization.scalarTestRandomFormulaInvalid', path, 'scalar-test base and explicit difficulty expressions cannot contain dice', sourcePath));
+    }
 }
 function isSelectedDestinationMovementProgram(program) {
     if (program.kind !== 'onCheck')

@@ -10,5 +10,5 @@ export * from './play-bundle-compiler.js';
 export * from './content-patch-builders.js';
 export type * from './types.js';
 export type * from './play-bundle-types.js';
-export type { NormalizedRpgIr, RpgActionId, RpgDamageType, RpgDefenseId, RpgModifierId, RpgResourceId, RpgStackingGroup, RpgStatId, } from '@asha-rpg/ir';
+export type { NormalizedRpgIr, RpgActionId, RpgDamageType, RpgDefenseId, RpgModifierId, RpgResourceId, RpgIrScalarExpression, RpgStackingGroup, RpgStatId, } from '@asha-rpg/ir';
 //# sourceMappingURL=index.d.ts.map

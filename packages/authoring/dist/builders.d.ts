@@ -1,4 +1,4 @@
-import type { RpgActionId, RpgIrComparison, RpgIrFormula, RpgIrPredicate, RpgIrResourceCost, RpgIrSubject, RpgIrTargetSelector, RpgReactionId, RpgReactionOptionId, RpgStackingGroup } from '@asha-rpg/ir';
+import type { RpgActionId, RpgIrComparison, RpgIrFormula, RpgIrPredicate, RpgIrResourceCost, RpgIrScalarExpression, RpgIrSubject, RpgIrTargetSelector, RpgReactionId, RpgReactionOptionId, RpgStackingGroup } from '@asha-rpg/ir';
 import type { ActionInput, AuthoredAction, AuthoredActionSource, AuthoredPackage, AuthoringDuration, AuthoringProgram, AuthoringStacking, AuthoringTiming, CheckBranchInput, OutcomeBranchInput } from './types.js';
 import type { ContentCatalogReference } from './catalogs.js';
 import type { RulesetCalculationSelectorReference, RulesetScalarTestProfileReference, RulesetValueReference } from './ruleset-builders.js';
@@ -24,14 +24,16 @@ export declare function ally(options: {
     readonly range: number;
     readonly maximum?: number;
 }): RpgIrTargetSelector;
-export declare function constant(value: number): RpgIrFormula;
-export declare function readStat(subject: RpgIrSubject, id: AuthoredStatReference): RpgIrFormula;
+export declare function constant(value: number): RpgIrScalarExpression;
+export declare function readStat(subject: RpgIrSubject, id: AuthoredStatReference): RpgIrScalarExpression;
+export declare function add(...terms: readonly RpgIrScalarExpression[]): RpgIrScalarExpression;
 export declare function add(...terms: readonly RpgIrFormula[]): RpgIrFormula;
 export declare function dice(options: {
     readonly count: number;
     readonly sides: number;
     readonly bonus?: number;
 }): RpgIrFormula;
+export declare function half(value: RpgIrScalarExpression): RpgIrScalarExpression;
 export declare function half(value: RpgIrFormula): RpgIrFormula;
 export declare function always(): RpgIrPredicate;
 export declare function compare(left: RpgIrFormula, comparison: RpgIrComparison, right: RpgIrFormula): RpgIrPredicate;
@@ -56,10 +58,10 @@ export declare function savingThrow(options: {
 }>;
 export declare function scalarTest(options: {
     readonly profile: RulesetScalarTestProfileReference<string, string>;
-    readonly base: RpgIrFormula;
+    readonly base: RpgIrScalarExpression;
     readonly difficulty: {
         readonly kind: 'explicit';
-        readonly value: RpgIrFormula;
+        readonly value: RpgIrScalarExpression;
     } | {
         readonly kind: 'targetDefense';
         readonly defense: AuthoredDefenseReference;
