@@ -6,14 +6,16 @@ use rpg_core::{
     RpgEntityState, RpgResolutionReceipt, StateFingerprint, Team,
 };
 use rpg_ir::{
-    CompiledPlayBundleArtifact, ContentPackDependencyLockEntry, PlayBundleArtifactSchema,
-    PlayBundleFingerprints, ResolvedContentPack, RpgVersionedIdentity, VersionedRpgRequirement,
+    CompiledEffectDefinition, CompiledPlayBundleArtifact, ContentPackDependencyLockEntry,
+    PlayBundleArtifactSchema, PlayBundleFingerprints, ResolvedContentPack, RpgVersionedIdentity,
+    VersionedRpgRequirement,
 };
 use serde::{Deserialize, Serialize};
 
 use crate::semantic_session::{
     PendingTransaction, PreparedAreaCommand, RpgAuthorityCommand, RpgAuthoritySession,
-    RpgCommandOutcome, RpgPendingReaction, RpgReactionCommand, RpgTurnControlCommand,
+    RpgCommandOutcome, RpgPendingReaction, RpgPendingTurnSave, RpgReactionCommand,
+    RpgTurnControlCommand,
 };
 use crate::{
     encounter::{validate_derived_state, validate_restored_encounter},
@@ -22,9 +24,9 @@ use crate::{
 
 pub const RPG_CHECKPOINT_SCHEMA_ID: &str = "asha.rpg.session.checkpoint";
 pub const RPG_REPLAY_ENTRY_SCHEMA_ID: &str = "asha.rpg.session.replay-entry";
-pub const RPG_CHECKPOINT_SCHEMA_VERSION: u32 = 11;
-pub const RPG_REPLAY_ENTRY_SCHEMA_VERSION: u32 = 12;
-pub const RPG_EVENT_SCHEMA_VERSION: u32 = 10;
+pub const RPG_CHECKPOINT_SCHEMA_VERSION: u32 = 12;
+pub const RPG_REPLAY_ENTRY_SCHEMA_VERSION: u32 = 13;
+pub const RPG_EVENT_SCHEMA_VERSION: u32 = 11;
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase", deny_unknown_fields)]
@@ -99,6 +101,7 @@ pub struct RpgPortableEffect {
     pub remaining_count: u32,
     pub application_revision: u64,
     pub duration_anchor: rpg_core::RpgEffectDurationAnchor,
+    pub tenure: rpg_core::RpgEffectTenure,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
@@ -141,6 +144,10 @@ pub enum RpgCheckpointPhase {
         random_values: Vec<u32>,
         pending: Box<RpgPendingReaction>,
     },
+    AwaitingTurnSave {
+        command: RpgTurnControlCommand,
+        pending: Box<RpgPendingTurnSave>,
+    },
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
@@ -164,7 +171,13 @@ pub struct RpgSessionCheckpoint {
 #[serde(tag = "kind", rename_all = "camelCase", deny_unknown_fields)]
 pub enum RpgReplayPhase {
     Ready,
-    AwaitingReaction { reaction_id: String },
+    AwaitingReaction {
+        reaction_id: String,
+    },
+    AwaitingTurnSave {
+        actor_id: String,
+        effect_instance_ids: Vec<String>,
+    },
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
@@ -249,7 +262,7 @@ impl RpgAuthoritySession {
                 "portable checkpoints require a session created from a compiled PlayBundle",
             )
         })?;
-        let state = portable_state(&self.state);
+        let state = portable_state(&self.state, &self.encounter.effect_definitions);
         let phase = checkpoint_phase(self);
         let accepted_random_position = self.accepted_random_values;
         let state_hash = session_state_hash(
@@ -318,6 +331,7 @@ impl RpgAuthoritySession {
                 &checkpoint.schemas,
             ));
         }
+        validate_portable_effect_tenure(&checkpoint.state, bundle.effects())?;
         let state = restore_state(&checkpoint.state)?;
         let derived_diagnostics = validate_derived_state(&bundle, &state);
         if !derived_diagnostics.is_empty() {
@@ -395,7 +409,9 @@ impl RpgAuthoritySession {
                     .collect(),
             });
         }
-        restored.pending = restore_phase(&checkpoint.phase, &restored)?;
+        let (pending_reaction, pending_turn_save) = restore_phase(&checkpoint.phase, &restored)?;
+        restored.pending = pending_reaction;
+        restored.pending_turn_save = pending_turn_save;
         Ok(restored)
     }
 
@@ -493,7 +509,7 @@ impl RpgAuthoritySession {
     }
 
     pub fn state_hash(&self) -> Result<StateFingerprint, RpgReplayFailure> {
-        let state = portable_state(&self.state);
+        let state = portable_state(&self.state, &self.encounter.effect_definitions);
         let phase = checkpoint_phase(self);
         session_state_hash(
             &self.encounter.scenario,
@@ -808,7 +824,10 @@ fn validate_replay_entry_schema(
     Ok(())
 }
 
-fn portable_state(state: &RpgCapabilityState) -> RpgPortableCapabilityState {
+fn portable_state(
+    state: &RpgCapabilityState,
+    effect_definitions: &std::collections::BTreeMap<String, CompiledEffectDefinition>,
+) -> RpgPortableCapabilityState {
     RpgPortableCapabilityState {
         revision: state.revision(),
         accepted_activations_this_turn: state.accepted_activations_this_turn(),
@@ -864,6 +883,10 @@ fn portable_state(state: &RpgCapabilityState) -> RpgPortableCapabilityState {
                         remaining_count: effect.remaining_count(),
                         application_revision: effect.application_revision(),
                         duration_anchor: effect.duration_anchor(),
+                        tenure: effect_definitions
+                            .get(effect.definition_id())
+                            .map(|definition| definition.tenure)
+                            .unwrap_or_else(|| effect.tenure()),
                     })
                     .collect(),
                 activation_budgets: entity
@@ -876,6 +899,35 @@ fn portable_state(state: &RpgCapabilityState) -> RpgPortableCapabilityState {
             })
             .collect(),
     }
+}
+
+fn validate_portable_effect_tenure(
+    state: &RpgPortableCapabilityState,
+    effect_definitions: &[CompiledEffectDefinition],
+) -> Result<(), RpgReplayFailure> {
+    for (entity_index, entity) in state.entities.iter().enumerate() {
+        for (effect_index, effect) in entity.effects.iter().enumerate() {
+            let Some(definition) = effect_definitions.iter().find(|definition| {
+                definition.definition_id == effect.definition_id
+                    && definition.definition_version == effect.definition_version
+            }) else {
+                continue;
+            };
+            if effect.tenure != definition.tenure
+                || effect.duration_anchor != definition.duration_anchor
+            {
+                return Err(replay_failure(
+                    "RPG_CHECKPOINT_EFFECT_STATE_MISMATCH",
+                    format!("$.state.entities[{entity_index}].effects[{effect_index}].tenure"),
+                    format!(
+                        "effect {} tenure does not match the compiled definition",
+                        effect.instance_id
+                    ),
+                ));
+            }
+        }
+    }
+    Ok(())
 }
 
 fn restore_state(
@@ -978,23 +1030,35 @@ fn state_restore_failure(path: &str, error: rpg_core::RpgStateRestoreError) -> R
 }
 
 fn checkpoint_phase(session: &RpgAuthoritySession) -> RpgCheckpointPhase {
-    match &session.pending {
-        None => RpgCheckpointPhase::Ready,
-        Some(transaction) => RpgCheckpointPhase::AwaitingReaction {
+    match (&session.pending, &session.pending_turn_save) {
+        (None, None) => RpgCheckpointPhase::Ready,
+        (Some(transaction), None) => RpgCheckpointPhase::AwaitingReaction {
             expected_revision: transaction.expected_revision,
             intent: Box::new(transaction.portable_intent.clone()),
             random_values: transaction.random_values.clone(),
             pending: Box::new(transaction.pending.clone()),
         },
+        (None, Some(pending)) => RpgCheckpointPhase::AwaitingTurnSave {
+            command: RpgTurnControlCommand {
+                expected_revision: pending.expected_revision,
+                actor_id: pending.actor_id.clone(),
+                control: pending.control.clone(),
+                random_values: Vec::new(),
+            },
+            pending: Box::new(pending.clone()),
+        },
+        (Some(_), Some(_)) => {
+            unreachable!("reaction and turn-save phases are mutually exclusive")
+        }
     }
 }
 
 fn restore_phase(
     phase: &RpgCheckpointPhase,
     baseline: &RpgAuthoritySession,
-) -> Result<Option<PendingTransaction>, RpgReplayFailure> {
+) -> Result<(Option<PendingTransaction>, Option<RpgPendingTurnSave>), RpgReplayFailure> {
     match phase {
-        RpgCheckpointPhase::Ready => Ok(None),
+        RpgCheckpointPhase::Ready => Ok((None, None)),
         RpgCheckpointPhase::AwaitingReaction {
             expected_revision,
             intent,
@@ -1044,17 +1108,61 @@ fn restore_phase(
                         "Rust authority did not retain the verified pending transaction",
                     )
                 })
-                .map(Some)
+                .map(|pending| (Some(pending), None))
+        }
+        RpgCheckpointPhase::AwaitingTurnSave { command, pending } => {
+            let mut proof = baseline.clone();
+            proof.pending = None;
+            proof.pending_turn_save = None;
+            let outcome = proof.control(command.clone());
+            let RpgCommandOutcome::AwaitingTurnSave(actual) = outcome else {
+                return Err(replay_mismatch(
+                    "RPG_CHECKPOINT_PHASE_MISMATCH",
+                    "$.phase",
+                    pending.as_ref(),
+                    &outcome,
+                ));
+            };
+            if pending.as_ref() != &actual {
+                return Err(replay_mismatch(
+                    "RPG_CHECKPOINT_PHASE_MISMATCH",
+                    "$.phase.pending",
+                    pending.as_ref(),
+                    &actual,
+                ));
+            }
+            proof
+                .pending_turn_save
+                .take()
+                .ok_or_else(|| {
+                    replay_failure(
+                        "RPG_CHECKPOINT_PHASE_MISMATCH",
+                        "$.phase.pending",
+                        "Rust authority did not retain the verified pending turn save",
+                    )
+                })
+                .map(|pending| (None, Some(pending)))
         }
     }
 }
 
 fn replay_boundary(session: &RpgAuthoritySession) -> Result<RpgReplayBoundary, RpgReplayFailure> {
-    let phase = match session.pending_reaction() {
-        None => RpgReplayPhase::Ready,
-        Some(pending) => RpgReplayPhase::AwaitingReaction {
+    let phase = match (session.pending_reaction(), &session.pending_turn_save) {
+        (None, None) => RpgReplayPhase::Ready,
+        (Some(pending), None) => RpgReplayPhase::AwaitingReaction {
             reaction_id: pending.request.reaction_id.clone(),
         },
+        (None, Some(pending)) => RpgReplayPhase::AwaitingTurnSave {
+            actor_id: pending.actor_id.clone(),
+            effect_instance_ids: pending
+                .candidates
+                .iter()
+                .map(|candidate| candidate.instance_id.clone())
+                .collect(),
+        },
+        (Some(_), Some(_)) => {
+            unreachable!("reaction and turn-save phases are mutually exclusive")
+        }
     };
     Ok(RpgReplayBoundary {
         revision: session.state.revision(),
@@ -1231,6 +1339,19 @@ fn compare_outcome(
                     &actual.random_evidence,
                 ));
             }
+            if expected != actual {
+                return Err(replay_mismatch(
+                    "RPG_REPLAY_PHASE_MISMATCH",
+                    path,
+                    expected,
+                    actual,
+                ));
+            }
+        }
+        (
+            RpgCommandOutcome::AwaitingTurnSave(expected),
+            RpgCommandOutcome::AwaitingTurnSave(actual),
+        ) => {
             if expected != actual {
                 return Err(replay_mismatch(
                     "RPG_REPLAY_PHASE_MISMATCH",

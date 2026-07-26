@@ -153,11 +153,19 @@ names the policy and canonical retained sources. The ledger owns no mutable
 state and consumes no randomness.
 
 The item, feature, and named-effect schemas may separately declare
-`asha.rpg.pool-contribution@1` records for a Ruleset-owned heterogeneous-pool
+`asha.rpg.pool-contribution@2` records for a Ruleset-owned heterogeneous-pool
 profile. Their closed effects add a die count, add an automatic result-axis
 value, or replace one die at a time with an explicit fallback. They reuse the
 typed predicate and stacking contracts, but never pass through the scalar
 selector ledger.
+
+Scalar, outcome-band, and heterogeneous-pool contributions use an explicit
+`actor` or `target` subject. Items and selected features are actor-owned;
+active named effects may contribute through either lane. Rust gathers the
+actor lane from effects on the acting participant and the target lane from
+effects on the participant currently being resolved. The subject is part of
+the canonical contribution identity and retained ledger; TypeScript does not
+infer it from presentation or execute it.
 
 One source may declare at most 32 contributions of each typed family, one
 evaluation may gather at
@@ -216,15 +224,29 @@ only matching budgets, reset the accepted count, and emit the complete
 lifecycle evidence. Runtime internals,
 compiled programs, and capability-store layout are not serialized contracts.
 
-Named effect definitions are sealed `asha.rpg.effect@1` content with a bounded
-rank, one portable stacking identity/policy, one positive `1..=1000`
-global-turn, round, source-turn, or target-turn duration, and at most 32 typed
-registered contributions. `applyEffect` and `removeEffect` are the only
-mutation operations. Rust retains exact target/source/definition/instance
-identity, rank, remaining count, anchor, policy, and application revision.
+Named effect definitions are sealed `asha.rpg.effect@2` content with a bounded
+rank, one portable stacking identity/policy, and one typed tenure. Fixed tenure
+uses a positive `1..=1000` global-turn, round, source-turn, or target-turn
+count. Save-ends tenure requests one d20 at the target's turn end and succeeds
+on 10 or higher. An effect may also carry at most 32 canonical typed condition
+clauses that forbid an action tag, require an action tag, or forbid movement.
+Rust applies those restrictions both while projecting choices and during
+submission preflight, retaining the exact unavailable effect source. At most
+32 typed registered contributions are accepted. `applyEffect` and
+`removeEffect` are the only authored mutation operations. Rust retains exact
+target/source/definition/instance identity, rank, tenure, remaining count,
+condition clauses, policy, and application revision.
 `independentBySource`, `replace`, and `refresh` are deterministic; an instance
 applied or refreshed in the transaction that advances a matching boundary
 does not age until a later accepted transaction.
+
+Explicit end-turn may enter an awaiting-turn-save phase with canonically
+ordered effect candidates. Each candidate owns one exact
+`effectSave` d20 request. Resolution, effect expiry or retention, budget reset,
+and turn transition are one staged transaction. Wrong evidence cardinality or
+range preserves the pending phase, state, log, revision, accepted random
+position, and state hash. Fixed-action turn models collect the same evidence
+before their automatic transition, so they cannot bypass save-ends tenure.
 
 ## Scenario and persistence
 
@@ -234,14 +256,16 @@ numeric domains, content-owned resource/modifier ids, board, occupancy,
 initiative, capability owners, and random-source binding before mutable state
 exists.
 
-Checkpoint schema version 10 embeds the exact compiled PlayBundle, Scenario and
+Checkpoint schema version 12 embeds the exact compiled PlayBundle, Scenario and
 Scenario fingerprint, portable state, turn/log, accepted random position,
-pending phase, named effect instances, and canonical state hash. Replay entry schema version 11 records
+pending reaction or turn-save phase, named effect instances, and canonical
+state hash. Replay entry schema version 13 records
 ordinary submit/reaction/turn-control operations and verifies before/after
-boundaries. Accepted event schema version 9 and encounter-view schema version 11
+boundaries. Accepted event schema version 11 and encounter-view schema version 13
 carry the contextual contribution ledger, character selection, activation
 budgets, accepted activation count, exact authority-derived area selections,
-and structured typed-damage packet evidence. Replay never reruns
+structured typed-damage packet evidence, active-effect tenure/conditions, and
+pending save requests. Replay never reruns
 authoring or substitutes a candidate artifact.
 
 ## TypeScript authoring

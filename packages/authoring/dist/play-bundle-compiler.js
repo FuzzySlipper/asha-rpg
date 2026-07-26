@@ -104,7 +104,7 @@ export function preparePlayBundle(options) {
         })),
     ].sort(compareRelationship);
     const prepared = immutable({
-        schema: { identity: 'asha.rpg.play-bundle.prepared', major: 10 },
+        schema: { identity: 'asha.rpg.play-bundle.prepared', major: 11 },
         playBundleIdentity: options.bundle.identity,
         ruleset: options.bundle.ruleset,
         contentPacks: [...context.selected.values()]
@@ -3158,8 +3158,8 @@ function validateEffectDefinitions(records, resolvedReferences, ruleset, diagnos
             diagnostics.push(diagnostic('compatibility', 'EFFECT_EXTENSION_POLICY_UNSUPPORTED', `$.packages[${record.package.key}].definitions.${record.definition.id}.extensionPolicy`, 'effect definitions are sealed in the current semantic contract', profileDiagnosticContext(record)));
         }
         if (data.schema.identity !== 'asha.rpg.effect' ||
-            data.schema.version !== 1) {
-            diagnostics.push(diagnostic('compatibility', 'EFFECT_SCHEMA_UNSUPPORTED', `${path}.schema`, 'effect definitions require asha.rpg.effect@1', profileDiagnosticContext(record)));
+            data.schema.version !== 2) {
+            diagnostics.push(diagnostic('compatibility', 'EFFECT_SCHEMA_UNSUPPORTED', `${path}.schema`, 'effect definitions require asha.rpg.effect@2', profileDiagnosticContext(record)));
         }
         if (!Number.isSafeInteger(data.rankMinimum) ||
             !Number.isSafeInteger(data.rankMaximum) ||
@@ -3174,16 +3174,18 @@ function validateEffectDefinitions(records, resolvedReferences, ruleset, diagnos
             diagnostics.push(diagnostic('source', 'EFFECT_STACKING_POLICY_CONFLICT', `${path}.stacking`, `stacking identity ${data.stackingId} must use one policy across the PlayBundle`, profileDiagnosticContext(record)));
         }
         stackingPolicies.set(data.stackingId, data.stacking);
-        if (!Number.isSafeInteger(data.durationCount) || data.durationCount < 1 || data.durationCount > 1_000) {
-            diagnostics.push(diagnostic('source', 'EFFECT_DURATION_INVALID', `${path}.durationCount`, 'effect duration count must be an integer within 1..=1000', profileDiagnosticContext(record)));
-        }
+        validateEffectTenure(data.tenure, `${path}.tenure`, diagnostics, record);
+        validateEffectCondition(data.condition, `${path}.condition`, records, diagnostics, record);
         const contributionCount = data.contributions.length +
             data.outcomeBandShifts.length +
             data.poolContributions.length;
         if (contributionCount > 32 ||
             data.damageResponses.length > 64 ||
-            contributionCount + data.damageResponses.length < 1) {
-            diagnostics.push(diagnostic('source', 'EFFECT_CONTRIBUTIONS_INVALID', path, 'effect definitions require at least one typed entry, at most 32 roll contributions, and at most 64 damage responses', profileDiagnosticContext(record)));
+            contributionCount +
+                data.damageResponses.length +
+                (data.condition === null ? 0 : data.condition.clauses.length) <
+                1) {
+            diagnostics.push(diagnostic('source', 'EFFECT_CONTRIBUTIONS_INVALID', path, 'effect definitions require at least one typed entry, at most 32 roll contributions, at most 32 condition clauses, and at most 64 damage responses', profileDiagnosticContext(record)));
         }
         validateScalarContributions(data.contributions, `${path}.contributions`, record, ruleset, diagnostics);
         validateOutcomeBandShifts(data.outcomeBandShifts, `${path}.outcomeBandShifts`, record, ruleset, diagnostics);
@@ -3201,6 +3203,48 @@ function validateEffectDefinitions(records, resolvedReferences, ruleset, diagnos
         if (count > 128) {
             diagnostics.push(diagnostic('source', 'EFFECT_DEFINITION_LIMIT_EXCEEDED', '$.materializedDefinitions', `package ${packageId} has ${count} effects; maximum is 128`, {}));
         }
+    }
+}
+function validateEffectTenure(tenure, path, diagnostics, record) {
+    if (tenure.kind === 'fixed') {
+        if (!Number.isSafeInteger(tenure.count) ||
+            tenure.count < 1 ||
+            tenure.count > 1_000) {
+            diagnostics.push(diagnostic('source', 'EFFECT_TENURE_INVALID', `${path}.count`, 'fixed effect tenure count must be an integer within 1..=1000', profileDiagnosticContext(record)));
+        }
+    }
+}
+function validateEffectCondition(condition, path, records, diagnostics, record) {
+    if (condition === null)
+        return;
+    if (condition.clauses.length < 1 || condition.clauses.length > 32) {
+        diagnostics.push(diagnostic('source', 'EFFECT_CONDITION_CLAUSE_LIMIT_INVALID', `${path}.clauses`, 'a condition requires 1..=32 canonical clauses', profileDiagnosticContext(record)));
+    }
+    const actionTags = new Set(records.flatMap((candidate) => candidate.definition.kind === 'action'
+        ? (candidate.definition.action?.tags ?? [])
+        : []));
+    const requirements = new Map();
+    let previousKey;
+    for (const [index, clause] of condition.clauses.entries()) {
+        const clausePath = `${path}.clauses[${index}]`;
+        const key = clause.kind === 'forbidMovement'
+            ? '2:forbidMovement'
+            : `${clause.kind === 'forbidActionTag' ? '0' : '1'}:${clause.actionTag}`;
+        if (previousKey !== undefined && previousKey >= key) {
+            diagnostics.push(diagnostic('source', 'EFFECT_CONDITION_CLAUSES_NOT_CANONICAL', clausePath, 'condition clauses must be unique and canonically sorted', profileDiagnosticContext(record)));
+        }
+        previousKey = key;
+        if (clause.kind === 'forbidMovement')
+            continue;
+        if (!validPortableIdentifier(clause.actionTag) ||
+            !actionTags.has(clause.actionTag)) {
+            diagnostics.push(diagnostic('graph', 'EFFECT_CONDITION_ACTION_TAG_UNKNOWN', `${clausePath}.actionTag`, `condition clause references unknown action tag ${clause.actionTag}`, profileDiagnosticContext(record)));
+        }
+        const previous = requirements.get(clause.actionTag);
+        if (previous !== undefined && previous !== clause.kind) {
+            diagnostics.push(diagnostic('source', 'EFFECT_CONDITION_CLAUSES_CONTRADICTORY', clausePath, `condition both requires and forbids action tag ${clause.actionTag}`, profileDiagnosticContext(record)));
+        }
+        requirements.set(clause.actionTag, clause.kind);
     }
 }
 function validateDamageResponses(responses, path, diagnostics, context) {
@@ -3257,8 +3301,11 @@ function validateOutcomeBandShifts(shifts, path, record, ruleset, diagnostics) {
             : undefined;
         const maximumShift = profile === undefined ? 15 : Math.min(15, profile.bands.length - 1);
         if (shift.schema.identity !== 'asha.rpg.outcome-band-shift' ||
-            shift.schema.version !== 1) {
-            diagnostics.push(diagnostic('compatibility', 'OUTCOME_BAND_SHIFT_SCHEMA_UNSUPPORTED', `${shiftPath}.schema`, 'outcome-band shifts require asha.rpg.outcome-band-shift@1', profileDiagnosticContext(record)));
+            shift.schema.version !== 2) {
+            diagnostics.push(diagnostic('compatibility', 'OUTCOME_BAND_SHIFT_SCHEMA_UNSUPPORTED', `${shiftPath}.schema`, 'outcome-band shifts require asha.rpg.outcome-band-shift@2', profileDiagnosticContext(record)));
+        }
+        if (record.definition.kind !== 'effect' && shift.subject !== 'actor') {
+            diagnostics.push(diagnostic('compatibility', 'CONTRIBUTION_SUBJECT_LANE_UNSUPPORTED', `${shiftPath}.subject`, 'only named effects may contribute through the target subject lane', profileDiagnosticContext(record)));
         }
         if (!validPortableIdentifier(shift.id) ||
             (previousId !== undefined && previousId >= shift.id) ||
@@ -3277,8 +3324,12 @@ function validateScalarContributions(contributions, path, record, ruleset, diagn
     for (const [index, contribution] of contributions.entries()) {
         const contributionPath = `${path}[${index}]`;
         if (contribution.schema.identity !== 'asha.rpg.scalar-contribution' ||
-            contribution.schema.version !== 1) {
-            diagnostics.push(diagnostic('compatibility', 'SCALAR_CONTRIBUTION_SCHEMA_UNSUPPORTED', `${contributionPath}.schema`, 'scalar contributions require asha.rpg.scalar-contribution@1', profileDiagnosticContext(record)));
+            contribution.schema.version !== 2) {
+            diagnostics.push(diagnostic('compatibility', 'SCALAR_CONTRIBUTION_SCHEMA_UNSUPPORTED', `${contributionPath}.schema`, 'scalar contributions require asha.rpg.scalar-contribution@2', profileDiagnosticContext(record)));
+        }
+        if (record.definition.kind !== 'effect' &&
+            contribution.subject !== 'actor') {
+            diagnostics.push(diagnostic('compatibility', 'CONTRIBUTION_SUBJECT_LANE_UNSUPPORTED', `${contributionPath}.subject`, 'only named effects may contribute through the target subject lane', profileDiagnosticContext(record)));
         }
         if (!validPortableIdentifier(contribution.id) ||
             (previousId !== undefined && previousId >= contribution.id)) {
@@ -3307,8 +3358,12 @@ function validatePoolContributions(contributions, path, record, ruleset, diagnos
             ? ruleset.provides.heterogeneousPoolProfiles.find((candidate) => candidate.id === contribution.profile.id)
             : undefined;
         if (contribution.schema.identity !== 'asha.rpg.pool-contribution' ||
-            contribution.schema.version !== 1) {
-            diagnostics.push(diagnostic('compatibility', 'POOL_CONTRIBUTION_SCHEMA_UNSUPPORTED', `${contributionPath}.schema`, 'pool contributions require asha.rpg.pool-contribution@1', profileDiagnosticContext(record)));
+            contribution.schema.version !== 2) {
+            diagnostics.push(diagnostic('compatibility', 'POOL_CONTRIBUTION_SCHEMA_UNSUPPORTED', `${contributionPath}.schema`, 'pool contributions require asha.rpg.pool-contribution@2', profileDiagnosticContext(record)));
+        }
+        if (record.definition.kind !== 'effect' &&
+            contribution.subject !== 'actor') {
+            diagnostics.push(diagnostic('compatibility', 'CONTRIBUTION_SUBJECT_LANE_UNSUPPORTED', `${contributionPath}.subject`, 'only named effects may contribute through the target subject lane', profileDiagnosticContext(record)));
         }
         if (!validPortableIdentifier(contribution.id) ||
             (previousId !== undefined && previousId >= contribution.id) ||

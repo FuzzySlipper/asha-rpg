@@ -1,10 +1,11 @@
 use std::collections::{BTreeMap, BTreeSet};
 
 use rpg_core::{
-    RpgContributionPredicate, RpgContributionValueExpression, RpgDamageResponseDefinition,
-    RpgDamageResponseEffect, RpgNaturalDieEffect, RpgOutcomeBandShiftDefinition,
-    RpgPoolContributionDefinition, RpgPoolContributionEffect, RpgRulesetValueKind,
-    RpgScalarContributionDefinition, MAXIMUM_RPG_DAMAGE_RESPONSES,
+    RpgConditionDefinition, RpgConditionRestrictionClause, RpgContributionPredicate,
+    RpgContributionSubject, RpgContributionValueExpression, RpgDamageResponseDefinition,
+    RpgDamageResponseEffect, RpgEffectDurationAnchor, RpgEffectTenure, RpgNaturalDieEffect,
+    RpgOutcomeBandShiftDefinition, RpgPoolContributionDefinition, RpgPoolContributionEffect,
+    RpgRulesetValueKind, RpgScalarContributionDefinition, MAXIMUM_RPG_DAMAGE_RESPONSES,
     MAXIMUM_RPG_DAMAGE_SCALE_COMPONENT, MAXIMUM_RPG_DAMAGE_TAGS,
 };
 use rpg_ir::{
@@ -103,11 +104,11 @@ const MAX_CONTRIBUTION_PREDICATE_NODES: usize = 128;
 const MAX_CONTRIBUTION_EXPRESSION_DEPTH: usize = 16;
 const MAX_CONTRIBUTION_EXPRESSION_NODES: usize = 256;
 const SCALAR_CONTRIBUTION_IDENTITY: &str = "asha.rpg.scalar-contribution";
-const SCALAR_CONTRIBUTION_VERSION: u32 = 1;
+const SCALAR_CONTRIBUTION_VERSION: u32 = 2;
 const OUTCOME_BAND_SHIFT_IDENTITY: &str = "asha.rpg.outcome-band-shift";
-const OUTCOME_BAND_SHIFT_VERSION: u32 = 1;
+const OUTCOME_BAND_SHIFT_VERSION: u32 = 2;
 const POOL_CONTRIBUTION_IDENTITY: &str = "asha.rpg.pool-contribution";
-const POOL_CONTRIBUTION_VERSION: u32 = 1;
+const POOL_CONTRIBUTION_VERSION: u32 = 2;
 const DAMAGE_RESPONSE_IDENTITY: &str = "asha.rpg.damage-response";
 const DAMAGE_RESPONSE_VERSION: u32 = 1;
 
@@ -2029,24 +2030,45 @@ fn compile_effects(
                 ));
             }
         }
-        if !(1..=rpg_core::MAXIMUM_RPG_EFFECT_DURATION).contains(&effect.duration_count) {
-            diagnostics.push(RpgDiagnostic::error(
-                RpgDiagnosticStage::Semantics,
-                "EFFECT_DURATION_INVALID",
-                format!("{path}.semantic.durationCount"),
-                format!(
-                    "effect duration count must be within 1..={}",
-                    rpg_core::MAXIMUM_RPG_EFFECT_DURATION
-                ),
-            ));
-        }
+        let (duration_anchor, duration_count) = match effect.tenure {
+            RpgEffectTenure::Fixed { anchor, count } => {
+                if anchor == RpgEffectDurationAnchor::TargetTurnEndSave
+                    || !(1..=rpg_core::MAXIMUM_RPG_EFFECT_DURATION).contains(&count)
+                {
+                    diagnostics.push(RpgDiagnostic::error(
+                        RpgDiagnosticStage::Semantics,
+                        "EFFECT_TENURE_INVALID",
+                        format!("{path}.semantic.tenure"),
+                        format!(
+                            "fixed effect tenure requires a fixed anchor and count within 1..={}",
+                            rpg_core::MAXIMUM_RPG_EFFECT_DURATION
+                        ),
+                    ));
+                }
+                (anchor, count)
+            }
+            RpgEffectTenure::TargetTurnEndSave {} => {
+                (RpgEffectDurationAnchor::TargetTurnEndSave, 1)
+            }
+        };
+        validate_effect_condition(
+            effect.condition.as_ref(),
+            prepared,
+            &format!("{path}.semantic.condition"),
+            &mut diagnostics,
+        );
         let contribution_count = effect
             .contributions
             .len()
             .saturating_add(effect.outcome_band_shifts.len())
             .saturating_add(effect.pool_contributions.len());
-        if (contribution_count == 0 && effect.damage_responses.is_empty())
+        let condition_count = effect
+            .condition
+            .as_ref()
+            .map_or(0, |condition| condition.clauses.len());
+        if (contribution_count == 0 && effect.damage_responses.is_empty() && condition_count == 0)
             || contribution_count > MAX_EFFECT_CONTRIBUTIONS
+            || condition_count > MAX_EFFECT_CONTRIBUTIONS
             || effect.damage_responses.len() > MAXIMUM_RPG_DAMAGE_RESPONSES
         {
             diagnostics.push(RpgDiagnostic::error(
@@ -2054,7 +2076,7 @@ fn compile_effects(
                 "EFFECT_CONTRIBUTIONS_INVALID",
                 format!("{path}.semantic"),
                 format!(
-                    "effect definitions require at least one typed entry, at most {MAX_EFFECT_CONTRIBUTIONS} roll contributions, and at most {MAXIMUM_RPG_DAMAGE_RESPONSES} damage responses"
+                    "effect definitions require at least one typed entry, at most {MAX_EFFECT_CONTRIBUTIONS} roll contributions, at most {MAX_EFFECT_CONTRIBUTIONS} condition clauses, and at most {MAXIMUM_RPG_DAMAGE_RESPONSES} damage responses"
                 ),
             ));
         }
@@ -2112,8 +2134,10 @@ fn compile_effects(
             rank_maximum: effect.rank_maximum,
             stacking_id: effect.stacking_id,
             stacking: effect.stacking,
-            duration_anchor: effect.duration_anchor,
-            duration_count: effect.duration_count,
+            tenure: effect.tenure,
+            duration_anchor,
+            duration_count,
+            condition: effect.condition,
             contributions: effect.contributions,
             outcome_band_shifts: effect.outcome_band_shifts,
             pool_contributions: effect.pool_contributions,
@@ -2257,6 +2281,82 @@ fn compile_character_classes(
     }
 }
 
+fn validate_effect_condition(
+    condition: Option<&RpgConditionDefinition>,
+    prepared: &PreparedPlayBundle,
+    path: &str,
+    diagnostics: &mut Vec<RpgDiagnostic>,
+) {
+    let Some(condition) = condition else {
+        return;
+    };
+    if condition.clauses.is_empty() || condition.clauses.len() > MAX_EFFECT_CONTRIBUTIONS {
+        diagnostics.push(RpgDiagnostic::error(
+            RpgDiagnosticStage::Semantics,
+            "EFFECT_CONDITION_CLAUSE_LIMIT_INVALID",
+            format!("{path}.clauses"),
+            format!("a condition requires 1..={MAX_EFFECT_CONTRIBUTIONS} canonical clauses"),
+        ));
+    }
+    let action_tags = prepared
+        .materialized_definitions
+        .iter()
+        .filter(|definition| definition.kind == MaterializedContentDefinitionKind::Action)
+        .filter_map(|definition| {
+            serde_json::from_value::<MaterializedActionSemantic>(definition.semantic.clone()).ok()
+        })
+        .flat_map(|semantic| match semantic {
+            MaterializedActionSemantic::Inline { action, .. } => action.tags,
+            MaterializedActionSemantic::Invocation { tags, .. } => tags,
+        })
+        .collect::<BTreeSet<_>>();
+    let mut previous = None::<&RpgConditionRestrictionClause>;
+    let mut tag_polarities = BTreeMap::<&str, bool>::new();
+    for (index, clause) in condition.clauses.iter().enumerate() {
+        let clause_path = format!("{path}.clauses[{index}]");
+        if previous.is_some_and(|previous| previous >= clause) {
+            diagnostics.push(RpgDiagnostic::error(
+                RpgDiagnosticStage::Artifact,
+                "EFFECT_CONDITION_CLAUSES_NOT_CANONICAL",
+                &clause_path,
+                "condition clauses must be unique and canonically sorted",
+            ));
+        }
+        previous = Some(clause);
+        let (tag, forbidden) = match clause {
+            RpgConditionRestrictionClause::ForbidActionTag { action_tag } => {
+                (Some(action_tag.as_str()), true)
+            }
+            RpgConditionRestrictionClause::RequireActionTag { action_tag } => {
+                (Some(action_tag.as_str()), false)
+            }
+            RpgConditionRestrictionClause::ForbidMovement => (None, false),
+        };
+        let Some(tag) = tag else {
+            continue;
+        };
+        if !valid_identifier(tag) || !action_tags.contains(tag) {
+            diagnostics.push(RpgDiagnostic::error(
+                RpgDiagnosticStage::References,
+                "EFFECT_CONDITION_ACTION_TAG_UNKNOWN",
+                format!("{clause_path}.actionTag"),
+                format!("condition clause references unknown action tag {tag}"),
+            ));
+        }
+        if tag_polarities
+            .insert(tag, forbidden)
+            .is_some_and(|previous| previous != forbidden)
+        {
+            diagnostics.push(RpgDiagnostic::error(
+                RpgDiagnosticStage::Semantics,
+                "EFFECT_CONDITION_CLAUSES_CONTRADICTORY",
+                clause_path,
+                format!("condition both requires and forbids action tag {tag}"),
+            ));
+        }
+    }
+}
+
 fn required_definition_label(
     definition: &MaterializedContentDefinition,
     definition_index: usize,
@@ -2330,6 +2430,16 @@ fn validate_scalar_contributions(
                 "SCALAR_CONTRIBUTION_SCHEMA_UNSUPPORTED",
                 format!("{contribution_path}.schema"),
                 format!("expected {SCALAR_CONTRIBUTION_IDENTITY}@{SCALAR_CONTRIBUTION_VERSION}"),
+            ));
+        }
+        if source_definition.kind != MaterializedContentDefinitionKind::Effect
+            && contribution.subject != RpgContributionSubject::Actor
+        {
+            diagnostics.push(RpgDiagnostic::error(
+                RpgDiagnosticStage::Compatibility,
+                "CONTRIBUTION_SUBJECT_LANE_UNSUPPORTED",
+                format!("{contribution_path}.subject"),
+                "only named effects may contribute through the target subject lane",
             ));
         }
         if !valid_identifier(&contribution.id)
@@ -2461,6 +2571,16 @@ fn validate_pool_contributions(
                 "POOL_CONTRIBUTION_SCHEMA_UNSUPPORTED",
                 format!("{contribution_path}.schema"),
                 format!("expected {POOL_CONTRIBUTION_IDENTITY}@{POOL_CONTRIBUTION_VERSION}"),
+            ));
+        }
+        if source_definition.kind != MaterializedContentDefinitionKind::Effect
+            && contribution.subject != RpgContributionSubject::Actor
+        {
+            diagnostics.push(RpgDiagnostic::error(
+                RpgDiagnosticStage::Compatibility,
+                "CONTRIBUTION_SUBJECT_LANE_UNSUPPORTED",
+                format!("{contribution_path}.subject"),
+                "only named effects may contribute through the target subject lane",
             ));
         }
         if !valid_identifier(&contribution.id)
@@ -2602,6 +2722,16 @@ fn validate_outcome_band_shifts(
                 "OUTCOME_BAND_SHIFT_SCHEMA_UNSUPPORTED",
                 format!("{shift_path}.schema"),
                 format!("expected {OUTCOME_BAND_SHIFT_IDENTITY}@{OUTCOME_BAND_SHIFT_VERSION}"),
+            ));
+        }
+        if source_definition.kind != MaterializedContentDefinitionKind::Effect
+            && shift.subject != RpgContributionSubject::Actor
+        {
+            diagnostics.push(RpgDiagnostic::error(
+                RpgDiagnosticStage::Compatibility,
+                "CONTRIBUTION_SUBJECT_LANE_UNSUPPORTED",
+                format!("{shift_path}.subject"),
+                "only named effects may contribute through the target subject lane",
             ));
         }
         if !valid_identifier(&shift.id)

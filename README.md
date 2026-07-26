@@ -44,7 +44,8 @@ Scenario-bound authority session are the single supported path.
 
 The initial operation set is deliberately closed: typed damage packets, healing, resource
 change, bounded grid movement, turn-bounded modifier application, named effect
-application/removal with bounded authority-relative expiry, and a typed
+application/removal with fixed or target-turn-end save-ends tenure, closed
+action/movement condition restrictions, and a typed
 before-damage reaction window. Checks support attack, saving throw, generic
 Ruleset-owned scalar tests, heterogeneous pools, and no-roll flows. Scalar profiles declare
 one d2..d100 primary die, checked numeric domains, complete margin thresholds,
@@ -120,7 +121,7 @@ It exports distinct `Ruleset`, `ContentPack`, `PlayBundle`, and `Scenario`
 contracts. A Ruleset has no authored gameplay definitions; a Scenario has no
 definitions or gameplay script. It does not evaluate gameplay semantics or discover packages from global
 registries or the filesystem. Rust validates the prepared graph, creates the
-private executable plan, and emits the closed `asha.rpg.play-bundle.compiled@10`
+private executable plan, and emits the closed `asha.rpg.play-bundle.compiled@11`
 artifact with independent source, semantic, and presentation fingerprints.
 Representative consumer code lives in
 `examples/representative-actions.ts`; its normalized artifact is sent through

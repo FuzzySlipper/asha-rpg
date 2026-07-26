@@ -773,9 +773,10 @@ export type ContentContributionPredicate =
 export interface ContentScalarContribution {
   readonly schema: {
     readonly identity: "asha.rpg.scalar-contribution";
-    readonly version: 1;
+    readonly version: 2;
   };
   readonly id: string;
+  readonly subject: "actor" | "target";
   readonly selector: ContentOwnedRulesetReference;
   readonly stackingGroup: ContentOwnedRulesetReference;
   readonly value: ContentContributionValueExpression;
@@ -785,9 +786,10 @@ export interface ContentScalarContribution {
 export interface ContentOutcomeBandShift {
   readonly schema: {
     readonly identity: "asha.rpg.outcome-band-shift";
-    readonly version: 1;
+    readonly version: 2;
   };
   readonly id: string;
+  readonly subject: "actor" | "target";
   readonly profile: ContentOwnedRulesetReference;
   readonly shift: number;
   readonly predicate: ContentContributionPredicate;
@@ -815,9 +817,10 @@ export type ContentPoolContributionEffect =
 export interface ContentPoolContribution {
   readonly schema: {
     readonly identity: "asha.rpg.pool-contribution";
-    readonly version: 1;
+    readonly version: 2;
   };
   readonly id: string;
+  readonly subject: "actor" | "target";
   readonly profile: ContentOwnedRulesetReference;
   readonly stackingGroup: ContentOwnedRulesetReference;
   readonly effect: ContentPoolContributionEffect;
@@ -882,18 +885,42 @@ export interface ContentCharacterFeatureDefinition extends ContentDefinitionBase
 export interface ContentEffectData {
   readonly schema: {
     readonly identity: "asha.rpg.effect";
-    readonly version: 1;
+    readonly version: 2;
   };
   readonly rankMinimum: number;
   readonly rankMaximum: number;
   readonly stackingId: string;
   readonly stacking: "independentBySource" | "replace" | "refresh";
-  readonly durationAnchor:
-    | "globalTurnTransition"
-    | "roundTransition"
-    | "sourceTurnStart"
-    | "targetTurnStart";
-  readonly durationCount: number;
+  readonly tenure:
+    | {
+        readonly kind: "fixed";
+        readonly anchor:
+          | "globalTurnTransition"
+          | "roundTransition"
+          | "sourceTurnStart"
+          | "targetTurnStart";
+        readonly count: number;
+      }
+    | {
+        readonly kind: "targetTurnEndSave";
+      };
+  readonly condition:
+    | {
+        readonly clauses: readonly (
+          | {
+              readonly kind: "forbidActionTag";
+              readonly actionTag: string;
+            }
+          | {
+              readonly kind: "requireActionTag";
+              readonly actionTag: string;
+            }
+          | {
+              readonly kind: "forbidMovement";
+            }
+        )[];
+      }
+    | null;
   readonly contributions: readonly ContentScalarContribution[];
   readonly outcomeBandShifts: readonly ContentOutcomeBandShift[];
   readonly poolContributions: readonly ContentPoolContribution[];
@@ -1246,7 +1273,7 @@ export interface MaterializedContentDefinition {
 export interface PreparedPlayBundle {
   readonly schema: {
     readonly identity: "asha.rpg.play-bundle.prepared";
-    readonly major: 10;
+    readonly major: 11;
   };
   readonly playBundleIdentity: PlayBundleIdentity;
   readonly ruleset: Ruleset;

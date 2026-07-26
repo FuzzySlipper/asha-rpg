@@ -359,6 +359,41 @@ pub enum RpgEffectDurationAnchor {
     RoundTransition,
     SourceTurnStart,
     TargetTurnStart,
+    TargetTurnEndSave,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Serialize, Deserialize)]
+#[serde(
+    tag = "kind",
+    rename_all = "camelCase",
+    rename_all_fields = "camelCase",
+    deny_unknown_fields
+)]
+pub enum RpgEffectTenure {
+    Fixed {
+        anchor: RpgEffectDurationAnchor,
+        count: u32,
+    },
+    TargetTurnEndSave {},
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, PartialOrd, Ord, Serialize, Deserialize)]
+#[serde(
+    tag = "kind",
+    rename_all = "camelCase",
+    rename_all_fields = "camelCase",
+    deny_unknown_fields
+)]
+pub enum RpgConditionRestrictionClause {
+    ForbidActionTag { action_tag: String },
+    RequireActionTag { action_tag: String },
+    ForbidMovement,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase", deny_unknown_fields)]
+pub struct RpgConditionDefinition {
+    pub clauses: Vec<RpgConditionRestrictionClause>,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Serialize, Deserialize)]
@@ -466,6 +501,17 @@ impl ActiveRpgEffect {
 
     pub fn duration_anchor(&self) -> RpgEffectDurationAnchor {
         self.duration_anchor
+    }
+
+    pub fn tenure(&self) -> RpgEffectTenure {
+        if self.duration_anchor == RpgEffectDurationAnchor::TargetTurnEndSave {
+            RpgEffectTenure::TargetTurnEndSave {}
+        } else {
+            RpgEffectTenure::Fixed {
+                anchor: self.duration_anchor,
+                count: self.remaining_count,
+            }
+        }
     }
 }
 
@@ -1057,6 +1103,15 @@ impl RpgEffectsOwner<'_> {
             .collect())
     }
 
+    pub fn remove_instance(
+        &mut self,
+        target_entity_id: &str,
+        instance_id: &str,
+    ) -> Result<Option<ActiveRpgEffect>, RpgCapabilityMutationError> {
+        let target = self.state.entity_mut_for_owner(target_entity_id)?;
+        Ok(target.effects.remove(instance_id))
+    }
+
     pub fn advance_boundaries(
         &mut self,
         transition_revision: u64,
@@ -1078,6 +1133,7 @@ impl RpgEffectsOwner<'_> {
                             effect.source_entity_id == current_actor_id
                         }
                         RpgEffectDurationAnchor::TargetTurnStart => target.id == current_actor_id,
+                        RpgEffectDurationAnchor::TargetTurnEndSave => false,
                     };
                     (matches && effect.application_revision != transition_revision).then(|| {
                         (
@@ -1316,6 +1372,7 @@ pub enum RpgRandomRequestKind {
     ScalarTest,
     FormulaDice,
     HeterogeneousPool,
+    EffectSave,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, PartialOrd, Ord, Serialize, Deserialize)]
@@ -1547,6 +1604,7 @@ pub struct RpgScalarContributionSchema {
 pub struct RpgScalarContributionDefinition {
     pub schema: RpgScalarContributionSchema,
     pub id: String,
+    pub subject: RpgContributionSubject,
     pub selector: RpgOwnedRulesetReference,
     pub stacking_group: RpgOwnedRulesetReference,
     pub value: RpgContributionValueExpression,
@@ -1636,6 +1694,7 @@ impl RpgPoolContributionEffect {
 pub struct RpgPoolContributionDefinition {
     pub schema: RpgPoolContributionSchema,
     pub id: String,
+    pub subject: RpgContributionSubject,
     pub profile: RpgOwnedRulesetReference,
     pub stacking_group: RpgOwnedRulesetReference,
     pub effect: RpgPoolContributionEffect,
@@ -1805,6 +1864,7 @@ pub struct RpgOutcomeBandShiftSchema {
 pub struct RpgOutcomeBandShiftDefinition {
     pub schema: RpgOutcomeBandShiftSchema,
     pub id: String,
+    pub subject: RpgContributionSubject,
     pub profile: RpgOwnedRulesetReference,
     pub shift: i32,
     pub predicate: RpgContributionPredicate,
@@ -2031,6 +2091,7 @@ pub enum RpgDomainEvent {
         stacking: RpgEffectStackingPolicy,
         rank: i32,
         duration_anchor: RpgEffectDurationAnchor,
+        tenure: RpgEffectTenure,
         remaining_count: u32,
         application_revision: u64,
         replaced_instance_ids: Vec<String>,
@@ -2045,6 +2106,7 @@ pub enum RpgDomainEvent {
         stacking: RpgEffectStackingPolicy,
         rank: i32,
         duration_anchor: RpgEffectDurationAnchor,
+        tenure: RpgEffectTenure,
         previous_count: u32,
         remaining_count: u32,
         application_revision: u64,
@@ -2064,6 +2126,7 @@ pub enum RpgDomainEvent {
         definition_id: String,
         definition_version: u32,
         duration_anchor: RpgEffectDurationAnchor,
+        tenure: RpgEffectTenure,
         previous_count: u32,
         remaining_count: u32,
     },
@@ -2074,6 +2137,17 @@ pub enum RpgDomainEvent {
         definition_version: u32,
         source_id: String,
         duration_anchor: RpgEffectDurationAnchor,
+        tenure: RpgEffectTenure,
+    },
+    EffectSaveResolved {
+        target_id: String,
+        instance_id: String,
+        definition_id: String,
+        definition_version: u32,
+        source_id: String,
+        roll: u32,
+        difficulty: u32,
+        saved: bool,
     },
     PositionChanged {
         source_id: String,
@@ -2129,6 +2203,16 @@ pub struct RpgResolutionRejection {
     pub random_attempted: u64,
     pub random_request: Option<Box<RpgRandomRequest>>,
     pub reaction_request: Option<Box<RpgReactionRequest>>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub unavailable_source: Option<Box<RpgUnavailableSource>>,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase", deny_unknown_fields)]
+pub struct RpgUnavailableSource {
+    pub source_kind: String,
+    pub source_definition_id: String,
+    pub source_instance_id: String,
 }
 
 #[cfg(test)]

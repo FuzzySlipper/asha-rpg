@@ -15,5 +15,6 @@ pub use replay::*;
 
 pub use semantic_session::{
     RpgAuthorityCommand, RpgAuthoritySession, RpgAutomaticCommandFailure, RpgCommandOutcome,
-    RpgPendingReaction, RpgReactionCommand, RpgTurnControlCommand, RpgTurnControlReceipt,
+    RpgEffectSaveCandidate, RpgPendingReaction, RpgPendingTurnSave, RpgReactionCommand,
+    RpgTurnControlCommand, RpgTurnControlReceipt,
 };

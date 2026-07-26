@@ -46,6 +46,27 @@ import type {
   ScenarioBoundedValue,
 } from './play-bundle-types.js';
 
+type ScalarContributionInput = Omit<
+  ContentScalarContribution,
+  'schema' | 'subject'
+> & {
+  readonly subject?: ContentScalarContribution['subject'];
+};
+
+type OutcomeBandShiftInput = Omit<
+  ContentOutcomeBandShift,
+  'schema' | 'subject'
+> & {
+  readonly subject?: ContentOutcomeBandShift['subject'];
+};
+
+type PoolContributionInput = Omit<
+  ContentPoolContribution,
+  'schema' | 'subject'
+> & {
+  readonly subject?: ContentPoolContribution['subject'];
+};
+
 const participantProfileCapabilityBrand: unique symbol = Symbol(
   'asha-rpg.participant-profile-capability-builder',
 );
@@ -234,9 +255,9 @@ export function defineItemDefinition(
       ContentItemData,
       'schema' | 'contributions' | 'outcomeBandShifts' | 'poolContributions'
     > & {
-      readonly contributions?: readonly Omit<ContentScalarContribution, 'schema'>[];
-      readonly outcomeBandShifts?: readonly Omit<ContentOutcomeBandShift, 'schema'>[];
-      readonly poolContributions?: readonly Omit<ContentPoolContribution, 'schema'>[];
+      readonly contributions?: readonly ScalarContributionInput[];
+      readonly outcomeBandShifts?: readonly OutcomeBandShiftInput[];
+      readonly poolContributions?: readonly PoolContributionInput[];
     };
   },
 ): ContentItemDefinition {
@@ -272,9 +293,9 @@ export function defineCharacterFeatureDefinition(
     'characterFeature'
   > & {
     readonly characterFeature: {
-      readonly contributions?: readonly Omit<ContentScalarContribution, 'schema'>[];
-      readonly outcomeBandShifts?: readonly Omit<ContentOutcomeBandShift, 'schema'>[];
-      readonly poolContributions?: readonly Omit<ContentPoolContribution, 'schema'>[];
+      readonly contributions?: readonly ScalarContributionInput[];
+      readonly outcomeBandShifts?: readonly OutcomeBandShiftInput[];
+      readonly poolContributions?: readonly PoolContributionInput[];
       readonly damageResponses?: readonly Omit<ContentDamageResponse, 'schema'>[];
     };
   },
@@ -308,11 +329,12 @@ export function defineEffectDefinition(
     readonly effect: Omit<
       ContentEffectDefinition['effect'],
       'schema' | 'contributions' | 'outcomeBandShifts' | 'poolContributions'
-        | 'damageResponses'
+        | 'damageResponses' | 'condition'
     > & {
-      readonly contributions?: readonly Omit<ContentScalarContribution, 'schema'>[];
-      readonly outcomeBandShifts?: readonly Omit<ContentOutcomeBandShift, 'schema'>[];
-      readonly poolContributions?: readonly Omit<ContentPoolContribution, 'schema'>[];
+      readonly condition?: ContentEffectDefinition['effect']['condition'];
+      readonly contributions?: readonly ScalarContributionInput[];
+      readonly outcomeBandShifts?: readonly OutcomeBandShiftInput[];
+      readonly poolContributions?: readonly PoolContributionInput[];
       readonly damageResponses?: readonly Omit<ContentDamageResponse, 'schema'>[];
     };
   },
@@ -324,8 +346,15 @@ export function defineEffectDefinition(
       ...input.effect,
       schema: {
         identity: 'asha.rpg.effect' as const,
-        version: 1 as const,
+        version: 2 as const,
       },
+      condition: input.effect.condition == null
+        ? null
+        : {
+            clauses: [...input.effect.condition.clauses].sort((left, right) =>
+              conditionClauseKey(left).localeCompare(conditionClauseKey(right)),
+            ),
+          },
       contributions: normalizeScalarContributions(input.effect.contributions ?? []),
       outcomeBandShifts: normalizeOutcomeBandShifts(
         input.effect.outcomeBandShifts ?? [],
@@ -341,14 +370,15 @@ export function defineEffectDefinition(
 }
 
 function normalizeOutcomeBandShifts(
-  shifts: readonly Omit<ContentOutcomeBandShift, 'schema'>[],
+  shifts: readonly OutcomeBandShiftInput[],
 ): readonly ContentOutcomeBandShift[] {
   return shifts
     .map((shift) => ({
       ...shift,
+      subject: shift.subject ?? 'actor',
       schema: {
         identity: 'asha.rpg.outcome-band-shift' as const,
-        version: 1 as const,
+        version: 2 as const,
       },
     }))
     .sort((left, right) => left.id.localeCompare(right.id));
@@ -377,31 +407,43 @@ function normalizeDamageResponses(
 }
 
 function normalizePoolContributions(
-  contributions: readonly Omit<ContentPoolContribution, 'schema'>[],
+  contributions: readonly PoolContributionInput[],
 ): readonly ContentPoolContribution[] {
   return contributions
     .map((contribution) => ({
       ...contribution,
+      subject: contribution.subject ?? 'actor',
       schema: {
         identity: 'asha.rpg.pool-contribution' as const,
-        version: 1 as const,
+        version: 2 as const,
       },
     }))
     .sort((left, right) => left.id.localeCompare(right.id));
 }
 
 function normalizeScalarContributions(
-  contributions: readonly Omit<ContentScalarContribution, 'schema'>[],
+  contributions: readonly ScalarContributionInput[],
 ): readonly ContentScalarContribution[] {
   return contributions
     .map((contribution) => ({
       ...contribution,
+      subject: contribution.subject ?? 'actor',
       schema: {
         identity: 'asha.rpg.scalar-contribution' as const,
-        version: 1 as const,
+        version: 2 as const,
       },
     }))
     .sort((left, right) => left.id.localeCompare(right.id));
+}
+
+function conditionClauseKey(
+  clause: NonNullable<ContentEffectDefinition['effect']['condition']>['clauses'][number],
+): string {
+  if (clause.kind === 'forbidMovement') {
+    return '2:forbidMovement';
+  }
+  const rank = clause.kind === 'forbidActionTag' ? '0' : '1';
+  return `${rank}:${clause.actionTag}`;
 }
 
 export function defineCharacterClassDefinition(

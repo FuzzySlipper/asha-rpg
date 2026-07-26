@@ -267,7 +267,7 @@ export function preparePlayBundle(options: {
   ].sort(compareRelationship);
 
   const prepared: PreparedPlayBundle = immutable({
-    schema: { identity: 'asha.rpg.play-bundle.prepared', major: 10 },
+    schema: { identity: 'asha.rpg.play-bundle.prepared', major: 11 },
     playBundleIdentity: options.bundle.identity,
     ruleset: options.bundle.ruleset,
     contentPacks: [...context.selected.values()]
@@ -5511,13 +5511,13 @@ function validateEffectDefinitions(
     }
     if (
       data.schema.identity !== 'asha.rpg.effect' ||
-      data.schema.version !== 1
+      data.schema.version !== 2
     ) {
       diagnostics.push(diagnostic(
         'compatibility',
         'EFFECT_SCHEMA_UNSUPPORTED',
         `${path}.schema`,
-        'effect definitions require asha.rpg.effect@1',
+        'effect definitions require asha.rpg.effect@2',
         profileDiagnosticContext(record),
       ));
     }
@@ -5554,15 +5554,14 @@ function validateEffectDefinitions(
       ));
     }
     stackingPolicies.set(data.stackingId, data.stacking);
-    if (!Number.isSafeInteger(data.durationCount) || data.durationCount < 1 || data.durationCount > 1_000) {
-      diagnostics.push(diagnostic(
-        'source',
-        'EFFECT_DURATION_INVALID',
-        `${path}.durationCount`,
-        'effect duration count must be an integer within 1..=1000',
-        profileDiagnosticContext(record),
-      ));
-    }
+    validateEffectTenure(data.tenure, `${path}.tenure`, diagnostics, record);
+    validateEffectCondition(
+      data.condition,
+      `${path}.condition`,
+      records,
+      diagnostics,
+      record,
+    );
     const contributionCount =
       data.contributions.length +
       data.outcomeBandShifts.length +
@@ -5570,13 +5569,16 @@ function validateEffectDefinitions(
     if (
       contributionCount > 32 ||
       data.damageResponses.length > 64 ||
-      contributionCount + data.damageResponses.length < 1
+      contributionCount +
+        data.damageResponses.length +
+        (data.condition === null ? 0 : data.condition.clauses.length) <
+        1
     ) {
       diagnostics.push(diagnostic(
         'source',
         'EFFECT_CONTRIBUTIONS_INVALID',
         path,
-        'effect definitions require at least one typed entry, at most 32 roll contributions, and at most 64 damage responses',
+        'effect definitions require at least one typed entry, at most 32 roll contributions, at most 32 condition clauses, and at most 64 damage responses',
         profileDiagnosticContext(record),
       ));
     }
@@ -5632,6 +5634,98 @@ function validateEffectDefinitions(
         {},
       ));
     }
+  }
+}
+
+function validateEffectTenure(
+  tenure: import('./play-bundle-types.js').ContentEffectData['tenure'],
+  path: string,
+  diagnostics: PlayBundleCompilerDiagnostic[],
+  record: DefinitionRecord,
+): void {
+  if (tenure.kind === 'fixed') {
+    if (
+      !Number.isSafeInteger(tenure.count) ||
+      tenure.count < 1 ||
+      tenure.count > 1_000
+    ) {
+      diagnostics.push(diagnostic(
+        'source',
+        'EFFECT_TENURE_INVALID',
+        `${path}.count`,
+        'fixed effect tenure count must be an integer within 1..=1000',
+        profileDiagnosticContext(record),
+      ));
+    }
+  }
+}
+
+function validateEffectCondition(
+  condition: import('./play-bundle-types.js').ContentEffectData['condition'],
+  path: string,
+  records: readonly DefinitionRecord[],
+  diagnostics: PlayBundleCompilerDiagnostic[],
+  record: DefinitionRecord,
+): void {
+  if (condition === null) return;
+  if (condition.clauses.length < 1 || condition.clauses.length > 32) {
+    diagnostics.push(diagnostic(
+      'source',
+      'EFFECT_CONDITION_CLAUSE_LIMIT_INVALID',
+      `${path}.clauses`,
+      'a condition requires 1..=32 canonical clauses',
+      profileDiagnosticContext(record),
+    ));
+  }
+  const actionTags = new Set(
+    records.flatMap((candidate) =>
+      candidate.definition.kind === 'action'
+        ? (candidate.definition.action?.tags ?? [])
+        : [],
+    ),
+  );
+  const requirements = new Map<string, string>();
+  let previousKey: string | undefined;
+  for (const [index, clause] of condition.clauses.entries()) {
+    const clausePath = `${path}.clauses[${index}]`;
+    const key =
+      clause.kind === 'forbidMovement'
+        ? '2:forbidMovement'
+        : `${clause.kind === 'forbidActionTag' ? '0' : '1'}:${clause.actionTag}`;
+    if (previousKey !== undefined && previousKey >= key) {
+      diagnostics.push(diagnostic(
+        'source',
+        'EFFECT_CONDITION_CLAUSES_NOT_CANONICAL',
+        clausePath,
+        'condition clauses must be unique and canonically sorted',
+        profileDiagnosticContext(record),
+      ));
+    }
+    previousKey = key;
+    if (clause.kind === 'forbidMovement') continue;
+    if (
+      !validPortableIdentifier(clause.actionTag) ||
+      !actionTags.has(clause.actionTag)
+    ) {
+      diagnostics.push(diagnostic(
+        'graph',
+        'EFFECT_CONDITION_ACTION_TAG_UNKNOWN',
+        `${clausePath}.actionTag`,
+        `condition clause references unknown action tag ${clause.actionTag}`,
+        profileDiagnosticContext(record),
+      ));
+    }
+    const previous = requirements.get(clause.actionTag);
+    if (previous !== undefined && previous !== clause.kind) {
+      diagnostics.push(diagnostic(
+        'source',
+        'EFFECT_CONDITION_CLAUSES_CONTRADICTORY',
+        clausePath,
+        `condition both requires and forbids action tag ${clause.actionTag}`,
+        profileDiagnosticContext(record),
+      ));
+    }
+    requirements.set(clause.actionTag, clause.kind);
   }
 }
 
@@ -5751,17 +5845,26 @@ function validateOutcomeBandShifts(
       profile === undefined ? 15 : Math.min(15, profile.bands.length - 1);
     if (
       shift.schema.identity !== 'asha.rpg.outcome-band-shift' ||
-      shift.schema.version !== 1
+      shift.schema.version !== 2
     ) {
       diagnostics.push(
         diagnostic(
           'compatibility',
           'OUTCOME_BAND_SHIFT_SCHEMA_UNSUPPORTED',
           `${shiftPath}.schema`,
-          'outcome-band shifts require asha.rpg.outcome-band-shift@1',
+          'outcome-band shifts require asha.rpg.outcome-band-shift@2',
           profileDiagnosticContext(record),
         ),
       );
+    }
+    if (record.definition.kind !== 'effect' && shift.subject !== 'actor') {
+      diagnostics.push(diagnostic(
+        'compatibility',
+        'CONTRIBUTION_SUBJECT_LANE_UNSUPPORTED',
+        `${shiftPath}.subject`,
+        'only named effects may contribute through the target subject lane',
+        profileDiagnosticContext(record),
+      ));
     }
     if (
       !validPortableIdentifier(shift.id) ||
@@ -5806,13 +5909,25 @@ function validateScalarContributions(
     const contributionPath = `${path}[${index}]`;
     if (
       contribution.schema.identity !== 'asha.rpg.scalar-contribution' ||
-      contribution.schema.version !== 1
+      contribution.schema.version !== 2
     ) {
       diagnostics.push(diagnostic(
         'compatibility',
         'SCALAR_CONTRIBUTION_SCHEMA_UNSUPPORTED',
         `${contributionPath}.schema`,
-        'scalar contributions require asha.rpg.scalar-contribution@1',
+        'scalar contributions require asha.rpg.scalar-contribution@2',
+        profileDiagnosticContext(record),
+      ));
+    }
+    if (
+      record.definition.kind !== 'effect' &&
+      contribution.subject !== 'actor'
+    ) {
+      diagnostics.push(diagnostic(
+        'compatibility',
+        'CONTRIBUTION_SUBJECT_LANE_UNSUPPORTED',
+        `${contributionPath}.subject`,
+        'only named effects may contribute through the target subject lane',
         profileDiagnosticContext(record),
       ));
     }
@@ -5898,17 +6013,29 @@ function validatePoolContributions(
         : undefined;
     if (
       contribution.schema.identity !== 'asha.rpg.pool-contribution' ||
-      contribution.schema.version !== 1
+      contribution.schema.version !== 2
     ) {
       diagnostics.push(
         diagnostic(
           'compatibility',
           'POOL_CONTRIBUTION_SCHEMA_UNSUPPORTED',
           `${contributionPath}.schema`,
-          'pool contributions require asha.rpg.pool-contribution@1',
+          'pool contributions require asha.rpg.pool-contribution@2',
           profileDiagnosticContext(record),
         ),
       );
+    }
+    if (
+      record.definition.kind !== 'effect' &&
+      contribution.subject !== 'actor'
+    ) {
+      diagnostics.push(diagnostic(
+        'compatibility',
+        'CONTRIBUTION_SUBJECT_LANE_UNSUPPORTED',
+        `${contributionPath}.subject`,
+        'only named effects may contribute through the target subject lane',
+        profileDiagnosticContext(record),
+      ));
     }
     if (
       !validPortableIdentifier(contribution.id) ||

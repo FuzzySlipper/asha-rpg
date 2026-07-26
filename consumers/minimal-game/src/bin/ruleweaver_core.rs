@@ -9,7 +9,8 @@ use asha_rpg::{
     RpgEquipmentSlotSetup, RpgInitialCapability, RpgIntentItemBinding, RpgItemInstanceSetup,
     RpgNaturalDieEffect, RpgParticipantSetup, RpgRandomRequest, RpgRandomRequestKind,
     RpgRandomSource, RpgRandomSourceBinding, RpgRandomSourceFailure, RpgScenario, RpgTeamId,
-    RpgTurnInitialization, RPG_LINE_OF_EFFECT_OBSTRUCTION_ID,
+    RpgTurnControl, RpgTurnControlProposal, RpgTurnInitialization,
+    RPG_LINE_OF_EFFECT_OBSTRUCTION_ID,
     RPG_LINE_OF_EFFECT_OBSTRUCTION_VERSION,
 };
 use serde_json::Value;
@@ -25,6 +26,7 @@ fn main() {
     let bundle = compile_prepared_play_bundle_json(&prepared_source)
         .expect("compile the exact TypeScript-authored prepared bundle");
     prove_line_of_effect_projection_staleness_and_atomicity(bundle.clone());
+    prove_condition_lanes_tenure_restrictions_and_replay(bundle.clone());
     let scenario = scenario(&bundle, 5);
     let mut session =
         RpgAuthoritySession::from_scenario(bundle.clone(), scenario.clone()).expect("scenario");
@@ -275,6 +277,439 @@ fn main() {
     );
 }
 
+fn prove_condition_lanes_tenure_restrictions_and_replay(
+    bundle: asha_rpg::CompiledPlayBundle,
+) {
+    let mut setup = scenario(&bundle, 5);
+    setup.participants[0].definition_ids.extend([
+        "action.apply-condition".to_owned(),
+        "action.condition-probe".to_owned(),
+        "action.restricted".to_owned(),
+    ]);
+    for participant in &mut setup.participants[1..] {
+        participant.definition_ids.extend([
+            "action.condition-probe".to_owned(),
+            "action.restricted".to_owned(),
+            "action.shift".to_owned(),
+        ]);
+        participant.definition_ids.sort();
+    }
+    setup.participants[0].definition_ids.sort();
+    let mut session =
+        RpgAuthoritySession::from_scenario(bundle, setup).expect("condition scenario");
+    let initial = session.checkpoint().expect("condition initial checkpoint");
+    let mut replay_entries = Vec::new();
+
+    let mut no_random = ScriptedSource::new(&session, []);
+    let (applied, apply_entry) = session
+        .submit_with_random_source_recorded(
+            RpgActionProposal {
+                expected_revision: 0,
+                action_id: "action.apply-condition".to_owned(),
+                actor_id: ACTOR_ID.to_owned(),
+                target_ids: vec![FIRST_TARGET_ID.to_owned()],
+                item_binding: None,
+            },
+            &mut no_random,
+        )
+        .expect("apply save-ends effects");
+    let applied = accepted(applied);
+    assert_eq!(
+        applied
+            .events
+            .iter()
+            .filter(|event| matches!(event, RpgDomainEvent::EffectApplied { .. }))
+            .count(),
+        2
+    );
+    replay_entries.push(apply_entry);
+    let mut duplicate_effect_identity =
+        session.checkpoint().expect("checkpoint with active effects");
+    let target_effects = &mut duplicate_effect_identity
+        .state
+        .entities
+        .iter_mut()
+        .find(|entity| entity.id == FIRST_TARGET_ID)
+        .expect("condition target")
+        .effects;
+    target_effects.push(target_effects[0].clone());
+    let duplicate_failure = RpgAuthoritySession::restore_checkpoint(duplicate_effect_identity)
+        .expect_err("duplicate active effect identity fails closed");
+    assert!(duplicate_failure.diagnostics.iter().any(|diagnostic| {
+        diagnostic.code == "RPG_CHECKPOINT_STATE_INVALID"
+    }), "unexpected duplicate-effect diagnostics: {:?}", duplicate_failure.diagnostics);
+
+    let mut no_random = ScriptedSource::new(&session, []);
+    let (exposed, expose_entry) = session
+        .submit_with_random_source_recorded(
+            RpgActionProposal {
+                expected_revision: 1,
+                action_id: "action.expose".to_owned(),
+                actor_id: ACTOR_ID.to_owned(),
+                target_ids: vec![FIRST_TARGET_ID.to_owned()],
+                item_binding: None,
+            },
+            &mut no_random,
+        )
+        .expect("apply fixed-tenure effect");
+    accepted(exposed);
+    replay_entries.push(expose_entry);
+
+    let mut probe_source = ScriptedSource::new(&session, [vec![12]]);
+    let (target_lane, target_lane_entry) = session
+        .submit_with_random_source_recorded(
+            RpgActionProposal {
+                expected_revision: 2,
+                action_id: "action.condition-probe".to_owned(),
+                actor_id: ACTOR_ID.to_owned(),
+                target_ids: vec![FIRST_TARGET_ID.to_owned()],
+                item_binding: None,
+            },
+            &mut probe_source,
+        )
+        .expect("target-lane condition probe");
+    let target_lane = accepted(target_lane);
+    let target_ledger = target_lane
+        .events
+        .iter()
+        .find_map(|event| match event {
+            RpgDomainEvent::ScalarTestResolved {
+                contribution_ledger,
+                ..
+            } => Some(contribution_ledger),
+            _ => None,
+        })
+        .expect("target-lane ledger");
+    assert!(target_ledger.candidates.iter().any(|candidate| {
+        candidate.source_definition_id == "effect.save-ends-restricted"
+            && candidate.contribution_id == "target-opening"
+    }));
+    assert!(target_ledger.candidates.iter().any(|candidate| {
+        candidate.source_definition_id == "effect.save-ends-auxiliary"
+            && candidate.contribution_id == "auxiliary-opening"
+    }));
+    assert!(!target_ledger
+        .candidates
+        .iter()
+        .any(|candidate| candidate.contribution_id == "actor-pressure"));
+    replay_entries.push(target_lane_entry);
+
+    let (hero_ended, hero_end_entry) = session
+        .control_recorded(RpgTurnControlProposal {
+            expected_revision: 3,
+            actor_id: ACTOR_ID.to_owned(),
+            control: RpgTurnControl::EndTurn,
+        })
+        .expect("end hero turn");
+    assert!(matches!(
+        hero_ended,
+        RpgCommandOutcome::ControlAccepted(_)
+    ));
+    replay_entries.push(hero_end_entry);
+    let first_target_turn = session.encounter_view();
+    let first_target = first_target_turn
+        .participants
+        .iter()
+        .find(|participant| participant.id == FIRST_TARGET_ID)
+        .expect("conditioned target");
+    let exposed = first_target
+        .effects
+        .iter()
+        .find(|effect| effect.definition_id == "effect.exposed")
+        .expect("fixed effect remains after first target-turn boundary");
+    assert_eq!(exposed.remaining_count, 1);
+    assert!(matches!(
+        exposed.tenure,
+        asha_rpg::RpgEffectTenure::Fixed {
+            anchor: asha_rpg::RpgEffectDurationAnchor::TargetTurnStart,
+            count: 2
+        }
+    ));
+    let restricted_effect = first_target
+        .effects
+        .iter()
+        .find(|effect| effect.definition_id == "effect.save-ends-restricted")
+        .expect("save-ends effect readback");
+    assert!(matches!(
+        restricted_effect.tenure,
+        asha_rpg::RpgEffectTenure::TargetTurnEndSave {}
+    ));
+    assert_eq!(
+        restricted_effect
+            .condition
+            .as_ref()
+            .expect("typed condition")
+            .clauses
+            .len(),
+        2
+    );
+    let restricted = first_target_turn
+        .actions
+        .iter()
+        .find(|action| action.definition_id == "action.restricted")
+        .expect("restricted action readback");
+    assert!(!restricted.available);
+    assert_eq!(
+        restricted
+            .unavailable
+            .as_ref()
+            .expect("restriction reason")
+            .code,
+        "RPG_CONDITION_ACTION_RESTRICTED"
+    );
+    let unavailable_source = restricted
+        .unavailable
+        .as_ref()
+        .and_then(|reason| reason.unavailable_source.as_ref())
+        .expect("restriction source");
+    assert_eq!(
+        unavailable_source.source_definition_id,
+        "effect.save-ends-restricted"
+    );
+    let stale_restricted_binding = restricted.options.binding.clone();
+    let movement = first_target_turn
+        .actions
+        .iter()
+        .find(|action| action.definition_id == "action.shift")
+        .expect("movement readback");
+    assert!(!movement.available);
+    assert_eq!(
+        movement
+            .unavailable
+            .as_ref()
+            .expect("movement restriction reason")
+            .code,
+        "RPG_CONDITION_MOVEMENT_RESTRICTED"
+    );
+    let restricted_checkpoint = session.checkpoint().expect("restricted checkpoint");
+    let mut no_random = ScriptedSource::new(&session, []);
+    let rejected = session
+        .submit_bound_with_random_source_recorded(
+            RpgBoundActionProposal {
+                binding: restricted.options.binding.clone(),
+                target_ids: vec![ACTOR_ID.to_owned()],
+            },
+            &mut no_random,
+        )
+        .expect("restricted action submission is an authority outcome");
+    assert!(matches!(
+        rejected.outcome,
+        RpgCommandOutcome::Rejected(ref rejection)
+            if rejection.code == "RPG_CONDITION_ACTION_RESTRICTED"
+    ));
+    let mut no_random = ScriptedSource::new(&session, []);
+    let rejected = session
+        .submit_bound_with_random_source_recorded(
+            RpgBoundActionProposal {
+                binding: movement.options.binding.clone(),
+                target_ids: vec!["cell-0-0".to_owned()],
+            },
+            &mut no_random,
+        )
+        .expect("restricted movement submission is an authority outcome");
+    assert!(matches!(
+        rejected.outcome,
+        RpgCommandOutcome::Rejected(ref rejection)
+            if rejection.code == "RPG_CONDITION_MOVEMENT_RESTRICTED"
+    ));
+    assert_eq!(
+        session.checkpoint().expect("condition rejections are atomic"),
+        restricted_checkpoint
+    );
+
+    let mut probe_source = ScriptedSource::new(&session, [vec![12]]);
+    let (actor_lane, actor_lane_entry) = session
+        .submit_with_random_source_recorded(
+            RpgActionProposal {
+                expected_revision: 4,
+                action_id: "action.condition-probe".to_owned(),
+                actor_id: FIRST_TARGET_ID.to_owned(),
+                target_ids: vec![ACTOR_ID.to_owned()],
+                item_binding: None,
+            },
+            &mut probe_source,
+        )
+        .expect("actor-lane condition probe");
+    let actor_lane = accepted(actor_lane);
+    let actor_ledger = actor_lane
+        .events
+        .iter()
+        .find_map(|event| match event {
+            RpgDomainEvent::ScalarTestResolved {
+                contribution_ledger,
+                ..
+            } => Some(contribution_ledger),
+            _ => None,
+        })
+        .expect("actor-lane ledger");
+    assert!(actor_ledger.candidates.iter().any(|candidate| {
+        candidate.source_definition_id == "effect.save-ends-restricted"
+            && candidate.contribution_id == "actor-pressure"
+    }));
+    assert!(!actor_ledger
+        .candidates
+        .iter()
+        .any(|candidate| candidate.contribution_id == "target-opening"));
+    replay_entries.push(actor_lane_entry);
+
+    let mut fail_source = ScriptedSource::new(&session, [vec![9], vec![9]]);
+    let (failed_saves, failed_save_entries) = session
+        .control_with_random_source_recorded(
+            RpgTurnControlProposal {
+                expected_revision: 5,
+                actor_id: FIRST_TARGET_ID.to_owned(),
+                control: RpgTurnControl::EndTurn,
+            },
+            &mut fail_source,
+        )
+        .expect("resolve failed save-ends evidence");
+    let RpgCommandOutcome::ControlAccepted(failed_saves) = failed_saves else {
+        panic!("failed saves still advance the turn");
+    };
+    assert_eq!(
+        failed_saves
+            .events
+            .iter()
+            .filter_map(|event| match event {
+                RpgDomainEvent::EffectSaveResolved {
+                    definition_id,
+                    roll: 9,
+                    saved: false,
+                    ..
+                } => Some(definition_id.as_str()),
+                _ => None,
+            })
+            .collect::<Vec<_>>(),
+        [
+            "effect.save-ends-auxiliary",
+            "effect.save-ends-restricted"
+        ]
+    );
+    assert_eq!(
+        fail_source
+            .requests
+            .iter()
+            .map(|request| (request.kind, request.count, request.sides))
+            .collect::<Vec<_>>(),
+        [
+            (RpgRandomRequestKind::EffectSave, 1, 20),
+            (RpgRandomRequestKind::EffectSave, 1, 20)
+        ]
+    );
+    replay_entries.extend(failed_save_entries);
+
+    let (second_target_ended, second_target_end_entry) = session
+        .control_recorded(RpgTurnControlProposal {
+            expected_revision: 6,
+            actor_id: SECOND_TARGET_ID.to_owned(),
+            control: RpgTurnControl::EndTurn,
+        })
+        .expect("advance second target");
+    assert!(matches!(
+        second_target_ended,
+        RpgCommandOutcome::ControlAccepted(_)
+    ));
+    replay_entries.push(second_target_end_entry);
+    let (hero_ended, hero_end_entry) = session
+        .control_recorded(RpgTurnControlProposal {
+            expected_revision: 7,
+            actor_id: ACTOR_ID.to_owned(),
+            control: RpgTurnControl::EndTurn,
+        })
+        .expect("advance hero to second target turn");
+    assert!(matches!(
+        hero_ended,
+        RpgCommandOutcome::ControlAccepted(_)
+    ));
+    replay_entries.push(hero_end_entry);
+    let second_target_turn = session.encounter_view();
+    let first_target = second_target_turn
+        .participants
+        .iter()
+        .find(|participant| participant.id == FIRST_TARGET_ID)
+        .expect("conditioned target");
+    assert!(first_target
+        .effects
+        .iter()
+        .all(|effect| effect.definition_id != "effect.exposed"));
+
+    let mut success_source = ScriptedSource::new(&session, [vec![10], vec![10]]);
+    let (saved, saved_entries) = session
+        .control_with_random_source_recorded(
+            RpgTurnControlProposal {
+                expected_revision: 8,
+                actor_id: FIRST_TARGET_ID.to_owned(),
+                control: RpgTurnControl::EndTurn,
+            },
+            &mut success_source,
+        )
+        .expect("resolve successful save-ends evidence");
+    let RpgCommandOutcome::ControlAccepted(saved) = saved else {
+        panic!("successful saves should advance the turn");
+    };
+    assert_eq!(
+        saved
+            .events
+            .iter()
+            .filter_map(|event| match event {
+                RpgDomainEvent::EffectSaveResolved {
+                    definition_id,
+                    roll: 10,
+                    saved: true,
+                    ..
+                } => Some(definition_id.as_str()),
+                _ => None,
+            })
+            .collect::<Vec<_>>(),
+        [
+            "effect.save-ends-auxiliary",
+            "effect.save-ends-restricted"
+        ]
+    );
+    replay_entries.extend(saved_entries);
+    let after_save = session.encounter_view();
+    let target = after_save
+        .participants
+        .iter()
+        .find(|participant| participant.id == FIRST_TARGET_ID)
+        .expect("saved target");
+    assert!(target.effects.is_empty());
+
+    let before_stale = session.checkpoint().expect("post-save checkpoint");
+    let mut no_random = ScriptedSource::new(&session, []);
+    let stale = session
+        .submit_bound_with_random_source_recorded(
+            RpgBoundActionProposal {
+                binding: stale_restricted_binding,
+                target_ids: vec![FIRST_TARGET_ID.to_owned()],
+            },
+            &mut no_random,
+        )
+        .expect("expired-source binding is stale");
+    assert!(matches!(
+        stale.outcome,
+        RpgCommandOutcome::Rejected(ref rejection)
+            if rejection.code == "RPG_ACTION_OPTION_STALE"
+    ));
+    assert_eq!(
+        session.checkpoint().expect("stale binding is atomic"),
+        before_stale
+    );
+
+    let replayed =
+        RpgAuthoritySession::replay(initial, &replay_entries).expect("condition replay");
+    assert_eq!(replayed.state(), session.state());
+    assert_eq!(
+        replayed.state_hash().expect("condition replay hash"),
+        session.state_hash().expect("condition authority hash")
+    );
+    assert_eq!(
+        replayed.accepted_random_values(),
+        session.accepted_random_values()
+    );
+    assert_eq!(replayed.encounter_view().log, session.encounter_view().log);
+}
+
 fn prove_prepared_input_rejects_tampering(prepared_source: &[u8]) {
     let mut unknown_band: Value =
         serde_json::from_slice(prepared_source).expect("decode prepared witness JSON");
@@ -357,6 +792,47 @@ fn prove_prepared_input_rejects_tampering(prepared_source: &[u8]) {
         &missing_selector_requirement,
         "RPG_IR_LINE_OF_EFFECT_REQUIREMENT_MISSING",
     );
+
+    let mut duplicate_condition: Value =
+        serde_json::from_slice(prepared_source).expect("decode prepared witness JSON");
+    let condition = duplicate_condition["materializedDefinitions"]
+        .as_array_mut()
+        .expect("definitions")
+        .iter_mut()
+        .find(|definition| definition["id"] == "effect.save-ends-restricted")
+        .expect("save-ends condition");
+    let duplicate_clause = condition["semantic"]["condition"]["clauses"][0].clone();
+    condition["semantic"]["condition"]["clauses"]
+        .as_array_mut()
+        .expect("condition clauses")
+        .insert(1, duplicate_clause);
+    let typed_condition: MaterializedContentDefinition =
+        serde_json::from_value(condition.clone()).expect("decode condition definition");
+    condition["fingerprint"] = Value::String(
+        materialized_definition_fingerprint(&typed_condition)
+            .expect("fingerprint duplicate condition"),
+    );
+    assert_compile_rejects(
+        &duplicate_condition,
+        "EFFECT_CONDITION_CLAUSES_NOT_CANONICAL",
+    );
+
+    let mut tampered_tenure: Value =
+        serde_json::from_slice(prepared_source).expect("decode prepared witness JSON");
+    let condition = tampered_tenure["materializedDefinitions"]
+        .as_array_mut()
+        .expect("definitions")
+        .iter_mut()
+        .find(|definition| definition["id"] == "effect.save-ends-restricted")
+        .expect("save-ends condition");
+    condition["semantic"]["tenure"]["successMinimum"] = Value::Number(9_u64.into());
+    let typed_condition: MaterializedContentDefinition =
+        serde_json::from_value(condition.clone()).expect("decode tenure definition");
+    condition["fingerprint"] = Value::String(
+        materialized_definition_fingerprint(&typed_condition)
+            .expect("fingerprint tampered tenure"),
+    );
+    assert_compile_rejects(&tampered_tenure, "EFFECT_SEMANTIC_DECODE_FAILED");
 }
 
 fn prove_line_of_effect_projection_staleness_and_atomicity(

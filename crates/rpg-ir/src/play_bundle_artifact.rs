@@ -2,16 +2,16 @@ use std::collections::BTreeMap;
 
 pub use rpg_core::RpgRulesetValueKind as RulesetValueKind;
 use rpg_core::{
-    RpgContributionStackingPolicy, RpgDamageResponseDefinition, RpgEffectDurationAnchor,
-    RpgEffectStackingPolicy, RpgNaturalDieEffect, RpgOutcomeBandShiftDefinition,
-    RpgPoolContributionDefinition, RpgScalarContributionDefinition,
+    RpgConditionDefinition, RpgContributionStackingPolicy, RpgDamageResponseDefinition,
+    RpgEffectDurationAnchor, RpgEffectStackingPolicy, RpgEffectTenure, RpgNaturalDieEffect,
+    RpgOutcomeBandShiftDefinition, RpgPoolContributionDefinition, RpgScalarContributionDefinition,
 };
 use serde::{Deserialize, Serialize};
 use serde_json::Value;
 
 pub const PREPARED_PLAY_BUNDLE_IDENTITY: &str = "asha.rpg.play-bundle.prepared";
 pub const COMPILED_PLAY_BUNDLE_IDENTITY: &str = "asha.rpg.play-bundle.compiled";
-pub const PLAY_BUNDLE_ARTIFACT_MAJOR: u32 = 10;
+pub const PLAY_BUNDLE_ARTIFACT_MAJOR: u32 = 11;
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase", deny_unknown_fields)]
@@ -418,7 +418,7 @@ pub const ACTION_PROCEDURE_VERSION: u32 = 1;
 pub const ITEM_VERSION: u32 = 4;
 pub const CHARACTER_CLASS_VERSION: u32 = 1;
 pub const CHARACTER_FEATURE_VERSION: u32 = 4;
-pub const EFFECT_DEFINITION_VERSION: u32 = 1;
+pub const EFFECT_DEFINITION_VERSION: u32 = 2;
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase", deny_unknown_fields)]
@@ -745,8 +745,9 @@ pub struct MaterializedEffectDefinitionData {
     pub rank_maximum: i32,
     pub stacking_id: String,
     pub stacking: RpgEffectStackingPolicy,
-    pub duration_anchor: RpgEffectDurationAnchor,
-    pub duration_count: u32,
+    pub tenure: RpgEffectTenure,
+    #[serde(default)]
+    pub condition: Option<RpgConditionDefinition>,
     pub contributions: Vec<RpgScalarContributionDefinition>,
     #[serde(default)]
     pub outcome_band_shifts: Vec<RpgOutcomeBandShiftDefinition>,
@@ -767,8 +768,10 @@ pub struct CompiledEffectDefinition {
     pub rank_maximum: i32,
     pub stacking_id: String,
     pub stacking: RpgEffectStackingPolicy,
+    pub tenure: RpgEffectTenure,
     pub duration_anchor: RpgEffectDurationAnchor,
     pub duration_count: u32,
+    pub condition: Option<RpgConditionDefinition>,
     pub contributions: Vec<RpgScalarContributionDefinition>,
     pub outcome_band_shifts: Vec<RpgOutcomeBandShiftDefinition>,
     pub pool_contributions: Vec<RpgPoolContributionDefinition>,

@@ -19,7 +19,7 @@ use serde::{Deserialize, Serialize};
 pub const RPG_SCENARIO_SCHEMA_ID: &str = "asha.rpg.scenario";
 pub const RPG_SCENARIO_SCHEMA_VERSION: u32 = 3;
 pub const RPG_ENCOUNTER_VIEW_SCHEMA_ID: &str = "asha.rpg.encounter.view";
-pub const RPG_ENCOUNTER_VIEW_SCHEMA_VERSION: u32 = 12;
+pub const RPG_ENCOUNTER_VIEW_SCHEMA_VERSION: u32 = 13;
 pub const RPG_END_TURN_CONTROL_ID: &str = "control.end-turn";
 pub const RPG_LINE_OF_EFFECT_OBSTRUCTION_ID: &str = "line-of-effect.obstruction";
 pub const RPG_LINE_OF_EFFECT_OBSTRUCTION_VERSION: u32 = 1;
@@ -269,9 +269,11 @@ pub struct RpgEffectView {
     pub stacking_id: String,
     pub stacking: rpg_core::RpgEffectStackingPolicy,
     pub rank: i32,
+    pub tenure: rpg_core::RpgEffectTenure,
     pub duration_anchor: rpg_core::RpgEffectDurationAnchor,
     pub remaining_count: u32,
     pub application_revision: u64,
+    pub condition: Option<rpg_core::RpgConditionDefinition>,
     pub contributions: Vec<rpg_core::RpgScalarContributionDefinition>,
     pub outcome_band_shifts: Vec<rpg_core::RpgOutcomeBandShiftDefinition>,
     pub pool_contributions: Vec<rpg_core::RpgPoolContributionDefinition>,
@@ -639,6 +641,7 @@ pub struct RpgEncounterView {
     pub actions: Vec<RpgActionView>,
     pub controls: Vec<RpgTurnControlView>,
     pub pending_reaction: Option<RpgReactionRequest>,
+    pub pending_turn_save: Option<crate::RpgPendingTurnSave>,
     pub log: Vec<RpgEncounterLogEntry>,
     pub outcome: RpgEncounterOutcomeView,
 }
@@ -2825,9 +2828,13 @@ pub(crate) fn participant_view(
                     stacking_id: effect.stacking_id().to_owned(),
                     stacking: effect.stacking(),
                     rank: effect.rank(),
+                    tenure: definition
+                        .map(|definition| definition.tenure)
+                        .unwrap_or_else(|| effect.tenure()),
                     duration_anchor: effect.duration_anchor(),
                     remaining_count: effect.remaining_count(),
                     application_revision: effect.application_revision(),
+                    condition: definition.and_then(|definition| definition.condition.clone()),
                     contributions: definition
                         .map(|definition| definition.contributions.clone())
                         .unwrap_or_default(),
@@ -2910,6 +2917,7 @@ fn resolution_rejection(
         random_attempted: 0,
         random_request: None,
         reaction_request: None,
+        unavailable_source: None,
     }
 }
 

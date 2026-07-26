@@ -74,6 +74,7 @@ pub struct RpgTurnControlCommand {
     pub expected_revision: u64,
     pub actor_id: String,
     pub control: RpgTurnControl,
+    pub random_values: Vec<u32>,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
@@ -82,7 +83,29 @@ pub struct RpgTurnControlReceipt {
     pub control: RpgTurnControl,
     pub actor_id: String,
     pub events: Vec<rpg_core::RpgDomainEvent>,
+    pub random_evidence: Vec<rpg_core::RpgRandomEvidence>,
+    pub random_consumed: u64,
     pub state_revision: u64,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase", deny_unknown_fields)]
+pub struct RpgEffectSaveCandidate {
+    pub target_id: String,
+    pub instance_id: String,
+    pub definition_id: String,
+    pub definition_version: u32,
+    pub source_entity_id: String,
+    pub request: rpg_core::RpgRandomRequest,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase", deny_unknown_fields)]
+pub struct RpgPendingTurnSave {
+    pub expected_revision: u64,
+    pub actor_id: String,
+    pub control: RpgTurnControl,
+    pub candidates: Vec<RpgEffectSaveCandidate>,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
@@ -101,6 +124,7 @@ pub enum RpgCommandOutcome {
     Accepted(RpgResolutionReceipt),
     ControlAccepted(RpgTurnControlReceipt),
     AwaitingReaction(RpgPendingReaction),
+    AwaitingTurnSave(RpgPendingTurnSave),
     Rejected(RpgResolutionRejection),
 }
 
@@ -145,6 +169,7 @@ pub struct RpgAuthoritySession {
     pub(crate) rules: CompiledRpgRules,
     pub(crate) state: RpgCapabilityState,
     pub(crate) pending: Option<PendingTransaction>,
+    pub(crate) pending_turn_save: Option<RpgPendingTurnSave>,
     pub(crate) accepted_random_values: u64,
     pub(crate) encounter: RpgEncounterAuthority,
     pub(crate) session_binding_id: String,
@@ -166,6 +191,7 @@ impl RpgAuthoritySession {
             rules: self.rules.clone(),
             state: self.state.clone(),
             pending: self.pending.clone(),
+            pending_turn_save: self.pending_turn_save.clone(),
             accepted_random_values: self.accepted_random_values,
             encounter: self.encounter.clone(),
             session_binding_id: self.session_binding_id.clone(),
@@ -185,6 +211,7 @@ impl RpgAuthoritySession {
             rules: bundle.rules().clone(),
             state,
             pending: None,
+            pending_turn_save: None,
             accepted_random_values: 0,
             encounter,
             session_binding_id: next_session_binding_id(),
@@ -345,7 +372,7 @@ impl RpgAuthoritySession {
                     action_id: action.id.clone(),
                     item_binding: item_binding.clone(),
                 };
-                let options = match target_kind {
+                let mut options = match target_kind {
                     RpgIrTargetKind::Participant => {
                         let mut filtered_participants = Vec::new();
                         let legal_candidates = self
@@ -568,6 +595,24 @@ impl RpgAuthoritySession {
                         }
                     }
                 };
+                if self.pending.is_some() || self.pending_turn_save.is_some() {
+                    options.participant_ids.clear();
+                    options.cell_paths.clear();
+                    options.area_options.clear();
+                    first_rejection = Some(if self.pending_turn_save.is_some() {
+                        rejection(
+                            "RPG_SESSION_TURN_SAVE_PENDING",
+                            "$.action",
+                            "resolve the pending end-turn saves before choosing an action",
+                        )
+                    } else {
+                        rejection(
+                            "RPG_SESSION_REACTION_PENDING",
+                            "$.action",
+                            "resolve the pending reaction before choosing an action",
+                        )
+                    });
+                }
                 let has_options = !options.participant_ids.is_empty()
                     || !options.cell_paths.is_empty()
                     || !options.area_options.is_empty();
@@ -635,6 +680,12 @@ impl RpgAuthoritySession {
                 "$.control",
                 "resolve the pending reaction before ending the turn",
             ))
+        } else if self.pending_turn_save.is_some() {
+            Some(rejection(
+                "RPG_SESSION_TURN_SAVE_PENDING",
+                "$.control",
+                "submit the required d20 save evidence to finish ending the turn",
+            ))
         } else if !matches!(
             encounter_outcome(&self.state),
             RpgEncounterOutcomeView::InProgress
@@ -688,6 +739,7 @@ impl RpgAuthoritySession {
             pending_reaction: self
                 .pending_reaction()
                 .map(|pending| pending.request.clone()),
+            pending_turn_save: self.pending_turn_save.clone(),
             log: self.encounter.log.clone(),
             outcome: encounter_outcome(&self.state),
         }
@@ -708,6 +760,13 @@ impl RpgAuthoritySession {
                 "RPG_SESSION_REACTION_PENDING",
                 "$.command",
                 "resolve the pending reaction before submitting another command",
+            ));
+        }
+        if self.pending_turn_save.is_some() {
+            return RpgCommandOutcome::Rejected(rejection(
+                "RPG_SESSION_TURN_SAVE_PENDING",
+                "$.command",
+                "resolve the pending end-turn saves before submitting another command",
             ));
         }
         if command.expected_revision != self.state.revision() {
@@ -796,11 +855,6 @@ impl RpgAuthoritySession {
                 if let Some(area_event) = area_event {
                     prepend_area_evidence(&mut receipt, area_event);
                 }
-                if random.remaining() != 0 {
-                    return RpgCommandOutcome::Rejected(unused_random_rejection(
-                        random.remaining(),
-                    ));
-                }
                 if let Some(rejection) =
                     runtime_board_rejection(&self.encounter.scenario.board, &staged_state)
                 {
@@ -812,6 +866,21 @@ impl RpgAuthoritySession {
                         RpgEncounterOutcomeView::InProgress
                     );
                 let refreshed = refreshed_modifiers(&receipt.events);
+                if advances_turn {
+                    if let Err(rejection) = append_automatic_turn_saves(
+                        &self.encounter,
+                        &mut staged_state,
+                        &mut random,
+                        &mut receipt,
+                    ) {
+                        return RpgCommandOutcome::Rejected(rejection);
+                    }
+                }
+                if random.remaining() != 0 {
+                    return RpgCommandOutcome::Rejected(unused_random_rejection(
+                        random.remaining(),
+                    ));
+                }
                 let next_turn = advances_turn.then(|| {
                     append_turn_events(
                         &self.rules,
@@ -898,6 +967,13 @@ impl RpgAuthoritySession {
     }
 
     pub(crate) fn react(&mut self, command: RpgReactionCommand) -> RpgCommandOutcome {
+        if self.pending_turn_save.is_some() {
+            return RpgCommandOutcome::Rejected(rejection(
+                "RPG_SESSION_TURN_SAVE_PENDING",
+                "$.reaction",
+                "resolve the pending end-turn saves before submitting a reaction",
+            ));
+        }
         let Some(transaction) = self.pending.clone() else {
             return RpgCommandOutcome::Rejected(rejection(
                 "RPG_SESSION_REACTION_ABSENT",
@@ -945,11 +1021,6 @@ impl RpgAuthoritySession {
                 if let Some(area_event) = transaction.area_event {
                     prepend_area_evidence(&mut receipt, area_event);
                 }
-                if random.remaining() != 0 {
-                    return RpgCommandOutcome::Rejected(unused_random_rejection(
-                        random.remaining(),
-                    ));
-                }
                 if let Some(rejection) =
                     runtime_board_rejection(&self.encounter.scenario.board, &staged_state)
                 {
@@ -961,6 +1032,21 @@ impl RpgAuthoritySession {
                         RpgEncounterOutcomeView::InProgress
                     );
                 let refreshed = refreshed_modifiers(&receipt.events);
+                if advances_turn {
+                    if let Err(rejection) = append_automatic_turn_saves(
+                        &self.encounter,
+                        &mut staged_state,
+                        &mut random,
+                        &mut receipt,
+                    ) {
+                        return RpgCommandOutcome::Rejected(rejection);
+                    }
+                }
+                if random.remaining() != 0 {
+                    return RpgCommandOutcome::Rejected(unused_random_rejection(
+                        random.remaining(),
+                    ));
+                }
                 let next_turn = advances_turn.then(|| {
                     append_turn_events(
                         &self.rules,
@@ -994,6 +1080,9 @@ impl RpgAuthoritySession {
                 "$.control",
                 "resolve the pending reaction before ending the turn",
             ));
+        }
+        if let Some(pending) = self.pending_turn_save.clone() {
+            return self.resolve_pending_turn_save(command, pending);
         }
         if command.expected_revision != self.state.revision() {
             return RpgCommandOutcome::Rejected(revision_rejection(
@@ -1030,6 +1119,32 @@ impl RpgAuthoritySession {
                 "the current actor must have positive vitality",
             ));
         }
+        let save_candidates = match self.turn_save_candidates(&command.actor_id) {
+            Ok(candidates) => candidates,
+            Err(rejection) => return RpgCommandOutcome::Rejected(rejection),
+        };
+        if !save_candidates.is_empty() {
+            if !command.random_values.is_empty() {
+                return RpgCommandOutcome::Rejected(rejection(
+                    "RPG_EFFECT_SAVE_PHASE_REQUIRED",
+                    "$.control.randomValues",
+                    "end-turn save evidence may only be submitted after authority opens the typed save phase",
+                ));
+            }
+            let pending = RpgPendingTurnSave {
+                expected_revision: command.expected_revision,
+                actor_id: command.actor_id,
+                control: command.control,
+                candidates: save_candidates,
+            };
+            self.pending_turn_save = Some(pending.clone());
+            return RpgCommandOutcome::AwaitingTurnSave(pending);
+        }
+        if !command.random_values.is_empty() {
+            return RpgCommandOutcome::Rejected(unused_random_rejection(
+                command.random_values.len(),
+            ));
+        }
 
         let mut staged_state = self.state.clone();
         let mut events = Vec::new();
@@ -1047,9 +1162,150 @@ impl RpgAuthoritySession {
             control: command.control,
             actor_id: command.actor_id,
             events,
+            random_evidence: Vec::new(),
+            random_consumed: 0,
             state_revision,
         };
         self.state = staged_state;
+        self.encounter.record_control(&receipt);
+        self.encounter.set_turn(next_turn);
+        RpgCommandOutcome::ControlAccepted(receipt)
+    }
+
+    fn turn_save_candidates(
+        &self,
+        actor_id: &str,
+    ) -> Result<Vec<RpgEffectSaveCandidate>, RpgResolutionRejection> {
+        turn_save_candidates_for(&self.state, actor_id, &self.encounter.effect_definitions)
+    }
+
+    fn resolve_pending_turn_save(
+        &mut self,
+        command: RpgTurnControlCommand,
+        pending: RpgPendingTurnSave,
+    ) -> RpgCommandOutcome {
+        if command.expected_revision != pending.expected_revision
+            || command.actor_id != pending.actor_id
+            || command.control != pending.control
+        {
+            return RpgCommandOutcome::Rejected(rejection(
+                "RPG_EFFECT_SAVE_PENDING_MISMATCH",
+                "$.control",
+                "turn-save evidence does not match the authority-owned pending transition",
+            ));
+        }
+        let current = match self.turn_save_candidates(&command.actor_id) {
+            Ok(candidates) => candidates,
+            Err(rejection) => return RpgCommandOutcome::Rejected(rejection),
+        };
+        if current != pending.candidates {
+            return RpgCommandOutcome::Rejected(rejection(
+                "RPG_EFFECT_SAVE_PENDING_STALE",
+                "$.control.saves",
+                "the authority-owned save candidate set no longer matches current effect state",
+            ));
+        }
+        if command.random_values.len() < pending.candidates.len() {
+            let mut rejection = rejection(
+                "RPG_EFFECT_SAVE_EVIDENCE_UNDERFLOW",
+                "$.control.randomValues",
+                format!(
+                    "end-turn saves require exactly {} d20 values",
+                    pending.candidates.len()
+                ),
+            );
+            rejection.random_request = pending
+                .candidates
+                .get(command.random_values.len())
+                .map(|candidate| Box::new(candidate.request.clone()));
+            return RpgCommandOutcome::Rejected(rejection);
+        }
+        if command.random_values.len() > pending.candidates.len() {
+            return RpgCommandOutcome::Rejected(unused_random_rejection(
+                command
+                    .random_values
+                    .len()
+                    .saturating_sub(pending.candidates.len()),
+            ));
+        }
+        for (index, value) in command.random_values.iter().enumerate() {
+            if !(1..=20).contains(value) {
+                return RpgCommandOutcome::Rejected(rejection(
+                    "RPG_RANDOM_VALUE_OUT_OF_RANGE",
+                    format!("$.control.randomValues[{index}]"),
+                    format!("save value {value} is outside 1..=20"),
+                ));
+            }
+        }
+
+        let mut staged_state = self.state.clone();
+        let mut events = Vec::new();
+        let mut random_evidence = Vec::with_capacity(pending.candidates.len());
+        for (candidate, roll) in pending
+            .candidates
+            .iter()
+            .zip(command.random_values.iter().copied())
+        {
+            let saved = roll >= 10;
+            events.push(rpg_core::RpgDomainEvent::EffectSaveResolved {
+                target_id: candidate.target_id.clone(),
+                instance_id: candidate.instance_id.clone(),
+                definition_id: candidate.definition_id.clone(),
+                definition_version: candidate.definition_version,
+                source_id: candidate.source_entity_id.clone(),
+                roll,
+                difficulty: 10,
+                saved,
+            });
+            random_evidence.push(rpg_core::RpgRandomEvidence {
+                request: candidate.request.clone(),
+                values: vec![roll],
+                heterogeneous_values: Vec::new(),
+            });
+            if saved {
+                let removed = staged_state
+                    .effects_owner()
+                    .remove_instance(&candidate.target_id, &candidate.instance_id)
+                    .expect("validated save target remains available")
+                    .expect("validated save effect remains active");
+                events.push(rpg_core::RpgDomainEvent::EffectExpired {
+                    target_id: candidate.target_id.clone(),
+                    instance_id: removed.instance_id().to_owned(),
+                    definition_id: removed.definition_id().to_owned(),
+                    definition_version: removed.definition_version(),
+                    source_id: removed.source_entity_id().to_owned(),
+                    duration_anchor: removed.duration_anchor(),
+                    tenure: self
+                        .encounter
+                        .effect_definitions
+                        .get(&candidate.definition_id)
+                        .map(|definition| definition.tenure)
+                        .unwrap_or_else(|| removed.tenure()),
+                });
+            }
+        }
+        let next_turn = append_turn_events(
+            &self.rules,
+            &self.encounter,
+            &self.state,
+            &mut staged_state,
+            &mut events,
+            BTreeSet::new(),
+            self.state.revision().saturating_add(1),
+        );
+        let state_revision = staged_state.advance_revision();
+        let random_consumed = u64::try_from(random_evidence.len()).unwrap_or(u64::MAX);
+        let receipt = RpgTurnControlReceipt {
+            control: command.control,
+            actor_id: command.actor_id,
+            events,
+            random_evidence,
+            random_consumed,
+            state_revision,
+        };
+        self.pending_turn_save = None;
+        self.state = staged_state;
+        self.accepted_random_values = self.accepted_random_values.saturating_add(random_consumed);
         self.encounter.record_control(&receipt);
         self.encounter.set_turn(next_turn);
         RpgCommandOutcome::ControlAccepted(receipt)
@@ -1335,7 +1591,52 @@ impl RpgAuthoritySession {
             expected_revision: proposal.expected_revision,
             actor_id: proposal.actor_id,
             control: proposal.control,
+            random_values: Vec::new(),
         })
+    }
+
+    pub fn control_with_random_values_recorded(
+        &mut self,
+        proposal: RpgTurnControlProposal,
+        random_values: Vec<u32>,
+    ) -> Result<(RpgCommandOutcome, RpgReplayEntry), RpgReplayFailure> {
+        self.record_turn_control(RpgTurnControlCommand {
+            expected_revision: proposal.expected_revision,
+            actor_id: proposal.actor_id,
+            control: proposal.control,
+            random_values,
+        })
+    }
+
+    pub fn control_with_random_source_recorded(
+        &mut self,
+        proposal: RpgTurnControlProposal,
+        source: &mut dyn RpgRandomSource,
+    ) -> Result<(RpgCommandOutcome, Vec<RpgReplayEntry>), RpgAutomaticCommandFailure> {
+        self.require_random_source(source)?;
+        let command = RpgTurnControlCommand {
+            expected_revision: proposal.expected_revision,
+            actor_id: proposal.actor_id,
+            control: proposal.control,
+            random_values: Vec::new(),
+        };
+        let (outcome, first_entry) = self
+            .record_turn_control(command.clone())
+            .map_err(RpgAutomaticCommandFailure::Replay)?;
+        let RpgCommandOutcome::AwaitingTurnSave(pending) = outcome else {
+            return Ok((outcome, vec![first_entry]));
+        };
+        let mut random_values = Vec::with_capacity(pending.candidates.len());
+        for candidate in &pending.candidates {
+            extend_random_values(&mut random_values, &candidate.request, source)?;
+        }
+        let (outcome, second_entry) = self
+            .record_turn_control(RpgTurnControlCommand {
+                random_values,
+                ..command
+            })
+            .map_err(RpgAutomaticCommandFailure::Replay)?;
+        Ok((outcome, vec![first_entry, second_entry]))
     }
 
     fn proposal_cell_targets(&self, proposal: &RpgActionProposal) -> Vec<RpgIntentCellTarget> {
@@ -1779,6 +2080,7 @@ impl RpgAuthoritySession {
             rules,
             state,
             pending: None,
+            pending_turn_save: None,
             accepted_random_values: 0,
             encounter: RpgEncounterAuthority {
                 scenario,
@@ -1831,6 +2133,173 @@ fn refreshed_modifiers(events: &[rpg_core::RpgDomainEvent]) -> BTreeSet<(String,
         .collect()
 }
 
+fn turn_save_candidates_for(
+    state: &RpgCapabilityState,
+    actor_id: &str,
+    effect_definitions: &BTreeMap<String, rpg_ir::CompiledEffectDefinition>,
+) -> Result<Vec<RpgEffectSaveCandidate>, RpgResolutionRejection> {
+    let actor = state.entity(actor_id).ok_or_else(|| {
+        rejection(
+            "RPG_TURN_ACTOR_UNKNOWN",
+            "$.control.actorId",
+            format!("turn actor {actor_id} is unavailable"),
+        )
+    })?;
+    let mut candidates = Vec::new();
+    for effect in actor.effects() {
+        if effect.duration_anchor() != rpg_core::RpgEffectDurationAnchor::TargetTurnEndSave {
+            continue;
+        }
+        let definition = effect_definitions
+            .get(effect.definition_id())
+            .ok_or_else(|| {
+                rejection(
+                    "RPG_RUNTIME_EFFECT_DEFINITION_UNKNOWN",
+                    "$.control.saves",
+                    format!(
+                        "active effect {} references unavailable definition {}",
+                        effect.instance_id(),
+                        effect.definition_id()
+                    ),
+                )
+            })?;
+        if definition.definition_version != effect.definition_version()
+            || definition.tenure != (rpg_core::RpgEffectTenure::TargetTurnEndSave {})
+        {
+            return Err(rejection(
+                "RPG_RUNTIME_EFFECT_TENURE_MISMATCH",
+                "$.control.saves",
+                format!(
+                    "active effect {} does not match the compiled save-ends tenure",
+                    effect.instance_id()
+                ),
+            ));
+        }
+        candidates.push(RpgEffectSaveCandidate {
+            target_id: actor_id.to_owned(),
+            instance_id: effect.instance_id().to_owned(),
+            definition_id: effect.definition_id().to_owned(),
+            definition_version: effect.definition_version(),
+            source_entity_id: effect.source_entity_id().to_owned(),
+            request: rpg_core::RpgRandomRequest {
+                kind: rpg_core::RpgRandomRequestKind::EffectSave,
+                count: 1,
+                sides: 20,
+                path: String::new(),
+                heterogeneous_terms: Vec::new(),
+            },
+        });
+    }
+    candidates.sort_by(|left, right| {
+        (
+            left.definition_id.as_str(),
+            left.source_entity_id.as_str(),
+            left.instance_id.as_str(),
+        )
+            .cmp(&(
+                right.definition_id.as_str(),
+                right.source_entity_id.as_str(),
+                right.instance_id.as_str(),
+            ))
+    });
+    if candidates.len() > 32 {
+        return Err(rejection(
+            "RPG_EFFECT_SAVE_CANDIDATE_LIMIT_EXCEEDED",
+            "$.control.saves",
+            "one end-turn transition may resolve at most 32 save-ends effects",
+        ));
+    }
+    for (index, candidate) in candidates.iter_mut().enumerate() {
+        candidate.request.path = format!("$.control.saves[{index}].roll");
+    }
+    Ok(candidates)
+}
+
+fn append_automatic_turn_saves(
+    encounter: &RpgEncounterAuthority,
+    staged_state: &mut RpgCapabilityState,
+    random: &mut DeterministicRandomStream,
+    receipt: &mut RpgResolutionReceipt,
+) -> Result<(), RpgResolutionRejection> {
+    let candidates = turn_save_candidates_for(
+        staged_state,
+        encounter.current_actor_id(),
+        &encounter.effect_definitions,
+    )?;
+    for candidate in candidates {
+        let Some(roll) = random.take() else {
+            let mut rejection = rejection(
+                "RPG_RANDOM_EXHAUSTED",
+                &candidate.request.path,
+                "automatic end-turn effect save requires one d20 value",
+            );
+            rejection.trace = Box::new(receipt.trace.clone());
+            rejection.random_evidence = Box::new(receipt.random_evidence.clone());
+            rejection.random_attempted = receipt.random_consumed;
+            rejection.random_request = Some(Box::new(candidate.request));
+            return Err(rejection);
+        };
+        if !(1..=20).contains(&roll) {
+            let mut rejection = rejection(
+                "RPG_RANDOM_VALUE_OUT_OF_RANGE",
+                &candidate.request.path,
+                format!("save value {roll} is outside 1..=20"),
+            );
+            rejection.trace = Box::new(receipt.trace.clone());
+            rejection.random_evidence = Box::new(receipt.random_evidence.clone());
+            rejection.random_attempted = receipt.random_consumed.saturating_add(1);
+            return Err(rejection);
+        }
+        let saved = roll >= 10;
+        receipt
+            .events
+            .push(rpg_core::RpgDomainEvent::EffectSaveResolved {
+                target_id: candidate.target_id.clone(),
+                instance_id: candidate.instance_id.clone(),
+                definition_id: candidate.definition_id.clone(),
+                definition_version: candidate.definition_version,
+                source_id: candidate.source_entity_id.clone(),
+                roll,
+                difficulty: 10,
+                saved,
+            });
+        receipt.random_evidence.push(rpg_core::RpgRandomEvidence {
+            request: candidate.request.clone(),
+            values: vec![roll],
+            heterogeneous_values: Vec::new(),
+        });
+        receipt.random_consumed = receipt.random_consumed.saturating_add(1);
+        receipt.trace.push(RpgTraceStep {
+            path: candidate.request.path,
+            code: "RPG_EFFECT_SAVE_RANDOM_CONSUMED".to_owned(),
+            detail: format!("d20={roll}"),
+        });
+        if saved {
+            let removed = staged_state
+                .effects_owner()
+                .remove_instance(&candidate.target_id, &candidate.instance_id)
+                .expect("validated save target remains available")
+                .expect("validated save effect remains active");
+            receipt
+                .events
+                .push(rpg_core::RpgDomainEvent::EffectExpired {
+                    target_id: candidate.target_id,
+                    instance_id: removed.instance_id().to_owned(),
+                    definition_id: removed.definition_id().to_owned(),
+                    definition_version: removed.definition_version(),
+                    source_id: removed.source_entity_id().to_owned(),
+                    duration_anchor: removed.duration_anchor(),
+                    tenure: encounter
+                        .effect_definitions
+                        .get(&candidate.definition_id)
+                        .map(|definition| definition.tenure)
+                        .unwrap_or_else(|| removed.tenure()),
+                });
+        }
+    }
+    Ok(())
+}
+
 fn append_turn_events(
     rules: &CompiledRpgRules,
     encounter: &RpgEncounterAuthority,
@@ -1854,6 +2323,7 @@ fn append_turn_events(
         turn: next_turn.turn,
     });
     events.extend(effect_boundary_events(
+        &encounter.effect_definitions,
         staged_state,
         transition_revision,
         &encounter.turn.current_actor_id,
@@ -1907,6 +2377,7 @@ fn append_turn_events(
 }
 
 fn effect_boundary_events(
+    effect_definitions: &BTreeMap<String, rpg_ir::CompiledEffectDefinition>,
     staged_state: &mut RpgCapabilityState,
     transition_revision: u64,
     previous_actor_id: &str,
@@ -1933,6 +2404,10 @@ fn effect_boundary_events(
                 definition_id: effect.definition_id().to_owned(),
                 definition_version: effect.definition_version(),
                 duration_anchor: effect.duration_anchor(),
+                tenure: effect_definitions
+                    .get(effect.definition_id())
+                    .map(|definition| definition.tenure)
+                    .unwrap_or_else(|| effect.tenure()),
                 previous_count,
                 remaining_count: effect.remaining_count(),
             },
@@ -1946,6 +2421,10 @@ fn effect_boundary_events(
                 definition_version: effect.definition_version(),
                 source_id: effect.source_entity_id().to_owned(),
                 duration_anchor: effect.duration_anchor(),
+                tenure: effect_definitions
+                    .get(effect.definition_id())
+                    .map(|definition| definition.tenure)
+                    .unwrap_or_else(|| effect.tenure()),
             },
         })
         .collect()
@@ -2144,6 +2623,7 @@ fn rejection(
         random_attempted: 0,
         random_request: None,
         reaction_request: None,
+        unavailable_source: None,
     }
 }
 

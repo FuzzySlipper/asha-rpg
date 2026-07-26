@@ -3,13 +3,13 @@ use std::collections::{BTreeMap, BTreeSet};
 use rpg_core::{
     ActiveRpgEffect, DeterministicRandomStream, GridPosition, RpgCapabilityId,
     RpgCapabilityMutationError, RpgCapabilityState, RpgCapabilityWorkspace,
-    RpgContributionComparison, RpgContributionDisposition, RpgContributionPredicate,
-    RpgContributionStackingPolicy, RpgContributionSubject, RpgContributionTeamRelation,
-    RpgContributionValueExpression, RpgDamagePartResolution, RpgDamageResponseDecision,
-    RpgDamageResponseDefinition, RpgDamageResponseDisposition, RpgDamageResponseEffect,
-    RpgDamageResponsePhase, RpgDamageResponseSchema, RpgDamageScaleStep, RpgDomainEvent,
-    RpgEffectMutation, RpgHeterogeneousRandomTerm, RpgHeterogeneousRandomValue, RpgIntent,
-    RpgModifierStackingPolicy, RpgNaturalDieEffect, RpgNaturalDieResolution,
+    RpgConditionRestrictionClause, RpgContributionComparison, RpgContributionDisposition,
+    RpgContributionPredicate, RpgContributionStackingPolicy, RpgContributionSubject,
+    RpgContributionTeamRelation, RpgContributionValueExpression, RpgDamagePartResolution,
+    RpgDamageResponseDecision, RpgDamageResponseDefinition, RpgDamageResponseDisposition,
+    RpgDamageResponseEffect, RpgDamageResponsePhase, RpgDamageResponseSchema, RpgDamageScaleStep,
+    RpgDomainEvent, RpgEffectMutation, RpgHeterogeneousRandomTerm, RpgHeterogeneousRandomValue,
+    RpgIntent, RpgModifierStackingPolicy, RpgNaturalDieEffect, RpgNaturalDieResolution,
     RpgOutcomeBandShiftDecision, RpgOutcomeBandShiftDefinition, RpgOutcomeBandShiftDisposition,
     RpgOutcomeBandShiftLedger, RpgPoolCancellationResult, RpgPoolContributionDecision,
     RpgPoolContributionDefinition, RpgPoolContributionEffect, RpgPoolContributionLedger,
@@ -17,7 +17,7 @@ use rpg_core::{
     RpgReactionActivationBudgetCost, RpgReactionDecision, RpgReactionOption, RpgReactionRequest,
     RpgReactionUnavailable, RpgResolutionContext, RpgResolutionReceipt, RpgResolutionRejection,
     RpgRulesetValueKind, RpgScalarContributionDecision, RpgScalarContributionDefinition,
-    RpgScalarContributionLedger, RpgTraceStep, MAXIMUM_RPG_DAMAGE_RESPONSES,
+    RpgScalarContributionLedger, RpgTraceStep, RpgUnavailableSource, MAXIMUM_RPG_DAMAGE_RESPONSES,
 };
 use rpg_ir::{
     CompiledCharacterFeature, CompiledEffectDefinition, CompiledItemDefinition, RpgIrActivation,
@@ -326,6 +326,7 @@ impl CompiledRpgRules {
                 )
             })?;
         validate_intent(action, state, intent)?;
+        self.validate_condition_restrictions(state, intent, action)?;
         if let Some(activation) = &action.activation {
             activation_rejection(
                 self,
@@ -336,6 +337,126 @@ impl CompiledRpgRules {
             )?;
         }
         Ok(())
+    }
+
+    fn validate_condition_restrictions(
+        &self,
+        state: &RpgCapabilityState,
+        intent: &RpgIntent,
+        action: &CompiledAction,
+    ) -> Result<(), RpgResolutionRejection> {
+        let actor = state.entity(&intent.actor_id).ok_or_else(|| {
+            rejection(
+                "RPG_INTENT_ACTOR_UNKNOWN",
+                "$.intent.actorId",
+                format!("unknown actor {}", intent.actor_id),
+            )
+        })?;
+        for effect in actor.effects() {
+            let definition = self.effect(effect.definition_id()).ok_or_else(|| {
+                rejection(
+                    "RPG_RUNTIME_EFFECT_DEFINITION_UNKNOWN",
+                    "$.intent.actorId",
+                    format!(
+                        "active effect {} references unavailable definition {}",
+                        effect.instance_id(),
+                        effect.definition_id()
+                    ),
+                )
+            })?;
+            if definition.definition_version != effect.definition_version() {
+                return Err(rejection(
+                    "RPG_RUNTIME_EFFECT_DEFINITION_VERSION_MISMATCH",
+                    "$.intent.actorId",
+                    format!(
+                        "active effect {} references {}@{}, but authority has {}@{}",
+                        effect.instance_id(),
+                        effect.definition_id(),
+                        effect.definition_version(),
+                        definition.definition_id,
+                        definition.definition_version
+                    ),
+                ));
+            }
+            let Some(condition) = &definition.condition else {
+                continue;
+            };
+            for clause in &condition.clauses {
+                let restricted = match clause {
+                    RpgConditionRestrictionClause::ForbidActionTag { action_tag } => {
+                        action.tags.binary_search(action_tag).is_ok()
+                    }
+                    RpgConditionRestrictionClause::RequireActionTag { action_tag } => {
+                        action.tags.binary_search(action_tag).is_err()
+                    }
+                    RpgConditionRestrictionClause::ForbidMovement => {
+                        program_contains_movement(&action.program)
+                    }
+                };
+                if !restricted {
+                    continue;
+                }
+                let (code, message) = match clause {
+                    RpgConditionRestrictionClause::ForbidActionTag { action_tag } => (
+                        "RPG_CONDITION_ACTION_RESTRICTED",
+                        format!("{} forbids action tag {action_tag}", definition.label),
+                    ),
+                    RpgConditionRestrictionClause::RequireActionTag { action_tag } => (
+                        "RPG_CONDITION_ACTION_RESTRICTED",
+                        format!("{} requires action tag {action_tag}", definition.label),
+                    ),
+                    RpgConditionRestrictionClause::ForbidMovement => (
+                        "RPG_CONDITION_MOVEMENT_RESTRICTED",
+                        format!("{} forbids movement", definition.label),
+                    ),
+                };
+                let mut rejection = rejection(code, "$.intent.actionId", message);
+                rejection.unavailable_source = Some(Box::new(RpgUnavailableSource {
+                    source_kind: "effect".to_owned(),
+                    source_definition_id: definition.definition_id.clone(),
+                    source_instance_id: effect.instance_id().to_owned(),
+                }));
+                return Err(rejection);
+            }
+        }
+        Ok(())
+    }
+}
+
+fn program_contains_movement(program: &CompiledProgram) -> bool {
+    match program {
+        CompiledProgram::Operation(operation) => {
+            matches!(
+                operation.declaration,
+                RpgIrOperation::Move { .. } | RpgIrOperation::MoveToCell { .. }
+            )
+        }
+        CompiledProgram::Sequence(steps) => steps.iter().any(program_contains_movement),
+        CompiledProgram::When {
+            then, otherwise, ..
+        } => {
+            program_contains_movement(then)
+                || otherwise.as_deref().is_some_and(program_contains_movement)
+        }
+        CompiledProgram::Repeat { body, .. }
+        | CompiledProgram::ForEachTarget { body, .. }
+        | CompiledProgram::Atomic(body) => program_contains_movement(body),
+        CompiledProgram::OnCheck {
+            hit,
+            miss,
+            saved,
+            failed,
+            no_roll,
+        } => [hit, miss, saved, failed, no_roll]
+            .iter()
+            .filter_map(|branch| branch.as_deref())
+            .any(program_contains_movement),
+        CompiledProgram::OnOutcome { branches, default } => {
+            branches
+                .values()
+                .any(|branch| program_contains_movement(branch))
+                || program_contains_movement(default)
+        }
     }
 }
 
@@ -687,12 +808,20 @@ impl Execution<'_> {
         &self,
         target_id: &str,
         path: &str,
-    ) -> Result<Vec<(ActiveRpgEffect, CompiledEffectDefinition)>, RpgResolutionRejection> {
-        let mut entity_ids = vec![self.intent.actor_id.as_str(), target_id];
-        entity_ids.sort_unstable();
-        entity_ids.dedup();
+    ) -> Result<
+        Vec<(
+            RpgContributionSubject,
+            ActiveRpgEffect,
+            CompiledEffectDefinition,
+        )>,
+        RpgResolutionRejection,
+    > {
+        let entity_ids = [
+            (RpgContributionSubject::Actor, self.intent.actor_id.as_str()),
+            (RpgContributionSubject::Target, target_id),
+        ];
         let mut sources = Vec::new();
-        for entity_id in entity_ids {
+        for (subject, entity_id) in entity_ids {
             let entity = self.workspace.state().entity(entity_id).ok_or_else(|| {
                 self.fail(
                     "RPG_RUNTIME_EFFECT_OWNER_UNKNOWN",
@@ -726,19 +855,21 @@ impl Execution<'_> {
                         ),
                     ));
                 }
-                sources.push((effect.clone(), definition.clone()));
+                sources.push((subject, effect.clone(), definition.clone()));
             }
         }
         sources.sort_by(|left, right| {
             (
-                left.0.definition_id(),
-                left.0.source_entity_id(),
-                left.0.instance_id(),
+                left.0,
+                left.1.definition_id(),
+                left.1.source_entity_id(),
+                left.1.instance_id(),
             )
                 .cmp(&(
-                    right.0.definition_id(),
-                    right.0.source_entity_id(),
-                    right.0.instance_id(),
+                    right.0,
+                    right.1.definition_id(),
+                    right.1.source_entity_id(),
+                    right.1.instance_id(),
                 ))
         });
         Ok(sources)
@@ -1167,9 +1298,9 @@ impl Execution<'_> {
                 }
             }
         }
-        for (effect, definition) in self.active_effect_sources(target_id, path)? {
+        for (subject, effect, definition) in self.active_effect_sources(target_id, path)? {
             for contribution in definition.pool_contributions {
-                if contribution.profile.id == profile.id {
+                if contribution.subject == subject && contribution.profile.id == profile.id {
                     pending.push(PendingPoolContribution {
                         source_definition_id: definition.definition_id.clone(),
                         source_instance_id: Some(effect.instance_id().to_owned()),
@@ -1837,9 +1968,9 @@ impl Execution<'_> {
                 }
             }
         }
-        for (effect, definition) in self.active_effect_sources(target_id, path)? {
+        for (subject, effect, definition) in self.active_effect_sources(target_id, path)? {
             for shift in definition.outcome_band_shifts {
-                if shift.profile.id == profile_id {
+                if shift.subject == subject && shift.profile.id == profile_id {
                     pending.push(PendingOutcomeBandShift {
                         source_definition_id: definition.definition_id.clone(),
                         source_instance_id: Some(effect.instance_id().to_owned()),
@@ -1990,9 +2121,9 @@ impl Execution<'_> {
                 }
             }
         }
-        for (effect, definition) in self.active_effect_sources(target_id, path)? {
+        for (subject, effect, definition) in self.active_effect_sources(target_id, path)? {
             for contribution in definition.contributions {
-                if contribution.selector.id == selector_id {
+                if contribution.subject == subject && contribution.selector.id == selector_id {
                     pending.push(PendingContribution {
                         source_definition_id: definition.definition_id.clone(),
                         source_instance_id: Some(effect.instance_id().to_owned()),
@@ -3150,6 +3281,7 @@ impl Execution<'_> {
                             stacking: effect.stacking(),
                             rank: effect.rank(),
                             duration_anchor: effect.duration_anchor(),
+                            tenure: definition.tenure,
                             remaining_count: effect.remaining_count(),
                             application_revision: effect.application_revision(),
                             replaced_instance_ids,
@@ -3184,6 +3316,7 @@ impl Execution<'_> {
                             stacking: current.stacking(),
                             rank: current.rank(),
                             duration_anchor: current.duration_anchor(),
+                            tenure: definition.tenure,
                             previous_count: previous.remaining_count(),
                             remaining_count: current.remaining_count(),
                             application_revision: current.application_revision(),
@@ -3751,6 +3884,7 @@ impl Execution<'_> {
             .unwrap_or(u64::MAX),
             random_request: None,
             reaction_request: None,
+            unavailable_source: None,
         }
     }
 }
@@ -4240,5 +4374,6 @@ fn rejection(
         random_attempted: 0,
         random_request: None,
         reaction_request: None,
+        unavailable_source: None,
     }
 }

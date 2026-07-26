@@ -1,6 +1,15 @@
 import type { ContentCatalogReference } from './catalogs.js';
 import type { RulesetValueReference } from './ruleset-builders.js';
 import type { ContentActionDefinition, ContentActionProcedureDefinition, ContentCharacterClassData, ContentCharacterClassDefinition, ContentCharacterFeatureDefinition, ContentEffectDefinition, ContentInvokedActionDefinition, ActionProcedureArgumentsFor, ActionProcedureCompositionArgumentsFor, ActionProcedureParameter, ActionProcedureParameterReference, ActionProcedureParameterType, ContentItemAttribute, ContentItemData, ContentItemDefinition, EquippedItemAttributeReference, EquippedItemBindingRequirement, PlayBundleManifest, ContentDefinition, ContentDefinitionReference, ContentParticipantProfileData, ContentParticipantProfileCapability, ContentDerivedDefinition, ContentDamageResponse, ContentPackDependency, ContentPackIdentity, ContentMixinApplication, ContentMixinDefinition, ContentPackManifest, ContentPatch, ContentPackRequest, ContentPackSource, ContentPolicyBinding, ContentReservedRelationship, ContentOutcomeBandShift, ContentPoolContribution, ContentScalarContribution, ContentSupportDefinition, ContentTemplateDefinition, ScenarioBoundedValue } from './play-bundle-types.js';
+type ScalarContributionInput = Omit<ContentScalarContribution, 'schema' | 'subject'> & {
+    readonly subject?: ContentScalarContribution['subject'];
+};
+type OutcomeBandShiftInput = Omit<ContentOutcomeBandShift, 'schema' | 'subject'> & {
+    readonly subject?: ContentOutcomeBandShift['subject'];
+};
+type PoolContributionInput = Omit<ContentPoolContribution, 'schema' | 'subject'> & {
+    readonly subject?: ContentPoolContribution['subject'];
+};
 type OrdinaryDefinitionInput<Definition extends ContentDefinition> = Omit<Definition, 'kind' | 'lowLevelReferences'> & {
     readonly kind?: Definition['kind'];
 };
@@ -45,24 +54,25 @@ export declare function actionProcedureInvocation<const Parameters extends reado
 export declare function defineSupportDefinition(input: OrdinaryDefinitionInput<ContentSupportDefinition>): ContentSupportDefinition;
 export declare function defineItemDefinition(input: Omit<OrdinaryDefinitionInput<ContentItemDefinition>, 'item'> & {
     readonly item: Omit<ContentItemData, 'schema' | 'contributions' | 'outcomeBandShifts' | 'poolContributions'> & {
-        readonly contributions?: readonly Omit<ContentScalarContribution, 'schema'>[];
-        readonly outcomeBandShifts?: readonly Omit<ContentOutcomeBandShift, 'schema'>[];
-        readonly poolContributions?: readonly Omit<ContentPoolContribution, 'schema'>[];
+        readonly contributions?: readonly ScalarContributionInput[];
+        readonly outcomeBandShifts?: readonly OutcomeBandShiftInput[];
+        readonly poolContributions?: readonly PoolContributionInput[];
     };
 }): ContentItemDefinition;
 export declare function defineCharacterFeatureDefinition(input: Omit<OrdinaryDefinitionInput<ContentCharacterFeatureDefinition>, 'characterFeature'> & {
     readonly characterFeature: {
-        readonly contributions?: readonly Omit<ContentScalarContribution, 'schema'>[];
-        readonly outcomeBandShifts?: readonly Omit<ContentOutcomeBandShift, 'schema'>[];
-        readonly poolContributions?: readonly Omit<ContentPoolContribution, 'schema'>[];
+        readonly contributions?: readonly ScalarContributionInput[];
+        readonly outcomeBandShifts?: readonly OutcomeBandShiftInput[];
+        readonly poolContributions?: readonly PoolContributionInput[];
         readonly damageResponses?: readonly Omit<ContentDamageResponse, 'schema'>[];
     };
 }): ContentCharacterFeatureDefinition;
 export declare function defineEffectDefinition(input: Omit<OrdinaryDefinitionInput<ContentEffectDefinition>, 'effect'> & {
-    readonly effect: Omit<ContentEffectDefinition['effect'], 'schema' | 'contributions' | 'outcomeBandShifts' | 'poolContributions' | 'damageResponses'> & {
-        readonly contributions?: readonly Omit<ContentScalarContribution, 'schema'>[];
-        readonly outcomeBandShifts?: readonly Omit<ContentOutcomeBandShift, 'schema'>[];
-        readonly poolContributions?: readonly Omit<ContentPoolContribution, 'schema'>[];
+    readonly effect: Omit<ContentEffectDefinition['effect'], 'schema' | 'contributions' | 'outcomeBandShifts' | 'poolContributions' | 'damageResponses' | 'condition'> & {
+        readonly condition?: ContentEffectDefinition['effect']['condition'];
+        readonly contributions?: readonly ScalarContributionInput[];
+        readonly outcomeBandShifts?: readonly OutcomeBandShiftInput[];
+        readonly poolContributions?: readonly PoolContributionInput[];
         readonly damageResponses?: readonly Omit<ContentDamageResponse, 'schema'>[];
     };
 }): ContentEffectDefinition;

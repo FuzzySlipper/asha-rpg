@@ -33,6 +33,7 @@ import {
   moveToCell,
   noRoll,
   onCheck,
+  onOutcome,
   preparePlayBundle,
   readStat,
   rulesetActivationBudget,
@@ -42,6 +43,7 @@ import {
   rulesetScalarTestProfile,
   rulesetStat,
   scalarTest,
+  sequence,
   spend,
 } from '@asha-rpg/authoring';
 import {
@@ -277,11 +279,15 @@ const exposedTarget = defineEffectDefinition({
     rankMaximum: 1,
     stackingId: 'exposed',
     stacking: 'refresh',
-    durationAnchor: 'targetTurnStart',
-    durationCount: 2,
+    tenure: {
+      kind: 'fixed',
+      anchor: 'targetTurnStart',
+      count: 2,
+    },
     contributions: [
       {
         id: 'exposed-opening',
+        subject: 'target',
         selector: attackSelector,
         stackingGroup: untyped,
         value: { kind: 'constant', value: 1 },
@@ -290,6 +296,70 @@ const exposedTarget = defineEffectDefinition({
           subject: 'target',
           definition: { definitionId: 'effect.exposed' },
         },
+      },
+    ],
+  },
+});
+
+const saveEndsRestricted = defineEffectDefinition({
+  id: 'effect.save-ends-restricted',
+  visibility: 'public',
+  extensionPolicy: 'sealed',
+  source: { module: sourceModule, declaration: 'saveEndsRestricted' },
+  presentation: { label: 'Restricted until save' },
+  effect: {
+    rankMinimum: 1,
+    rankMaximum: 1,
+    stackingId: 'save-ends-restricted',
+    stacking: 'refresh',
+    tenure: { kind: 'targetTurnEndSave' },
+    condition: {
+      clauses: [
+        { kind: 'forbidMovement' },
+        { kind: 'forbidActionTag', actionTag: 'restricted' },
+      ],
+    },
+    contributions: [
+      {
+        id: 'actor-pressure',
+        subject: 'actor',
+        selector: attackSelector,
+        stackingGroup: untyped,
+        value: { kind: 'constant', value: 3 },
+        predicate: { kind: 'always' },
+      },
+      {
+        id: 'target-opening',
+        subject: 'target',
+        selector: attackSelector,
+        stackingGroup: untyped,
+        value: { kind: 'constant', value: 2 },
+        predicate: { kind: 'always' },
+      },
+    ],
+  },
+});
+
+const saveEndsAuxiliary = defineEffectDefinition({
+  id: 'effect.save-ends-auxiliary',
+  visibility: 'public',
+  extensionPolicy: 'sealed',
+  source: { module: sourceModule, declaration: 'saveEndsAuxiliary' },
+  presentation: { label: 'Auxiliary save' },
+  effect: {
+    rankMinimum: 1,
+    rankMaximum: 1,
+    stackingId: 'save-ends-auxiliary',
+    stacking: 'refresh',
+    tenure: { kind: 'targetTurnEndSave' },
+    contributions: [
+      {
+        id: 'auxiliary-opening',
+        subject: 'target',
+        selector: attackSelector,
+        stackingGroup: untyped,
+        value: { kind: 'constant', value: 1 },
+        predicate: { kind: 'always' },
       },
     ],
   },
@@ -588,6 +658,91 @@ const exposeDefinition = defineActionDefinition({
   action: exposeAction,
 });
 
+const applyConditionAction = action({
+  id: actionId('action.apply-condition'),
+  name: 'Apply condition',
+  sourcePath: `${sourceModule}#applyConditionAction`,
+  targets: hostile({ range: 4, lineOfEffect: 'required' }),
+  check: noRoll(),
+  activation: activation({
+    timing: 'action',
+    costs: [{ budget: standardBudget, amount: 1 }],
+  }),
+  program: onCheck({
+    noRoll: sequence(
+      applyEffect({
+        effect: { definitionId: saveEndsAuxiliary.id },
+        rank: constant(1),
+      }),
+      applyEffect({
+        effect: { definitionId: saveEndsRestricted.id },
+        rank: constant(1),
+      }),
+    ),
+  }),
+});
+const applyConditionDefinition = defineActionDefinition({
+  id: applyConditionAction.id,
+  visibility: 'public',
+  extensionPolicy: 'sealed',
+  source: { module: sourceModule, declaration: 'applyConditionAction' },
+  presentation: { label: applyConditionAction.name },
+  action: applyConditionAction,
+});
+
+const conditionProbeAction = action({
+  id: actionId('action.condition-probe'),
+  name: 'Condition probe',
+  sourcePath: `${sourceModule}#conditionProbeAction`,
+  tags: ['probe'],
+  targets: hostile({ range: 4, lineOfEffect: 'required' }),
+  check: scalarTest({
+    profile: attackProfile,
+    base: readStat('actor', rulesetStat(ruleset, 'might')),
+    difficulty: {
+      kind: 'targetDefense',
+      defense: rulesetDefense(ruleset, 'armor'),
+    },
+  }),
+  rollScope: 'perTarget',
+  activation: activation({ timing: 'action', costs: [] }),
+  program: onOutcome({
+    branches: {
+      hit: heal({ amount: constant(0) }),
+    },
+    default: heal({ amount: constant(0) }),
+  }),
+});
+const conditionProbeDefinition = defineActionDefinition({
+  id: conditionProbeAction.id,
+  visibility: 'public',
+  extensionPolicy: 'sealed',
+  source: { module: sourceModule, declaration: 'conditionProbeAction' },
+  presentation: { label: conditionProbeAction.name },
+  action: conditionProbeAction,
+});
+
+const restrictedAction = action({
+  id: actionId('action.restricted'),
+  name: 'Restricted action',
+  sourcePath: `${sourceModule}#restrictedAction`,
+  tags: ['restricted'],
+  targets: hostile({ range: 4, lineOfEffect: 'required' }),
+  check: noRoll(),
+  activation: activation({ timing: 'action', costs: [] }),
+  program: onCheck({
+    noRoll: heal({ amount: constant(0) }),
+  }),
+});
+const restrictedDefinition = defineActionDefinition({
+  id: restrictedAction.id,
+  visibility: 'public',
+  extensionPolicy: 'sealed',
+  source: { module: sourceModule, declaration: 'restrictedAction' },
+  presentation: { label: restrictedAction.name },
+  action: restrictedAction,
+});
+
 const burstAction = action({
   id: actionId('action.burst'),
   name: 'Burst',
@@ -693,11 +848,16 @@ const contentPack = defineContentPack({
     ...catalogs.definitions,
     coreAttackProcedure,
     coreAttack,
+    applyConditionDefinition,
     burstDefinition,
+    conditionProbeDefinition,
     exposeDefinition,
+    restrictedDefinition,
     shiftDefinition,
     rallyDefinition,
     exposedTarget,
+    saveEndsAuxiliary,
+    saveEndsRestricted,
     vanguardClass,
     tacticalTraining,
     shortBlade,
@@ -706,11 +866,16 @@ const contentPack = defineContentPack({
   exports: [
     ...catalogs.definitions.map((definition) => definition.id),
     coreAttack.id,
+    applyConditionDefinition.id,
     burstDefinition.id,
+    conditionProbeDefinition.id,
     exposeDefinition.id,
+    restrictedDefinition.id,
     shiftDefinition.id,
     rallyDefinition.id,
     exposedTarget.id,
+    saveEndsAuxiliary.id,
+    saveEndsRestricted.id,
     vanguardClass.id,
     tacticalTraining.id,
     shortBlade.id,

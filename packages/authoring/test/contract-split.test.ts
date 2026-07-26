@@ -306,7 +306,7 @@ test("Ruleset scalar profiles author canonical ordered outcomes and reject gaps"
     result.ok ? "expected scalar profile" : JSON.stringify(result.diagnostics),
   );
   if (!result.ok) return;
-  assert.equal(result.prepared.schema.major, 10);
+  assert.equal(result.prepared.schema.major, 11);
   assert.deepEqual(
     result.prepared.ruleset.provides.scalarTestProfiles.map(
       (profile) => profile.id,
@@ -602,8 +602,9 @@ test("Heterogeneous pool profiles and content contributions retain typed owner-b
     ).poolContributions,
     [
       {
-        schema: { identity: "asha.rpg.pool-contribution", version: 1 },
+        schema: { identity: "asha.rpg.pool-contribution", version: 2 },
         id: "add-boost",
+        subject: "actor",
         profile: { rulesetId: poolRuleset.identity.id, id: "story" },
         stackingGroup: {
           rulesetId: poolRuleset.identity.id,
@@ -613,8 +614,9 @@ test("Heterogeneous pool profiles and content contributions retain typed owner-b
         predicate: { kind: "always" },
       },
       {
-        schema: { identity: "asha.rpg.pool-contribution", version: 1 },
+        schema: { identity: "asha.rpg.pool-contribution", version: 2 },
         id: "z-add-success",
+        subject: "actor",
         profile: { rulesetId: poolRuleset.identity.id, id: "story" },
         stackingGroup: {
           rulesetId: poolRuleset.identity.id,
@@ -1403,11 +1405,18 @@ test("named effects materialize closed typed lifecycle definitions and operation
       rankMaximum: 4,
       stackingId: "focus",
       stacking: "refresh",
-      durationAnchor: "sourceTurnStart",
-      durationCount: 2,
+      tenure: { kind: "targetTurnEndSave" },
+      condition: {
+        clauses: [
+          { kind: "forbidMovement" },
+          { kind: "requireActionTag", actionTag: "focus" },
+          { kind: "forbidActionTag", actionTag: "restricted" },
+        ],
+      },
       contributions: [
         {
           id: "focused-bonus",
+          subject: "target",
           selector,
           stackingGroup,
           value: { kind: "constant", value: 1 },
@@ -1426,6 +1435,7 @@ test("named effects materialize closed typed lifecycle definitions and operation
     sourcePath: "contract/effects.ts#focus",
     targets: hostile({ range: 1 }),
     check: noRoll(),
+    tags: ["focus", "restricted"],
     program: onCheck({
       noRoll: sequence(
         applyEffect({
@@ -1481,12 +1491,37 @@ test("named effects materialize closed typed lifecycle definitions and operation
   assert.deepEqual(materialized?.references, []);
   assert.deepEqual(
     (materialized?.semantic as {
-      contributions: { predicate: unknown }[];
+      contributions: { predicate: unknown; subject: string }[];
     }).contributions[0]?.predicate,
     {
       kind: "effectActive",
       subject: "actor",
       definitionId: effect.id,
+    },
+  );
+  assert.equal(
+    (materialized?.semantic as {
+      contributions: { subject: string }[];
+    }).contributions[0]?.subject,
+    "target",
+  );
+  assert.deepEqual(
+    (materialized?.semantic as {
+      tenure: unknown;
+      condition: unknown;
+    }).tenure,
+    { kind: "targetTurnEndSave" },
+  );
+  assert.deepEqual(
+    (materialized?.semantic as {
+      condition: unknown;
+    }).condition,
+    {
+      clauses: [
+        { kind: "forbidActionTag", actionTag: "restricted" },
+        { kind: "requireActionTag", actionTag: "focus" },
+        { kind: "forbidMovement" },
+      ],
     },
   );
 });

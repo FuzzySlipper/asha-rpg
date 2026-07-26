@@ -5,15 +5,15 @@ use asha_rpg::{
     ContentValueRequirement, GridPosition, MaterializedContentDefinition,
     MaterializedContentDefinitionKind, MaterializedContentVisibility, PlayBundleArtifactSchema,
     PreparedPlayBundle, ResolvedContentPack, RpgActionProposal, RpgAreaActionProposal,
-    RpgAuthoritySession, RpgAutomaticCommandFailure, RpgBoardSetup, RpgCellCapabilitySetup,
-    RpgCellCapabilityValue, RpgCellSetup, RpgCommandOutcome, RpgContributionDisposition,
-    RpgContributionStackingPolicy, RpgDamageResponseDisposition, RpgDamageResponsePhase,
-    RpgDomainEvent, RpgInitialCapability, RpgNaturalDieEffect, RpgOutcomeBandShiftDisposition,
-    RpgParticipantSetup, RpgRandomRequest, RpgRandomRequestKind, RpgRandomSourceBinding,
-    RpgReactionProposal, RpgRollTapeEntry, RpgRollTapeSource, RpgScalarContributionLedger,
-    RpgScenario, RpgTeamId, RpgTurnControl, RpgTurnControlProposal, RpgTurnInitialization,
-    RpgVersionedIdentity, Ruleset, RulesetActionEconomyModel, RulesetActivationBudget,
-    RulesetActivationBudgetResetBoundary, RulesetActivationTiming,
+    RpgAuthoritySession, RpgAutomaticCommandFailure, RpgBoardSetup, RpgBoundActionProposal,
+    RpgCellCapabilitySetup, RpgCellCapabilityValue, RpgCellSetup, RpgCommandOutcome,
+    RpgContributionDisposition, RpgContributionStackingPolicy, RpgDamageResponseDisposition,
+    RpgDamageResponsePhase, RpgDomainEvent, RpgInitialCapability, RpgNaturalDieEffect,
+    RpgOutcomeBandShiftDisposition, RpgParticipantSetup, RpgRandomRequest, RpgRandomRequestKind,
+    RpgRandomSourceBinding, RpgReactionProposal, RpgRollTapeEntry, RpgRollTapeSource,
+    RpgScalarContributionLedger, RpgScenario, RpgTeamId, RpgTurnControl, RpgTurnControlProposal,
+    RpgTurnInitialization, RpgVersionedIdentity, Ruleset, RulesetActionEconomyModel,
+    RulesetActivationBudget, RulesetActivationBudgetResetBoundary, RulesetActivationTiming,
     RulesetCalculationSelectorContract, RulesetContributionStackingGroupContract,
     RulesetHeterogeneousPoolProfile, RulesetMarginBandRule, RulesetModels, RulesetNaturalDieRule,
     RulesetNumericDomain, RulesetOutcomeBand, RulesetPoolAxisValue, RulesetPoolCancellation,
@@ -667,14 +667,18 @@ fn named_effects_apply_skip_same_transition_age_expire_restore_and_replay() {
     assert_eq!(replayed.state_hash(), session.state_hash());
 
     let mut tampered = aged_checkpoint.clone();
-    tampered
+    let tampered_effect = &mut tampered
         .state
         .entities
         .iter_mut()
         .find(|entity| entity.id == "target")
         .unwrap()
-        .effects[0]
-        .remaining_count = 3;
+        .effects[0];
+    tampered_effect.remaining_count = 3;
+    tampered_effect.tenure = asha_rpg::RpgEffectTenure::Fixed {
+        anchor: tampered_effect.duration_anchor,
+        count: 3,
+    };
     let failure = RpgAuthoritySession::restore_checkpoint(tampered).unwrap_err();
     assert!(failure
         .diagnostics
@@ -706,13 +710,13 @@ fn named_effect_compilation_and_runtime_enforce_bounded_tenure_rank_and_contribu
             .iter_mut()
             .find(|definition| definition.id == "effect.global")
             .unwrap();
-        effect.semantic["durationCount"] = json!(invalid_count);
+        effect.semantic["tenure"]["count"] = json!(invalid_count);
         effect.fingerprint = materialized_definition_fingerprint(effect).unwrap();
         let failure = compile_prepared_play_bundle(invalid).unwrap_err();
         assert!(failure
             .diagnostics
             .iter()
-            .any(|diagnostic| diagnostic.code == "EFFECT_DURATION_INVALID"));
+            .any(|diagnostic| diagnostic.code == "EFFECT_TENURE_INVALID"));
     }
 
     let mut excessive = effect_prepared();
@@ -1163,6 +1167,510 @@ fn active_effect_scalar_contribution_disappears_after_exact_expiry() {
 }
 
 #[test]
+fn condition_subject_lanes_restrict_options_and_save_ends_atomically_replay() {
+    let bundle = compile_prepared_play_bundle(condition_prepared()).unwrap();
+    let actions = vec![
+        "action.apply-save-pair".to_owned(),
+        "action.condition-move".to_owned(),
+        "action.condition-probe".to_owned(),
+        "action.effect-test".to_owned(),
+    ];
+    let mut scenario = basic_scenario_with_actions(&bundle, actions);
+    for participant in &mut scenario.participants {
+        participant
+            .capabilities
+            .push(RpgInitialCapability::Defense {
+                id: "guard".to_owned(),
+                value: 10,
+            });
+    }
+    let mut session = RpgAuthoritySession::from_scenario(bundle, scenario).unwrap();
+    let initial = session.checkpoint().unwrap();
+    let (outcome, apply_entry) = submit_no_random(
+        &mut session,
+        RpgActionProposal {
+            expected_revision: 0,
+            action_id: "action.apply-save-pair".to_owned(),
+            actor_id: "actor".to_owned(),
+            target_ids: vec!["target".to_owned()],
+            item_binding: None,
+        },
+    );
+    assert!(matches!(outcome, RpgCommandOutcome::Accepted(_)));
+    assert_eq!(session.turn().current_actor_id, "target");
+
+    let restricted = session
+        .encounter_view()
+        .actions
+        .into_iter()
+        .find(|action| action.definition_id == "action.effect-test")
+        .unwrap();
+    assert!(!restricted.available);
+    let unavailable = restricted.unavailable.as_ref().unwrap();
+    assert_eq!(unavailable.code, "RPG_CONDITION_ACTION_RESTRICTED");
+    let source = unavailable.unavailable_source.as_ref().unwrap();
+    assert_eq!(source.source_definition_id, "effect.save-restricted");
+    assert_eq!(source.source_kind, "effect");
+    let stale_restricted_binding = restricted.options.binding;
+    let restricted_movement = session
+        .encounter_view()
+        .actions
+        .into_iter()
+        .find(|action| action.definition_id == "action.condition-move")
+        .unwrap();
+    assert!(!restricted_movement.available);
+    let movement_unavailable = restricted_movement.unavailable.as_ref().unwrap();
+    assert_eq!(
+        movement_unavailable.code,
+        "RPG_CONDITION_MOVEMENT_RESTRICTED"
+    );
+    assert_eq!(
+        movement_unavailable
+            .unavailable_source
+            .as_ref()
+            .unwrap()
+            .source_definition_id,
+        "effect.save-restricted"
+    );
+    let effect_view = session.encounter_view();
+    let effects = &effect_view
+        .participants
+        .iter()
+        .find(|participant| participant.id == "target")
+        .unwrap()
+        .effects;
+    assert_eq!(effects.len(), 2);
+    assert!(effects.iter().all(|effect| {
+        effect.tenure == (asha_rpg::RpgEffectTenure::TargetTurnEndSave {})
+            && effect.remaining_count == 1
+    }));
+    assert!(effects
+        .iter()
+        .any(|effect| effect.condition.as_ref().is_some_and(|condition| {
+            matches!(
+                condition.clauses.as_slice(),
+                [
+                    asha_rpg::RpgConditionRestrictionClause::ForbidActionTag {
+                        action_tag
+                    },
+                    asha_rpg::RpgConditionRestrictionClause::ForbidMovement
+                ] if action_tag == "restricted"
+            )
+        })));
+
+    let turn_proposal = RpgTurnControlProposal {
+        expected_revision: 1,
+        actor_id: "target".to_owned(),
+        control: RpgTurnControl::EndTurn,
+    };
+    let (outcome, pending_entry) = session.control_recorded(turn_proposal.clone()).unwrap();
+    let RpgCommandOutcome::AwaitingTurnSave(pending) = outcome else {
+        panic!("target end turn should open saves: {outcome:?}");
+    };
+    assert_eq!(
+        pending
+            .candidates
+            .iter()
+            .map(|candidate| candidate.definition_id.as_str())
+            .collect::<Vec<_>>(),
+        ["effect.save-auxiliary", "effect.save-restricted"]
+    );
+    assert!(pending.candidates.iter().all(|candidate| {
+        candidate.request.kind == RpgRandomRequestKind::EffectSave
+            && candidate.request.count == 1
+            && candidate.request.sides == 20
+    }));
+    let pending_checkpoint = session.checkpoint().unwrap();
+    let pending_hash = session.state_hash().unwrap();
+    let pending_turn = session.turn().clone();
+    let pending_log_len = session.encounter_view().log.len();
+    let pending_random_position = session.encounter_view().accepted_random_position;
+
+    let (under, under_entry) = session
+        .control_with_random_values_recorded(turn_proposal.clone(), Vec::new())
+        .unwrap();
+    assert!(matches!(
+        under,
+        RpgCommandOutcome::Rejected(ref rejection)
+            if rejection.code == "RPG_EFFECT_SAVE_EVIDENCE_UNDERFLOW"
+                && rejection.random_request.is_some()
+    ));
+    let (over, over_entry) = session
+        .control_with_random_values_recorded(turn_proposal.clone(), vec![9, 9, 9])
+        .unwrap();
+    assert!(matches!(
+        over,
+        RpgCommandOutcome::Rejected(ref rejection)
+            if rejection.code == "RPG_RANDOM_EVIDENCE_UNUSED"
+    ));
+    let (out_of_range, range_entry) = session
+        .control_with_random_values_recorded(turn_proposal.clone(), vec![0, 9])
+        .unwrap();
+    assert!(matches!(
+        out_of_range,
+        RpgCommandOutcome::Rejected(ref rejection)
+            if rejection.code == "RPG_RANDOM_VALUE_OUT_OF_RANGE"
+    ));
+    assert_eq!(session.state_hash().unwrap(), pending_hash);
+    assert_eq!(session.turn(), &pending_turn);
+    assert_eq!(session.encounter_view().log.len(), pending_log_len);
+    assert_eq!(
+        session.encounter_view().accepted_random_position,
+        pending_random_position
+    );
+
+    let mut restored = RpgAuthoritySession::restore_checkpoint(pending_checkpoint.clone()).unwrap();
+    let (restored_failure, _) = restored
+        .control_with_random_values_recorded(turn_proposal.clone(), vec![9, 9])
+        .unwrap();
+    let (failure, fail_entry) = session
+        .control_with_random_values_recorded(turn_proposal, vec![9, 9])
+        .unwrap();
+    assert_eq!(failure, restored_failure);
+    let RpgCommandOutcome::ControlAccepted(failure_receipt) = failure else {
+        panic!("failed saves should still commit the turn: {failure:?}");
+    };
+    assert_eq!(failure_receipt.random_consumed, 2);
+    assert_eq!(
+        failure_receipt
+            .events
+            .iter()
+            .filter(|event| matches!(
+                event,
+                RpgDomainEvent::EffectSaveResolved { saved: false, .. }
+            ))
+            .count(),
+        2
+    );
+    assert_eq!(session.turn().current_actor_id, "opponent");
+    assert_eq!(
+        session.state().entity("target").unwrap().effects().count(),
+        2
+    );
+
+    let (outcome, opponent_entry) = session
+        .control_recorded(RpgTurnControlProposal {
+            expected_revision: 2,
+            actor_id: "opponent".to_owned(),
+            control: RpgTurnControl::EndTurn,
+        })
+        .unwrap();
+    assert!(matches!(outcome, RpgCommandOutcome::ControlAccepted(_)));
+    assert_eq!(session.turn().current_actor_id, "actor");
+
+    let attack_request = RpgRandomRequest {
+        kind: RpgRandomRequestKind::AttackCheck,
+        count: 1,
+        sides: 20,
+        path: "$.action.check.targets[0].roll".to_owned(),
+        heterogeneous_terms: Vec::new(),
+    };
+    let mut actor_source = RpgRollTapeSource::new(
+        session.scenario().random_source.clone(),
+        [RpgRollTapeEntry {
+            request: attack_request.clone(),
+            values: vec![7],
+        }],
+    );
+    let (outcome, actor_probe_entry) = session
+        .submit_with_random_source_recorded(
+            RpgActionProposal {
+                expected_revision: 3,
+                action_id: "action.condition-probe".to_owned(),
+                actor_id: "actor".to_owned(),
+                target_ids: vec!["target".to_owned()],
+                item_binding: None,
+            },
+            &mut actor_source,
+        )
+        .unwrap();
+    let RpgCommandOutcome::Accepted(actor_receipt) = outcome else {
+        panic!("target-lane probe should be accepted: {outcome:?}");
+    };
+    let actor_ledger = actor_receipt
+        .events
+        .iter()
+        .find_map(|event| match event {
+            RpgDomainEvent::AttackResolved {
+                contribution_ledger,
+                ..
+            } => Some(contribution_ledger),
+            _ => None,
+        })
+        .unwrap();
+    assert_eq!(actor_ledger.final_value, 3);
+    assert!(actor_ledger.candidates.iter().any(|candidate| {
+        candidate.source_definition_id == "effect.save-restricted"
+            && candidate.contribution_id == "a-target-opening"
+    }));
+    assert!(!actor_ledger
+        .candidates
+        .iter()
+        .any(|candidate| candidate.contribution_id == "b-actor-pressure"));
+    assert_eq!(session.turn().current_actor_id, "target");
+
+    let mut target_source = RpgRollTapeSource::new(
+        session.scenario().random_source.clone(),
+        [
+            RpgRollTapeEntry {
+                request: attack_request,
+                values: vec![7],
+            },
+            RpgRollTapeEntry {
+                request: RpgRandomRequest {
+                    kind: RpgRandomRequestKind::EffectSave,
+                    count: 1,
+                    sides: 20,
+                    path: "$.control.saves[0].roll".to_owned(),
+                    heterogeneous_terms: Vec::new(),
+                },
+                values: vec![9],
+            },
+            RpgRollTapeEntry {
+                request: RpgRandomRequest {
+                    kind: RpgRandomRequestKind::EffectSave,
+                    count: 1,
+                    sides: 20,
+                    path: "$.control.saves[1].roll".to_owned(),
+                    heterogeneous_terms: Vec::new(),
+                },
+                values: vec![10],
+            },
+        ],
+    );
+    let (outcome, target_probe_entry) = session
+        .submit_with_random_source_recorded(
+            RpgActionProposal {
+                expected_revision: 4,
+                action_id: "action.condition-probe".to_owned(),
+                actor_id: "target".to_owned(),
+                target_ids: vec!["opponent".to_owned()],
+                item_binding: None,
+            },
+            &mut target_source,
+        )
+        .unwrap();
+    let RpgCommandOutcome::Accepted(target_receipt) = outcome else {
+        panic!("actor-lane probe and automatic saves should commit: {outcome:?}");
+    };
+    let target_ledger = target_receipt
+        .events
+        .iter()
+        .find_map(|event| match event {
+            RpgDomainEvent::AttackResolved {
+                contribution_ledger,
+                ..
+            } => Some(contribution_ledger),
+            _ => None,
+        })
+        .unwrap();
+    assert_eq!(target_ledger.final_value, 3);
+    assert!(target_ledger.candidates.iter().any(|candidate| {
+        candidate.source_definition_id == "effect.save-restricted"
+            && candidate.contribution_id == "b-actor-pressure"
+    }));
+    assert!(!target_ledger
+        .candidates
+        .iter()
+        .any(|candidate| candidate.contribution_id == "a-target-opening"));
+    assert!(target_receipt.events.iter().any(|event| matches!(
+        event,
+        RpgDomainEvent::EffectSaveResolved {
+            definition_id,
+            roll: 10,
+            saved: true,
+            ..
+        } if definition_id == "effect.save-restricted"
+    )));
+    assert!(session
+        .state()
+        .entity("target")
+        .unwrap()
+        .effects()
+        .all(|effect| effect.definition_id() != "effect.save-restricted"));
+    assert!(session
+        .state()
+        .entity("target")
+        .unwrap()
+        .effects()
+        .any(|effect| effect.definition_id() == "effect.save-auxiliary"));
+
+    let (_, opponent_after_entry) = session
+        .control_recorded(RpgTurnControlProposal {
+            expected_revision: 5,
+            actor_id: "opponent".to_owned(),
+            control: RpgTurnControl::EndTurn,
+        })
+        .unwrap();
+    let (_, actor_after_entry) = session
+        .control_recorded(RpgTurnControlProposal {
+            expected_revision: 6,
+            actor_id: "actor".to_owned(),
+            control: RpgTurnControl::EndTurn,
+        })
+        .unwrap();
+    assert_eq!(session.turn().current_actor_id, "target");
+    let unrestricted = session
+        .encounter_view()
+        .actions
+        .into_iter()
+        .find(|action| action.definition_id == "action.effect-test")
+        .unwrap();
+    assert!(unrestricted.available);
+
+    let mut no_random =
+        RpgRollTapeSource::new(session.scenario().random_source.clone(), Vec::new());
+    let stale = session
+        .submit_bound_with_random_source_recorded(
+            RpgBoundActionProposal {
+                binding: stale_restricted_binding,
+                target_ids: vec!["opponent".to_owned()],
+            },
+            &mut no_random,
+        )
+        .unwrap();
+    assert!(matches!(
+        stale.outcome,
+        RpgCommandOutcome::Rejected(ref rejection)
+            if rejection.code == "RPG_ACTION_OPTION_STALE"
+    ));
+
+    let entries = vec![
+        apply_entry,
+        pending_entry,
+        under_entry,
+        over_entry,
+        range_entry,
+        fail_entry,
+        opponent_entry,
+        actor_probe_entry,
+        target_probe_entry,
+        opponent_after_entry,
+        actor_after_entry,
+    ];
+    let replayed = RpgAuthoritySession::replay(initial, &entries).unwrap();
+    assert_eq!(
+        replayed.state_hash().unwrap(),
+        session.state_hash().unwrap()
+    );
+    assert_eq!(
+        replayed.encounter_view().accepted_random_position,
+        session.encounter_view().accepted_random_position
+    );
+}
+
+#[test]
+fn condition_artifacts_reject_noncanonical_contradictory_unknown_and_tampered_contracts() {
+    let mutate_condition =
+        |prepared: &mut PreparedPlayBundle, mutation: &mut dyn FnMut(&mut serde_json::Value)| {
+            let definition = prepared
+                .materialized_definitions
+                .iter_mut()
+                .find(|definition| definition.id == "effect.save-restricted")
+                .unwrap();
+            mutation(&mut definition.semantic);
+            definition.fingerprint = materialized_definition_fingerprint(definition).unwrap();
+        };
+
+    let mut duplicate = condition_prepared();
+    mutate_condition(&mut duplicate, &mut |semantic| {
+        semantic["condition"]["clauses"] = json!([
+            {"kind": "forbidActionTag", "actionTag": "restricted"},
+            {"kind": "forbidActionTag", "actionTag": "restricted"}
+        ]);
+    });
+    let failure = compile_prepared_play_bundle(duplicate).unwrap_err();
+    assert!(failure
+        .diagnostics
+        .iter()
+        .any(|diagnostic| { diagnostic.code == "EFFECT_CONDITION_CLAUSES_NOT_CANONICAL" }));
+
+    let mut contradictory = condition_prepared();
+    mutate_condition(&mut contradictory, &mut |semantic| {
+        semantic["condition"]["clauses"] = json!([
+            {"kind": "forbidActionTag", "actionTag": "restricted"},
+            {"kind": "requireActionTag", "actionTag": "restricted"}
+        ]);
+    });
+    let failure = compile_prepared_play_bundle(contradictory).unwrap_err();
+    assert!(failure
+        .diagnostics
+        .iter()
+        .any(|diagnostic| { diagnostic.code == "EFFECT_CONDITION_CLAUSES_CONTRADICTORY" }));
+
+    let mut unknown = condition_prepared();
+    mutate_condition(&mut unknown, &mut |semantic| {
+        semantic["condition"]["clauses"][0]["actionTag"] = json!("unknown-tag");
+    });
+    let failure = compile_prepared_play_bundle(unknown).unwrap_err();
+    assert!(failure
+        .diagnostics
+        .iter()
+        .any(|diagnostic| { diagnostic.code == "EFFECT_CONDITION_ACTION_TAG_UNKNOWN" }));
+
+    let mut excessive = condition_prepared();
+    mutate_condition(&mut excessive, &mut |semantic| {
+        semantic["condition"]["clauses"] = serde_json::Value::Array(
+            (0..33)
+                .map(|index| {
+                    json!({
+                        "kind": "forbidActionTag",
+                        "actionTag": format!("restricted-{index:02}")
+                    })
+                })
+                .collect(),
+        );
+    });
+    let failure = compile_prepared_play_bundle(excessive).unwrap_err();
+    assert!(failure
+        .diagnostics
+        .iter()
+        .any(|diagnostic| { diagnostic.code == "EFFECT_CONDITION_CLAUSE_LIMIT_INVALID" }));
+
+    let mut missing_subject = condition_prepared();
+    mutate_condition(&mut missing_subject, &mut |semantic| {
+        semantic["contributions"][0]
+            .as_object_mut()
+            .unwrap()
+            .remove("subject");
+    });
+    let failure = compile_prepared_play_bundle(missing_subject).unwrap_err();
+    assert!(failure
+        .diagnostics
+        .iter()
+        .any(|diagnostic| diagnostic.code == "EFFECT_SEMANTIC_DECODE_FAILED"));
+
+    let mut invalid_tenure = condition_prepared();
+    mutate_condition(&mut invalid_tenure, &mut |semantic| {
+        semantic["tenure"]["successMinimum"] = json!(9);
+    });
+    let failure = compile_prepared_play_bundle(invalid_tenure).unwrap_err();
+    assert!(failure
+        .diagnostics
+        .iter()
+        .any(|diagnostic| diagnostic.code == "EFFECT_SEMANTIC_DECODE_FAILED"));
+
+    let mut wrong_lane = conditional_feature_prepared();
+    let feature = wrong_lane
+        .materialized_definitions
+        .iter_mut()
+        .find(|definition| {
+            definition.kind == MaterializedContentDefinitionKind::CharacterFeature
+                && definition.semantic["contributions"]
+                    .as_array()
+                    .is_some_and(|contributions| !contributions.is_empty())
+        })
+        .unwrap();
+    feature.semantic["contributions"][0]["subject"] = json!("target");
+    feature.fingerprint = materialized_definition_fingerprint(feature).unwrap();
+    let failure = compile_prepared_play_bundle(wrong_lane).unwrap_err();
+    assert!(failure
+        .diagnostics
+        .iter()
+        .any(|diagnostic| { diagnostic.code == "CONTRIBUTION_SUBJECT_LANE_UNSUPPORTED" }));
+}
+
+#[test]
 fn variable_activation_budgets_pay_multiple_actions_enforce_zero_cost_ceiling_and_reset() {
     let bundle = compile_prepared_play_bundle(activation_budget_prepared()).unwrap();
     let action_ids = vec![
@@ -1588,8 +2096,9 @@ fn character_features_resolve_multiple_spatial_roll_contributions_and_replay() {
         .as_array_mut()
         .unwrap()
         .push(json!({
-            "schema": {"identity": "asha.rpg.scalar-contribution", "version": 1},
+            "schema": {"identity": "asha.rpg.scalar-contribution", "version": 2},
             "id": "flanking",
+            "subject": "actor",
             "selector": {"rulesetId": "consumer.rules", "id": "attack-total"},
             "stackingGroup": {"rulesetId": "consumer.rules", "id": "circumstance"},
             "value": {"kind": "constant", "value": 1},
@@ -4358,8 +4867,9 @@ fn conditional_feature_prepared() -> PreparedPlayBundle {
             "schema": {"identity": "asha.rpg.character-feature", "version": 4},
             "contributions": [
                 {
-                    "schema": {"identity": "asha.rpg.scalar-contribution", "version": 1},
+                    "schema": {"identity": "asha.rpg.scalar-contribution", "version": 2},
                     "id": "action-context",
+                    "subject": "actor",
                     "selector": {"rulesetId": "consumer.rules", "id": "attack-total"},
                     "stackingGroup": {"rulesetId": "consumer.rules", "id": "circumstance"},
                     "value": {
@@ -4390,16 +4900,18 @@ fn conditional_feature_prepared() -> PreparedPlayBundle {
                     }
                 },
                 {
-                    "schema": {"identity": "asha.rpg.scalar-contribution", "version": 1},
+                    "schema": {"identity": "asha.rpg.scalar-contribution", "version": 2},
                     "id": "bonus-a",
+                    "subject": "actor",
                     "selector": {"rulesetId": "consumer.rules", "id": "attack-total"},
                     "stackingGroup": {"rulesetId": "consumer.rules", "id": "signed"},
                     "value": {"kind": "constant", "value": 2},
                     "predicate": {"kind": "always"}
                 },
                 {
-                    "schema": {"identity": "asha.rpg.scalar-contribution", "version": 1},
+                    "schema": {"identity": "asha.rpg.scalar-contribution", "version": 2},
                     "id": "cell",
+                    "subject": "actor",
                     "selector": {"rulesetId": "consumer.rules", "id": "attack-total"},
                     "stackingGroup": {"rulesetId": "consumer.rules", "id": "circumstance"},
                     "value": {"kind": "constant", "value": 1},
@@ -4410,8 +4922,9 @@ fn conditional_feature_prepared() -> PreparedPlayBundle {
                     }
                 },
                 {
-                    "schema": {"identity": "asha.rpg.scalar-contribution", "version": 1},
+                    "schema": {"identity": "asha.rpg.scalar-contribution", "version": 2},
                     "id": "distance",
+                    "subject": "actor",
                     "selector": {"rulesetId": "consumer.rules", "id": "attack-total"},
                     "stackingGroup": {"rulesetId": "consumer.rules", "id": "circumstance"},
                     "value": {"kind": "constant", "value": 1},
@@ -4422,16 +4935,18 @@ fn conditional_feature_prepared() -> PreparedPlayBundle {
                     }
                 },
                 {
-                    "schema": {"identity": "asha.rpg.scalar-contribution", "version": 1},
+                    "schema": {"identity": "asha.rpg.scalar-contribution", "version": 2},
                     "id": "flanking",
+                    "subject": "actor",
                     "selector": {"rulesetId": "consumer.rules", "id": "attack-total"},
                     "stackingGroup": {"rulesetId": "consumer.rules", "id": "circumstance"},
                     "value": {"kind": "constant", "value": 2},
                     "predicate": {"kind": "actorFlanksTarget"}
                 },
                 {
-                    "schema": {"identity": "asha.rpg.scalar-contribution", "version": 1},
+                    "schema": {"identity": "asha.rpg.scalar-contribution", "version": 2},
                     "id": "inapplicable",
+                    "subject": "actor",
                     "selector": {"rulesetId": "consumer.rules", "id": "attack-total"},
                     "stackingGroup": {"rulesetId": "consumer.rules", "id": "circumstance"},
                     "value": {"kind": "constant", "value": 9},
@@ -4442,8 +4957,9 @@ fn conditional_feature_prepared() -> PreparedPlayBundle {
                     }
                 },
                 {
-                    "schema": {"identity": "asha.rpg.scalar-contribution", "version": 1},
+                    "schema": {"identity": "asha.rpg.scalar-contribution", "version": 2},
                     "id": "penalty-a",
+                    "subject": "actor",
                     "selector": {"rulesetId": "consumer.rules", "id": "attack-total"},
                     "stackingGroup": {"rulesetId": "consumer.rules", "id": "signed"},
                     "value": {"kind": "constant", "value": -1},
@@ -4467,24 +4983,27 @@ fn conditional_feature_prepared() -> PreparedPlayBundle {
             "schema": {"identity": "asha.rpg.character-feature", "version": 4},
             "contributions": [
                 {
-                    "schema": {"identity": "asha.rpg.scalar-contribution", "version": 1},
+                    "schema": {"identity": "asha.rpg.scalar-contribution", "version": 2},
                     "id": "bonus-b",
+                    "subject": "actor",
                     "selector": {"rulesetId": "consumer.rules", "id": "attack-total"},
                     "stackingGroup": {"rulesetId": "consumer.rules", "id": "signed"},
                     "value": {"kind": "constant", "value": 2},
                     "predicate": {"kind": "always"}
                 },
                 {
-                    "schema": {"identity": "asha.rpg.scalar-contribution", "version": 1},
+                    "schema": {"identity": "asha.rpg.scalar-contribution", "version": 2},
                     "id": "penalty-b",
+                    "subject": "actor",
                     "selector": {"rulesetId": "consumer.rules", "id": "attack-total"},
                     "stackingGroup": {"rulesetId": "consumer.rules", "id": "signed"},
                     "value": {"kind": "constant", "value": -1},
                     "predicate": {"kind": "always"}
                 },
                 {
-                    "schema": {"identity": "asha.rpg.scalar-contribution", "version": 1},
+                    "schema": {"identity": "asha.rpg.scalar-contribution", "version": 2},
                     "id": "surrounded",
+                    "subject": "actor",
                     "selector": {"rulesetId": "consumer.rules", "id": "attack-total"},
                     "stackingGroup": {"rulesetId": "consumer.rules", "id": "circumstance"},
                     "value": {"kind": "constant", "value": 1},
@@ -4807,8 +5326,9 @@ fn scalar_test_prepared() -> PreparedPlayBundle {
         .find(|definition| definition.id == "feature.flanking")
         .unwrap();
     flanking.semantic["outcomeBandShifts"] = json!([{
-        "schema": {"identity": "asha.rpg.outcome-band-shift", "version": 1},
+        "schema": {"identity": "asha.rpg.outcome-band-shift", "version": 2},
         "id": "flanking-up",
+        "subject": "actor",
         "profile": {"rulesetId": "consumer.rules", "id": "graded-check"},
         "shift": 1,
         "predicate": {"kind": "actorFlanksTarget"}
@@ -4820,8 +5340,9 @@ fn scalar_test_prepared() -> PreparedPlayBundle {
         .find(|definition| definition.id == "feature.surrounded")
         .unwrap();
     surrounded.semantic["outcomeBandShifts"] = json!([{
-        "schema": {"identity": "asha.rpg.outcome-band-shift", "version": 1},
+        "schema": {"identity": "asha.rpg.outcome-band-shift", "version": 2},
         "id": "surrounded-down",
+        "subject": "actor",
         "profile": {"rulesetId": "consumer.rules", "id": "graded-check"},
         "shift": -1,
         "predicate": {"kind": "actorSurrounded", "minimumHostiles": 2}
@@ -5059,16 +5580,18 @@ fn heterogeneous_pool_prepared() -> PreparedPlayBundle {
         .unwrap();
     flanking.semantic["poolContributions"] = json!([
         {
-            "schema": {"identity": "asha.rpg.pool-contribution", "version": 1},
+            "schema": {"identity": "asha.rpg.pool-contribution", "version": 2},
             "id": "a-add-source",
+            "subject": "actor",
             "profile": {"rulesetId": "consumer.rules", "id": "narrative-pool"},
             "stackingGroup": {"rulesetId": "consumer.rules", "id": "circumstance"},
             "effect": {"kind": "addDice", "dieTypeId": "source", "delta": 1},
             "predicate": {"kind": "always"}
         },
         {
-            "schema": {"identity": "asha.rpg.pool-contribution", "version": 1},
+            "schema": {"identity": "asha.rpg.pool-contribution", "version": 2},
             "id": "b-replace-source",
+            "subject": "actor",
             "profile": {"rulesetId": "consumer.rules", "id": "narrative-pool"},
             "stackingGroup": {"rulesetId": "consumer.rules", "id": "circumstance"},
             "effect": {
@@ -5081,8 +5604,9 @@ fn heterogeneous_pool_prepared() -> PreparedPlayBundle {
             "predicate": {"kind": "always"}
         },
         {
-            "schema": {"identity": "asha.rpg.pool-contribution", "version": 1},
+            "schema": {"identity": "asha.rpg.pool-contribution", "version": 2},
             "id": "c-replace-upgrade",
+            "subject": "actor",
             "profile": {"rulesetId": "consumer.rules", "id": "narrative-pool"},
             "stackingGroup": {"rulesetId": "consumer.rules", "id": "circumstance"},
             "effect": {
@@ -5095,8 +5619,9 @@ fn heterogeneous_pool_prepared() -> PreparedPlayBundle {
             "predicate": {"kind": "always"}
         },
         {
-            "schema": {"identity": "asha.rpg.pool-contribution", "version": 1},
+            "schema": {"identity": "asha.rpg.pool-contribution", "version": 2},
             "id": "d-fallback-self",
+            "subject": "actor",
             "profile": {"rulesetId": "consumer.rules", "id": "narrative-pool"},
             "stackingGroup": {"rulesetId": "consumer.rules", "id": "circumstance"},
             "effect": {
@@ -5109,8 +5634,9 @@ fn heterogeneous_pool_prepared() -> PreparedPlayBundle {
             "predicate": {"kind": "always"}
         },
         {
-            "schema": {"identity": "asha.rpg.pool-contribution", "version": 1},
+            "schema": {"identity": "asha.rpg.pool-contribution", "version": 2},
             "id": "e-contention",
+            "subject": "actor",
             "profile": {"rulesetId": "consumer.rules", "id": "narrative-pool"},
             "stackingGroup": {"rulesetId": "consumer.rules", "id": "circumstance"},
             "effect": {
@@ -5123,8 +5649,9 @@ fn heterogeneous_pool_prepared() -> PreparedPlayBundle {
             "predicate": {"kind": "always"}
         },
         {
-            "schema": {"identity": "asha.rpg.pool-contribution", "version": 1},
+            "schema": {"identity": "asha.rpg.pool-contribution", "version": 2},
             "id": "f-complication",
+            "subject": "actor",
             "profile": {"rulesetId": "consumer.rules", "id": "narrative-pool"},
             "stackingGroup": {"rulesetId": "consumer.rules", "id": "circumstance"},
             "effect": {"kind": "addAxis", "axisId": "complication", "value": 1},
@@ -5716,8 +6243,9 @@ fn item_pool_prepared() -> PreparedPlayBundle {
     {
         item.semantic["poolContributions"] = json!([
             {
-                "schema": {"identity": "asha.rpg.pool-contribution", "version": 1},
+                "schema": {"identity": "asha.rpg.pool-contribution", "version": 2},
                 "id": "a-replace-challenge",
+                "subject": "actor",
                 "profile": {"rulesetId": "consumer.rules", "id": "narrative-pool"},
                 "stackingGroup": {"rulesetId": "consumer.rules", "id": "circumstance"},
                 "effect": {
@@ -5730,8 +6258,9 @@ fn item_pool_prepared() -> PreparedPlayBundle {
                 "predicate": {"kind": "always"}
             },
             {
-                "schema": {"identity": "asha.rpg.pool-contribution", "version": 1},
+                "schema": {"identity": "asha.rpg.pool-contribution", "version": 2},
                 "id": "b-complication",
+                "subject": "actor",
                 "profile": {"rulesetId": "consumer.rules", "id": "narrative-pool"},
                 "stackingGroup": {"rulesetId": "consumer.rules", "id": "circumstance"},
                 "effect": {"kind": "addAxis", "axisId": "complication", "value": 1},
@@ -5759,8 +6288,9 @@ fn item_pool_prepared() -> PreparedPlayBundle {
             "contributions": [],
             "outcomeBandShifts": [],
             "poolContributions": [{
-                "schema": {"identity": "asha.rpg.pool-contribution", "version": 1},
+                "schema": {"identity": "asha.rpg.pool-contribution", "version": 2},
                 "id": "a-add-challenge",
+                "subject": "actor",
                 "profile": {"rulesetId": "consumer.rules", "id": "narrative-pool"},
                 "stackingGroup": {"rulesetId": "consumer.rules", "id": "circumstance"},
                 "effect": {"kind": "addDice", "dieTypeId": "challenge", "delta": 1},
@@ -5792,18 +6322,19 @@ fn item_pool_prepared() -> PreparedPlayBundle {
         visibility: MaterializedContentVisibility::Exported,
         extension_policy: ContentExtensionPolicy::Sealed,
         semantic: json!({
-            "schema": {"identity": "asha.rpg.effect", "version": 1},
+            "schema": {"identity": "asha.rpg.effect", "version": 2},
             "rankMinimum": 1,
             "rankMaximum": 1,
             "stackingId": "pool-focus",
             "stacking": "refresh",
-            "durationAnchor": "roundTransition",
-            "durationCount": 3,
+            "tenure": {"kind": "fixed", "anchor": "roundTransition", "count": 3},
+            "condition": null,
             "contributions": [],
             "outcomeBandShifts": [],
             "poolContributions": [{
-                "schema": {"identity": "asha.rpg.pool-contribution", "version": 1},
+                "schema": {"identity": "asha.rpg.pool-contribution", "version": 2},
                 "id": "a-effect-challenge",
+                "subject": "actor",
                 "profile": {"rulesetId": "consumer.rules", "id": "narrative-pool"},
                 "stackingGroup": {"rulesetId": "consumer.rules", "id": "circumstance"},
                 "effect": {"kind": "addDice", "dieTypeId": "challenge", "delta": 1},
@@ -5971,8 +6502,9 @@ fn item_attack_prepared() -> PreparedPlayBundle {
     });
 
     let contribution = json!({
-        "schema": {"identity": "asha.rpg.scalar-contribution", "version": 1},
+        "schema": {"identity": "asha.rpg.scalar-contribution", "version": 2},
         "id": "precise",
+        "subject": "actor",
         "selector": {"rulesetId": "consumer.rules", "id": "attack-total"},
         "stackingGroup": {"rulesetId": "consumer.rules", "id": "circumstance"},
         "value": {"kind": "constant", "value": 2},
@@ -6606,16 +7138,17 @@ fn effect_prepared() -> PreparedPlayBundle {
         visibility: MaterializedContentVisibility::Exported,
         extension_policy: ContentExtensionPolicy::Sealed,
         semantic: json!({
-            "schema": {"identity": "asha.rpg.effect", "version": 1},
+            "schema": {"identity": "asha.rpg.effect", "version": 2},
             "rankMinimum": 1,
             "rankMaximum": 4,
             "stackingId": stacking_id,
             "stacking": stacking,
-            "durationAnchor": duration_anchor,
-            "durationCount": duration_count,
+            "tenure": {"kind": "fixed", "anchor": duration_anchor, "count": duration_count},
+            "condition": null,
             "contributions": [{
-                "schema": {"identity": "asha.rpg.scalar-contribution", "version": 1},
+                "schema": {"identity": "asha.rpg.scalar-contribution", "version": 2},
                 "id": "effect-bonus",
+                "subject": "target",
                 "selector": {"rulesetId": "consumer.rules", "id": "effect-test"},
                 "stackingGroup": {"rulesetId": "consumer.rules", "id": "effect-stack"},
                 "value": {"kind": "constant", "value": 1},
@@ -7008,6 +7541,203 @@ fn effect_prepared() -> PreparedPlayBundle {
     prepared
 }
 
+fn condition_prepared() -> PreparedPlayBundle {
+    let mut prepared = effect_prepared();
+    let source = |definition_id: &str| ContentDefinitionProvenance {
+        definition_id: definition_id.to_owned(),
+        package_id: "consumer.package".to_owned(),
+        package_version: "1.0.0".to_owned(),
+        source: ContentSourceLocation {
+            module: "conditions/save-ends.ts".to_owned(),
+            declaration: definition_id.replace('.', "_"),
+        },
+    };
+
+    let mut condition = prepared
+        .materialized_definitions
+        .iter()
+        .find(|definition| definition.id == "effect.global")
+        .unwrap()
+        .clone();
+    condition.id = "effect.save-restricted".to_owned();
+    condition.provenance = source(&condition.id);
+    condition.presentation = json!({"label": "Restricted until save"});
+    condition.semantic["stackingId"] = json!("save-restricted");
+    condition.semantic["tenure"] = json!({"kind": "targetTurnEndSave"});
+    condition.semantic["condition"] = json!({
+        "clauses": [
+            {"kind": "forbidActionTag", "actionTag": "restricted"},
+            {"kind": "forbidMovement"}
+        ]
+    });
+    condition.semantic["contributions"] = json!([
+        {
+            "schema": {"identity": "asha.rpg.scalar-contribution", "version": 2},
+            "id": "a-target-opening",
+            "subject": "target",
+            "selector": {"rulesetId": "consumer.rules", "id": "effect-test"},
+            "stackingGroup": {"rulesetId": "consumer.rules", "id": "effect-stack"},
+            "value": {"kind": "constant", "value": 2},
+            "predicate": {"kind": "always"}
+        },
+        {
+            "schema": {"identity": "asha.rpg.scalar-contribution", "version": 2},
+            "id": "b-actor-pressure",
+            "subject": "actor",
+            "selector": {"rulesetId": "consumer.rules", "id": "effect-test"},
+            "stackingGroup": {"rulesetId": "consumer.rules", "id": "effect-stack"},
+            "value": {"kind": "constant", "value": 3},
+            "predicate": {"kind": "always"}
+        }
+    ]);
+    condition.fingerprint = materialized_definition_fingerprint(&condition).unwrap();
+
+    let mut auxiliary = condition.clone();
+    auxiliary.id = "effect.save-auxiliary".to_owned();
+    auxiliary.provenance = source(&auxiliary.id);
+    auxiliary.presentation = json!({"label": "Auxiliary save"});
+    auxiliary.semantic["stackingId"] = json!("save-auxiliary");
+    auxiliary.semantic["condition"] = serde_json::Value::Null;
+    auxiliary.semantic["contributions"] = json!([{
+        "schema": {"identity": "asha.rpg.scalar-contribution", "version": 2},
+        "id": "auxiliary-target",
+        "subject": "target",
+        "selector": {"rulesetId": "consumer.rules", "id": "effect-test"},
+        "stackingGroup": {"rulesetId": "consumer.rules", "id": "effect-stack"},
+        "value": {"kind": "constant", "value": 1},
+        "predicate": {"kind": "always"}
+    }]);
+    auxiliary.fingerprint = materialized_definition_fingerprint(&auxiliary).unwrap();
+
+    let mut apply = prepared
+        .materialized_definitions
+        .iter()
+        .find(|definition| definition.id == "action.apply-anchors")
+        .unwrap()
+        .clone();
+    apply.id = "action.apply-save-pair".to_owned();
+    apply.provenance = source(&apply.id);
+    apply.presentation = json!({"label": "Apply save pair"});
+    apply.references = vec![condition.id.clone(), auxiliary.id.clone()];
+    apply.semantic["action"]["id"] = json!(apply.id);
+    apply.semantic["action"]["name"] = json!("Apply save pair");
+    apply.semantic["action"]["sourcePath"] = json!("conditions/save-ends.ts#applySavePair");
+    apply.semantic["action"]["tags"] = json!(["setup"]);
+    apply.semantic["action"]["program"]["body"]["noRoll"] = json!({
+        "kind": "sequence",
+        "steps": [
+            {"kind": "operation", "operation": {
+                "kind": "applyEffect",
+                "effectDefinitionId": condition.id,
+                "rank": {"kind": "constant", "value": 1}
+            }},
+            {"kind": "operation", "operation": {
+                "kind": "applyEffect",
+                "effectDefinitionId": auxiliary.id,
+                "rank": {"kind": "constant", "value": 1}
+            }}
+        ]
+    });
+    apply.fingerprint = materialized_definition_fingerprint(&apply).unwrap();
+
+    let restricted = prepared
+        .materialized_definitions
+        .iter_mut()
+        .find(|definition| definition.id == "action.effect-test")
+        .unwrap();
+    restricted.semantic["action"]["tags"] = json!(["restricted"]);
+    restricted.fingerprint = materialized_definition_fingerprint(restricted).unwrap();
+
+    let mut probe = restricted.clone();
+    probe.id = "action.condition-probe".to_owned();
+    probe.provenance = source(&probe.id);
+    probe.presentation = json!({"label": "Condition probe"});
+    probe.semantic["action"]["id"] = json!(probe.id);
+    probe.semantic["action"]["name"] = json!("Condition probe");
+    probe.semantic["action"]["sourcePath"] = json!("conditions/save-ends.ts#conditionProbe");
+    probe.semantic["action"]["tags"] = json!(["probe"]);
+    probe.fingerprint = materialized_definition_fingerprint(&probe).unwrap();
+
+    let mut movement = probe.clone();
+    movement.id = "action.condition-move".to_owned();
+    movement.provenance = source(&movement.id);
+    movement.presentation = json!({"label": "Condition movement"});
+    movement.semantic["action"]["id"] = json!(movement.id);
+    movement.semantic["action"]["name"] = json!("Condition movement");
+    movement.semantic["action"]["sourcePath"] = json!("conditions/save-ends.ts#conditionMovement");
+    movement.semantic["action"]["tags"] = json!(["movement"]);
+    movement.semantic["action"]["check"] = json!({"kind": "noRoll"});
+    movement.semantic["action"]["rollScope"] = json!("none");
+    movement.semantic["action"]["program"] = json!({
+        "kind": "atomic",
+        "body": {
+            "kind": "onCheck",
+            "noRoll": {
+                "kind": "operation",
+                "operation": {
+                    "kind": "move",
+                    "subject": "actor",
+                    "deltaX": {"kind": "constant", "value": 1},
+                    "deltaY": {"kind": "constant", "value": 0},
+                    "maximumDistance": 1,
+                    "provokes": false
+                }
+            }
+        }
+    });
+    movement.fingerprint = materialized_definition_fingerprint(&movement).unwrap();
+
+    prepared
+        .ruleset
+        .provides
+        .operations
+        .push(VersionedRpgRequirement {
+            id: "operation.move".to_owned(),
+            version: 1,
+        });
+    prepared.ruleset.provides.operations.sort();
+    prepared
+        .ruleset
+        .provides
+        .capabilities
+        .push(VersionedRpgRequirement {
+            id: "capability.position".to_owned(),
+            version: 1,
+        });
+    prepared.ruleset.provides.capabilities.sort();
+    prepared.content_requirements.operations = prepared.ruleset.provides.operations.clone();
+    prepared.content_requirements.capabilities = prepared.ruleset.provides.capabilities.clone();
+    prepared
+        .materialized_definitions
+        .extend([apply, movement, probe, auxiliary, condition]);
+    prepared
+        .materialized_definitions
+        .sort_by(|left, right| left.id.cmp(&right.id));
+    prepared.exported_roots = prepared
+        .materialized_definitions
+        .iter()
+        .map(|definition| definition.id.clone())
+        .collect();
+    prepared.definition_provenance = prepared
+        .materialized_definitions
+        .iter()
+        .map(|definition| definition.provenance.clone())
+        .collect();
+    prepared.relationships = prepared
+        .exported_roots
+        .iter()
+        .enumerate()
+        .map(|(order, target)| ContentRelationshipProvenance {
+            kind: ContentRelationshipKind::Exports,
+            source: "consumer.package@1.0.0".to_owned(),
+            target: target.clone(),
+            order,
+        })
+        .collect();
+    prepared.play_bundle_identity.id = "consumer.condition-bundle".to_owned();
+    prepared
+}
+
 fn damage_packet_prepared() -> PreparedPlayBundle {
     let mut prepared = healing_prepared();
     let package_id = "consumer.package";
@@ -7262,13 +7992,13 @@ fn damage_packet_prepared() -> PreparedPlayBundle {
         visibility: MaterializedContentVisibility::Exported,
         extension_policy: ContentExtensionPolicy::Sealed,
         semantic: json!({
-            "schema": {"identity": "asha.rpg.effect", "version": 1},
+            "schema": {"identity": "asha.rpg.effect", "version": 2},
             "rankMinimum": 1,
             "rankMaximum": 1,
             "stackingId": "damage-focus",
             "stacking": "refresh",
-            "durationAnchor": "targetTurnStart",
-            "durationCount": 3,
+            "tenure": {"kind": "fixed", "anchor": "targetTurnStart", "count": 3},
+            "condition": null,
             "contributions": [],
             "outcomeBandShifts": [],
             "poolContributions": [],

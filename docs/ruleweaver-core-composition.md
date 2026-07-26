@@ -17,6 +17,8 @@ The TypeScript source is
   damage dice, and damage type;
 - two inert item definitions and actor feature/item/target-effect
   contributions using canonical typed and untyped stacking groups;
+- fixed and target-turn-end save-ends effect tenure, actor/target effect
+  contribution lanes, and closed action/movement condition restrictions;
 - cost-once multiple targeting, per-target scalar results, hit/miss/critical
   branches, and a bounded critical follow-on expressed as an ordinary sequence;
 - a no-roll effect action and an unopposed healing action.
@@ -42,8 +44,11 @@ The independent Git consumer is
    damage, cost-once resource/budget events, and generic encounter readback;
 7. proves stale, mismatched binding, unaffordable, and malformed-evidence
    rejection leave the checkpoint unchanged; and
-8. replays the accepted sequence to the same state, hash, random position, and
-   log.
+8. proves canonical multiple save-ends failure and success, fixed expiry,
+   restriction removal, stale option identity, duplicate active-effect
+   rejection, and condition/tenure artifact tamper rejection; and
+9. replays the accepted sequences to the same state, hash, random position,
+   and log.
 
 The witness also protects the portable JSON spelling of
 `RpgNaturalDieEffect::SetBand`: TypeScript emits `bandId`, and Rust decodes and
@@ -60,6 +65,9 @@ The follow-on is a bounded authored `sequence` under an outcome branch. It does
 not claim recursive stages, arbitrary callbacks, deferred action grants, or
 TypeScript continuation logic.
 
-Line of effect, condition restrictions and save-ends, route-cost movement
-allowances, forced movement, leave-adjacency reactions, and persistent spatial
-sources remain owned by #6251 and its direct implementation children.
+The condition witness is deliberately closed. It does not claim a full
+condition catalog, domination or control transfer, stealth/hearing,
+concentration, permanent or rest-based tenure, or arbitrary condition
+language. Route-cost movement allowances, forced movement, leave-adjacency
+reactions, and persistent spatial sources remain owned by other #6251
+implementation children.

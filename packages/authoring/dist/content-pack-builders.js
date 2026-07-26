@@ -122,8 +122,13 @@ export function defineEffectDefinition(input) {
             ...input.effect,
             schema: {
                 identity: 'asha.rpg.effect',
-                version: 1,
+                version: 2,
             },
+            condition: input.effect.condition == null
+                ? null
+                : {
+                    clauses: [...input.effect.condition.clauses].sort((left, right) => conditionClauseKey(left).localeCompare(conditionClauseKey(right))),
+                },
             contributions: normalizeScalarContributions(input.effect.contributions ?? []),
             outcomeBandShifts: normalizeOutcomeBandShifts(input.effect.outcomeBandShifts ?? []),
             poolContributions: normalizePoolContributions(input.effect.poolContributions ?? []),
@@ -135,9 +140,10 @@ function normalizeOutcomeBandShifts(shifts) {
     return shifts
         .map((shift) => ({
         ...shift,
+        subject: shift.subject ?? 'actor',
         schema: {
             identity: 'asha.rpg.outcome-band-shift',
-            version: 1,
+            version: 2,
         },
     }))
         .sort((left, right) => left.id.localeCompare(right.id));
@@ -165,9 +171,10 @@ function normalizePoolContributions(contributions) {
     return contributions
         .map((contribution) => ({
         ...contribution,
+        subject: contribution.subject ?? 'actor',
         schema: {
             identity: 'asha.rpg.pool-contribution',
-            version: 1,
+            version: 2,
         },
     }))
         .sort((left, right) => left.id.localeCompare(right.id));
@@ -176,12 +183,20 @@ function normalizeScalarContributions(contributions) {
     return contributions
         .map((contribution) => ({
         ...contribution,
+        subject: contribution.subject ?? 'actor',
         schema: {
             identity: 'asha.rpg.scalar-contribution',
-            version: 1,
+            version: 2,
         },
     }))
         .sort((left, right) => left.id.localeCompare(right.id));
+}
+function conditionClauseKey(clause) {
+    if (clause.kind === 'forbidMovement') {
+        return '2:forbidMovement';
+    }
+    const rank = clause.kind === 'forbidActionTag' ? '0' : '1';
+    return `${rank}:${clause.actionTag}`;
 }
 export function defineCharacterClassDefinition(input) {
     return immutable({
