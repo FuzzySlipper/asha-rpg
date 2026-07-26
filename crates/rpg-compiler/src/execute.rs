@@ -2679,6 +2679,14 @@ impl Execution<'_> {
                 });
             }
         }
+        self.canonical_damage_response_candidates(pending, path)
+    }
+
+    fn canonical_damage_response_candidates(
+        &self,
+        mut pending: Vec<PendingDamageResponse>,
+        path: &str,
+    ) -> Result<Vec<PendingDamageResponse>, RpgResolutionRejection> {
         if pending.len() > MAXIMUM_RPG_DAMAGE_RESPONSES {
             return Err(self.fail(
                 "RPG_RUNTIME_DAMAGE_RESPONSE_LIMIT_EXCEEDED",
@@ -2718,18 +2726,6 @@ impl Execution<'_> {
         let mut adjusted_packet_sum = 0_i64;
         for (index, part) in parts.iter().enumerate() {
             let part_path = format!("{path}.parts[{index}]");
-            let original_amount =
-                self.eval_nonnegative_formula(&part.amount, &format!("{part_path}.amount"))?;
-            original_packet_sum = original_packet_sum
-                .checked_add(i64::from(original_amount))
-                .ok_or_else(|| {
-                    self.fail(
-                        "RPG_RUNTIME_DAMAGE_PACKET_OVERFLOW",
-                        path,
-                        "original damage packet sum overflowed",
-                    )
-                })?;
-
             let mut responses = base_responses.clone();
             if index == 0 && self.pending_damage_reduction > 0 {
                 let value = i32::try_from(self.pending_damage_reduction)
@@ -2750,8 +2746,23 @@ impl Execution<'_> {
                         effect: RpgDamageResponseEffect::Flat { value },
                     },
                 });
-                responses.sort_by(|left, right| left.canonical_key().cmp(&right.canonical_key()));
             }
+            let responses = self.canonical_damage_response_candidates(
+                responses,
+                &format!("{part_path}.responseCandidates"),
+            )?;
+
+            let original_amount =
+                self.eval_nonnegative_formula(&part.amount, &format!("{part_path}.amount"))?;
+            original_packet_sum = original_packet_sum
+                .checked_add(i64::from(original_amount))
+                .ok_or_else(|| {
+                    self.fail(
+                        "RPG_RUNTIME_DAMAGE_PACKET_OVERFLOW",
+                        path,
+                        "original damage packet sum overflowed",
+                    )
+                })?;
 
             let eligible = responses
                 .iter()
