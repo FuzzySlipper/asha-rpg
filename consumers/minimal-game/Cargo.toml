@@ -7,4 +7,4 @@ publish = false
 [workspace]
 
 [dependencies]
-asha-rpg = { git = "https://github.com/FuzzySlipper/asha-rpg.git", rev = "eb4802f84b11b06e42d4565c91867d6ef94d6972" }
+asha-rpg = { git = "https://github.com/FuzzySlipper/asha-rpg.git", rev = "7c59d9ebc19bc4ee1aacdf74ba5242afecf56b38" }
